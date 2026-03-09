@@ -72,7 +72,7 @@ def main():
     # 初始化目录和日志
     out_dir = os.path.join(PROJECT_ROOT, args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    log_file = os.path.join(PROJECT_ROOT, "logs", f"top1_sim.{args.run_id}.log")
+    log_file = os.path.join(PROJECT_ROOT, "output", "logs", f"sim.{args.run_id}.log")
     setup_logging(log_file)
 
     logging.info("=" * 60)
