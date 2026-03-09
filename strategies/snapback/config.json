@@ -1,0 +1,26 @@
+{
+  "strategy_name": "WashoutSnapback",
+  "scan_interval_sec": 60,
+  "min_24h_quote_vol": 50000000,
+  "drop_window_mins": 15,
+  "min_drop_pct": 0.08,
+  "vol_climax_window_mins": 5,
+  "vol_baseline_window_mins": 120,
+  "min_vol_climax_ratio": 8.0,
+  "trigger_signals": {
+    "enable_pin_bar": true,
+    "min_lower_shadow_ratio": 0.6,
+    "enable_engulfing": true,
+    "engulfing_requires_vol": true
+  },
+  "min_needle_depth_pct": 0.025,
+  "max_needle_depth_pct": 0.1,
+  "entry_pullback_pct": -0.02,
+  "take_profit_pct": 0.025,
+  "order_timeout_sec": 180,
+  "cooldown_hours": 4,
+  "max_hold_mins": 5,
+  "time_stop_min_profit": 0.005,
+  "defense_trigger_pct": 999.0,
+  "defense_lock_pct": 0.005
+}
