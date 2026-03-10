@@ -303,6 +303,24 @@ def merge_write_month(
     return tbl_out.num_rows
 
 
+
+def infer_last_open_from_local(data_dir: str, symbol: str) -> Optional[int]:
+    sym_dir = os.path.join(data_dir, symbol)
+    if not os.path.isdir(sym_dir):
+        return None
+
+    parquet_files = sorted(fn for fn in os.listdir(sym_dir) if fn.endswith(".parquet"))
+    if not parquet_files:
+        return None
+
+    fp = os.path.join(sym_dir, parquet_files[-1])
+    tbl = pq.read_table(fp, columns=["open_time_ms"])
+    col = tbl.column("open_time_ms")
+    if len(col) <= 0:
+        return None
+
+    return int(max(col.to_pylist()))
+
 # ----------------------------
 # backfill / sync
 # ----------------------------
@@ -537,20 +555,46 @@ def main():
                 except Exception as e:
                     logging.error("[backfill] %s failed: %s", sym, e)
         else:
-            # sync：如果没有 state 的 symbol，则自动 backfill（保持一步到位）
+            # sync：优先依赖 state；若 state 缺失但本地已有 shards，则先从本地恢复 last_open_time_ms。
+            # 只有既没有 state、也没有本地 shards 时，才执行 full backfill。
             for i, sym in enumerate(symbols, 1):
                 try:
                     per = state.get("per_symbol", {}).get(sym)
                     if not per or "last_open_time_ms" not in per:
-                        backfill_symbol(
-                            sess,
-                            sym,
-                            args.days,
-                            args.data_dir,
-                            state,
-                            args.limit,
-                            args.sleep_ms,
-                        )
+                        try:
+                            last_open = infer_last_open_from_local(args.data_dir, sym)
+                        except Exception as e:
+                            logging.warning(
+                                "[sync] %s: infer local last_open failed: %s", sym, e
+                            )
+                            last_open = None
+
+                        if last_open is not None:
+                            update_symbol_state(state, sym, last_open)
+                            logging.info(
+                                "[sync] %s: recovered state from local shards last_open=%s",
+                                sym,
+                                last_open,
+                            )
+                            sync_symbol(
+                                sess,
+                                sym,
+                                args.data_dir,
+                                state,
+                                args.limit,
+                                args.sleep_ms,
+                            )
+                        else:
+                            logging.info("[sync] %s: no state/local shards; backfill first", sym)
+                            backfill_symbol(
+                                sess,
+                                sym,
+                                args.days,
+                                args.data_dir,
+                                state,
+                                args.limit,
+                                args.sleep_ms,
+                            )
                     else:
                         sync_symbol(
                             sess, sym, args.data_dir, state, args.limit, args.sleep_ms
