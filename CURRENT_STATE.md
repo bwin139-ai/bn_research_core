@@ -1,10 +1,18 @@
 # CURRENT_STATE.md
 
 - 项目：bn_research_core
-- 当前可信基线：0579bcb
+- 当前可信基线：0579bcb（已验证）
 - 当前阶段：PERF_ONLY
-- 当前目标：只做提速，不改业务逻辑
-- 小窗口验证：2025-04-24 ~ 2025-04-25 已通过，NEIROUSDT 可复现
-- 当前任务：跑 2025-04-18 ~ 2025-06-28 第一批次全量窗口，对比 sim_trades 输出
-- 禁止事项：禁止修改策略逻辑、参数契约、输出口径
-- 下一步唯一动作：完成 PERF1_VERIFY_FULL 并核对交易结果
+- 第一刀结果：通过
+- 一致性：sim_trades 字节级一致
+- 性能：load_panel 提升 41.17%，总耗时提升 3.53%
+- 下一步：设计 PERF_ONLY 第二刀（聚焦 data_feeder 高频横截面访问）
+
+
+cd /root/bn_research_core
+
+/root/service_env/bin/python tools/audit_perf_and_trades.py \
+  --old-log /root/BN_strategy/output/logs/sim.Snapback_V1_A1.log \
+  --new-log /root/bn_research_core/output/logs/sim.PERF3_VERIFY_FULL.console.log \
+  --old-trades /root/BN_strategy/output/state/sim_trades.Snapback_V1_A1.jsonl \
+  --new-trades /root/bn_research_core/output/state/sim_trades.PERF3_VERIFY_FULL.jsonl
