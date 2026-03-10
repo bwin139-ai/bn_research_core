@@ -17,21 +17,7 @@ def main():
         help="指定要提取的回测 RUN_ID (例如: Topq_Small_13579)，如果不指定则默认寻找最新的",
         default=None,
     )
-    parser.add_argument(
-        "--strategy",
-        type=str,
-        help="策略名称 (top1 或 snapback)，若不传将尝试根据 run-id 自动推测",
-        default=None,
-    )
     args = parser.parse_args()
-
-    # 自动推断策略类型
-    strategy_type = args.strategy
-    if not strategy_type:
-        if args.run_id and "Snapback" in args.run_id:
-            strategy_type = "snapback"
-        else:
-            strategy_type = "top1"
 
     print("🔍 正在寻找回测交易记录...")
 
@@ -123,43 +109,28 @@ def main():
             except Exception:
                 pass
 
-        # 🚀 策略特征分流路由
-        base_features = {
-            "Symbol": sym,
-            "Hold(m)": hold_mins,
-            "Reason": t.get("reason", "UNKNOWN"),
-            "PnL(%)": round(t.get("pnl_pct", 0) * 100, 2),
-            "24hChg(%)": round(ctx.get("chg_24h", 0) * 100, 1),
-            "MFE(%)": round(mfe_pct, 2),
-            "MAE(%)": round(mae_pct, 2),
-        }
+        # 安全提取 V3 专属宏观雷达特征，防呆处理
+        mdd_15m = ctx.get("mDD_15m")
+        mdd_120m = ctx.get("mDD_120m")
 
-        if strategy_type == "snapback":
-            needle_low = ctx.get("needle_low")
-            drop_pct = ctx.get("drop_pct", 0)
-            sl_dist = ((needle_low / entry_price) - 1.0) if needle_low else 0.0
-
-            strat_features = {
-                "Drop(%)": round(drop_pct * 100, 2),
-                "VolR": round(ctx.get("vol_ratio", 0), 1),
-                "Trigger": ctx.get("trigger_type", "N/A"),
-                "NeedleDist(%)": round(sl_dist * 100, 2),
-            }
-        else:
-            # 兼容老版本 Top1 逻辑
-            mdd_15m = ctx.get("mDD_15m")
-            mdd_120m = ctx.get("mDD_120m")
-            strat_features = {
+        features_list.append(
+            {
+                "Symbol": sym,
+                "Hold(m)": hold_mins,
+                "Reason": t.get("reason", "UNKNOWN"),
+                "PnL(%)": round(t.get("pnl_pct", 0) * 100, 2),
+                "24hChg(%)": round(ctx.get("chg_24h", 0) * 100, 1),
                 "mDD_15m(%)": round(mdd_15m * 100, 2) if mdd_15m is not None else "N/A",
                 "mDD_120m(%)": (
                     round(mdd_120m * 100, 2) if mdd_120m is not None else "N/A"
                 ),
+                "mDD_old(%)": round(ctx.get("micro_drawdown", 0) * 100, 2),
                 "mMom(%)": round(ctx.get("micro_momentum", 0) * 100, 2),
                 "VolR": round(ctx.get("micro_vol_ratio", 0), 2),
+                "MFE(%)": round(mfe_pct, 2),
+                "MAE(%)": round(mae_pct, 2),
             }
-
-        # 合并字典
-        features_list.append({**base_features, **strat_features})
+        )
 
     df_features = pd.DataFrame(features_list)
     df_features.sort_values(by="PnL(%)", ascending=False, inplace=True)

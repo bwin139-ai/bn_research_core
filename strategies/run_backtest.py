@@ -111,7 +111,7 @@ def main():
             data_dir=data_dir,
             start_time_ms=start_ms,
             end_time_ms=end_ms,
-            ndays_lowest=config.get("ndays_lowest", 3),
+            ndays_lowest=config["ndays_lowest"],
         )
         timestamps = feeder.get_timestamps()
         logging.info(

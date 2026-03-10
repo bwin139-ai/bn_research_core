@@ -28,6 +28,7 @@ class WashoutSnapbackStrategy:
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
         self.tp_pct = self.config["take_profit_pct"]
+        self.sl_pct = self.config["stop_loss_pct"]
         self.timeout_sec = self.config["order_timeout_sec"]
         self.cooldown_ms = self.config["cooldown_hours"] * 3600 * 1000
 
@@ -68,37 +69,41 @@ class WashoutSnapbackStrategy:
             if idx < self.vol_baseline_window:
                 continue
 
-            current_price = row["close"]
-            curr_k = sym_df.iloc[idx - 1]
-            prev_k = sym_df.iloc[idx - 2]
-
-            # 🚀 提速3倍：直接读取引擎下发的预计算数据，时间复杂度从 O(N) 降为 O(1)
-            highest_price = curr_k.get("roll_max_15", 0)
-            needle_low = curr_k.get("roll_min_15", 0)
-            vol_climax = curr_k.get("roll_vol_5", 0)
-            vol_baseline = curr_k.get("roll_vol_120", 0)
-
-            if highest_price == 0 or vol_baseline == 0 or needle_low == 0:
+            # 截取回溯视距 (只需要长均量线的长度即可)
+            start_idx = max(0, idx - self.vol_baseline_window - 5)
+            history_df = sym_df.iloc[start_idx:idx]
+            if len(history_df) < self.vol_baseline_window:
                 continue
 
-            drop_pct = (highest_price - current_price) / highest_price
+            current_price = row["close"]
+
+            # 体检 A: 瀑布跌幅是否达标
+            recent_drop_df = history_df.tail(self.drop_window)
+            highest_price = recent_drop_df["high"].max()
+            drop_pct = (
+                (highest_price - current_price) / highest_price
+                if highest_price > 0
+                else 0
+            )
             if drop_pct < self.min_drop_pct:
                 continue
 
-            # 🚀 V2 黄金区间防守过滤：太浅容易扫，太深是接飞刀
-            sl_dist_pct = (needle_low / current_price) - 1.0
-            min_sl_dist = -self.config.get("max_needle_depth_pct", 0.10)
-            max_sl_dist = -self.config.get("min_needle_depth_pct", 0.025)
-            if not (min_sl_dist <= sl_dist_pct <= max_sl_dist):
-                continue
-
-            vol_ratio = vol_climax / vol_baseline
+            # 体检 B: 是否放出恐慌天量
+            vol_climax = (
+                history_df["quote_asset_volume"].tail(self.vol_climax_window).mean()
+            )
+            vol_baseline = (
+                history_df["quote_asset_volume"].tail(self.vol_baseline_window).mean()
+            )
+            vol_ratio = vol_climax / vol_baseline if vol_baseline > 0 else 0
             if vol_ratio < self.min_vol_ratio:
                 continue
 
             # ==========================================
-            # 🦅 核心形态审查
+            # 🦅 核心逻辑：站在最后一根K线上，审查出击信号 (一锤定音)
             # ==========================================
+            curr_k = history_df.iloc[-1]
+            prev_k = history_df.iloc[-2]
 
             trigger_matched = False
             trigger_name = ""
@@ -139,7 +144,6 @@ class WashoutSnapbackStrategy:
                         "trigger": trigger_name,
                         "chg_24h": row["chg_24h"],
                         "vol_24h": row["vol_24h"],
-                        "needle_low": needle_low,
                     }
                 )
 
@@ -175,7 +179,7 @@ class WashoutSnapbackStrategy:
             "params": {
                 "entry_pullback_pct": self.entry_pullback,
                 "take_profit_pct": self.tp_pct,
-                "stop_loss_pct": (target["needle_low"] / target["current_price"]) - 1.0,
+                "stop_loss_pct": self.sl_pct,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {
@@ -184,7 +188,6 @@ class WashoutSnapbackStrategy:
                 "drop_pct": target["drop_pct"],
                 "vol_ratio": target["vol_ratio"],
                 "trigger_type": target["trigger"],
-                "needle_low": target["needle_low"],
             },
         }
 

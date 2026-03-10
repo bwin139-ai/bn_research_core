@@ -7,9 +7,20 @@ from typing import Any, Dict
 
 class StrategyConfig:
     # 严格定义必须存在的字段，没有任何默认值（捍卫铁律2）
-    REQUIRED_KEYS = (
-        []
-    )  # 🚀 彻底放权：底层引擎不再干涉策略基因，配置校验由各策略自行完成
+    REQUIRED_KEYS = [
+        "strategy_name",
+        "scan_interval_sec",
+        "min_24h_pct_chg",
+        "min_24h_quote_vol",
+        "ndays_lowest",
+        "max_surge_from_lowest",
+        "entry_pullback_pct",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "order_timeout_sec",
+        "cooldown_hours",
+        "benchmark_index",
+    ]
 
     @staticmethod
     def load(config_path: str) -> Dict[str, Any]:

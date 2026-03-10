@@ -7,7 +7,7 @@
 STRATEGY_NAME="snapback"
 
 # 2. 策略大版本 (姓氏 - 代表代码逻辑)
-PREFIX="Snapback_V2"
+PREFIX="Snapback_V1"
 
 # 3. 参数测试批次 (名字 - 代表 JSON 参数组合，如 B, C, D)
 SERIES="A"
@@ -31,12 +31,12 @@ run_batch() {
     log "====================================================="
 
     if [ "${STRATEGY_NAME}" = "top1" ]; then
-        CONFIG_PATH="top1_hunter/config.json"
+        CONFIG_PATH="config.json"
     else
-        CONFIG_PATH="${STRATEGY_NAME}/config.json"
+        CONFIG_PATH="../${STRATEGY_NAME}/config.json"
     fi
 
-    /root/service_env/bin/python strategies/run_backtest.py \
+    /root/service_env/bin/python strategies/top1_hunter/run_backtest.py \
       --strategy "${STRATEGY_NAME}" \
       --start "${start_date}T00:00:00+00:00" \
       --end "${end_date}T00:00:00+00:00" \

@@ -27,7 +27,7 @@ class CrossSectionalFeeder:
 
         # --- 生产级防御底线：严格读取历史投喂窗口契约 ---
         # 如果 config.json 中未定义此参数，将直接抛出 KeyError，严禁使用隐式默认值
-        self.max_history_window_mins = self.config.get("max_history_window_mins", 150)
+        self.max_history_window_mins = self.config["max_history_window_mins"]
 
         # 为了能计算期初的 24h 和 N 天滚动指标，实际加载数据需要往前推 N 天
         self.buffer_start_ms = start_time_ms - (ndays_lowest + 1) * 24 * 3600 * 1000
