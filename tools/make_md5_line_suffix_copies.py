@@ -1,17 +1,18 @@
-# tools_make_md5_line_suffix_copies.py
+# make_md5_line_suffix_copies.py
 import hashlib
 import pathlib
 import shutil
 
 """
-python3 tools/tools_make_md5_line_suffix_copies.py
+python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
     "strategies/run_backtest.py",
     # "=================================",
     "tools/ai_feature_extractor.py",
+    "tools/extract_crime_scene.py",
+    "tools/fetch_all.sh",
     "tools/run_full_backtest.sh",
-    # "tools/fetch_all.sh",
     # "=================================",
     "core/config_loader.py",
     "core/analysis/analyzer.py",
