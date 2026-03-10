@@ -34,10 +34,6 @@ class CrossSectionalFeeder:
 
         self.df = self._load_and_align_data()
         self.timestamps = self.df.index.get_level_values("open_time_ms").unique().tolist()
-        self.cross_sections = {
-            ts: df.droplevel("open_time_ms")
-            for ts, df in self.df.groupby(level="open_time_ms", sort=False)
-        }
 
     def _get_all_symbols(self) -> List[str]:
         return [
@@ -130,4 +126,7 @@ class CrossSectionalFeeder:
 
     def get_cross_section(self, timestamp_ms: int) -> pd.DataFrame:
         """获取 T 时刻全市场的 K 线切片"""
-        return self.cross_sections.get(timestamp_ms, pd.DataFrame())
+        try:
+            return self.df.xs(timestamp_ms, level="open_time_ms")
+        except KeyError:
+            return pd.DataFrame()
