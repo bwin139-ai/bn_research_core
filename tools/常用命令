@@ -1,0 +1,58 @@
+# ========= 项目根目录 =========
+cd ~/ai_projects/bn_research_core
+cd /root/bn_research_core
+
+# ========= 阿里云运行 拉取最新代码 =========
+cd /root/bn_research_core
+git fetch --all
+git checkout main
+git pull --ff-only origin main
+
+# ========= 前端运行仿真系统 参数切换Top1 / Snapback =========
+cd /root/bn_research_core
+/root/service_env/bin/python strategies/run_backtest.py \
+  --strategy top1 \
+  --start 2026-03-01T00:00:00+00:00 \
+  --end   2026-03-05T00:00:00+00:00 \
+  --kline-window 240 \
+  --config strategies/top1_hunter/config.json \
+  --out-dir "output/state" \
+  --run-id "Top1_V4_SmokeTest"
+
+cd /root/bn_research_core
+/root/service_env/bin/python strategies/run_backtest.py \
+  --strategy snapback \
+  --start 2026-03-01T00:00:00+00:00 \
+  --end   2026-03-05T00:00:00+00:00 \
+  --kline-window 240 \
+  --config snapback/config.json \
+  --out-dir "output/state" \
+  --run-id "Snapback_V2_SmokeTest"
+
+# ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
+cd /root/bn_research_core
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id Top1_V3_C4_ALL
+
+# =========== 批量运行Top1 / snapback ===========
+cd /root/bn_research_core
+nohup ./tools/run_full_backtest.sh > output/logs/full_batch_manager.log 2>&1 &
+
+# =========  Top1资金曲线绘制 =========
+cd /root/bn_research_core
+/root/service_env/bin/python core/analysis/top1_equity_curve.py \
+  --trades output/state/sim_trades.Top1_V3_C4_ALL.jsonl \
+  --kline-root data/klines_1m \
+  --initial-equity 100 \
+  --fee-side 0.0005 \
+  --out output/state/sim_curve.Top1_V3_C4_ALL.png \
+  --summary-out output/state/sim_equity.Top1_V3_C4_ALL.json
+
+# =========  Top1 信号前120分钟 k线数据采集 =========
+cd /root/bn_research_core
+/root/service_env/bin/python tools/extract_crime_scene.py \
+  --trades output/state/sim_trades.Top1_V2_ALL.jsonl \
+  --window 120
+
+# =========  从服务器拉取数据 =========
+cd ~/ai_projects/bn_research_core
+~/ai_projects/bn_strategy/tools/fetch_all.sh A
