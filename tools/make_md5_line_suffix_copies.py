@@ -8,10 +8,10 @@ python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
     #"klines_1m_store.py",
-    #"strategies/run_backtest.py",
+    "strategies/run_backtest.py",
     # "=================================",
     #"tools/ai_feature_extractor.py",
-    "tools/extract_crime_scene.py",
+    #"tools/extract_crime_scene.py",
     #"tools/fetch_all.sh",
     #"tools/run_full_backtest.sh",
     # "=================================",
@@ -20,7 +20,7 @@ FILES = [
     #"core/analysis/top1_equity_curve.py",
     # "core/analysis/visualizer.py",
     #"core/engine/broker.py",
-    #"core/engine/data_feeder.py",
+    "core/engine/data_feeder.py",
     # "=================================",
     #"strategies/snapback/config.json",
     #"strategies/snapback/logic.py",
