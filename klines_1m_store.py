@@ -209,11 +209,7 @@ SCHEMA = pa.schema(
         ("high", pa.float64()),
         ("low", pa.float64()),
         ("close", pa.float64()),
-        ("volume", pa.float64()),
         ("quote_asset_volume", pa.float64()),
-        ("taker_buy_quote_asset_volume", pa.float64()),
-        ("close_time_ms", pa.int64()),
-        ("trades", pa.int64()),
     ]
 )
 
@@ -222,17 +218,13 @@ def rows_to_table(rows: List[List]) -> pa.Table:
     # Binance kline array:
     # [ open_time, open, high, low, close, volume, close_time,
     #   quote_asset_volume, number_of_trades, taker_buy_base, taker_buy_quote, ignore ]
+    # Store contract is intentionally narrowed to 6 columns.
     open_time = [int(r[0]) for r in rows]
     open_ = [float(r[1]) for r in rows]
     high = [float(r[2]) for r in rows]
     low = [float(r[3]) for r in rows]
     close = [float(r[4]) for r in rows]
-    vol = [float(r[5]) for r in rows]
-    close_time = [int(r[6]) for r in rows]
-
     quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
-    trades = [int(r[8]) if len(r) > 8 else 0 for r in rows]
-    taker_buy_quote = [float(r[10]) if len(r) > 10 else 0.0 for r in rows]
 
     return pa.Table.from_arrays(
         [
@@ -241,11 +233,7 @@ def rows_to_table(rows: List[List]) -> pa.Table:
             pa.array(high, type=pa.float64()),
             pa.array(low, type=pa.float64()),
             pa.array(close, type=pa.float64()),
-            pa.array(vol, type=pa.float64()),
             pa.array(quote_vol, type=pa.float64()),
-            pa.array(taker_buy_quote, type=pa.float64()),
-            pa.array(close_time, type=pa.int64()),
-            pa.array(trades, type=pa.int64()),
         ],
         schema=SCHEMA,
     )
@@ -260,12 +248,13 @@ def merge_write_month(
 ) -> int:
     """
     Merge by open_time_ms (dedup), sort asc, write shard.
-    Strict schema: assumes existing parquet (if any) uses current SCHEMA.
+    Strict schema: assumes existing parquet (if any) uses current 6-column SCHEMA.
     """
     ensure_dir(os.path.join(data_dir, symbol))
     fpath = month_file(data_dir, symbol, month_key)
 
-    # Binance kline rows are keyed by open_time_ms
+    # Keep a Binance-like sparse row shape so rows_to_table can consume both
+    # fresh API rows and locally reconstructed rows with the same field indices.
     merged: Dict[int, List] = {int(r[0]): r for r in new_rows}
 
     if os.path.exists(fpath):
@@ -277,11 +266,7 @@ def merge_write_month(
                 "high",
                 "low",
                 "close",
-                "volume",
                 "quote_asset_volume",
-                "taker_buy_quote_asset_volume",
-                "close_time_ms",
-                "trades",
             ],
         )
 
@@ -290,30 +275,23 @@ def merge_write_month(
         h = tbl.column("high").to_pylist()
         low_ = tbl.column("low").to_pylist()
         c = tbl.column("close").to_pylist()
-        v = tbl.column("volume").to_pylist()
         qv = tbl.column("quote_asset_volume").to_pylist()
-        tbq = tbl.column("taker_buy_quote_asset_volume").to_pylist()
-        ct = tbl.column("close_time_ms").to_pylist()
-        tr = tbl.column("trades").to_pylist()
 
         for i in range(len(ot)):
             k = int(ot[i])
             if k in merged:
                 continue
-            # Build a Binance-like row (rows_to_table uses indices 0,1,2,3,4,5,6,7,8,10)
+            # Rebuild the minimal index positions consumed by rows_to_table:
+            # 0=open_time_ms, 1=open, 2=high, 3=low, 4=close, 7=quote_asset_volume
             merged[k] = [
                 k,
                 o[i],
                 h[i],
                 low_[i],
                 c[i],
-                v[i],
-                ct[i],
-                qv[i],
-                tr[i],
                 0.0,
-                tbq[i],
                 0,
+                qv[i],
             ]
 
     keys = sorted(merged.keys())
