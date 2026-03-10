@@ -8,6 +8,16 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 
+REQUIRED_COLUMNS = [
+    "open_time_ms",
+    "open",
+    "high",
+    "low",
+    "close",
+    "quote_asset_volume",
+]
+
+
 class CrossSectionalFeeder:
     def __init__(
         self,
@@ -60,7 +70,7 @@ class CrossSectionalFeeder:
             if not files:
                 continue
 
-            tbl = pq.read_table(files)
+            tbl = pq.read_table(files, columns=REQUIRED_COLUMNS)
             df_sym = tbl.to_pandas()
 
             # 过滤时间范围（带 Buffer）
