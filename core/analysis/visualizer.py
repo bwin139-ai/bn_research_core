@@ -59,6 +59,11 @@ class StrategyVisualizerMatplotlib:
 
         plot_df_1m = sym_df_1m.loc[start_time_dt:end_time_dt].copy()
 
+        if "quote_asset_volume" not in plot_df_1m.columns:
+            raise ValueError(
+                '[数据缺失] plot_df_1m 缺少 "quote_asset_volume"，无法绘制成交额副图'
+            )
+
         # --- 2. 准备整合标题信息 ---
         exit_str_full = exit_time_dt.strftime("%Y-%m-%d %H:%M")
         signal_str_short = signal_time_dt.strftime("%H:%M")
@@ -101,12 +106,22 @@ class StrategyVisualizerMatplotlib:
             f"mDD {m_dd*100:.1f}% | mMom {m_mom*100:.1f}% | VolR {m_vr:.2f}"
         )
 
-        # --- 3. 绘制主图 (关闭 tight_layout，自己接管排版) ---
+        # --- 3. 绘制主图 + 成交额副图 (关闭 tight_layout，自己接管排版) ---
+        quote_vol_addplot = mpf.make_addplot(
+            plot_df_1m["quote_asset_volume"],
+            panel=1,
+            type="bar",
+            ylabel="Quote Vol",
+            color="dimgray",
+        )
+
         fig, axes = mpf.plot(
             plot_df_1m,
             type="candle",
             style=self.s,
-            volume=True,
+            addplot=quote_vol_addplot,
+            volume=False,
+            panel_ratios=(3, 1),
             returnfig=True,
             show_nontrading=False,
             datetime_format="%m-%d %H:%M",
