@@ -33,15 +33,21 @@ def load_trades(path: str) -> List[Dict[str, Any]]:
         raw = f.read().strip()
     if not raw:
         return []
-    # JSON array/object
+
+    # Try full-file JSON first, but fall back to JSONL if the file contains
+    # multiple top-level JSON objects (common .jsonl layout).
     if raw[0] in "[{":
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
         if isinstance(parsed, list):
             return parsed
         if isinstance(parsed, dict):
             if isinstance(parsed.get("trades"), list):
                 return parsed["trades"]
             raise ValueError(f"Unsupported JSON object format in {path}")
+
     # JSONL
     out = []
     with open(path, "r", encoding="utf-8") as f:
