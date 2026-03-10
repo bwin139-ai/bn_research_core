@@ -111,7 +111,6 @@ def main():
                             "h": float(row["high"]),
                             "l": float(row["low"]),
                             "c": float(row["close"]),
-                            "v": float(row["volume"]) if "volume" in row else 0.0,
                         }
                     )
 
