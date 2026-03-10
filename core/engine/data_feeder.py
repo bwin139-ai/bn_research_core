@@ -33,7 +33,6 @@ class CrossSectionalFeeder:
         self.buffer_start_ms = start_time_ms - (ndays_lowest + 1) * 24 * 3600 * 1000
 
         self.df = self._load_and_align_data()
-        self.timestamps = self.df.index.get_level_values("open_time_ms").unique().tolist()
 
     def _get_all_symbols(self) -> List[str]:
         return [
@@ -122,7 +121,7 @@ class CrossSectionalFeeder:
 
     def get_timestamps(self) -> List[int]:
         """获取所有唯一的时间戳，用于驱动时间轮"""
-        return self.timestamps
+        return self.df.index.get_level_values("open_time_ms").unique().tolist()
 
     def get_cross_section(self, timestamp_ms: int) -> pd.DataFrame:
         """获取 T 时刻全市场的 K 线切片"""
