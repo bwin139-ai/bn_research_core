@@ -107,11 +107,14 @@ def main():
     # 3. 初始化基础设施
     data_dir = os.path.join(PROJECT_ROOT, "data", "klines_1m")
     try:
-        feeder_ndays_lowest = config["ndays_lowest"]
-        if args.strategy == "snapback":
+        if args.strategy == "top1":
+            feeder_ndays_lowest = config["ndays_lowest"]
+        elif args.strategy == "snapback":
             feeder_ndays_lowest = max(
                 1, math.ceil(config["max_history_window_mins"] / (24 * 60))
             )
+        else:
+            raise KeyError(f"【铁律违背】不支持的策略类型: {args.strategy!r}")
 
         feeder = CrossSectionalFeeder(
             config=config,

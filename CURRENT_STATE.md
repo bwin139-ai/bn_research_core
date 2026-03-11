@@ -13,9 +13,9 @@ cd /root/bn_research_core
 
 /root/service_env/bin/python tools/audit_perf_and_trades.py \
   --old-log /root/BN_strategy/output/logs/sim.Snapback_V1_A1.log \
-  --new-log /root/bn_research_core/output/logs/sim.PERF0_VERIFY_FULL.console.log \
+  --new-log /root/bn_research_core/output/logs/sim.PERF_NEWBASELINE.log \
   --old-trades /root/BN_strategy/output/state/sim_trades.Snapback_V1_A1.jsonl \
-  --new-trades /root/bn_research_core/output/state/sim_trades.PERF0_VERIFY_FULL.jsonl
+  --new-trades /root/bn_research_core/output/state/sim_trades.PERF_NEWBASELINE.jsonl
 
 
 
@@ -27,5 +27,5 @@ nohup /root/service_env/bin/python strategies/run_backtest.py \
   --kline-window 240 \
   --config "snapback/config.json" \
   --out-dir "output/state" \
-  --run-id "PERF0_VERIFY_FULL" \
-  > output/logs/sim.PERF3_VERIFY_FULL.console.log 2>&1 &
+  --run-id "PERF_NEWBASELINE" \
+  > output/logs/sim.PERF_NEWBASELINE.log 2>&1 &
