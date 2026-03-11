@@ -20,13 +20,13 @@
   "max_needle_depth_pct": 0.1,  
 
   "entry_pullback_pct": -0.02,
-  "take_profit_pct": 0.025,
+  "take_profit_pct": 0.03,
   "order_timeout_sec": 180,
   "cooldown_hours": 4,
 
   "max_hold_mins": 10,
   "time_stop_min_profit": 0.005,
-  "defense_trigger_pct": 0.03,
+  "defense_trigger_pct": 0.06,
   "defense_lock_pct": 0.005,
 
   "max_history_window_mins": 130,

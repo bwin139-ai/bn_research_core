@@ -39,12 +39,12 @@ cd /root/bn_research_core
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-03-01T00:00:00+00:00 \
-  --end   2026-03-05T00:00:00+00:00 \
+  --start 2026-03-04T00:00:00+00:00 \
+  --end   2026-03-11T00:00:00+00:00 \
   --kline-window 240 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V2_SmokeTest"
+  --run-id "Snapback_V2"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
@@ -73,6 +73,8 @@ cd /root/bn_research_core
 # =========  从服务器拉取数据 =========
 cd ~/ai_projects/bn_research_core
 ~/ai_projects/bn_strategy/tools/fetch_all.sh A
+
+scp -r 'root@8.218.96.252:/root/bn_research_core/logs/*ABNTR_s1_0303T141737*' ~/ai_projects/bn_strategy/logs
 
 # =========  k线落盘 =========
 cd /root/bn_research_core
