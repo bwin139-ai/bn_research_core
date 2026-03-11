@@ -11,25 +11,20 @@ class WashoutSnapbackStrategy:
         # 基础过滤
         self.min_24h_vol = self.config["min_24h_quote_vol"]
 
-        # 🩸 案发现场参数
+        # 第一层：对超跌的观察（价 + 量 共振）
         self.drop_window = self.config["drop_window_mins"]
         self.min_drop_pct = self.config["min_drop_pct"]
         self.vol_climax_window = self.config["vol_climax_window_mins"]
         self.vol_baseline_window = self.config["vol_baseline_window_mins"]
         self.min_vol_ratio = self.config["min_vol_climax_ratio"]
 
-        # 🦅 猎手出击信号参数
-        triggers = self.config["trigger_signals"]
-        self.enable_pin_bar = triggers["enable_pin_bar"]
-        self.min_lower_shadow_ratio = triggers["min_lower_shadow_ratio"]
-        self.enable_engulfing = triggers["enable_engulfing"]
-        self.engulfing_req_vol = triggers["engulfing_requires_vol"]
+        # 第二层：对反弹的观察（ABC 结构修复比例）
+        self.min_rebound_ratio = self.config["min_rebound_ratio"]
+        self.max_rebound_ratio = self.config["max_rebound_ratio"]
 
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
         self.tp_pct = self.config["take_profit_pct"]
-        self.min_needle_depth_pct = self.config["min_needle_depth_pct"]
-        self.max_needle_depth_pct = self.config["max_needle_depth_pct"]
         self.timeout_sec = self.config["order_timeout_sec"]
         self.cooldown_ms = self.config["cooldown_hours"] * 3600 * 1000
 
@@ -78,28 +73,24 @@ class WashoutSnapbackStrategy:
 
             current_price = row["close"]
 
-            # 体检 A: 针尖深度是否落在黄金区间
+            # ==============================
+            # 第一层：对超跌的观察
+            # CAB 取数顺序：
+            # C = 当前收盘；
+            # A = 从 C 往前回看 drop_window 根 bars 的最高点；
+            # B = A 与 C 之间的最低点。
+            # 虽然命名叫 ABC，但数据获取顺序必须严格按 CAB 理解。
+            # ==============================
             recent_drop_df = history_df.tail(self.drop_window)
-            highest_price = recent_drop_df["high"].max()
+            recent_high_price = recent_drop_df["high"].max()
             drop_pct = (
-                (highest_price - current_price) / highest_price
-                if highest_price > 0
-                else 0
-            )
-            needle_price = recent_drop_df["low"].min()
-            needle_depth_pct = (
-                (current_price - needle_price) / current_price
-                if current_price > 0
+                (recent_high_price - current_price) / recent_high_price
+                if recent_high_price > 0
                 else 0
             )
             if drop_pct < self.min_drop_pct:
                 continue
-            if needle_depth_pct < self.min_needle_depth_pct:
-                continue
-            if needle_depth_pct > self.max_needle_depth_pct:
-                continue
 
-            # 体检 B: 是否放出恐慌天量
             vol_climax = (
                 history_df["quote_asset_volume"].tail(self.vol_climax_window).mean()
             )
@@ -110,55 +101,38 @@ class WashoutSnapbackStrategy:
             if vol_ratio < self.min_vol_ratio:
                 continue
 
-            # ==========================================
-            # 🦅 核心逻辑：站在最后一根K线上，审查出击信号 (一锤定音)
-            # ==========================================
-            curr_k = history_df.iloc[-1]
-            prev_k = history_df.iloc[-2]
+            # ==============================
+            # 第二层：对反弹的观察
+            # 用 ABC 结构修复比例替代 PinBar / Engulfing + 固定针深区间。
+            # A = recent_high_price
+            # B = recent_low_price (限定在 A 与 C 所处窗口之间)
+            # C = current_price
+            # rebound_ratio = (C - B) / (A - B)
+            # ==============================
+            recent_low_price = recent_drop_df["low"].min()
+            extreme_drop_range = recent_high_price - recent_low_price
+            if extreme_drop_range <= 0:
+                continue
 
-            trigger_matched = False
-            trigger_name = ""
+            rebound_ratio = (current_price - recent_low_price) / extreme_drop_range
+            if rebound_ratio < self.min_rebound_ratio:
+                continue
+            if rebound_ratio > self.max_rebound_ratio:
+                continue
 
-            # 形态 1: 擎天一柱 (Pin Bar)
-            if self.enable_pin_bar:
-                k_range = curr_k["high"] - curr_k["low"]
-                if k_range > 0:
-                    lower_shadow = min(curr_k["open"], curr_k["close"]) - curr_k["low"]
-                    if (lower_shadow / k_range) >= self.min_lower_shadow_ratio:
-                        trigger_matched = True
-                        trigger_name = "PinBar"
-
-            # 形态 2: 阳包阴吞噬 (Engulfing)
-            if not trigger_matched and self.enable_engulfing:
-                prev_is_red = prev_k["close"] < prev_k["open"]
-                curr_is_green = curr_k["close"] > curr_k["open"]
-                if prev_is_red and curr_is_green:
-                    # 现价高于前阴开盘，且低位接住了前阴收盘
-                    if (
-                        curr_k["close"] > prev_k["open"]
-                        and curr_k["open"] <= prev_k["close"]
-                    ):
-                        if not self.engulfing_req_vol or (
-                            curr_k["quote_asset_volume"] > prev_k["quote_asset_volume"]
-                        ):
-                            trigger_matched = True
-                            trigger_name = "Engulfing"
-
-            # 信号确立，推入候选池
-            if trigger_matched:
-                candidates.append(
-                    {
-                        "symbol": sym,
-                        "current_price": current_price,
-                        "drop_pct": drop_pct,
-                        "vol_ratio": vol_ratio,
-                        "trigger": trigger_name,
-                        "needle_price": needle_price,
-                        "needle_depth_pct": needle_depth_pct,
-                        "chg_24h": row["chg_24h"],
-                        "vol_24h": row["vol_24h"],
-                    }
-                )
+            candidates.append(
+                {
+                    "symbol": sym,
+                    "current_price": current_price,
+                    "drop_pct": drop_pct,
+                    "vol_ratio": vol_ratio,
+                    "recent_high_price": recent_high_price,
+                    "recent_low_price": recent_low_price,
+                    "rebound_ratio": rebound_ratio,
+                    "chg_24h": row["chg_24h"],
+                    "vol_24h": row["vol_24h"],
+                }
+            )
 
         if not candidates:
             return None
@@ -173,7 +147,7 @@ class WashoutSnapbackStrategy:
         limit_price = current_price * (1 - self.entry_pullback)
         # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
         tp_price = current_price * (1 + self.tp_pct)
-        sl_price = target["needle_price"]
+        sl_price = target["recent_low_price"]
 
         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
         time_bj_str = (
@@ -192,8 +166,8 @@ class WashoutSnapbackStrategy:
             "params": {
                 "entry_pullback_pct": self.entry_pullback,
                 "take_profit_pct": self.tp_pct,
-                "min_needle_depth_pct": self.min_needle_depth_pct,
-                "max_needle_depth_pct": self.max_needle_depth_pct,
+                "min_rebound_ratio": self.min_rebound_ratio,
+                "max_rebound_ratio": self.max_rebound_ratio,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {
@@ -201,14 +175,14 @@ class WashoutSnapbackStrategy:
                 "vol_24h": target["vol_24h"],
                 "drop_pct": target["drop_pct"],
                 "vol_ratio": target["vol_ratio"],
-                "trigger_type": target["trigger"],
-                "needle_price": target["needle_price"],
-                "needle_depth_pct": target["needle_depth_pct"],
+                "recent_high_price": target["recent_high_price"],
+                "recent_low_price": target["recent_low_price"],
+                "rebound_ratio": target["rebound_ratio"],
             },
         }
 
         logging.info(
-            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 信号: {target['trigger']} | 当前价: {current_price:.4f} | 针尖深度: {target['needle_depth_pct']*100:.2f}% | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f}"
+            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}%"
         )
 
         return signal

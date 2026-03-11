@@ -9,15 +9,8 @@
   "vol_baseline_window_mins": 120,
   "min_vol_climax_ratio": 8.0,
 
-  "trigger_signals": {
-    "enable_pin_bar": true,
-    "min_lower_shadow_ratio": 0.6,
-    "enable_engulfing": true,
-    "engulfing_requires_vol": true
-  },
-
-  "min_needle_depth_pct": 0.025,
-  "max_needle_depth_pct": 0.1,  
+  "min_rebound_ratio": 0.10,
+  "max_rebound_ratio": 0.30,
 
   "entry_pullback_pct": -0.02,
   "take_profit_pct": 0.03,
