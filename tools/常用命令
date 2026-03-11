@@ -50,7 +50,7 @@ cd /root/bn_research_core
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2_40D_P3_0311T1525_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.1_40D_P3_0311T2154_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core

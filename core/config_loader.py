@@ -34,6 +34,7 @@ class StrategyConfig:
         "min_24h_quote_vol",
         "drop_window_mins",
         "min_drop_pct",
+        "max_drop_pct",
         "vol_climax_window_mins",
         "vol_baseline_window_mins",
         "min_vol_climax_ratio",

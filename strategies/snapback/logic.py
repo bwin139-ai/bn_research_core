@@ -14,6 +14,7 @@ class WashoutSnapbackStrategy:
         # 第一层：对超跌的观察（价 + 量 共振）
         self.drop_window = self.config["drop_window_mins"]
         self.min_drop_pct = self.config["min_drop_pct"]
+        self.max_drop_pct = self.config["max_drop_pct"]
         self.vol_climax_window = self.config["vol_climax_window_mins"]
         self.vol_baseline_window = self.config["vol_baseline_window_mins"]
         self.min_vol_ratio = self.config["min_vol_climax_ratio"]
@@ -89,6 +90,8 @@ class WashoutSnapbackStrategy:
                 else 0
             )
             if drop_pct < self.min_drop_pct:
+                continue
+            if drop_pct > self.max_drop_pct:
                 continue
 
             vol_climax = (
@@ -166,6 +169,7 @@ class WashoutSnapbackStrategy:
             "params": {
                 "entry_pullback_pct": self.entry_pullback,
                 "take_profit_pct": self.tp_pct,
+                "max_drop_pct": self.max_drop_pct,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "timeout_sec": self.timeout_sec,

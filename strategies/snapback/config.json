@@ -4,6 +4,7 @@
 
   "drop_window_mins": 15,
   "min_drop_pct": 0.08,
+  "max_drop_pct": 0.20,
 
   "vol_climax_window_mins": 5,
   "vol_baseline_window_mins": 120,
