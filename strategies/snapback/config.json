@@ -9,8 +9,8 @@
   "vol_baseline_window_mins": 120,
   "min_vol_climax_ratio": 8.0,
 
-  "min_rebound_ratio": 0.10,
-  "max_rebound_ratio": 0.30,
+  "min_rebound_ratio": 0.15,
+  "max_rebound_ratio": 0.25,
 
   "entry_pullback_pct": -0.02,
   "take_profit_pct": 0.03,
