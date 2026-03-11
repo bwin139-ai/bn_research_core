@@ -1,5 +1,5 @@
 {
-  "strategy_name": "WashoutSnapback",
+  "strategy_name": "snapback",
   "min_24h_quote_vol": 50000000,
 
   "drop_window_mins": 15,
