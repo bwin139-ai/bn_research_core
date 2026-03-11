@@ -2,9 +2,9 @@
 import argparse
 import json
 import math
-import os
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 TIME_CANDIDATES = [
@@ -56,7 +56,29 @@ class TradeRow:
     idx: int
     raw: Dict[str, Any]
     time_key: str
-    time_value: float
+    time_value: float  # normalized to epoch seconds
+
+
+def _looks_like_epoch_ms(value: float) -> bool:
+    return abs(value) >= 1e11
+
+
+def _to_epoch_seconds(v: Any) -> float:
+    if isinstance(v, (int, float)):
+        x = float(v)
+        return x / 1000.0 if _looks_like_epoch_ms(x) else x
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            raise ValueError("empty time string")
+        try:
+            x = float(s)
+            return x / 1000.0 if _looks_like_epoch_ms(x) else x
+        except ValueError:
+            pass
+        s2 = s.replace("Z", "+00:00")
+        return datetime.fromisoformat(s2).timestamp()
+    raise ValueError(f"unsupported time value: {type(v).__name__}")
 
 
 def _load_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -81,13 +103,12 @@ def _pick_time_key(rows: List[Dict[str, Any]]) -> str:
         sample_keys.update(row.keys())
     for key in TIME_CANDIDATES:
         if key in sample_keys:
-            # Make sure enough values are usable
             ok = 0
             for row in rows[:20]:
                 v = row.get(key)
                 if isinstance(v, (int, float)):
                     ok += 1
-                elif isinstance(v, str) and v:
+                elif isinstance(v, str) and v.strip():
                     ok += 1
             if ok >= max(1, min(5, len(rows[:20]))):
                 return key
@@ -96,30 +117,12 @@ def _pick_time_key(rows: List[Dict[str, Any]]) -> str:
     )
 
 
-def _to_epoch_like(v: Any) -> float:
-    if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, str):
-        s = v.strip()
-        if not s:
-            raise ValueError("empty time string")
-        # Try plain numeric first
-        try:
-            return float(s)
-        except ValueError:
-            pass
-        from datetime import datetime
-        s2 = s.replace("Z", "+00:00")
-        return datetime.fromisoformat(s2).timestamp()
-    raise ValueError(f"unsupported time value: {type(v).__name__}")
-
-
 def _materialize(rows: List[Dict[str, Any]], time_key: str) -> List[TradeRow]:
     out: List[TradeRow] = []
     for i, row in enumerate(rows):
         if time_key not in row:
             raise SystemExit(f"Row {i} missing time key {time_key}")
-        out.append(TradeRow(idx=i, raw=row, time_key=time_key, time_value=_to_epoch_like(row[time_key])))
+        out.append(TradeRow(idx=i, raw=row, time_key=time_key, time_value=_to_epoch_seconds(row[time_key])))
     return out
 
 
@@ -235,11 +238,7 @@ def _first_mismatch(
     return None
 
 
-def _fmt_time_like(value: float, original_key: str) -> Any:
-    # Keep same scale for ms-like keys; otherwise emit ISO for readability.
-    if original_key.endswith("_ms"):
-        return int(value)
-    from datetime import datetime, timezone
+def _fmt_epoch_seconds(value: float) -> str:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -262,8 +261,8 @@ def audit(
     old_rows = _materialize(old_raw, old_time_key)
     new_rows = _materialize(new_raw, new_time_key)
 
-    compare_start_v = _to_epoch_like(compare_start) if compare_start else None
-    compare_end_v = _to_epoch_like(compare_end) if compare_end else None
+    compare_start_v = _to_epoch_seconds(compare_start) if compare_start else None
+    compare_end_v = _to_epoch_seconds(compare_end) if compare_end else None
     overlap_start, overlap_end = _infer_overlap(old_rows, new_rows, compare_start_v, compare_end_v)
 
     old_overlap = _filter_rows(old_rows, overlap_start, overlap_end)
@@ -292,8 +291,8 @@ def audit(
         "new_total_count": len(new_rows),
         "old_time_key": old_time_key,
         "new_time_key": new_time_key,
-        "overlap_start": _fmt_time_like(overlap_start, old_time_key),
-        "overlap_end": _fmt_time_like(overlap_end, old_time_key),
+        "overlap_start": _fmt_epoch_seconds(overlap_start),
+        "overlap_end": _fmt_epoch_seconds(overlap_end),
         "old_overlap_count": len(old_overlap),
         "new_overlap_count": len(new_overlap),
         "same_order_key_seq": old_keys == new_keys,
@@ -309,8 +308,8 @@ def audit(
         "first_mismatch": mismatch,
     }
     if new_tail:
-        report["tail_new_first_time"] = _fmt_time_like(min(r.time_value for r in new_tail), new_time_key)
-        report["tail_new_last_time"] = _fmt_time_like(max(r.time_value for r in new_tail), new_time_key)
+        report["tail_new_first_time"] = _fmt_epoch_seconds(min(r.time_value for r in new_tail))
+        report["tail_new_last_time"] = _fmt_epoch_seconds(max(r.time_value for r in new_tail))
         report["tail_new_symbols_top10"] = dict(Counter(str(r.raw.get("symbol")) for r in new_tail).most_common(10))
     return report
 
