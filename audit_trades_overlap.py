@@ -1,292 +1,420 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import json
 import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-TIME_CANDIDATES = [
-    "exit_time_ms",
-    "close_time_ms",
-    "exit_ts_ms",
-    "exit_timestamp_ms",
-    "exit_time",
-    "close_time",
-    "exit_ts",
-    "timestamp",
-    "ts",
-    "entry_time_ms",
-    "open_time_ms",
-    "entry_time",
-]
-
-STRICT_KEY_CANDIDATES = [
+STRICT_TOP_FIELDS = [
     "symbol",
-    "side",
-    "position_side",
-    "entry_time_ms",
-    "exit_time_ms",
+    "signal_time",
     "entry_time",
     "exit_time",
-    "entry_reason",
-    "exit_reason",
     "reason",
-    "signal",
+    "signal_time_bj",
+    "entry_time_bj",
+    "exit_time_bj",
 ]
 
-FLOAT_CANDIDATES = [
+STRICT_CONTEXT_FIELDS = [
+    "trigger_type",
+]
+
+FLOAT_TOP_FIELDS = [
+    "signal_price",
     "entry_price",
     "exit_price",
-    "pnl",
-    "net_pnl",
-    "gross_pnl",
-    "return_pct",
-    "roi",
-    "fee",
-    "fees",
+    "pnl_pct",
 ]
 
-REASON_CANDIDATES = ["reason", "exit_reason", "entry_reason", "signal"]
+FLOAT_CONTEXT_FIELDS = [
+    "chg_24h",
+    "vol_24h",
+    "drop_pct",
+    "vol_ratio",
+]
+
+TIME_KEYS_CANDIDATES = [
+    "exit_time",
+    "entry_time",
+    "signal_time",
+    "exit_time_ms",
+    "entry_time_ms",
+    "signal_time_ms",
+]
 
 
 @dataclass
-class TradeRow:
-    idx: int
-    raw: Dict[str, Any]
-    time_key: str
-    time_value: float  # normalized to epoch seconds
+class TimeInfo:
+    key: str
+    value: float
 
 
-def _looks_like_epoch_ms(value: float) -> bool:
-    return abs(value) >= 1e11
-
-
-def _to_epoch_seconds(v: Any) -> float:
-    if isinstance(v, (int, float)):
-        x = float(v)
-        return x / 1000.0 if _looks_like_epoch_ms(x) else x
-    if isinstance(v, str):
-        s = v.strip()
-        if not s:
-            raise ValueError("empty time string")
-        try:
-            x = float(s)
-            return x / 1000.0 if _looks_like_epoch_ms(x) else x
-        except ValueError:
-            pass
-        s2 = s.replace("Z", "+00:00")
-        return datetime.fromisoformat(s2).timestamp()
-    raise ValueError(f"unsupported time value: {type(v).__name__}")
-
-
-def _load_jsonl(path: str) -> List[Dict[str, Any]]:
+def _read_jsonl(path: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
-        for lineno, line in enumerate(f, 1):
+        for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise SystemExit(f"JSON decode error in {path}:{lineno}: {exc}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"JSON decode error in {path}:{line_no}: {e}") from e
+    if not rows:
+        raise ValueError(f"No rows found in {path}")
     return rows
 
 
-def _pick_time_key(rows: List[Dict[str, Any]]) -> str:
-    if not rows:
-        raise SystemExit("No trades found; cannot infer time field.")
-    sample_keys = set()
-    for row in rows[:20]:
-        sample_keys.update(row.keys())
-    for key in TIME_CANDIDATES:
-        if key in sample_keys:
-            ok = 0
-            for row in rows[:20]:
-                v = row.get(key)
-                if isinstance(v, (int, float)):
-                    ok += 1
-                elif isinstance(v, str) and v.strip():
-                    ok += 1
-            if ok >= max(1, min(5, len(rows[:20]))):
-                return key
-    raise SystemExit(
-        "Unable to infer time field. Pass --time-key explicitly after checking your JSONL schema."
-    )
-
-
-def _materialize(rows: List[Dict[str, Any]], time_key: str) -> List[TradeRow]:
-    out: List[TradeRow] = []
-    for i, row in enumerate(rows):
-        if time_key not in row:
-            raise SystemExit(f"Row {i} missing time key {time_key}")
-        out.append(TradeRow(idx=i, raw=row, time_key=time_key, time_value=_to_epoch_seconds(row[time_key])))
-    return out
-
-
-def _infer_overlap(
-    old_rows: List[TradeRow],
-    new_rows: List[TradeRow],
-    compare_start: Optional[float],
-    compare_end: Optional[float],
-) -> Tuple[float, float]:
-    old_min = min(r.time_value for r in old_rows)
-    old_max = max(r.time_value for r in old_rows)
-    new_min = min(r.time_value for r in new_rows)
-    new_max = max(r.time_value for r in new_rows)
-    start = max(old_min, new_min) if compare_start is None else compare_start
-    end = min(old_max, new_max) if compare_end is None else compare_end
-    if end < start:
-        raise SystemExit("No overlap between old and new trades in the chosen compare window.")
-    return start, end
-
-
-def _filter_rows(rows: List[TradeRow], start: float, end: float) -> List[TradeRow]:
-    return [r for r in rows if start <= r.time_value <= end]
-
-
-def _build_semantic_key(row: Dict[str, Any], extra_keys: Optional[List[str]] = None) -> Tuple[Any, ...]:
-    keys = list(STRICT_KEY_CANDIDATES)
-    if extra_keys:
-        for k in extra_keys:
-            if k not in keys:
-                keys.append(k)
-    return tuple(row.get(k) for k in keys)
-
-
-def _pick_reason(row: Dict[str, Any]) -> Optional[str]:
-    for k in REASON_CANDIDATES:
-        v = row.get(k)
-        if v is not None:
-            return str(v)
+def _to_epoch_seconds(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        av = abs(v)
+        if av >= 1e14:
+            return v / 1_000_000.0
+        if av >= 1e11:
+            return v / 1000.0
+        return v
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return _to_epoch_seconds(int(s))
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            return None
     return None
 
 
-def _float_diffs(a: Dict[str, Any], b: Dict[str, Any], abs_tol: float, rel_tol: float) -> Dict[str, Dict[str, float]]:
-    out: Dict[str, Dict[str, float]] = {}
-    keys = set(a.keys()) & set(b.keys())
-    for k in keys:
-        if k not in FLOAT_CANDIDATES:
-            continue
-        va, vb = a.get(k), b.get(k)
-        if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
-            if not math.isclose(float(va), float(vb), abs_tol=abs_tol, rel_tol=rel_tol):
-                out[k] = {
-                    "old": float(va),
-                    "new": float(vb),
-                    "delta": float(vb) - float(va),
-                }
+def _fmt_epoch_seconds(sec: Optional[float]) -> Optional[str]:
+    if sec is None:
+        return None
+    return datetime.fromtimestamp(sec, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _detect_time_key(rows: List[Dict[str, Any]]) -> str:
+    sample = rows[0]
+    for key in TIME_KEYS_CANDIDATES:
+        if key in sample and _to_epoch_seconds(sample.get(key)) is not None:
+            return key
+    raise ValueError(f"Could not detect time key from candidates: {TIME_KEYS_CANDIDATES}")
+
+
+def _extract_time(row: Dict[str, Any], key: str) -> TimeInfo:
+    sec = _to_epoch_seconds(row.get(key))
+    if sec is None:
+        raise ValueError(f"Row missing/invalid time field {key}: {row}")
+    return TimeInfo(key=key, value=sec)
+
+
+def _filter_overlap(rows: List[Dict[str, Any]], time_key: str, start_sec: float, end_sec: float) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        t = _extract_time(row, time_key).value
+        if start_sec <= t <= end_sec:
+            out.append(row)
     return out
 
 
-def _counter(rows: Iterable[TradeRow]) -> Counter:
-    c = Counter()
-    for r in rows:
-        reason = _pick_reason(r.raw)
-        if reason is not None:
-            c[reason] += 1
-    return c
+def _tail_after(rows: List[Dict[str, Any]], time_key: str, end_sec: float) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        t = _extract_time(row, time_key).value
+        if t > end_sec:
+            out.append(row)
+    return out
 
 
-def _sum_field(rows: Iterable[TradeRow], names: List[str]) -> Optional[float]:
-    total = 0.0
-    found = False
-    for r in rows:
-        for n in names:
-            v = r.raw.get(n)
-            if isinstance(v, (int, float)):
-                total += float(v)
-                found = True
-                break
-    return total if found else None
+def _strict_key(row: Dict[str, Any]) -> Tuple[Any, ...]:
+    ctx = row.get("context") or {}
+    vals: List[Any] = []
+    for field in STRICT_TOP_FIELDS:
+        vals.append(row.get(field))
+    for field in STRICT_CONTEXT_FIELDS:
+        vals.append(ctx.get(field))
+    return tuple(vals)
+
+
+def _counter_diff_count(a: Counter, b: Counter) -> int:
+    total = 0
+    for key, count in (a - b).items():
+        total += count
+    return total
+
+
+def _safe_isclose(a: Any, b: Any, abs_tol: float, rel_tol: float) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return a == b
+    return math.isclose(float(a), float(b), abs_tol=abs_tol, rel_tol=rel_tol)
+
+
+def _float_fields_diff(
+    old_row: Dict[str, Any],
+    new_row: Dict[str, Any],
+    abs_tol: float,
+    rel_tol: float,
+) -> Dict[str, Dict[str, Any]]:
+    diffs: Dict[str, Dict[str, Any]] = {}
+
+    for field in FLOAT_TOP_FIELDS:
+        ov = old_row.get(field)
+        nv = new_row.get(field)
+        if not _safe_isclose(ov, nv, abs_tol=abs_tol, rel_tol=rel_tol):
+            diffs[field] = _make_float_diff_payload(ov, nv)
+
+    old_ctx = old_row.get("context") or {}
+    new_ctx = new_row.get("context") or {}
+    for field in FLOAT_CONTEXT_FIELDS:
+        ov = old_ctx.get(field)
+        nv = new_ctx.get(field)
+        if not _safe_isclose(ov, nv, abs_tol=abs_tol, rel_tol=rel_tol):
+            diffs[f"context.{field}"] = _make_float_diff_payload(ov, nv)
+
+    return diffs
+
+
+def _make_float_diff_payload(old_value: Any, new_value: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "old": old_value,
+        "new": new_value,
+        "abs_diff": None,
+        "rel_diff": None,
+    }
+    if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
+        o = float(old_value)
+        n = float(new_value)
+        abs_diff = abs(n - o)
+        denom = max(abs(o), abs(n), 1e-30)
+        payload["abs_diff"] = abs_diff
+        payload["rel_diff"] = abs_diff / denom
+    return payload
+
+
+def _update_float_stats(
+    stats: Dict[str, Dict[str, Any]],
+    old_row: Dict[str, Any],
+    new_row: Dict[str, Any],
+    idx: int,
+) -> None:
+    for field in FLOAT_TOP_FIELDS:
+        _update_one_float_stat(stats, field, old_row.get(field), new_row.get(field), idx)
+
+    old_ctx = old_row.get("context") or {}
+    new_ctx = new_row.get("context") or {}
+    for field in FLOAT_CONTEXT_FIELDS:
+        _update_one_float_stat(stats, f"context.{field}", old_ctx.get(field), new_ctx.get(field), idx)
+
+
+def _update_one_float_stat(
+    stats: Dict[str, Dict[str, Any]],
+    field: str,
+    old_value: Any,
+    new_value: Any,
+    idx: int,
+) -> None:
+    item = stats.setdefault(
+        field,
+        {
+            "present_both_count": 0,
+            "equal_within_tol_count": 0,
+            "diff_count": 0,
+            "max_abs_diff": None,
+            "max_rel_diff": None,
+            "max_abs_diff_at_index": None,
+            "max_rel_diff_at_index": None,
+            "first_diff_index": None,
+            "first_diff_old": None,
+            "first_diff_new": None,
+        },
+    )
+
+    if old_value is None or new_value is None:
+        return
+    if not isinstance(old_value, (int, float)) or not isinstance(new_value, (int, float)):
+        return
+
+    o = float(old_value)
+    n = float(new_value)
+    abs_diff = abs(n - o)
+    rel_diff = abs_diff / max(abs(o), abs(n), 1e-30)
+    item["present_both_count"] += 1
+
+    if abs_diff == 0.0:
+        item["equal_within_tol_count"] += 1
+    else:
+        item["diff_count"] += 1
+        if item["first_diff_index"] is None:
+            item["first_diff_index"] = idx
+            item["first_diff_old"] = old_value
+            item["first_diff_new"] = new_value
+
+    if item["max_abs_diff"] is None or abs_diff > item["max_abs_diff"]:
+        item["max_abs_diff"] = abs_diff
+        item["max_abs_diff_at_index"] = idx
+    if item["max_rel_diff"] is None or rel_diff > item["max_rel_diff"]:
+        item["max_rel_diff"] = rel_diff
+        item["max_rel_diff_at_index"] = idx
+
+
+def _finalize_float_stats(stats: Dict[str, Dict[str, Any]], abs_tol: float, rel_tol: float) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for field, item in stats.items():
+        present = item["present_both_count"]
+        diff_count = 0
+        first_idx = None
+        first_old = None
+        first_new = None
+        max_abs = item["max_abs_diff"]
+        max_rel = item["max_rel_diff"]
+
+        # Reinterpret diff_count in tolerance terms.
+        # If max diff is within tolerance, all are within tolerance.
+        # Otherwise keep the raw diff_count from exact comparisons only as an indicator is misleading,
+        # so recompute through stored maxima is impossible. Here we use first_diff_* + maxima for reporting,
+        # and expose within_tolerance based on thresholds.
+        within_tolerance = True
+        if max_abs is not None and max_rel is not None:
+            within_tolerance = max_abs <= abs_tol or max_rel <= rel_tol
+        if not within_tolerance:
+            diff_count = item["diff_count"]
+            first_idx = item["first_diff_index"]
+            first_old = item["first_diff_old"]
+            first_new = item["first_diff_new"]
+
+        out[field] = {
+            "present_both_count": present,
+            "within_tolerance": within_tolerance,
+            "max_abs_diff": max_abs,
+            "max_rel_diff": max_rel,
+            "max_abs_diff_at_index": item["max_abs_diff_at_index"],
+            "max_rel_diff_at_index": item["max_rel_diff_at_index"],
+            "first_diff_index": first_idx,
+            "first_diff_old": first_old,
+            "first_diff_new": first_new,
+            "abs_tol": abs_tol,
+            "rel_tol": rel_tol,
+        }
+    return out
 
 
 def _first_mismatch(
-    old_rows: List[TradeRow],
-    new_rows: List[TradeRow],
+    old_rows: List[Dict[str, Any]],
+    new_rows: List[Dict[str, Any]],
     abs_tol: float,
     rel_tol: float,
-    extra_keys: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     n = min(len(old_rows), len(new_rows))
-    for i in range(n):
-        a = old_rows[i].raw
-        b = new_rows[i].raw
-        ka = _build_semantic_key(a, extra_keys)
-        kb = _build_semantic_key(b, extra_keys)
-        float_diffs = _float_diffs(a, b, abs_tol=abs_tol, rel_tol=rel_tol)
-        if ka != kb or float_diffs:
+    for idx in range(n):
+        old_row = old_rows[idx]
+        new_row = new_rows[idx]
+        if _strict_key(old_row) != _strict_key(new_row):
             return {
-                "index": i,
-                "semantic_key_equal": ka == kb,
-                "old_semantic_key": ka,
-                "new_semantic_key": kb,
+                "index": idx,
+                "type": "strict_key_mismatch",
+                "old": old_row,
+                "new": new_row,
+            }
+        float_diffs = _float_fields_diff(old_row, new_row, abs_tol=abs_tol, rel_tol=rel_tol)
+        if float_diffs:
+            return {
+                "index": idx,
+                "type": "float_field_mismatch",
                 "float_diffs": float_diffs,
-                "old": a,
-                "new": b,
+                "old": old_row,
+                "new": new_row,
             }
     if len(old_rows) != len(new_rows):
         return {
             "index": n,
-            "semantic_key_equal": False,
-            "old": old_rows[n].raw if len(old_rows) > n else None,
-            "new": new_rows[n].raw if len(new_rows) > n else None,
-            "reason": "different_lengths",
+            "type": "length_mismatch",
+            "old_len": len(old_rows),
+            "new_len": len(new_rows),
         }
     return None
 
 
-def _fmt_epoch_seconds(value: float) -> str:
-    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+def _reason_counts(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    c = Counter()
+    for row in rows:
+        c[str(row.get("reason"))] += 1
+    return dict(c)
 
 
-def audit(
-    old_path: str,
-    new_path: str,
-    time_key: Optional[str],
-    compare_start: Optional[str],
-    compare_end: Optional[str],
-    abs_tol: float,
-    rel_tol: float,
-    extra_keys: Optional[List[str]],
-) -> Dict[str, Any]:
-    old_raw = _load_jsonl(old_path)
-    new_raw = _load_jsonl(new_path)
+def _sum_field(rows: Iterable[Dict[str, Any]], field: str) -> Optional[float]:
+    vals: List[float] = []
+    for row in rows:
+        v = row.get(field)
+        if isinstance(v, (int, float)):
+            vals.append(float(v))
+    if not vals:
+        return None
+    return float(sum(vals))
 
-    old_time_key = time_key or _pick_time_key(old_raw)
-    new_time_key = time_key or _pick_time_key(new_raw)
 
-    old_rows = _materialize(old_raw, old_time_key)
-    new_rows = _materialize(new_raw, new_time_key)
+def _top_symbols(rows: Iterable[Dict[str, Any]], n: int = 10) -> Dict[str, int]:
+    c = Counter()
+    for row in rows:
+        c[str(row.get("symbol"))] += 1
+    return dict(c.most_common(n))
 
-    compare_start_v = _to_epoch_seconds(compare_start) if compare_start else None
-    compare_end_v = _to_epoch_seconds(compare_end) if compare_end else None
-    overlap_start, overlap_end = _infer_overlap(old_rows, new_rows, compare_start_v, compare_end_v)
 
-    old_overlap = _filter_rows(old_rows, overlap_start, overlap_end)
-    new_overlap = _filter_rows(new_rows, overlap_start, overlap_end)
-    new_tail = [r for r in new_rows if r.time_value > overlap_end]
+def audit(old_trades: str, new_trades: str, abs_tol: float, rel_tol: float) -> Dict[str, Any]:
+    old_rows = _read_jsonl(old_trades)
+    new_rows = _read_jsonl(new_trades)
 
-    old_keys = [_build_semantic_key(r.raw, extra_keys) for r in old_overlap]
-    new_keys = [_build_semantic_key(r.raw, extra_keys) for r in new_overlap]
+    old_time_key = _detect_time_key(old_rows)
+    new_time_key = _detect_time_key(new_rows)
+
+    old_min = min(_extract_time(r, old_time_key).value for r in old_rows)
+    old_max = max(_extract_time(r, old_time_key).value for r in old_rows)
+    new_min = min(_extract_time(r, new_time_key).value for r in new_rows)
+    new_max = max(_extract_time(r, new_time_key).value for r in new_rows)
+
+    overlap_start = max(old_min, new_min)
+    overlap_end = min(old_max, new_max)
+    if overlap_start > overlap_end:
+        raise ValueError("No overlapping time range between old and new trades")
+
+    old_overlap = _filter_overlap(old_rows, old_time_key, overlap_start, overlap_end)
+    new_overlap = _filter_overlap(new_rows, new_time_key, overlap_start, overlap_end)
+    tail_new = _tail_after(new_rows, new_time_key, overlap_end)
+
+    old_keys = [_strict_key(r) for r in old_overlap]
+    new_keys = [_strict_key(r) for r in new_overlap]
+    same_order_key_seq = old_keys == new_keys
 
     old_counter = Counter(old_keys)
     new_counter = Counter(new_keys)
-    only_old = sum((old_counter - new_counter).values())
-    only_new = sum((new_counter - old_counter).values())
 
-    mismatch = _first_mismatch(old_overlap, new_overlap, abs_tol, rel_tol, extra_keys)
+    float_stats_raw: Dict[str, Dict[str, Any]] = {}
+    pair_count = min(len(old_overlap), len(new_overlap))
+    for idx in range(pair_count):
+        _update_float_stats(float_stats_raw, old_overlap[idx], new_overlap[idx], idx)
+    float_field_report = _finalize_float_stats(float_stats_raw, abs_tol=abs_tol, rel_tol=rel_tol)
 
-    pnl_names = ["pnl", "net_pnl", "gross_pnl"]
-    old_pnl = _sum_field(old_overlap, pnl_names)
-    new_pnl = _sum_field(new_overlap, pnl_names)
-    tail_pnl = _sum_field(new_tail, pnl_names)
-
-    report = {
-        "old_path": old_path,
-        "new_path": new_path,
+    report: Dict[str, Any] = {
+        "old_path": old_trades,
+        "new_path": new_trades,
         "old_total_count": len(old_rows),
         "new_total_count": len(new_rows),
         "old_time_key": old_time_key,
@@ -295,53 +423,63 @@ def audit(
         "overlap_end": _fmt_epoch_seconds(overlap_end),
         "old_overlap_count": len(old_overlap),
         "new_overlap_count": len(new_overlap),
-        "same_order_key_seq": old_keys == new_keys,
-        "only_old_count": only_old,
-        "only_new_count": only_new,
-        "reason_counts_old": dict(_counter(old_overlap)),
-        "reason_counts_new": dict(_counter(new_overlap)),
-        "old_overlap_pnl_sum": old_pnl,
-        "new_overlap_pnl_sum": new_pnl,
-        "overlap_pnl_sum_delta": (new_pnl - old_pnl) if old_pnl is not None and new_pnl is not None else None,
-        "tail_new_count": len(new_tail),
-        "tail_new_pnl_sum": tail_pnl,
-        "first_mismatch": mismatch,
+        "same_order_key_seq": same_order_key_seq,
+        "only_old_count": _counter_diff_count(old_counter, new_counter),
+        "only_new_count": _counter_diff_count(new_counter, old_counter),
+        "reason_counts_old": _reason_counts(old_overlap),
+        "reason_counts_new": _reason_counts(new_overlap),
+        "old_overlap_pnl_pct_sum": _sum_field(old_overlap, "pnl_pct"),
+        "new_overlap_pnl_pct_sum": _sum_field(new_overlap, "pnl_pct"),
+        "overlap_pnl_pct_sum_delta": None,
+        "strict_schema": {
+            "top_fields": STRICT_TOP_FIELDS,
+            "context_fields": STRICT_CONTEXT_FIELDS,
+        },
+        "float_schema": {
+            "top_fields": FLOAT_TOP_FIELDS,
+            "context_fields": FLOAT_CONTEXT_FIELDS,
+            "abs_tol": abs_tol,
+            "rel_tol": rel_tol,
+        },
+        "float_field_report": float_field_report,
+        "tail_new_count": len(tail_new),
+        "tail_new_pnl_pct_sum": _sum_field(tail_new, "pnl_pct"),
+        "tail_new_first_time": _fmt_epoch_seconds(min((_extract_time(r, new_time_key).value for r in tail_new), default=None)),
+        "tail_new_last_time": _fmt_epoch_seconds(max((_extract_time(r, new_time_key).value for r in tail_new), default=None)),
+        "tail_new_symbols_top10": _top_symbols(tail_new, n=10),
+        "first_mismatch": _first_mismatch(old_overlap, new_overlap, abs_tol=abs_tol, rel_tol=rel_tol),
     }
-    if new_tail:
-        report["tail_new_first_time"] = _fmt_epoch_seconds(min(r.time_value for r in new_tail))
-        report["tail_new_last_time"] = _fmt_epoch_seconds(max(r.time_value for r in new_tail))
-        report["tail_new_symbols_top10"] = dict(Counter(str(r.raw.get("symbol")) for r in new_tail).most_common(10))
+
+    old_sum = report["old_overlap_pnl_pct_sum"]
+    new_sum = report["new_overlap_pnl_pct_sum"]
+    if old_sum is not None and new_sum is not None:
+        report["overlap_pnl_pct_sum_delta"] = new_sum - old_sum
+
     return report
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Audit old/new trades JSONL over overlap window with per-trade comparison.")
-    ap.add_argument("--old-trades", required=True)
-    ap.add_argument("--new-trades", required=True)
-    ap.add_argument("--time-key", default=None, help="Optional explicit time field used by both files.")
-    ap.add_argument("--compare-start", default=None, help="Optional compare start (epoch / epoch_ms / ISO8601).")
-    ap.add_argument("--compare-end", default=None, help="Optional compare end (epoch / epoch_ms / ISO8601).")
-    ap.add_argument("--abs-tol", type=float, default=1e-9)
-    ap.add_argument("--rel-tol", type=float, default=1e-9)
-    ap.add_argument("--extra-key", action="append", default=[], help="Additional strict key field(s) to include in semantic comparison.")
-    ap.add_argument("--report-out", default=None)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Audit overlapping trades with strict fields + float tolerance fields")
+    parser.add_argument("--old-trades", required=True)
+    parser.add_argument("--new-trades", required=True)
+    parser.add_argument("--abs-tol", type=float, default=1e-8)
+    parser.add_argument("--rel-tol", type=float, default=1e-8)
+    parser.add_argument("--report-out", default=None)
+    args = parser.parse_args()
 
     report = audit(
-        old_path=args.old_trades,
-        new_path=args.new_trades,
-        time_key=args.time_key,
-        compare_start=args.compare_start,
-        compare_end=args.compare_end,
+        old_trades=args.old_trades,
+        new_trades=args.new_trades,
         abs_tol=args.abs_tol,
         rel_tol=args.rel_tol,
-        extra_keys=args.extra_key,
     )
+
     text = json.dumps(report, ensure_ascii=False, indent=2)
     print(text)
     if args.report_out:
-        with open(args.report_out, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+        out_path = Path(args.report_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
