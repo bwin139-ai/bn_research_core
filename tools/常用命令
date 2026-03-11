@@ -11,19 +11,21 @@ git checkout main
 git pull --ff-only origin main
 
 # ========= 并行调度主进程 =========
-cd /root/bn_research_core
-nohup /root/service_env/bin/python schedule_backtests.py \
+RUNSET="SNAP_V2_40D_P3_$(date +%m%dT%H%M)"
+nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
-  --start "2025-04-18T00:00:00+00:00" \
-  --end "2026-03-11T00:00:00+00:00" \
+  --start 2025-04-18T00:00:00+00:00 \
+  --end 2026-03-11T00:00:00+00:00 \
   --batch-days 40 \
   --max-parallel 3 \
   --kline-window 240 \
-  --config "snapback/config.json" \
-  --out-dir "output/state" \
-  --logs-dir "output/logs" \
-  --run-prefix "SNAP40D_P3" \
-  > output/logs/scheduler.SNAP40D_P3.console.log 2>&1 &
+  --config snapback/config.json \
+  --out-dir output/state \
+  --logs-dir output/logs \
+  --run-prefix "'"$RUNSET"'" \
+  --post-merge \
+  --build-equity' \
+> "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
 # ========= 前端运行仿真系统 参数切换Top1 / Snapback =========
 cd /root/bn_research_core
@@ -74,7 +76,7 @@ cd /root/bn_research_core
 cd ~/ai_projects/bn_research_core
 ~/ai_projects/bn_strategy/tools/fetch_all.sh A
 
-scp -r 'root@8.218.96.252:/root/bn_research_core/logs/*ABNTR_s1_0303T141737*' ~/ai_projects/bn_strategy/logs
+scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/sim_viz_Snapback_V2' ~/ai_projects/bn_research_core/viz
 
 # =========  k线落盘 =========
 cd /root/bn_research_core

@@ -12,6 +12,7 @@ output/
 logs/
 figs/
 state/
+viz/
 
 *.parquet
 *.jsonl
