@@ -16,9 +16,11 @@
     "engulfing_requires_vol": true
   },
 
+  "min_needle_depth_pct": 0.025,
+  "max_needle_depth_pct": 0.1,  
+
   "entry_pullback_pct": -0.02,
   "take_profit_pct": 0.025,
-  "stop_loss_pct": 0.04,
   "order_timeout_sec": 180,
   "cooldown_hours": 4,
 

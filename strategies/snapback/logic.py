@@ -13,7 +13,6 @@ class WashoutSnapbackStrategy:
 
         # 🩸 案发现场参数
         self.drop_window = self.config["drop_window_mins"]
-        self.min_drop_pct = self.config["min_drop_pct"]
         self.vol_climax_window = self.config["vol_climax_window_mins"]
         self.vol_baseline_window = self.config["vol_baseline_window_mins"]
         self.min_vol_ratio = self.config["min_vol_climax_ratio"]
@@ -28,7 +27,8 @@ class WashoutSnapbackStrategy:
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
         self.tp_pct = self.config["take_profit_pct"]
-        self.sl_pct = self.config["stop_loss_pct"]
+        self.min_needle_depth_pct = self.config["min_needle_depth_pct"]
+        self.max_needle_depth_pct = self.config["max_needle_depth_pct"]
         self.timeout_sec = self.config["order_timeout_sec"]
         self.cooldown_ms = self.config["cooldown_hours"] * 3600 * 1000
 
@@ -77,7 +77,7 @@ class WashoutSnapbackStrategy:
 
             current_price = row["close"]
 
-            # 体检 A: 瀑布跌幅是否达标
+            # 体检 A: 针尖深度是否落在黄金区间
             recent_drop_df = history_df.tail(self.drop_window)
             highest_price = recent_drop_df["high"].max()
             drop_pct = (
@@ -85,7 +85,15 @@ class WashoutSnapbackStrategy:
                 if highest_price > 0
                 else 0
             )
-            if drop_pct < self.min_drop_pct:
+            needle_price = recent_drop_df["low"].min()
+            needle_depth_pct = (
+                (current_price - needle_price) / current_price
+                if current_price > 0
+                else 0
+            )
+            if needle_depth_pct < self.min_needle_depth_pct:
+                continue
+            if needle_depth_pct > self.max_needle_depth_pct:
                 continue
 
             # 体检 B: 是否放出恐慌天量
@@ -142,6 +150,8 @@ class WashoutSnapbackStrategy:
                         "drop_pct": drop_pct,
                         "vol_ratio": vol_ratio,
                         "trigger": trigger_name,
+                        "needle_price": needle_price,
+                        "needle_depth_pct": needle_depth_pct,
                         "chg_24h": row["chg_24h"],
                         "vol_24h": row["vol_24h"],
                     }
@@ -160,7 +170,7 @@ class WashoutSnapbackStrategy:
         limit_price = current_price * (1 - self.entry_pullback)
         # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
         tp_price = current_price * (1 + self.tp_pct)
-        sl_price = current_price * (1 - self.sl_pct)
+        sl_price = target["needle_price"]
 
         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
         time_bj_str = (
@@ -179,7 +189,8 @@ class WashoutSnapbackStrategy:
             "params": {
                 "entry_pullback_pct": self.entry_pullback,
                 "take_profit_pct": self.tp_pct,
-                "stop_loss_pct": self.sl_pct,
+                "min_needle_depth_pct": self.min_needle_depth_pct,
+                "max_needle_depth_pct": self.max_needle_depth_pct,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {
@@ -188,11 +199,13 @@ class WashoutSnapbackStrategy:
                 "drop_pct": target["drop_pct"],
                 "vol_ratio": target["vol_ratio"],
                 "trigger_type": target["trigger"],
+                "needle_price": target["needle_price"],
+                "needle_depth_pct": target["needle_depth_pct"],
             },
         }
 
         logging.info(
-            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 信号: {target['trigger']} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f}"
+            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 信号: {target['trigger']} | 当前价: {current_price:.4f} | 针尖深度: {target['needle_depth_pct']*100:.2f}% | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f}"
         )
 
         return signal
