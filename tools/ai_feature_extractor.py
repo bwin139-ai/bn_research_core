@@ -19,6 +19,12 @@ TOP1_OPTIONAL_CONTEXT_FIELDS = [
 SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("drop_pct", "Drop(%)", "pct"),
     ("vol_ratio", "VolR", "raw"),
+    ("rebound_ratio", "Rebound(%)", "pct"),
+    ("recent_high_price", "A_High", "price"),
+    ("recent_low_price", "B_Low", "price"),
+]
+
+LEGACY_SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("trigger_type", "Trigger", "str"),
     ("needle_depth_pct", "NeedleDepth(%)", "pct"),
     ("needle_price", "NeedlePx", "price"),
@@ -53,7 +59,17 @@ def infer_strategy_name(run_id, config_data, trades):
         return "snapback"
 
     first_ctx = trades[0].get("context", {}) if trades else {}
-    if any(k in first_ctx for k in ["needle_depth_pct", "needle_price", "trigger_type"]):
+    if any(
+        k in first_ctx
+        for k in [
+            "rebound_ratio",
+            "recent_high_price",
+            "recent_low_price",
+            "needle_depth_pct",
+            "needle_price",
+            "trigger_type",
+        ]
+    ):
         return "snapback"
     if any(k in first_ctx for k in ["mDD_15m", "mDD_120m", "micro_drawdown", "micro_momentum"]):
         return "top1"
@@ -67,6 +83,10 @@ def build_strategy_fields(strategy_name, trades):
 
     if strategy_name == "snapback":
         fields.extend(SNAPBACK_OPTIONAL_CONTEXT_FIELDS)
+        if "rebound_ratio" not in first_ctx:
+            for candidate in LEGACY_SNAPBACK_OPTIONAL_CONTEXT_FIELDS:
+                if candidate[0] in first_ctx:
+                    fields.append(candidate)
     elif strategy_name == "top1":
         fields.extend(TOP1_OPTIONAL_CONTEXT_FIELDS)
     else:
