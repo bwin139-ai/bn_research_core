@@ -4,13 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 UTC = timezone.utc
 
@@ -53,6 +54,238 @@ class RunningTask:
     task: Task
     proc: subprocess.Popen
     started_at: float
+
+
+
+def load_jsonl(path: Path) -> List[dict]:
+    rows: List[dict] = []
+    if not path.exists():
+        return rows
+    with path.open('r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def merge_jsonl_files(paths: List[Path], out_path: Path) -> int:
+    total = 0
+    ensure_dir(out_path.parent)
+    with out_path.open('w', encoding='utf-8') as out:
+        for path in paths:
+            if not path.exists():
+                continue
+            with path.open('r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    out.write(line if line.endswith('\n') else line + '\n')
+                    total += 1
+    return total
+
+
+def merge_viz_dirs(paths: List[Path], out_dir: Path) -> int:
+    ensure_dir(out_dir)
+    copied = 0
+    for path in paths:
+        if not path.exists() or not path.is_dir():
+            continue
+        for png in sorted(path.glob('*.png')):
+            target = out_dir / png.name
+            if target.exists():
+                stem = png.stem
+                suffix = png.suffix
+                idx = 1
+                while True:
+                    alt = out_dir / f"{stem}__dup{idx}{suffix}"
+                    if not alt.exists():
+                        target = alt
+                        break
+                    idx += 1
+            shutil.copy2(png, target)
+            copied += 1
+    return copied
+
+
+def resolve_config_path(config_arg: str) -> Path:
+    raw = Path(config_arg)
+    if raw.exists():
+        return raw
+    strat_path = Path('strategies') / config_arg
+    if strat_path.exists():
+        return strat_path
+    return raw
+
+
+def build_all_summary(
+    args: argparse.Namespace,
+    runset: str,
+    tasks: List[Task],
+    finished: List[dict],
+    scheduler_summary: dict,
+    merged_trades_path: Optional[Path],
+    merged_signals_path: Optional[Path],
+    artifacts: Dict[str, str],
+) -> dict:
+    trades = load_jsonl(merged_trades_path) if merged_trades_path else []
+    signals = load_jsonl(merged_signals_path) if merged_signals_path else []
+
+    reason_counts: Dict[str, int] = {}
+    symbols = set()
+    pnl_pct_sum = 0.0
+    pnl_pct_present = False
+    for row in trades:
+        sym = row.get('symbol')
+        if sym:
+            symbols.add(sym)
+        reason = row.get('reason')
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if isinstance(row.get('pnl_pct'), (int, float)):
+            pnl_pct_sum += float(row['pnl_pct'])
+            pnl_pct_present = True
+
+    config_path = resolve_config_path(args.config)
+    run_config: Dict[str, Any] | None = None
+    if config_path.exists():
+        with config_path.open('r', encoding='utf-8') as f:
+            run_config = json.load(f)
+
+    return {
+        'summary_scope': 'ALL',
+        'generated_by': 'schedule_backtests.py',
+        'strategy_name': args.strategy,
+        'run_id': f'{runset}_ALL',
+        'start': args.start,
+        'end': args.end,
+        'batch_days': args.batch_days,
+        'max_parallel': args.max_parallel,
+        'batch_count': len(tasks),
+        'success_count': scheduler_summary['success_count'],
+        'failed_count': scheduler_summary['failed_count'],
+        'wall_clock_seconds': scheduler_summary['wall_clock_seconds'],
+        'signals_count': len(signals),
+        'total_trades': len(trades),
+        'symbols_count': len(symbols),
+        'reason_counts': reason_counts,
+        'pnl_pct_sum': round(pnl_pct_sum, 12) if pnl_pct_present else None,
+        'batch_run_ids': [t.run_id for t in tasks],
+        'batch_summaries': [str(Path(args.out_dir) / f'sim_summary.{t.run_id}.json') for t in tasks],
+        'config_path': str(config_path),
+        'run_config': run_config,
+        'artifacts': artifacts,
+    }
+
+
+def run_post_processing(
+    args: argparse.Namespace,
+    scheduler_name: str,
+    tasks: List[Task],
+    finished: List[dict],
+    scheduler_summary: dict,
+    scheduler_log: Path,
+) -> tuple[Dict[str, str], List[str]]:
+    artifacts: Dict[str, str] = {}
+    errors: List[str] = []
+
+    enabled_merge = args.post_merge or args.build_equity
+    if not enabled_merge:
+        return artifacts, errors
+
+    state_dir = Path(args.out_dir)
+    runset = scheduler_name
+
+    append_line(scheduler_log, f'POST_MERGE_START runset={runset}')
+    print(f'POST_MERGE_START runset={runset}')
+
+    trade_paths = [state_dir / f'sim_trades.{t.run_id}.jsonl' for t in tasks]
+    signal_paths = [state_dir / f'sim_signals.{t.run_id}.jsonl' for t in tasks]
+    viz_dirs = [state_dir / f'sim_viz_{t.run_id}' for t in tasks]
+
+    merged_trades = state_dir / f'sim_trades.{runset}_ALL.jsonl'
+    merged_signals = state_dir / f'sim_signals.{runset}_ALL.jsonl'
+    merged_viz_dir = state_dir / f'sim_viz_{runset}_ALL'
+    merged_summary = state_dir / f'sim_summary.{runset}_ALL.json'
+
+    try:
+        trades_count = merge_jsonl_files(trade_paths, merged_trades)
+        artifacts['merged_trades'] = str(merged_trades)
+        signals_count = merge_jsonl_files(signal_paths, merged_signals)
+        artifacts['merged_signals'] = str(merged_signals)
+        viz_count = merge_viz_dirs(viz_dirs, merged_viz_dir)
+        artifacts['merged_viz_dir'] = str(merged_viz_dir)
+
+        all_summary = build_all_summary(
+            args=args,
+            runset=runset,
+            tasks=tasks,
+            finished=finished,
+            scheduler_summary=scheduler_summary,
+            merged_trades_path=merged_trades,
+            merged_signals_path=merged_signals,
+            artifacts=artifacts.copy(),
+        )
+        with merged_summary.open('w', encoding='utf-8') as f:
+            json.dump(all_summary, f, ensure_ascii=False, indent=2)
+        artifacts['merged_summary'] = str(merged_summary)
+
+        append_line(
+            scheduler_log,
+            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count} merged_summary={merged_summary}',
+        )
+        print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count}')
+    except Exception as e:
+        msg = f'post-merge failed: {e}'
+        errors.append(msg)
+        append_line(scheduler_log, f'POST_MERGE_FAIL runset={runset} error={e}')
+        print(f'POST_MERGE_FAIL runset={runset} error={e}')
+        return artifacts, errors
+
+    if args.build_equity:
+        append_line(scheduler_log, f'POST_EQUITY_START runset={runset}')
+        print(f'POST_EQUITY_START runset={runset}')
+        equity_png = state_dir / f'sim_curve.{runset}_ALL.png'
+        equity_json = state_dir / f'sim_equity.{runset}_ALL.json'
+        logs_dir = Path(args.logs_dir)
+        ensure_dir(logs_dir)
+        equity_log = logs_dir / f'equity_{runset}_ALL.log'
+        cmd = [
+            args.python_bin,
+            args.equity_script,
+            '--trades', str(merged_trades),
+            '--kline-root', args.kline_root,
+            '--initial-equity', str(args.equity_initial),
+            '--fee-side', str(args.equity_fee_side),
+            '--out', str(equity_png),
+            '--summary-out', str(equity_json),
+        ]
+        try:
+            with equity_log.open('w', encoding='utf-8') as f:
+                proc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, check=False)
+            if proc.returncode != 0:
+                raise RuntimeError(f'equity script rc={proc.returncode}; see {equity_log}')
+            artifacts['equity_curve_png'] = str(equity_png)
+            artifacts['equity_summary_json'] = str(equity_json)
+            artifacts['equity_log'] = str(equity_log)
+            append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} out={equity_png} summary={equity_json}')
+            print(f'POST_EQUITY_DONE runset={runset} out={equity_png}')
+        except Exception as e:
+            msg = f'build-equity failed: {e}'
+            errors.append(msg)
+            append_line(scheduler_log, f'POST_EQUITY_FAIL runset={runset} error={e}')
+            print(f'POST_EQUITY_FAIL runset={runset} error={e}')
+
+    if artifacts.get('merged_summary'):
+        merged_summary_path = Path(artifacts['merged_summary'])
+        with merged_summary_path.open('r', encoding='utf-8') as f:
+            all_summary = json.load(f)
+        all_summary['artifacts'] = artifacts
+        with merged_summary_path.open('w', encoding='utf-8') as f:
+            json.dump(all_summary, f, ensure_ascii=False, indent=2)
+
+    return artifacts, errors
 
 
 def build_batches(start: datetime, end: datetime, batch_days: int) -> List[tuple[datetime, datetime]]:
@@ -194,6 +427,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--summary-json', default=None)
     ap.add_argument('--poll-seconds', type=float, default=2.0)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--post-merge', action='store_true')
+    ap.add_argument('--build-equity', action='store_true')
+    ap.add_argument('--equity-script', default='core/analysis/top1_equity_curve.py')
+    ap.add_argument('--kline-root', default='data/klines_1m')
+    ap.add_argument('--equity-initial', type=float, default=100.0)
+    ap.add_argument('--equity-fee-side', type=float, default=0.0005)
     args = ap.parse_args()
     if args.max_parallel <= 0:
         ap.error('--max-parallel must be > 0')
