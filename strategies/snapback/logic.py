@@ -13,6 +13,7 @@ class WashoutSnapbackStrategy:
 
         # 🩸 案发现场参数
         self.drop_window = self.config["drop_window_mins"]
+        self.min_drop_pct = self.config["min_drop_pct"]
         self.vol_climax_window = self.config["vol_climax_window_mins"]
         self.vol_baseline_window = self.config["vol_baseline_window_mins"]
         self.min_vol_ratio = self.config["min_vol_climax_ratio"]
@@ -91,6 +92,8 @@ class WashoutSnapbackStrategy:
                 if current_price > 0
                 else 0
             )
+            if drop_pct < self.min_drop_pct:
+                continue
             if needle_depth_pct < self.min_needle_depth_pct:
                 continue
             if needle_depth_pct > self.max_needle_depth_pct:
