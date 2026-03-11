@@ -114,12 +114,15 @@ def append_line(path: Path, text: str) -> None:
 def launch_task(task: Task, scheduler_log: Path) -> RunningTask:
     log_f = open(task.log_path, 'a', encoding='utf-8')
     proc = subprocess.Popen(task.cmd, stdout=log_f, stderr=subprocess.STDOUT)
-    rt = RunningTask(task=task, proc=proc, started_at=time.time())
+    started_at_ts = time.time()
+    started_at_dt = datetime.now(UTC)
+    rt = RunningTask(task=task, proc=proc, started_at=started_at_ts)
+    stamp = fmt_dt(started_at_dt)
     append_line(
         scheduler_log,
-        f"START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id} start={task.start} end={task.end} log={task.log_path}",
+        f"[{stamp}] START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id} start={task.start} end={task.end} log={task.log_path}",
     )
-    print(f"START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id}")
+    print(f"[{stamp}] START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id}")
     return rt
 
 
@@ -131,6 +134,7 @@ def poll_running(running: List[RunningTask], scheduler_log: Path, finished: List
             keep.append(rt)
             continue
         elapsed = time.time() - rt.started_at
+        finished_at_dt = datetime.now(UTC)
         rec = {
             'batch_id': rt.task.batch_id,
             'run_id': rt.task.run_id,
@@ -139,14 +143,17 @@ def poll_running(running: List[RunningTask], scheduler_log: Path, finished: List
             'log_path': rt.task.log_path,
             'start': rt.task.start,
             'end': rt.task.end,
+            'started_at': fmt_dt(datetime.fromtimestamp(rt.started_at, tz=UTC)),
+            'finished_at': fmt_dt(finished_at_dt),
         }
         finished.append(rec)
         status = 'DONE' if rc == 0 else 'FAIL'
+        stamp = fmt_dt(finished_at_dt)
         append_line(
             scheduler_log,
-            f"{status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id} log={rt.task.log_path}",
+            f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id} log={rt.task.log_path}",
         )
-        print(f"{status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id}")
+        print(f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id}")
     return keep
 
 
