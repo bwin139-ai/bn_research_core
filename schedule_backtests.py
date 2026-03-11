@@ -461,6 +461,29 @@ def main() -> int:
     if args.dry_run:
         return 0
 
+    if args.post_only:
+        if not summary_json.exists():
+            raise FileNotFoundError(f'summary json not found for post-only mode: {summary_json}')
+        with summary_json.open('r', encoding='utf-8') as f:
+            summary = json.load(f)
+        finished = summary.get('finished', [])
+        if summary.get('failed_count'):
+            raise RuntimeError('post-only mode requires failed_count == 0')
+        artifacts, errors = run_post_processing(
+            args=args,
+            scheduler_name=scheduler_name,
+            tasks=tasks,
+            finished=finished,
+            scheduler_summary=summary,
+            scheduler_log=scheduler_log,
+        )
+        summary['artifacts'] = artifacts
+        summary['artifacts_errors'] = errors
+        with summary_json.open('w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        print(f"Wrote summary: {summary_json}")
+        return 1 if errors else 0
+
     pending = list(tasks)
     running: List[RunningTask] = []
     finished: List[dict] = []
@@ -477,13 +500,30 @@ def main() -> int:
     summary = make_summary(args, tasks, finished, wall)
     with summary_json.open('w', encoding='utf-8') as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    artifacts = {}
+    artifacts_errors: List[str] = []
+    if summary['failed_count'] == 0 and (args.post_merge or args.build_equity):
+        artifacts, artifacts_errors = run_post_processing(
+            args=args,
+            scheduler_name=scheduler_name,
+            tasks=tasks,
+            finished=finished,
+            scheduler_summary=summary,
+            scheduler_log=scheduler_log,
+        )
+        summary['artifacts'] = artifacts
+        summary['artifacts_errors'] = artifacts_errors
+        with summary_json.open('w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+
     append_line(
         scheduler_log,
         f"SUMMARY success={summary['success_count']} failed={summary['failed_count']} wall_clock={summary['wall_clock_seconds']}s summary_json={summary_json}",
     )
     print(f"SUMMARY success={summary['success_count']} failed={summary['failed_count']} wall_clock={summary['wall_clock_seconds']}s")
     print(f"Wrote summary: {summary_json}")
-    return 1 if summary['failed_count'] else 0
+    return 1 if summary['failed_count'] or artifacts_errors else 0
 
 
 if __name__ == '__main__':
