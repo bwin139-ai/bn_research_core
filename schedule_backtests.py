@@ -429,6 +429,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--post-merge', action='store_true')
     ap.add_argument('--build-equity', action='store_true')
+    ap.add_argument('--post-only', action='store_true')
     ap.add_argument('--equity-script', default='core/analysis/top1_equity_curve.py')
     ap.add_argument('--kline-root', default='data/klines_1m')
     ap.add_argument('--equity-initial', type=float, default=100.0)
