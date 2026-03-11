@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -106,12 +107,18 @@ def main():
     # 3. 初始化基础设施
     data_dir = os.path.join(PROJECT_ROOT, "data", "klines_1m")
     try:
+        feeder_ndays_lowest = config["ndays_lowest"]
+        if args.strategy == "snapback":
+            feeder_ndays_lowest = max(
+                1, math.ceil(config["max_history_window_mins"] / (24 * 60))
+            )
+
         feeder = CrossSectionalFeeder(
             config=config,
             data_dir=data_dir,
             start_time_ms=start_ms,
             end_time_ms=end_ms,
-            ndays_lowest=config["ndays_lowest"],
+            ndays_lowest=feeder_ndays_lowest,
         )
         timestamps = feeder.get_timestamps()
         logging.info(
