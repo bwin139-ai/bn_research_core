@@ -74,6 +74,12 @@ class CrossSectionalFeeder:
             df_sym.sort_values("open_time_ms", inplace=True)
             df_sym["symbol"] = sym
 
+            # --- Snapback branch 1 所需：显式保证 idx 列存在 ---
+            # 允许 pre-list / 缺少 index 数据的品种存在，此时 *_idx 为 NaN。
+            for idx_col in ("high_idx", "low_idx", "close_idx"):
+                if idx_col not in df_sym.columns:
+                    df_sym[idx_col] = float("nan")
+
             # --- 核心：向量化预计算特征 ---
             # 假设 K 线是连续的 1m，24 小时 = 1440 根 K 线
             window_24h = 24 * 60

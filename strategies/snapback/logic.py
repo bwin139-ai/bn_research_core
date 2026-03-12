@@ -112,12 +112,19 @@ class WashoutSnapbackStrategy:
             # C = current_price
             # rebound_ratio = (C - B) / (A - B)
             # ==============================
-            recent_low_price = recent_drop_df["low"].min()
-            extreme_drop_range = recent_high_price - recent_low_price
-            if extreme_drop_range <= 0:
+            b_contract_ts = recent_drop_df["low"].idxmin()
+            b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
+            b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
+            if pd.isna(b_index_price):
                 continue
 
-            rebound_ratio = (current_price - recent_low_price) / extreme_drop_range
+            extreme_drop_range = recent_high_price - b_index_price
+            if extreme_drop_range <= 0:
+                continue
+            if current_price <= b_index_price:
+                continue
+
+            rebound_ratio = (current_price - b_index_price) / extreme_drop_range
             if rebound_ratio < self.min_rebound_ratio:
                 continue
             if rebound_ratio > self.max_rebound_ratio:
@@ -130,7 +137,8 @@ class WashoutSnapbackStrategy:
                     "drop_pct": drop_pct,
                     "vol_ratio": vol_ratio,
                     "recent_high_price": recent_high_price,
-                    "recent_low_price": recent_low_price,
+                    "b_contract_price": b_contract_price,
+                    "b_index_price": b_index_price,
                     "rebound_ratio": rebound_ratio,
                     "chg_24h": row["chg_24h"],
                     "vol_24h": row["vol_24h"],
@@ -150,7 +158,7 @@ class WashoutSnapbackStrategy:
         limit_price = current_price * (1 - self.entry_pullback)
         # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
         tp_price = current_price * (1 + self.tp_pct)
-        sl_price = target["recent_low_price"]
+        sl_price = target["b_index_price"]
 
         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
         time_bj_str = (
@@ -180,7 +188,8 @@ class WashoutSnapbackStrategy:
                 "drop_pct": target["drop_pct"],
                 "vol_ratio": target["vol_ratio"],
                 "recent_high_price": target["recent_high_price"],
-                "recent_low_price": target["recent_low_price"],
+                "b_contract_price": target["b_contract_price"],
+                "b_index_price": target["b_index_price"],
                 "rebound_ratio": target["rebound_ratio"],
             },
         }

@@ -1,0 +1,69 @@
+--- a/core/engine/data_feeder.py	2026-03-12 05:11:33.526284243 +0000
++++ b/core/engine/data_feeder.py	2026-03-12 05:13:51.670114388 +0000
+@@ -74,6 +74,12 @@
+             df_sym.sort_values("open_time_ms", inplace=True)
+             df_sym["symbol"] = sym
+ 
++            # --- Snapback branch 1 所需：显式保证 idx 列存在 ---
++            # 允许 pre-list / 缺少 index 数据的品种存在，此时 *_idx 为 NaN。
++            for idx_col in ("high_idx", "low_idx", "close_idx"):
++                if idx_col not in df_sym.columns:
++                    df_sym[idx_col] = float("nan")
++
+             # --- 核心：向量化预计算特征 ---
+             # 假设 K 线是连续的 1m，24 小时 = 1440 根 K 线
+             window_24h = 24 * 60
+--- a/strategies/snapback/logic.py	2026-03-12 05:11:33.633243582 +0000
++++ b/strategies/snapback/logic.py	2026-03-12 05:13:51.671152909 +0000
+@@ -112,12 +112,19 @@
+             # C = current_price
+             # rebound_ratio = (C - B) / (A - B)
+             # ==============================
+-            recent_low_price = recent_drop_df["low"].min()
+-            extreme_drop_range = recent_high_price - recent_low_price
++            b_contract_ts = recent_drop_df["low"].idxmin()
++            b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
++            b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
++            if pd.isna(b_index_price):
++                continue
++
++            extreme_drop_range = recent_high_price - b_index_price
+             if extreme_drop_range <= 0:
+                 continue
++            if current_price <= b_index_price:
++                continue
+ 
+-            rebound_ratio = (current_price - recent_low_price) / extreme_drop_range
++            rebound_ratio = (current_price - b_index_price) / extreme_drop_range
+             if rebound_ratio < self.min_rebound_ratio:
+                 continue
+             if rebound_ratio > self.max_rebound_ratio:
+@@ -130,7 +137,8 @@
+                     "drop_pct": drop_pct,
+                     "vol_ratio": vol_ratio,
+                     "recent_high_price": recent_high_price,
+-                    "recent_low_price": recent_low_price,
++                    "b_contract_price": b_contract_price,
++                    "b_index_price": b_index_price,
+                     "rebound_ratio": rebound_ratio,
+                     "chg_24h": row["chg_24h"],
+                     "vol_24h": row["vol_24h"],
+@@ -150,7 +158,7 @@
+         limit_price = current_price * (1 - self.entry_pullback)
+         # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
+         tp_price = current_price * (1 + self.tp_pct)
+-        sl_price = target["recent_low_price"]
++        sl_price = target["b_index_price"]
+ 
+         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
+         time_bj_str = (
+@@ -180,7 +188,8 @@
+                 "drop_pct": target["drop_pct"],
+                 "vol_ratio": target["vol_ratio"],
+                 "recent_high_price": target["recent_high_price"],
+-                "recent_low_price": target["recent_low_price"],
++                "b_contract_price": target["b_contract_price"],
++                "b_index_price": target["b_index_price"],
+                 "rebound_ratio": target["rebound_ratio"],
+             },
+         }
