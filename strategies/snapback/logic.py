@@ -34,6 +34,10 @@ class WashoutSnapbackStrategy:
 
         self.cooldown_until: Dict[str, int] = {}
 
+        # 体检 probe：只做分层计数，不改变策略语义
+        self._probe_calls = 0
+        self._probe_every = 500
+
     def on_kline_close(
         self,
         current_time_ms: int,
@@ -52,6 +56,16 @@ class WashoutSnapbackStrategy:
             return None
 
         candidates = []
+        probe = {
+            "seen_symbols": len(cs),
+            "pass_history": 0,
+            "pass_drop_range": 0,
+            "pass_vol_climax": 0,
+            "idx_missing_branch1": 0,
+            "pass_branch1": 0,
+            "pass_branch2": 0,
+            "candidates": 0,
+        }
 
         # 2. 全局扫街：寻找案发现场
         for sym, row in cs.iterrows():
@@ -74,6 +88,7 @@ class WashoutSnapbackStrategy:
             history_df = sym_df.iloc[start_idx:idx]
             if len(history_df) < self.vol_baseline_window:
                 continue
+            probe["pass_history"] += 1
 
             current_price = row["close"]
 
@@ -96,6 +111,7 @@ class WashoutSnapbackStrategy:
                 continue
             if drop_pct > self.max_drop_pct:
                 continue
+            probe["pass_drop_range"] += 1
 
             vol_climax = (
                 history_df["quote_asset_volume"].tail(self.vol_climax_window).mean()
@@ -106,6 +122,7 @@ class WashoutSnapbackStrategy:
             vol_ratio = vol_climax / vol_baseline if vol_baseline > 0 else 0
             if vol_ratio < self.min_vol_ratio:
                 continue
+            probe["pass_vol_climax"] += 1
 
             # ==============================
             # 第二层：对反弹的观察
@@ -153,6 +170,7 @@ class WashoutSnapbackStrategy:
                     b_contract_ts = current_bar.name
                     b_contract_price = current_low
                     b_index_price = current_low_idx
+                    probe["pass_branch2"] += 1
 
             # branch 1：ABC 结构修复比例
             if trigger_name is None:
@@ -160,6 +178,7 @@ class WashoutSnapbackStrategy:
                 b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
                 b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
                 if pd.isna(b_index_price):
+                    probe["idx_missing_branch1"] += 1
                     continue
 
                 extreme_drop_range = recent_high_price - b_index_price
@@ -174,6 +193,7 @@ class WashoutSnapbackStrategy:
                 if rebound_ratio > self.max_rebound_ratio:
                     continue
                 trigger_name = "ABC_BINDEX"
+                probe["pass_branch1"] += 1
 
             candidates.append(
                 {
@@ -192,6 +212,22 @@ class WashoutSnapbackStrategy:
                     "chg_24h": row["chg_24h"],
                     "vol_24h": row["vol_24h"],
                 }
+            )
+            probe["candidates"] += 1
+
+        self._probe_calls += 1
+        should_log_probe = (self._probe_calls % self._probe_every == 0) or bool(candidates)
+        if should_log_probe:
+            logging.info(
+                "[SNAPBACK_PROBE] seen=%s pass_history=%s pass_drop=%s pass_vol=%s idx_missing_b1=%s pass_b1=%s pass_b2=%s candidates=%s",
+                probe["seen_symbols"],
+                probe["pass_history"],
+                probe["pass_drop_range"],
+                probe["pass_vol_climax"],
+                probe["idx_missing_branch1"],
+                probe["pass_branch1"],
+                probe["pass_branch2"],
+                probe["candidates"],
             )
 
         if not candidates:

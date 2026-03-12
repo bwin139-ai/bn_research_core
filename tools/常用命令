@@ -31,8 +31,8 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
-  --start 2026-03-01T00:00:00+00:00 \
-  --end   2026-03-05T00:00:00+00:00 \
+  --start 2025-04-15T00:00:00+00:00 \
+  --end   2025-04-23T00:12:00+00:00 \
   --kline-window 240 \
   --config strategies/top1_hunter/config.json \
   --out-dir "output/state" \
@@ -41,12 +41,12 @@ cd /root/bn_research_core
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-03-04T00:00:00+00:00 \
-  --end   2026-03-11T00:00:00+00:00 \
+  --start 2025-04-15T00:00:00+00:00 \
+  --end   2025-04-23T00:12:00+00:00 \
   --kline-window 240 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V2.1"
+  --run-id "Snapback_V2.3_SmokeTest"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
@@ -79,8 +79,16 @@ cd ~/ai_projects/bn_research_core
 scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/sim_viz_Snapback_V2' ~/ai_projects/bn_research_core/viz
 
 # =========  k线落盘 =========
-cd /root/bn_research_core
+# *** 只补 idx 列 ***
+nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
+  --start-date 2025-04-23 \
+  --end-date 2025-07-01 \
+  --limit 1500 \
+  --sleep-ms 1000 \
+  >> logs/klines_1m_augment_idx_20250414_20250424.log 2>&1 &
+
 # *** 合约价 backfill ***
+cd /root/bn_research_core
 nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   --symbols XAUUSDT \
   --price-source contract \
