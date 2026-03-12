@@ -19,9 +19,15 @@ TOP1_OPTIONAL_CONTEXT_FIELDS = [
 SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("drop_pct", "Drop(%)", "pct"),
     ("vol_ratio", "VolR", "raw"),
+    ("trigger_name", "Trigger", "str"),
     ("rebound_ratio", "Rebound(%)", "pct"),
     ("recent_high_price", "A_High", "price"),
     ("recent_low_price", "B_Low", "price"),
+    ("b_contract_price", "B_Contract", "price"),
+    ("b_index_price", "B_Index", "price"),
+    ("wick_ratio", "WickRatio", "raw"),
+    ("basis_spike_pct", "BasisSpike(%)", "pct"),
+    ("basis_close_pct", "BasisClose(%)", "pct"),
 ]
 
 LEGACY_SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
@@ -68,6 +74,12 @@ def infer_strategy_name(run_id, config_data, trades):
             "needle_depth_pct",
             "needle_price",
             "trigger_type",
+            "trigger_name",
+            "b_contract_price",
+            "b_index_price",
+            "basis_spike_pct",
+            "basis_close_pct",
+            "wick_ratio",
         ]
     ):
         return "snapback"
