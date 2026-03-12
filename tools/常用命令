@@ -80,21 +80,42 @@ scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/sim_viz_Snapback_V
 
 # =========  k线落盘 =========
 cd /root/bn_research_core
-nohup /root/service_env/bin/python -u  klines_1m_store.py backfill \
+# *** 合约价 backfill ***
+nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   --symbols XAUUSDT \
+  --price-source contract \
   --days 270 \
   --limit 1500 \
   --sleep-ms 1000 \
   >> logs/klines_1m_backfill.log 2>&1 &
 
+# *** 合约价 sync ***
 cd /root/bn_research_core
-nohup /root/service_env/bin/python -u klines_1m_store.py \
+nohup /root/service_env/bin/python -u klines_1m_store.py sync \
+  --price-source contract \
   --days 270 \
   --limit 1500 \
   --sleep-ms 1000 \
-  sync \
   >> logs/klines_1m_sync.log 2>&1 &
 
+# *** 指数价 backfill ***
+cd /root/bn_research_core
+nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
+  --symbols XAUUSDT \
+  --price-source index \
+  --days 365 \
+  --limit 1500 \
+  --sleep-ms 1000 \
+  >> logs/index_klines_1m_backfill.log 2>&1 &
+
+# *** 指数价 sync ***
+cd /root/bn_research_core
+nohup /root/service_env/bin/python -u klines_1m_store.py sync \
+  --price-source index \
+  --days 365 \
+  --limit 1500 \
+  --sleep-ms 1000 \
+  >> logs/index_klines_1m_sync.log 2>&1 &
 
 我想先做个思想准备有个预案，我们聊久了如果你再次出现幻觉，类似反复纠缠“之前上传的文件已过期，无法重新加载”，我可以怎样做
 已思考 12s

@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 import requests
@@ -37,6 +37,21 @@ def utc_now() -> datetime:
 
 def utc_iso() -> str:
     return utc_now().isoformat()
+
+
+def parse_utc_date(s: str) -> datetime:
+    dt = datetime.strptime(s, "%Y-%m-%d")
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def date_range_to_ms(start_date: Optional[str], end_date: Optional[str], days: int) -> tuple[int, int]:
+    if start_date and end_date:
+        start_dt = parse_utc_date(start_date)
+        end_dt = parse_utc_date(end_date) + timedelta(days=1)
+        return floor_to_minute_ms(int(start_dt.timestamp() * 1000)), floor_to_minute_ms(int(end_dt.timestamp() * 1000))
+    now_ms = int(utc_now().timestamp() * 1000)
+    start_ms = floor_to_minute_ms(now_ms - int(days) * 24 * 60 * 60 * 1000)
+    return start_ms, now_ms
 
 
 def floor_to_minute_ms(ts_ms: int) -> int:
@@ -226,6 +241,9 @@ SCHEMA_CONTRACT = pa.schema(
         ("low", pa.float64()),
         ("close", pa.float64()),
         ("quote_asset_volume", pa.float64()),
+        ("high_idx", pa.float64()),
+        ("low_idx", pa.float64()),
+        ("close_idx", pa.float64()),
     ]
 )
 
@@ -265,6 +283,9 @@ def rows_to_table(rows: List[List], price_source: str) -> pa.Table:
         )
 
     quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
+    high_idx = [float(r[8]) if len(r) > 8 and r[8] is not None else None for r in rows]
+    low_idx = [float(r[9]) if len(r) > 9 and r[9] is not None else None for r in rows]
+    close_idx = [float(r[10]) if len(r) > 10 and r[10] is not None else None for r in rows]
     return pa.Table.from_arrays(
         [
             pa.array(open_time, type=pa.int64()),
@@ -273,6 +294,9 @@ def rows_to_table(rows: List[List], price_source: str) -> pa.Table:
             pa.array(low, type=pa.float64()),
             pa.array(close, type=pa.float64()),
             pa.array(quote_vol, type=pa.float64()),
+            pa.array(high_idx, type=pa.float64()),
+            pa.array(low_idx, type=pa.float64()),
+            pa.array(close_idx, type=pa.float64()),
         ],
         schema=SCHEMA_CONTRACT,
     )
@@ -287,7 +311,7 @@ def merge_write_month(
 ) -> int:
     """
     Merge by open_time_ms (dedup), sort asc, write shard.
-    Strict schema: contract keeps the current 6-column schema; index uses a 5-column OHLC schema.
+    Strict schema: contract main table keeps 6 core columns plus 3 optional idx columns; index source uses a 5-column OHLC schema.
     """
     ensure_dir(os.path.join(data_dir, symbol))
     fpath = month_file(data_dir, symbol, month_key)
@@ -327,17 +351,17 @@ def merge_write_month(
                     c[i],
                 ]
         else:
-            tbl = pq.read_table(
-                fpath,
-                columns=[
-                    "open_time_ms",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "quote_asset_volume",
-                ],
-            )
+            contract_cols = [
+                "open_time_ms",
+                "open",
+                "high",
+                "low",
+                "close",
+                "quote_asset_volume",
+            ]
+            idx_cols = ["high_idx", "low_idx", "close_idx"]
+            available_cols = contract_cols + [c for c in idx_cols if c in pq.read_schema(fpath).names]
+            tbl = pq.read_table(fpath, columns=available_cols)
 
             ot = tbl.column("open_time_ms").to_pylist()
             o = tbl.column("open").to_pylist()
@@ -345,13 +369,14 @@ def merge_write_month(
             low_ = tbl.column("low").to_pylist()
             c = tbl.column("close").to_pylist()
             qv = tbl.column("quote_asset_volume").to_pylist()
+            hi_idx = tbl.column("high_idx").to_pylist() if "high_idx" in tbl.column_names else [None] * len(ot)
+            lo_idx = tbl.column("low_idx").to_pylist() if "low_idx" in tbl.column_names else [None] * len(ot)
+            cl_idx = tbl.column("close_idx").to_pylist() if "close_idx" in tbl.column_names else [None] * len(ot)
 
             for i in range(len(ot)):
                 k = int(ot[i])
                 if k in merged:
                     continue
-                # Rebuild the minimal index positions consumed by rows_to_table:
-                # 0=open_time_ms, 1=open, 2=high, 3=low, 4=close, 7=quote_asset_volume
                 merged[k] = [
                     k,
                     o[i],
@@ -361,6 +386,9 @@ def merge_write_month(
                     0.0,
                     0,
                     qv[i],
+                    hi_idx[i],
+                    lo_idx[i],
+                    cl_idx[i],
                 ]
 
     keys = sorted(merged.keys())
@@ -402,9 +430,10 @@ def backfill_symbol(
     limit: int,
     sleep_ms: int,
     price_source: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> None:
-    now_ms = int(utc_now().timestamp() * 1000)
-    start_ms = floor_to_minute_ms(now_ms - int(days) * 24 * 60 * 60 * 1000)
+    start_ms, now_ms = date_range_to_ms(start_date, end_date, days)
 
     buckets: Dict[str, List[List]] = {}
     cur = start_ms
@@ -501,13 +530,90 @@ def sync_symbol(
     logging.info("[sync] %s: updated to %s", symbol, last_open)
 
 
+def merge_contract_and_index_month(
+    data_dir: str,
+    symbol: str,
+    month_key: str,
+    idx_rows: List[List],
+) -> int:
+    fpath = month_file(data_dir, symbol, month_key)
+    if not os.path.exists(fpath):
+        return 0
+
+    schema_names = pq.read_schema(fpath).names
+    base_cols = ["open_time_ms", "open", "high", "low", "close", "quote_asset_volume"]
+    idx_cols = [c for c in ["high_idx", "low_idx", "close_idx"] if c in schema_names]
+    tbl = pq.read_table(fpath, columns=base_cols + idx_cols)
+
+    ot = tbl.column("open_time_ms").to_pylist()
+    o = tbl.column("open").to_pylist()
+    h = tbl.column("high").to_pylist()
+    low_ = tbl.column("low").to_pylist()
+    c = tbl.column("close").to_pylist()
+    qv = tbl.column("quote_asset_volume").to_pylist()
+    hi_idx_old = tbl.column("high_idx").to_pylist() if "high_idx" in tbl.column_names else [None] * len(ot)
+    lo_idx_old = tbl.column("low_idx").to_pylist() if "low_idx" in tbl.column_names else [None] * len(ot)
+    cl_idx_old = tbl.column("close_idx").to_pylist() if "close_idx" in tbl.column_names else [None] * len(ot)
+
+    idx_map = {int(r[0]): (float(r[2]), float(r[3]), float(r[4])) for r in idx_rows}
+    merged_rows = []
+    for i in range(len(ot)):
+        k = int(ot[i])
+        hi_idx, lo_idx, cl_idx = idx_map.get(k, (hi_idx_old[i], lo_idx_old[i], cl_idx_old[i]))
+        merged_rows.append([
+            k, o[i], h[i], low_[i], c[i], 0.0, 0, qv[i], hi_idx, lo_idx, cl_idx
+        ])
+
+    tbl_out = rows_to_table(merged_rows, PRICE_SOURCE_CONTRACT)
+    tmp = fpath + ".tmp"
+    pq.write_table(tbl_out, tmp, compression="zstd")
+    os.replace(tmp, fpath)
+    return tbl_out.num_rows
+
+
+def augment_idx_symbol(
+    session: requests.Session,
+    symbol: str,
+    data_dir: str,
+    limit: int,
+    sleep_ms: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    days: int,
+) -> None:
+    start_ms, end_ms = date_range_to_ms(start_date, end_date, days)
+    buckets: Dict[str, List[List]] = {}
+    cur = start_ms
+    while True:
+        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=end_ms, limit=limit, price_source=PRICE_SOURCE_INDEX)
+        if not rows:
+            break
+        for r in rows:
+            mk = month_key_from_ms(int(r[0]))
+            buckets.setdefault(mk, []).append(r)
+        last_open = int(rows[-1][0])
+        cur = last_open + INTERVAL_MS
+        if cur > end_ms - INTERVAL_MS:
+            break
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
+
+    touched = 0
+    for mk in sorted(buckets.keys()):
+        if merge_contract_and_index_month(data_dir, symbol, mk, buckets[mk]) > 0:
+            touched += 1
+    logging.info("[augment-idx] %s: months=%s", symbol, touched)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="USD-M futures 1m contract/index klines -> parquet store (month shards) + incremental sync"
     )
     ap.add_argument(
-        "--days", type=int, default=180, help="backfill days (default: 180)"
+        "--days", type=int, default=180, help="fallback window in days when --start-date/--end-date are not provided (default: 180)"
     )
+    ap.add_argument("--start-date", default="", help="UTC start date YYYY-MM-DD")
+    ap.add_argument("--end-date", default="", help="UTC end date YYYY-MM-DD (inclusive)")
     ap.add_argument(
         "--limit", type=int, default=1000, help="klines limit per request (<=1500)"
     )
@@ -540,7 +646,7 @@ def main():
     )
     ap.add_argument(
         "cmd",
-        choices=["backfill", "sync"],
+        choices=["backfill", "sync", "augment-idx"],
         help="backfill=init store; sync=incremental update",
     )
     args = ap.parse_args()
@@ -550,7 +656,10 @@ def main():
         format="%(asctime)s | %(levelname)-8s | %(message)s",
     )
 
-    if args.price_source == PRICE_SOURCE_CONTRACT:
+    if args.cmd == "augment-idx":
+        resolved_data_dir = args.data_dir or "data/klines_1m"
+        resolved_state_path = args.state_path or "state/klines_1m_state.json"
+    elif args.price_source == PRICE_SOURCE_CONTRACT:
         resolved_data_dir = args.data_dir or "data/klines_1m"
         resolved_state_path = args.state_path or "state/klines_1m_state.json"
     elif args.price_source == PRICE_SOURCE_INDEX:
@@ -574,12 +683,14 @@ def main():
             symbols = list_symbols_excluding_usdc(sess)
 
         logging.info(
-            "[start] cmd=%s price_source=%s symbols=%s interval=%s days=%s data_dir=%s",
+            "[start] cmd=%s price_source=%s symbols=%s interval=%s days=%s start=%s end=%s data_dir=%s",
             args.cmd,
             args.price_source,
             len(symbols),
             INTERVAL,
             args.days,
+            args.start_date or "",
+            args.end_date or "",
             args.data_dir,
         )
 
@@ -642,10 +753,28 @@ def main():
                         args.limit,
                         args.sleep_ms,
                         args.price_source,
+                        args.start_date or None,
+                        args.end_date or None,
                     )
                     save_json(args.state_path, state)
                 except Exception as e:
                     logging.error("[backfill] %s failed: %s", sym, e)
+        elif args.cmd == "augment-idx":
+            # 将 index 价格按日期段补写进单目录 contract 主表（9 字段 schema）
+            for i, sym in enumerate(symbols, 1):
+                try:
+                    augment_idx_symbol(
+                        sess,
+                        sym,
+                        args.data_dir,
+                        args.limit,
+                        args.sleep_ms,
+                        args.start_date or None,
+                        args.end_date or None,
+                        args.days,
+                    )
+                except Exception as e:
+                    logging.error("[augment-idx] %s failed: %s", sym, e)
         else:
             # sync：优先依赖 state；若 state 缺失但本地已有 shards，则先从本地恢复 last_open_time_ms。
             # 只有既没有 state、也没有本地 shards 时，才执行 full backfill。
@@ -688,10 +817,12 @@ def main():
                                 args.limit,
                                 args.sleep_ms,
                                 args.price_source,
+                                args.start_date or None,
+                                args.end_date or None,
                             )
                     else:
                         sync_symbol(
-                            sess, sym, args.data_dir, state, args.limit, args.sleep_ms
+                            sess, sym, args.data_dir, state, args.limit, args.sleep_ms, args.price_source
                         )
                     save_json(args.state_path, state)
                 except Exception as e:
