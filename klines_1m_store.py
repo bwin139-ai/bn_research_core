@@ -625,7 +625,7 @@ def main():
     )
     ap.add_argument(
         "--price-source",
-        required=True,
+        required=False,
         choices=[PRICE_SOURCE_CONTRACT, PRICE_SOURCE_INDEX],
         help="explicit price source: contract=futures trade price klines, index=index price klines",
     )
@@ -659,6 +659,8 @@ def main():
     if args.cmd == "augment-idx":
         resolved_data_dir = args.data_dir or "data/klines_1m"
         resolved_state_path = args.state_path or "state/klines_1m_state.json"
+    elif not args.price_source:
+        raise SystemExit("--price-source is required for backfill and sync")
     elif args.price_source == PRICE_SOURCE_CONTRACT:
         resolved_data_dir = args.data_dir or "data/klines_1m"
         resolved_state_path = args.state_path or "state/klines_1m_state.json"
