@@ -218,7 +218,7 @@ def fetch_klines(
 # ----------------------------
 # parquet IO (month shards)
 # ----------------------------
-SCHEMA = pa.schema(
+SCHEMA_CONTRACT = pa.schema(
     [
         ("open_time_ms", pa.int64()),
         ("open", pa.float64()),
@@ -229,8 +229,18 @@ SCHEMA = pa.schema(
     ]
 )
 
+SCHEMA_INDEX = pa.schema(
+    [
+        ("open_time_ms", pa.int64()),
+        ("open", pa.float64()),
+        ("high", pa.float64()),
+        ("low", pa.float64()),
+        ("close", pa.float64()),
+    ]
+)
 
-def rows_to_table(rows: List[List]) -> pa.Table:
+
+def rows_to_table(rows: List[List], price_source: str) -> pa.Table:
     # Binance kline array (contract):
     # [ open_time, open, high, low, close, volume, close_time,
     #   quote_asset_volume, number_of_trades, taker_buy_base, taker_buy_quote, ignore ]
@@ -241,8 +251,20 @@ def rows_to_table(rows: List[List]) -> pa.Table:
     high = [float(r[2]) for r in rows]
     low = [float(r[3]) for r in rows]
     close = [float(r[4]) for r in rows]
-    quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
 
+    if price_source == PRICE_SOURCE_INDEX:
+        return pa.Table.from_arrays(
+            [
+                pa.array(open_time, type=pa.int64()),
+                pa.array(open_, type=pa.float64()),
+                pa.array(high, type=pa.float64()),
+                pa.array(low, type=pa.float64()),
+                pa.array(close, type=pa.float64()),
+            ],
+            schema=SCHEMA_INDEX,
+        )
+
+    quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
     return pa.Table.from_arrays(
         [
             pa.array(open_time, type=pa.int64()),
@@ -252,7 +274,7 @@ def rows_to_table(rows: List[List]) -> pa.Table:
             pa.array(close, type=pa.float64()),
             pa.array(quote_vol, type=pa.float64()),
         ],
-        schema=SCHEMA,
+        schema=SCHEMA_CONTRACT,
     )
 
 
@@ -261,11 +283,11 @@ def month_file(data_dir: str, symbol: str, month_key: str) -> str:
 
 
 def merge_write_month(
-    data_dir: str, symbol: str, month_key: str, new_rows: List[List]
+    data_dir: str, symbol: str, month_key: str, new_rows: List[List], price_source: str
 ) -> int:
     """
     Merge by open_time_ms (dedup), sort asc, write shard.
-    Strict schema: assumes existing parquet (if any) uses current 6-column SCHEMA.
+    Strict schema: contract keeps the current 6-column schema; index uses a 5-column OHLC schema.
     """
     ensure_dir(os.path.join(data_dir, symbol))
     fpath = month_file(data_dir, symbol, month_key)
@@ -275,44 +297,74 @@ def merge_write_month(
     merged: Dict[int, List] = {int(r[0]): r for r in new_rows}
 
     if os.path.exists(fpath):
-        tbl = pq.read_table(
-            fpath,
-            columns=[
-                "open_time_ms",
-                "open",
-                "high",
-                "low",
-                "close",
-                "quote_asset_volume",
-            ],
-        )
+        if price_source == PRICE_SOURCE_INDEX:
+            tbl = pq.read_table(
+                fpath,
+                columns=[
+                    "open_time_ms",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                ],
+            )
 
-        ot = tbl.column("open_time_ms").to_pylist()
-        o = tbl.column("open").to_pylist()
-        h = tbl.column("high").to_pylist()
-        low_ = tbl.column("low").to_pylist()
-        c = tbl.column("close").to_pylist()
-        qv = tbl.column("quote_asset_volume").to_pylist()
+            ot = tbl.column("open_time_ms").to_pylist()
+            o = tbl.column("open").to_pylist()
+            h = tbl.column("high").to_pylist()
+            low_ = tbl.column("low").to_pylist()
+            c = tbl.column("close").to_pylist()
 
-        for i in range(len(ot)):
-            k = int(ot[i])
-            if k in merged:
-                continue
-            # Rebuild the minimal index positions consumed by rows_to_table:
-            # 0=open_time_ms, 1=open, 2=high, 3=low, 4=close, 7=quote_asset_volume
-            merged[k] = [
-                k,
-                o[i],
-                h[i],
-                low_[i],
-                c[i],
-                0.0,
-                0,
-                qv[i],
-            ]
+            for i in range(len(ot)):
+                k = int(ot[i])
+                if k in merged:
+                    continue
+                merged[k] = [
+                    k,
+                    o[i],
+                    h[i],
+                    low_[i],
+                    c[i],
+                ]
+        else:
+            tbl = pq.read_table(
+                fpath,
+                columns=[
+                    "open_time_ms",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "quote_asset_volume",
+                ],
+            )
+
+            ot = tbl.column("open_time_ms").to_pylist()
+            o = tbl.column("open").to_pylist()
+            h = tbl.column("high").to_pylist()
+            low_ = tbl.column("low").to_pylist()
+            c = tbl.column("close").to_pylist()
+            qv = tbl.column("quote_asset_volume").to_pylist()
+
+            for i in range(len(ot)):
+                k = int(ot[i])
+                if k in merged:
+                    continue
+                # Rebuild the minimal index positions consumed by rows_to_table:
+                # 0=open_time_ms, 1=open, 2=high, 3=low, 4=close, 7=quote_asset_volume
+                merged[k] = [
+                    k,
+                    o[i],
+                    h[i],
+                    low_[i],
+                    c[i],
+                    0.0,
+                    0,
+                    qv[i],
+                ]
 
     keys = sorted(merged.keys())
-    tbl_out = rows_to_table([merged[k] for k in keys])
+    tbl_out = rows_to_table([merged[k] for k in keys], price_source)
 
     tmp = fpath + ".tmp"
     pq.write_table(tbl_out, tmp, compression="zstd")
@@ -382,7 +434,7 @@ def backfill_symbol(
 
     total_written = 0
     for mk in sorted(buckets.keys()):
-        n = merge_write_month(data_dir, symbol, mk, buckets[mk])
+        n = merge_write_month(data_dir, symbol, mk, buckets[mk], price_source)
         total_written += n
 
     if last_open is not None:
@@ -441,7 +493,7 @@ def sync_symbol(
         return
 
     for mk in sorted(buckets.keys()):
-        merge_write_month(data_dir, symbol, mk, buckets[mk])
+        merge_write_month(data_dir, symbol, mk, buckets[mk], price_source)
 
     if last_open is not None:
         update_symbol_state(state, symbol, last_open)
