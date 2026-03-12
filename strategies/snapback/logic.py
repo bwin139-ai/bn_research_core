@@ -91,6 +91,9 @@ class WashoutSnapbackStrategy:
             probe["pass_history"] += 1
 
             current_price = row["close"]
+            time_bj_str = (
+                pd.to_datetime(current_time_ms, unit="ms") + pd.Timedelta(hours=8)
+            ).strftime("%Y-%m-%d %H:%M")
 
             # ==============================
             # 第一层：对超跌的观察
@@ -109,6 +112,34 @@ class WashoutSnapbackStrategy:
             )
             if drop_pct < self.min_drop_pct:
                 continue
+            if sym == "WCTUSDT" and time_bj_str == "2025-04-19 04:07":
+                logging.info(
+                    "[SNAPBACK_DROP_TARGET] symbol=%s time_bj=%s a_high=%.10f c_close=%.10f drop_pct=%.10f min_drop=%.10f max_drop=%.10f drop_pass=%s vol_ratio=%.10f vol_pass=%s",
+                    sym,
+                    time_bj_str,
+                    recent_high_price,
+                    current_price,
+                    drop_pct,
+                    self.min_drop_pct,
+                    self.max_drop_pct,
+                    (self.min_drop_pct <= drop_pct <= self.max_drop_pct),
+                    vol_ratio if 'vol_ratio' in locals() else -1.0,
+                    False,
+                )
+            if sym == "MEMEUSDT" and time_bj_str == "2025-04-21 00:41":
+                logging.info(
+                    "[SNAPBACK_DROP_TARGET] symbol=%s time_bj=%s a_high=%.10f c_close=%.10f drop_pct=%.10f min_drop=%.10f max_drop=%.10f drop_pass=%s vol_ratio=%.10f vol_pass=%s",
+                    sym,
+                    time_bj_str,
+                    recent_high_price,
+                    current_price,
+                    drop_pct,
+                    self.min_drop_pct,
+                    self.max_drop_pct,
+                    (self.min_drop_pct <= drop_pct <= self.max_drop_pct),
+                    vol_ratio if 'vol_ratio' in locals() else -1.0,
+                    False,
+                )
             if drop_pct > self.max_drop_pct:
                 continue
             probe["pass_drop_range"] += 1
@@ -120,6 +151,24 @@ class WashoutSnapbackStrategy:
                 history_df["quote_asset_volume"].tail(self.vol_baseline_window).mean()
             )
             vol_ratio = vol_climax / vol_baseline if vol_baseline > 0 else 0
+            if sym == "WCTUSDT" and time_bj_str == "2025-04-19 04:07":
+                logging.info(
+                    "[SNAPBACK_DROP_TARGET_VOL] symbol=%s time_bj=%s vol_ratio=%.10f min_vol=%.10f vol_pass=%s",
+                    sym,
+                    time_bj_str,
+                    vol_ratio,
+                    self.min_vol_ratio,
+                    vol_ratio >= self.min_vol_ratio,
+                )
+            if sym == "MEMEUSDT" and time_bj_str == "2025-04-21 00:41":
+                logging.info(
+                    "[SNAPBACK_DROP_TARGET_VOL] symbol=%s time_bj=%s vol_ratio=%.10f min_vol=%.10f vol_pass=%s",
+                    sym,
+                    time_bj_str,
+                    vol_ratio,
+                    self.min_vol_ratio,
+                    vol_ratio >= self.min_vol_ratio,
+                )
             if vol_ratio < self.min_vol_ratio:
                 continue
             probe["pass_vol_climax"] += 1
