@@ -19,9 +19,12 @@ class WashoutSnapbackStrategy:
         self.vol_baseline_window = self.config["vol_baseline_window_mins"]
         self.min_vol_ratio = self.config["min_vol_climax_ratio"]
 
-        # 第二层：对反弹的观察（ABC 结构修复比例）
+        # 第二层：对反弹的观察（branch 1: ABC 修复 / branch 2: 流动性失真单针）
         self.min_rebound_ratio = self.config["min_rebound_ratio"]
         self.max_rebound_ratio = self.config["max_rebound_ratio"]
+        self.min_distortion_wick_ratio = self.config["min_distortion_wick_ratio"]
+        self.min_basis_spike_pct = self.config["min_basis_spike_pct"]
+        self.max_basis_close_pct = self.config["max_basis_close_pct"]
 
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
@@ -106,29 +109,71 @@ class WashoutSnapbackStrategy:
 
             # ==============================
             # 第二层：对反弹的观察
-            # 用 ABC 结构修复比例替代 PinBar / Engulfing + 固定针深区间。
-            # A = recent_high_price
-            # B = recent_low_price (限定在 A 与 C 所处窗口之间)
-            # C = current_price
-            # rebound_ratio = (C - B) / (A - B)
+            # branch 1 = ABC 结构修复比例（用 B_index 去失真）
+            # branch 2 = 流动性失真单针（当前 bar 既是 B 也是 C）
+            # 二者为 OR 关系，任一成立即可通过反弹层。
             # ==============================
-            b_contract_ts = recent_drop_df["low"].idxmin()
-            b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
-            b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
-            if pd.isna(b_index_price):
-                continue
+            trigger_name = None
+            b_contract_ts = None
+            b_contract_price = None
+            b_index_price = None
+            rebound_ratio = None
+            basis_spike_pct = None
+            basis_close_pct = None
+            wick_ratio = None
 
-            extreme_drop_range = recent_high_price - b_index_price
-            if extreme_drop_range <= 0:
-                continue
-            if current_price <= b_index_price:
-                continue
+            current_bar = recent_drop_df.iloc[-1]
+            current_low = current_bar["low"]
+            current_low_idx = current_bar.get("low_idx")
+            current_close_idx = current_bar.get("close_idx")
+            current_open = current_bar["open"]
+            current_high = current_bar["high"]
 
-            rebound_ratio = (current_price - b_index_price) / extreme_drop_range
-            if rebound_ratio < self.min_rebound_ratio:
-                continue
-            if rebound_ratio > self.max_rebound_ratio:
-                continue
+            # branch 2：流动性失真单针（效率优先，先判断）
+            price_range = current_high - current_low
+            lower_shadow = min(current_open, current_price) - current_low
+            wick_ratio = (lower_shadow / price_range) if price_range > 0 else 0
+
+            if (
+                current_low == recent_drop_df["low"].min()
+                and pd.notna(current_low_idx)
+                and pd.notna(current_close_idx)
+                and current_low_idx > 0
+                and current_close_idx > 0
+            ):
+                basis_spike_pct = (current_low_idx - current_low) / current_low_idx
+                basis_close_pct = (current_close_idx - current_price) / current_close_idx
+                if (
+                    wick_ratio >= self.min_distortion_wick_ratio
+                    and basis_spike_pct >= self.min_basis_spike_pct
+                    and basis_close_pct <= self.max_basis_close_pct
+                    and basis_close_pct < basis_spike_pct
+                ):
+                    trigger_name = "DISTORTION_PIN"
+                    b_contract_ts = current_bar.name
+                    b_contract_price = current_low
+                    b_index_price = current_low_idx
+
+            # branch 1：ABC 结构修复比例
+            if trigger_name is None:
+                b_contract_ts = recent_drop_df["low"].idxmin()
+                b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
+                b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
+                if pd.isna(b_index_price):
+                    continue
+
+                extreme_drop_range = recent_high_price - b_index_price
+                if extreme_drop_range <= 0:
+                    continue
+                if current_price <= b_index_price:
+                    continue
+
+                rebound_ratio = (current_price - b_index_price) / extreme_drop_range
+                if rebound_ratio < self.min_rebound_ratio:
+                    continue
+                if rebound_ratio > self.max_rebound_ratio:
+                    continue
+                trigger_name = "ABC_BINDEX"
 
             candidates.append(
                 {
@@ -140,6 +185,10 @@ class WashoutSnapbackStrategy:
                     "b_contract_price": b_contract_price,
                     "b_index_price": b_index_price,
                     "rebound_ratio": rebound_ratio,
+                    "trigger_name": trigger_name,
+                    "basis_spike_pct": basis_spike_pct,
+                    "basis_close_pct": basis_close_pct,
+                    "wick_ratio": wick_ratio,
                     "chg_24h": row["chg_24h"],
                     "vol_24h": row["vol_24h"],
                 }
@@ -180,6 +229,9 @@ class WashoutSnapbackStrategy:
                 "max_drop_pct": self.max_drop_pct,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
+                "min_distortion_wick_ratio": self.min_distortion_wick_ratio,
+                "min_basis_spike_pct": self.min_basis_spike_pct,
+                "max_basis_close_pct": self.max_basis_close_pct,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {
@@ -191,11 +243,20 @@ class WashoutSnapbackStrategy:
                 "b_contract_price": target["b_contract_price"],
                 "b_index_price": target["b_index_price"],
                 "rebound_ratio": target["rebound_ratio"],
+                "trigger_name": target["trigger_name"],
+                "basis_spike_pct": target["basis_spike_pct"],
+                "basis_close_pct": target["basis_close_pct"],
+                "wick_ratio": target["wick_ratio"],
             },
         }
 
-        logging.info(
-            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}%"
-        )
+        if target["trigger_name"] == "DISTORTION_PIN":
+            logging.info(
+                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | 失真单针: wick={target['wick_ratio']*100:.2f}% | 针尖基差: {target['basis_spike_pct']*100:.2f}% | 收盘基差: {target['basis_close_pct']*100:.2f}%"
+            )
+        else:
+            logging.info(
+                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}%"
+            )
 
         return signal
