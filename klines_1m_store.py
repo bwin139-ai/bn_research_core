@@ -24,6 +24,8 @@ except Exception as e:
 BASE_URL = "https://fapi.binance.com"  # USDⓈ-M Futures
 INTERVAL = "1m"
 INTERVAL_MS = 60_000
+PRICE_SOURCE_CONTRACT = "contract"
+PRICE_SOURCE_INDEX = "index"
 
 
 # ----------------------------
@@ -80,11 +82,12 @@ class StorePaths:
     state_path: str
 
 
-def load_state(state_path: str) -> Dict:
+def load_state(state_path: str, price_source: str) -> Dict:
     st = load_json(state_path, default={})
     st.setdefault("version", 1)
     st.setdefault("base_url", BASE_URL)
     st.setdefault("interval", INTERVAL)
+    st.setdefault("price_source", price_source)
     st.setdefault(
         "per_symbol", {}
     )  # symbol -> {"last_open_time_ms": int, "updated_utc": str}
@@ -186,14 +189,27 @@ def fetch_klines(
     start_ms: int,
     end_ms: Optional[int],
     limit: int,
+    price_source: str,
 ) -> List[List]:
-    url = f"{BASE_URL}/fapi/v1/klines"
-    params = {
-        "symbol": symbol,
-        "interval": INTERVAL,
-        "startTime": int(start_ms),
-        "limit": int(limit),
-    }
+    if price_source == PRICE_SOURCE_CONTRACT:
+        url = f"{BASE_URL}/fapi/v1/klines"
+        params = {
+            "symbol": symbol,
+            "interval": INTERVAL,
+            "startTime": int(start_ms),
+            "limit": int(limit),
+        }
+    elif price_source == PRICE_SOURCE_INDEX:
+        url = f"{BASE_URL}/fapi/v1/indexPriceKlines"
+        params = {
+            "pair": symbol,
+            "interval": INTERVAL,
+            "startTime": int(start_ms),
+            "limit": int(limit),
+        }
+    else:
+        raise ValueError(f"unsupported price_source: {price_source}")
+
     if end_ms is not None:
         params["endTime"] = int(end_ms)
     return http_get_json(session, url, params=params)
@@ -215,10 +231,11 @@ SCHEMA = pa.schema(
 
 
 def rows_to_table(rows: List[List]) -> pa.Table:
-    # Binance kline array:
+    # Binance kline array (contract):
     # [ open_time, open, high, low, close, volume, close_time,
     #   quote_asset_volume, number_of_trades, taker_buy_base, taker_buy_quote, ignore ]
-    # Store contract is intentionally narrowed to 6 columns.
+    # Binance index price kline array keeps the same OHLC layout, but the non-price
+    # fields are ignored by this store.
     open_time = [int(r[0]) for r in rows]
     open_ = [float(r[1]) for r in rows]
     high = [float(r[2]) for r in rows]
@@ -332,6 +349,7 @@ def backfill_symbol(
     state: Dict,
     limit: int,
     sleep_ms: int,
+    price_source: str,
 ) -> None:
     now_ms = int(utc_now().timestamp() * 1000)
     start_ms = floor_to_minute_ms(now_ms - int(days) * 24 * 60 * 60 * 1000)
@@ -341,7 +359,7 @@ def backfill_symbol(
     last_open = None
 
     while True:
-        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit)
+        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit, price_source=price_source)
         if not rows:
             break
 
@@ -382,6 +400,7 @@ def sync_symbol(
     state: Dict,
     limit: int,
     sleep_ms: int,
+    price_source: str,
 ) -> None:
     per = state.get("per_symbol", {}).get(symbol)
     if not per or "last_open_time_ms" not in per:
@@ -399,7 +418,7 @@ def sync_symbol(
     last_open = None
 
     while True:
-        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit)
+        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit, price_source=price_source)
         # Apply sleep after EVERY HTTP request. In sync mode, most symbols finish in a single request;
         # the old logic slept only between pages, causing burst requests across symbols
         # and triggering 429 / -1003 rate limits.
@@ -432,7 +451,7 @@ def sync_symbol(
 
 def main():
     ap = argparse.ArgumentParser(
-        description="USD-M futures 1m klines -> parquet store (month shards) + incremental sync"
+        description="USD-M futures 1m contract/index klines -> parquet store (month shards) + incremental sync"
     )
     ap.add_argument(
         "--days", type=int, default=180, help="backfill days (default: 180)"
@@ -446,9 +465,15 @@ def main():
         default=200,
         help="sleep between requests per symbol (ms)",
     )
-    ap.add_argument("--data-dir", default="data/klines_1m", help="output data dir")
     ap.add_argument(
-        "--state-path", default="state/klines_1m_state.json", help="state json path"
+        "--price-source",
+        required=True,
+        choices=[PRICE_SOURCE_CONTRACT, PRICE_SOURCE_INDEX],
+        help="explicit price source: contract=futures trade price klines, index=index price klines",
+    )
+    ap.add_argument("--data-dir", default="", help="output data dir (required to be explicit via --price-source defaults or manual override)")
+    ap.add_argument(
+        "--state-path", default="", help="state json path (required to be explicit via --price-source defaults or manual override)"
     )
     ap.add_argument(
         "--no-skip-existing",
@@ -473,10 +498,22 @@ def main():
         format="%(asctime)s | %(levelname)-8s | %(message)s",
     )
 
+    if args.price_source == PRICE_SOURCE_CONTRACT:
+        resolved_data_dir = args.data_dir or "data/klines_1m"
+        resolved_state_path = args.state_path or "state/klines_1m_state.json"
+    elif args.price_source == PRICE_SOURCE_INDEX:
+        resolved_data_dir = args.data_dir or "data/index_klines_1m"
+        resolved_state_path = args.state_path or "state/index_klines_1m_state.json"
+    else:
+        raise SystemExit(f"unsupported --price-source: {args.price_source}")
+
+    args.data_dir = resolved_data_dir
+    args.state_path = resolved_state_path
+
     ensure_dir(args.data_dir)
     ensure_dir(os.path.dirname(args.state_path) or ".")
 
-    state = load_state(args.state_path)
+    state = load_state(args.state_path, args.price_source)
 
     with requests.Session() as sess:
         if args.symbols.strip():
@@ -485,11 +522,13 @@ def main():
             symbols = list_symbols_excluding_usdc(sess)
 
         logging.info(
-            "[start] cmd=%s symbols=%s interval=%s days=%s",
+            "[start] cmd=%s price_source=%s symbols=%s interval=%s days=%s data_dir=%s",
             args.cmd,
+            args.price_source,
             len(symbols),
             INTERVAL,
             args.days,
+            args.data_dir,
         )
 
         if args.cmd == "backfill":
@@ -550,6 +589,7 @@ def main():
                         state,
                         args.limit,
                         args.sleep_ms,
+                        args.price_source,
                     )
                     save_json(args.state_path, state)
                 except Exception as e:
@@ -583,6 +623,7 @@ def main():
                                 state,
                                 args.limit,
                                 args.sleep_ms,
+                                args.price_source,
                             )
                         else:
                             logging.info("[sync] %s: no state/local shards; backfill first", sym)
@@ -594,6 +635,7 @@ def main():
                                 state,
                                 args.limit,
                                 args.sleep_ms,
+                                args.price_source,
                             )
                     else:
                         sync_symbol(
@@ -603,7 +645,7 @@ def main():
                 except Exception as e:
                     logging.error("[sync] %s failed: %s", sym, e)
 
-    logging.info("[done] state=%s", args.state_path)
+    logging.info("[done] price_source=%s state=%s", args.price_source, args.state_path)
 
 
 if __name__ == "__main__":
