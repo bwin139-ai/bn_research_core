@@ -13,7 +13,7 @@
   "min_basis_spike_pct": 0.03,
   "max_basis_close_pct": 0.005,
   "entry_pullback_pct": -0.02,
-  "take_profit_pct": 0.025,
+  "take_profit_pct": 0.035,
   "order_timeout_sec": 180,
   "cooldown_hours": 4,
   "max_hold_mins": 10,
