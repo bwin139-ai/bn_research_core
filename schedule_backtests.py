@@ -51,6 +51,14 @@ def notify_message(notify_label: Optional[str], text: str) -> None:
         pass
 
 
+def short_mmdd(iso_utc: str) -> str:
+    return parse_iso_utc(iso_utc).strftime('%m-%d')
+
+
+def fmt_seconds_cn(seconds: float) -> str:
+    return f'{seconds:.0f}秒'
+
+
 @dataclass
 class Task:
     batch_id: int
@@ -249,12 +257,19 @@ def run_post_processing(
             f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count} merged_summary={merged_summary}',
         )
         print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count}')
+        notify_message(
+            notify_label,
+            f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜图表：{viz_count}',
+        )
     except Exception as e:
         msg = f'post-merge failed: {e}'
         errors.append(msg)
         append_line(scheduler_log, f'POST_MERGE_FAIL runset={runset} error={e}')
         print(f'POST_MERGE_FAIL runset={runset} error={e}')
-        notify_message(notify_label, f'[SCHED] post-merge FAIL | strategy={args.strategy} | runset={runset} | error={e}')
+        notify_message(
+            notify_label,
+            f'汇总失败｜{args.strategy}\n原因：{e}',
+        )
         return artifacts, errors
 
     if args.build_equity:
@@ -285,13 +300,19 @@ def run_post_processing(
             artifacts['equity_log'] = str(equity_log)
             append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} out={equity_png} summary={equity_json}')
             print(f'POST_EQUITY_DONE runset={runset} out={equity_png}')
-            notify_message(notify_label, f'[SCHED] build-equity DONE | strategy={args.strategy} | runset={runset} | out={equity_png}')
+            notify_message(
+                notify_label,
+                f'资金曲线已生成｜{args.strategy}\n文件：{equity_png.name}',
+            )
         except Exception as e:
             msg = f'build-equity failed: {e}'
             errors.append(msg)
             append_line(scheduler_log, f'POST_EQUITY_FAIL runset={runset} error={e}')
             print(f'POST_EQUITY_FAIL runset={runset} error={e}')
-            notify_message(notify_label, f'[SCHED] build-equity FAIL | strategy={args.strategy} | runset={runset} | error={e}')
+            notify_message(
+                notify_label,
+                f'资金曲线生成失败｜{args.strategy}\n原因：{e}',
+            )
 
     if artifacts.get('merged_summary'):
         merged_summary_path = Path(artifacts['merged_summary'])
@@ -409,10 +430,19 @@ def poll_running(
             f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id} log={rt.task.log_path}",
         )
         print(f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id}")
-        notify_message(
-            notify_label,
-            f'[SCHED] {status} | strategy={strategy} | batch={rt.task.batch_id:02d} | run_id={rt.task.run_id} | rc={rc} | elapsed={elapsed:.1f}s | start={rt.task.start} | end={rt.task.end}',
-        )
+        if rc == 0:
+            msg = (
+                f'回测完成｜{strategy}｜第{rt.task.batch_id:02d}批\n'
+                f'区间：{short_mmdd(rt.task.start)} ~ {short_mmdd(rt.task.end)}\n'
+                f'耗时：{fmt_seconds_cn(elapsed)}'
+            )
+        else:
+            msg = (
+                f'回测失败｜{strategy}｜第{rt.task.batch_id:02d}批\n'
+                f'区间：{short_mmdd(rt.task.start)} ~ {short_mmdd(rt.task.end)}\n'
+                f'返回码：{rc}｜耗时：{fmt_seconds_cn(elapsed)}'
+            )
+        notify_message(notify_label, msg)
     return keep
 
 
@@ -555,7 +585,7 @@ def main() -> int:
     print(f"Wrote summary: {summary_json}")
     notify_message(
         args.notify_label,
-        f"[SCHED] SUMMARY | strategy={args.strategy} | runset={scheduler_name} | success={summary['success_count']} | failed={summary['failed_count']} | wall_clock={summary['wall_clock_seconds']}s | summary={summary_json}",
+        f"回测总结｜{args.strategy}\n成功：{summary['success_count']}｜失败：{summary['failed_count']}｜总耗时：{fmt_seconds_cn(summary['wall_clock_seconds'])}",
     )
     return 1 if summary['failed_count'] or artifacts_errors else 0
 

@@ -1,5 +1,15 @@
 python3 -m py_compile klines_1m_store.py
 
+# ========= 上传隐私数据 =========
+scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_research_core  
+
+# ========= 消息投递员 进程 =========
+cd /root/bn_research_core
+nohup bash -lc 'cd /root/bn_research_core && \
+set -a && source deploy.env && set +a && \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
+> output/logs/tg_queue_sender.console.log 2>&1 &
+
 # ========= 项目根目录 =========
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
