@@ -28,7 +28,10 @@ class WashoutSnapbackStrategy:
 
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
-        self.tp_pct = self.config["take_profit_pct"]
+        self.base_tp_pct = self.config["base_take_profit_pct"]
+        self.strong_tp_pct = self.config["strong_take_profit_pct"]
+        self.strong_tp_min_drop_pct = self.config["strong_tp_min_drop_pct"]
+        self.strong_tp_min_rebound_ratio = self.config["strong_tp_min_rebound_ratio"]
         self.timeout_sec = self.config["order_timeout_sec"]
         self.cooldown_ms = self.config["cooldown_hours"] * 3600 * 1000
 
@@ -178,6 +181,17 @@ class WashoutSnapbackStrategy:
                     continue
                 trigger_name = "ABC_BINDEX"
 
+            selected_tp_pct = self.base_tp_pct
+            tp_tier = "BASE"
+            if (
+                trigger_name == "ABC_BINDEX"
+                and drop_pct >= self.strong_tp_min_drop_pct
+                and rebound_ratio is not None
+                and rebound_ratio >= self.strong_tp_min_rebound_ratio
+            ):
+                selected_tp_pct = self.strong_tp_pct
+                tp_tier = "STRONG"
+
             candidates.append(
                 {
                     "symbol": sym,
@@ -189,6 +203,8 @@ class WashoutSnapbackStrategy:
                     "b_index_price": b_index_price,
                     "rebound_ratio": rebound_ratio,
                     "trigger_name": trigger_name,
+                    "selected_tp_pct": selected_tp_pct,
+                    "tp_tier": tp_tier,
                     "basis_spike_pct": basis_spike_pct,
                     "basis_close_pct": basis_close_pct,
                     "wick_ratio": wick_ratio,
@@ -210,7 +226,8 @@ class WashoutSnapbackStrategy:
 
         limit_price = current_price * (1 - self.entry_pullback)
         # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
-        tp_price = current_price * (1 + self.tp_pct)
+        selected_tp_pct = target["selected_tp_pct"]
+        tp_price = current_price * (1 + selected_tp_pct)
         sl_price = target["b_index_price"]
 
         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
@@ -229,7 +246,11 @@ class WashoutSnapbackStrategy:
             "sl_price": sl_price,
             "params": {
                 "entry_pullback_pct": self.entry_pullback,
-                "take_profit_pct": self.tp_pct,
+                "base_take_profit_pct": self.base_tp_pct,
+                "strong_take_profit_pct": self.strong_tp_pct,
+                "strong_tp_min_drop_pct": self.strong_tp_min_drop_pct,
+                "strong_tp_min_rebound_ratio": self.strong_tp_min_rebound_ratio,
+                "selected_take_profit_pct": selected_tp_pct,
                 "max_drop_pct": self.max_drop_pct,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
@@ -248,6 +269,8 @@ class WashoutSnapbackStrategy:
                 "b_index_price": target["b_index_price"],
                 "rebound_ratio": target["rebound_ratio"],
                 "trigger_name": target["trigger_name"],
+                "selected_tp_pct": target["selected_tp_pct"],
+                "tp_tier": target["tp_tier"],
                 "basis_spike_pct": target["basis_spike_pct"],
                 "basis_close_pct": target["basis_close_pct"],
                 "wick_ratio": target["wick_ratio"],
@@ -256,11 +279,11 @@ class WashoutSnapbackStrategy:
 
         if target["trigger_name"] == "DISTORTION_PIN":
             logging.info(
-                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | 失真单针: wick={target['wick_ratio']*100:.2f}% | 针尖基差: {target['basis_spike_pct']*100:.2f}% | 收盘基差: {target['basis_close_pct']*100:.2f}%"
+                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | 失真单针: wick={target['wick_ratio']*100:.2f}% | 针尖基差: {target['basis_spike_pct']*100:.2f}% | 收盘基差: {target['basis_close_pct']*100:.2f}% | TP档位: {target['tp_tier']}({target['selected_tp_pct']*100:.2f}%)"
             )
         else:
             logging.info(
-                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}%"
+                f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}% | TP档位: {target['tp_tier']}({target['selected_tp_pct']*100:.2f}%)"
             )
 
         return signal

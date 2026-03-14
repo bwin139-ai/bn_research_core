@@ -28,6 +28,8 @@ SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("wick_ratio", "WickRatio", "raw"),
     ("basis_spike_pct", "BasisSpike(%)", "pct"),
     ("basis_close_pct", "BasisClose(%)", "pct"),
+    ("tp_tier", "TpTier", "str"),
+    ("selected_tp_pct", "SelectedTP(%)", "pct"),
 ]
 
 LEGACY_SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
