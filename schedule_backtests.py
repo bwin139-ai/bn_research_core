@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.message_bridge import send_to_bot
+
 UTC = timezone.utc
 
 
@@ -37,6 +39,16 @@ def ensure_dir(path: Path) -> None:
 
 def now_tag() -> str:
     return datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+
+
+def notify_message(notify_label: Optional[str], text: str) -> None:
+    if not notify_label:
+        return
+    try:
+        send_to_bot(text, label=notify_label)
+    except Exception:
+        # best-effort only: scheduler semantics must not depend on notifications
+        pass
 
 
 @dataclass
@@ -186,6 +198,7 @@ def run_post_processing(
     finished: List[dict],
     scheduler_summary: dict,
     scheduler_log: Path,
+    notify_label: Optional[str] = None,
 ) -> tuple[Dict[str, str], List[str]]:
     artifacts: Dict[str, str] = {}
     errors: List[str] = []
@@ -241,6 +254,7 @@ def run_post_processing(
         errors.append(msg)
         append_line(scheduler_log, f'POST_MERGE_FAIL runset={runset} error={e}')
         print(f'POST_MERGE_FAIL runset={runset} error={e}')
+        notify_message(notify_label, f'[SCHED] post-merge FAIL | strategy={args.strategy} | runset={runset} | error={e}')
         return artifacts, errors
 
     if args.build_equity:
@@ -271,11 +285,13 @@ def run_post_processing(
             artifacts['equity_log'] = str(equity_log)
             append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} out={equity_png} summary={equity_json}')
             print(f'POST_EQUITY_DONE runset={runset} out={equity_png}')
+            notify_message(notify_label, f'[SCHED] build-equity DONE | strategy={args.strategy} | runset={runset} | out={equity_png}')
         except Exception as e:
             msg = f'build-equity failed: {e}'
             errors.append(msg)
             append_line(scheduler_log, f'POST_EQUITY_FAIL runset={runset} error={e}')
             print(f'POST_EQUITY_FAIL runset={runset} error={e}')
+            notify_message(notify_label, f'[SCHED] build-equity FAIL | strategy={args.strategy} | runset={runset} | error={e}')
 
     if artifacts.get('merged_summary'):
         merged_summary_path = Path(artifacts['merged_summary'])
@@ -359,7 +375,13 @@ def launch_task(task: Task, scheduler_log: Path) -> RunningTask:
     return rt
 
 
-def poll_running(running: List[RunningTask], scheduler_log: Path, finished: List[dict]) -> List[RunningTask]:
+def poll_running(
+    running: List[RunningTask],
+    scheduler_log: Path,
+    finished: List[dict],
+    strategy: str,
+    notify_label: Optional[str] = None,
+) -> List[RunningTask]:
     keep: List[RunningTask] = []
     for rt in running:
         rc = rt.proc.poll()
@@ -387,6 +409,10 @@ def poll_running(running: List[RunningTask], scheduler_log: Path, finished: List
             f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id} log={rt.task.log_path}",
         )
         print(f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id}")
+        notify_message(
+            notify_label,
+            f'[SCHED] {status} | strategy={strategy} | batch={rt.task.batch_id:02d} | run_id={rt.task.run_id} | rc={rc} | elapsed={elapsed:.1f}s | start={rt.task.start} | end={rt.task.end}',
+        )
     return keep
 
 
@@ -434,6 +460,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--kline-root', default='data/klines_1m')
     ap.add_argument('--equity-initial', type=float, default=100.0)
     ap.add_argument('--equity-fee-side', type=float, default=0.0005)
+    ap.add_argument('--notify-label', default=None, help='queue label for scheduler notifications, e.g. admin or global')
     args = ap.parse_args()
     if args.max_parallel <= 0:
         ap.error('--max-parallel must be > 0')
@@ -477,6 +504,7 @@ def main() -> int:
             finished=finished,
             scheduler_summary=summary,
             scheduler_log=scheduler_log,
+            notify_label=args.notify_label,
         )
         summary['artifacts'] = artifacts
         summary['artifacts_errors'] = errors
@@ -495,7 +523,7 @@ def main() -> int:
             task = pending.pop(0)
             running.append(launch_task(task, scheduler_log))
         time.sleep(args.poll_seconds)
-        running = poll_running(running, scheduler_log, finished)
+        running = poll_running(running, scheduler_log, finished, strategy=args.strategy, notify_label=args.notify_label)
 
     wall = time.time() - t0
     summary = make_summary(args, tasks, finished, wall)
@@ -512,6 +540,7 @@ def main() -> int:
             finished=finished,
             scheduler_summary=summary,
             scheduler_log=scheduler_log,
+            notify_label=args.notify_label,
         )
         summary['artifacts'] = artifacts
         summary['artifacts_errors'] = artifacts_errors
@@ -524,6 +553,10 @@ def main() -> int:
     )
     print(f"SUMMARY success={summary['success_count']} failed={summary['failed_count']} wall_clock={summary['wall_clock_seconds']}s")
     print(f"Wrote summary: {summary_json}")
+    notify_message(
+        args.notify_label,
+        f"[SCHED] SUMMARY | strategy={args.strategy} | runset={scheduler_name} | success={summary['success_count']} | failed={summary['failed_count']} | wall_clock={summary['wall_clock_seconds']}s | summary={summary_json}",
+    )
     return 1 if summary['failed_count'] or artifacts_errors else 0
 
 

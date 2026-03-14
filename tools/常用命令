@@ -10,8 +10,8 @@ git fetch --all
 git checkout main
 git pull --ff-only origin main
 
-# ========= 并行调度主进程 =========
-RUNSET="SNAP_V2.3_30D_P5_$(date +%m%dT%H%M)"
+# ========= 全量并行调度主进程 =========
+RUNSET="SNAP_V2.4_30D_P5_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
@@ -27,7 +27,7 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
   --build-equity' \
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
-# ========= 前端运行仿真系统 参数切换Top1 / Snapback =========
+# ========= 前端冒烟测试 Top1 / Snapback =========
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
@@ -46,11 +46,13 @@ cd /root/bn_research_core
   --kline-window 240 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V2.3_SmokeTest"
+  --run-id "Snapback_V2.4_SmokeTest"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_40D_P3_0313T1845_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_30D_P3_0313T2134_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_40D_P4_0313T2338_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_30D_P5_0314T0815_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core

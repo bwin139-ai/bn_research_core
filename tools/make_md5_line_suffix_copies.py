@@ -7,7 +7,7 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-    # "schedule_backtests.py",
+     "schedule_backtests.py",
     # "klines_1m_store.py",
     # "strategies/run_backtest.py",
     # "=================================",
@@ -16,7 +16,7 @@ FILES = [
     #"tools/fetch_all.sh",
     #"tools/run_full_backtest.sh",
     # "=================================",
-     "core/config_loader.py",
+    # "core/config_loader.py",
     #"core/analysis/analyzer.py",
     #"core/analysis/top1_equity_curve.py",
     # "core/analysis/visualizer.py",
