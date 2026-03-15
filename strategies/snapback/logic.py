@@ -25,6 +25,7 @@ class WashoutSnapbackStrategy:
         self.min_distortion_wick_ratio = self.config["min_distortion_wick_ratio"]
         self.min_basis_spike_pct = self.config["min_basis_spike_pct"]
         self.max_basis_close_pct = self.config["max_basis_close_pct"]
+        self.min_bc_bars = self.config["min_bc_bars"]
 
         # 游击战交易参数
         self.entry_pullback = self.config["entry_pullback_pct"]
@@ -185,6 +186,10 @@ class WashoutSnapbackStrategy:
                 if current_price <= b_index_price:
                     continue
 
+                bc_bars = len(ac_df) - 1
+                if bc_bars < self.min_bc_bars:
+                    continue
+
                 rebound_ratio = (current_price - b_index_price) / extreme_drop_range
                 if rebound_ratio < self.min_rebound_ratio:
                     continue
@@ -273,6 +278,7 @@ class WashoutSnapbackStrategy:
                 "min_distortion_wick_ratio": self.min_distortion_wick_ratio,
                 "min_basis_spike_pct": self.min_basis_spike_pct,
                 "max_basis_close_pct": self.max_basis_close_pct,
+                "min_bc_bars": self.min_bc_bars,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {
