@@ -46,6 +46,111 @@ def pct(v: Optional[float]) -> Optional[float]:
     return None if v is None else v * 100.0
 
 
+def pct_identity(v: Optional[float]) -> Optional[float]:
+    return v
+
+
+def first_present(*values: Any) -> Any:
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def safe_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def pct_change(base: Optional[float], target: Optional[float]) -> Optional[float]:
+    if base is None or target is None or abs(base) <= 1e-12:
+        return None
+    return (target / base - 1.0) * 100.0
+
+
+def bars_between(start_ms: Optional[int], end_ms: Optional[int]) -> Optional[int]:
+    if start_ms is None or end_ms is None:
+        return None
+    diff_ms = end_ms - start_ms
+    if diff_ms < 0:
+        return None
+    return int(round(diff_ms / 60000.0))
+
+
+def extract_abc_geometry(row: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    a_time = safe_int(first_present(
+        context.get("a_time"),
+        context.get("a_time_ms"),
+        context.get("a_open_time"),
+        context.get("a_open_time_ms"),
+        context.get("a_ts"),
+    ))
+    b_time = safe_int(first_present(
+        context.get("b_time"),
+        context.get("b_time_ms"),
+        context.get("b_open_time"),
+        context.get("b_open_time_ms"),
+        context.get("b_ts"),
+    ))
+    c_time = safe_int(first_present(
+        context.get("c_time"),
+        context.get("c_time_ms"),
+        context.get("c_open_time"),
+        context.get("c_open_time_ms"),
+        context.get("c_ts"),
+        row.get("entry_time"),
+    ))
+
+    a_price = safe_float(first_present(
+        context.get("a_high_price"),
+        context.get("a_price"),
+        context.get("a_contract_price"),
+        context.get("a_index_price"),
+    ))
+    b_contract_price = safe_float(context.get("b_contract_price"))
+    b_index_price = safe_float(context.get("b_index_price"))
+    c_price = safe_float(first_present(
+        context.get("c_price"),
+        context.get("c_close_price"),
+        row.get("entry_price"),
+    ))
+
+    ab_bars = bars_between(a_time, b_time)
+    bc_bars = bars_between(b_time, c_time)
+    ac_bars = bars_between(a_time, c_time)
+
+    ab_drop_to_b_index_pct = pct_change(a_price, b_index_price)
+    ab_drop_to_b_contract_pct = pct_change(a_price, b_contract_price)
+    bc_rebound_from_b_index_pct = pct_change(b_index_price, c_price)
+    bc_rebound_from_b_contract_pct = pct_change(b_contract_price, c_price)
+
+    bc_vs_ab_ratio_index: Optional[float] = None
+    if bc_rebound_from_b_index_pct is not None and ab_drop_to_b_index_pct is not None and abs(ab_drop_to_b_index_pct) > 1e-12:
+        bc_vs_ab_ratio_index = abs(bc_rebound_from_b_index_pct) / abs(ab_drop_to_b_index_pct)
+
+    bc_vs_ab_ratio_contract: Optional[float] = None
+    if bc_rebound_from_b_contract_pct is not None and ab_drop_to_b_contract_pct is not None and abs(ab_drop_to_b_contract_pct) > 1e-12:
+        bc_vs_ab_ratio_contract = abs(bc_rebound_from_b_contract_pct) / abs(ab_drop_to_b_contract_pct)
+
+    return {
+        "a_time": a_time,
+        "b_time": b_time,
+        "c_time": c_time,
+        "c_price": c_price,
+        "ab_bars": ab_bars,
+        "bc_bars": bc_bars,
+        "ac_bars": ac_bars,
+        "ab_drop_to_b_index_pct": ab_drop_to_b_index_pct,
+        "ab_drop_to_b_contract_pct": ab_drop_to_b_contract_pct,
+        "bc_rebound_from_b_index_pct": bc_rebound_from_b_index_pct,
+        "bc_rebound_from_b_contract_pct": bc_rebound_from_b_contract_pct,
+        "bc_vs_ab_ratio_index": bc_vs_ab_ratio_index,
+        "bc_vs_ab_ratio_contract": bc_vs_ab_ratio_contract,
+    }
 
 
 def calc_mfe_mae(data_dir: Path, symbol: str, entry_time: int, exit_time: int, entry_price: float) -> Tuple[Optional[float], Optional[float], str]:
@@ -153,6 +258,8 @@ def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
     if mfe_v is not None and selected_tp_v is not None and selected_tp_v > 1e-12:
         mfe_to_tp_ratio = mfe_v / selected_tp_v
 
+    abc = extract_abc_geometry(row, context)
+
     return {
         "symbol": row.get("symbol"),
         "entry_time": row.get("entry_time") or row.get("entry_time_bj"),
@@ -180,6 +287,7 @@ def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
         "exit_price": safe_float(row.get("exit_price")),
         "mfe_mae_source": mfe_mae_source,
         "mfe_mae_note": mfe_mae_note,
+        **abc,
     }
 
 
@@ -225,6 +333,11 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "pnl_pct", "mfe_pct", "mae_pct", "mae_to_loss_ratio", "mfe_to_tp_ratio", "selected_tp_pct",
         "drop_pct", "rebound_ratio", "vol_ratio", "wick_ratio", "basis_spike_pct", "basis_close_pct",
         "a_high_price", "b_contract_price", "b_index_price", "entry_price", "exit_price",
+        "a_time", "b_time", "c_time", "c_price",
+        "ab_bars", "bc_bars", "ac_bars",
+        "ab_drop_to_b_index_pct", "ab_drop_to_b_contract_pct",
+        "bc_rebound_from_b_index_pct", "bc_rebound_from_b_contract_pct",
+        "bc_vs_ab_ratio_index", "bc_vs_ab_ratio_contract",
         "mfe_mae_source", "mfe_mae_note",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +370,9 @@ def print_top(rows: List[Dict[str, Any]], top_n: int) -> None:
             f" | mae/loss={fmt(r.get('mae_to_loss_ratio'))}"
             f" | trigger={r.get('trigger_name')}"
             f" | tier={r.get('tp_tier')}"
+            f" | bc_idx={fmt(r.get('bc_rebound_from_b_index_pct'))}%"
+            f" | bc_bars={r.get('bc_bars') if r.get('bc_bars') is not None else 'N/A'}"
+            f" | bc/ab={fmt(r.get('bc_vs_ab_ratio_index'))}"
             f" | entry={r.get('entry_time')}"
         )
 
