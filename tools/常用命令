@@ -20,13 +20,13 @@ git checkout main
 git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
-RUNSET="SNAP_V2.4_30D_P5_$(date +%m%dT%H%M)"
+RUNSET="SNAP_V3.0_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
   --end 2026-03-11T00:00:00+00:00 \
   --batch-days 30 \
-  --max-parallel 5 \
+  --max-parallel 6 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir output/state \
