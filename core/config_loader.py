@@ -40,6 +40,7 @@ class StrategyConfig:
         "min_vol_climax_ratio",
         "min_rebound_ratio",
         "max_rebound_ratio",
+        "min_bc_bars",
         "entry_pullback_pct",
         "base_take_profit_pct",
         "strong_take_profit_pct",
