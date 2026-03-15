@@ -25,7 +25,7 @@ FILES = [
     # "core/engine/data_feeder.py",
     # "=================================",
     # "strategies/snapback/config.json",
-    # "strategies/snapback/logic.py",
+     "strategies/snapback/logic.py",
     # "=================================",
     #"strategies/top1_hunter/config.json",
     #"strategies/top1_hunter/logic.py",

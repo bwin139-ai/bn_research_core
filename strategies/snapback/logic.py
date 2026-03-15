@@ -92,7 +92,8 @@ class WashoutSnapbackStrategy:
             # 虽然命名叫 ABC，但数据获取顺序必须严格按 CAB 理解。
             # ==============================
             recent_drop_df = history_df.tail(self.drop_window)
-            recent_high_price = recent_drop_df["high"].max()
+            recent_high_ts = recent_drop_df["high"].idxmax()
+            recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
             drop_pct = (
                 (recent_high_price - current_price) / recent_high_price
                 if recent_high_price > 0
@@ -199,6 +200,11 @@ class WashoutSnapbackStrategy:
                     "drop_pct": drop_pct,
                     "vol_ratio": vol_ratio,
                     "recent_high_price": recent_high_price,
+                    "a_time": recent_high_ts,
+                    "a_high_price": recent_high_price,
+                    "b_time": b_contract_ts,
+                    "c_time": current_time_ms,
+                    "c_price": current_price,
                     "b_contract_price": b_contract_price,
                     "b_index_price": b_index_price,
                     "rebound_ratio": rebound_ratio,
@@ -265,6 +271,11 @@ class WashoutSnapbackStrategy:
                 "drop_pct": target["drop_pct"],
                 "vol_ratio": target["vol_ratio"],
                 "recent_high_price": target["recent_high_price"],
+                "a_time": target["a_time"],
+                "a_high_price": target["a_high_price"],
+                "b_time": target["b_time"],
+                "c_time": target["c_time"],
+                "c_price": target["c_price"],
                 "b_contract_price": target["b_contract_price"],
                 "b_index_price": target["b_index_price"],
                 "rebound_ratio": target["rebound_ratio"],
