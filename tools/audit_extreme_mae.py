@@ -15,9 +15,12 @@ import csv
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import pyarrow.parquet as pq
 
 DEFAULT_STATE_DIR = Path("output/state")
+DEFAULT_DATA_DIR = Path("data/klines_1m")
 
 
 def find_trades_file(run_id: str, state_dir: Path) -> Path:
@@ -43,6 +46,43 @@ def pct(v: Optional[float]) -> Optional[float]:
     return None if v is None else v * 100.0
 
 
+
+
+def calc_mfe_mae(data_dir: Path, symbol: str, entry_time: int, exit_time: int, entry_price: float) -> Tuple[Optional[float], Optional[float], str]:
+    if entry_price <= 0:
+        return None, None, "missing_or_invalid_entry_price"
+
+    sym_dir = data_dir / symbol
+    if not sym_dir.is_dir():
+        return None, None, "symbol_dir_not_found"
+
+    pq_files = sorted(sym_dir.glob("*.parquet"))
+    if not pq_files:
+        return None, None, "parquet_not_found"
+
+    try:
+        df = pq.read_table([str(x) for x in pq_files]).to_pandas()
+    except Exception:
+        return None, None, "parquet_read_failed"
+
+    if "open_time_ms" not in df.columns or "high" not in df.columns or "low" not in df.columns:
+        return None, None, "required_columns_missing"
+
+    hold_df = df[(df["open_time_ms"] >= entry_time) & (df["open_time_ms"] <= exit_time)]
+    if hold_df.empty:
+        return None, None, "hold_window_empty"
+
+    try:
+        high_max = float(hold_df["high"].max())
+        low_min = float(hold_df["low"].min())
+    except Exception:
+        return None, None, "high_low_calc_failed"
+
+    mfe_pct = (high_max / entry_price - 1.0) * 100.0
+    mae_pct = (low_min / entry_price - 1.0) * 100.0
+    return mfe_pct, mae_pct, "recomputed_from_klines"
+
+
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
@@ -57,7 +97,7 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def parse_trade(row: Dict[str, Any]) -> Dict[str, Any]:
+def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
     context = row.get("context") or {}
     params = row.get("params") or {}
 
@@ -69,9 +109,41 @@ def parse_trade(row: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     pnl_pct_v = pct(pnl_pct_raw)
-    mfe_v = pct(mfe_raw)
-    mae_v = pct(mae_raw)
     selected_tp_v = pct(selected_tp_raw)
+
+    mfe_mae_source = "trade_fields"
+    mfe_mae_note = "ok"
+    if mfe_raw is not None and mae_raw is not None:
+        mfe_v = pct(mfe_raw)
+        mae_v = pct(mae_raw)
+    else:
+        entry_time_raw = row.get("entry_time")
+        exit_time_raw = row.get("exit_time")
+        entry_price_raw = safe_float(row.get("entry_price"))
+        symbol = str(row.get("symbol") or "")
+        if entry_time_raw is None or exit_time_raw is None or entry_price_raw is None or not symbol:
+            mfe_v = None
+            mae_v = None
+            mfe_mae_source = "unavailable"
+            mfe_mae_note = "missing_trade_fields_for_recompute"
+        else:
+            try:
+                entry_time = int(entry_time_raw)
+                exit_time = int(exit_time_raw)
+            except (TypeError, ValueError):
+                mfe_v = None
+                mae_v = None
+                mfe_mae_source = "unavailable"
+                mfe_mae_note = "invalid_trade_time"
+            else:
+                mfe_v, mae_v, mfe_mae_note = calc_mfe_mae(
+                    data_dir=data_dir,
+                    symbol=symbol,
+                    entry_time=entry_time,
+                    exit_time=exit_time,
+                    entry_price=entry_price_raw,
+                )
+                mfe_mae_source = "recomputed_from_klines" if mfe_v is not None and mae_v is not None else "unavailable"
 
     mae_to_loss_ratio: Optional[float] = None
     if mae_v is not None and pnl_pct_v is not None and pnl_pct_v < 0 and abs(pnl_pct_v) > 1e-12:
@@ -106,6 +178,8 @@ def parse_trade(row: Dict[str, Any]) -> Dict[str, Any]:
         "b_index_price": safe_float(context.get("b_index_price")),
         "entry_price": safe_float(row.get("entry_price")),
         "exit_price": safe_float(row.get("exit_price")),
+        "mfe_mae_source": mfe_mae_source,
+        "mfe_mae_note": mfe_mae_note,
     }
 
 
@@ -151,6 +225,7 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "pnl_pct", "mfe_pct", "mae_pct", "mae_to_loss_ratio", "mfe_to_tp_ratio", "selected_tp_pct",
         "drop_pct", "rebound_ratio", "vol_ratio", "wick_ratio", "basis_spike_pct", "basis_close_pct",
         "a_high_price", "b_contract_price", "b_index_price", "entry_price", "exit_price",
+        "mfe_mae_source", "mfe_mae_note",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
@@ -190,13 +265,16 @@ def build_summary(all_rows: List[Dict[str, Any]], risk_rows: List[Dict[str, Any]
     reason_counts: Dict[str, int] = {}
     trigger_counts: Dict[str, int] = {}
     tier_counts: Dict[str, int] = {}
+    mfe_mae_source_counts: Dict[str, int] = {}
     for r in risk_rows:
         reason = str(r.get("reason") or "UNKNOWN")
         trigger = str(r.get("trigger_name") or "UNKNOWN")
         tier = str(r.get("tp_tier") or "UNKNOWN")
+        source = str(r.get("mfe_mae_source") or "UNKNOWN")
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
         trigger_counts[trigger] = trigger_counts.get(trigger, 0) + 1
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        mfe_mae_source_counts[source] = mfe_mae_source_counts.get(source, 0) + 1
 
     worst_mae = min((r["mae_pct"] for r in risk_rows if r.get("mae_pct") is not None), default=None)
     worst_ratio = max((r["mae_to_loss_ratio"] for r in risk_rows if r.get("mae_to_loss_ratio") is not None), default=None)
@@ -207,6 +285,7 @@ def build_summary(all_rows: List[Dict[str, Any]], risk_rows: List[Dict[str, Any]
         "reason_counts": reason_counts,
         "trigger_counts": trigger_counts,
         "tp_tier_counts": tier_counts,
+        "mfe_mae_source_counts": mfe_mae_source_counts,
         "worst_mae_pct": worst_mae,
         "max_mae_to_loss_ratio": worst_ratio,
     }
@@ -217,6 +296,7 @@ def main() -> None:
     ap.add_argument("--run-id", help="回测 RUNID，例如 SNAP_V2.4_30D_P5_0314T1212_ALL")
     ap.add_argument("--trades", help="直接指定 sim_trades.jsonl 文件路径")
     ap.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR), help="状态目录，默认 output/state")
+    ap.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="K线数据目录，默认 data/klines_1m")
     ap.add_argument("--mae-threshold-pct", type=float, default=-8.0, help="极深 MAE 阈值，默认 -8.0")
     ap.add_argument("--mae-loss-ratio-threshold", type=float, default=3.0, help="mae/loss 放大倍数阈值，默认 3.0")
     ap.add_argument("--low-mfe-threshold-pct", type=float, default=1.0, help="低 MFE 阈值，默认 1.0")
@@ -226,6 +306,7 @@ def main() -> None:
     args = ap.parse_args()
 
     state_dir = Path(args.state_dir)
+    data_dir = Path(args.data_dir)
     if args.trades:
         trades_path = Path(args.trades)
         run_id = trades_path.stem.replace("sim_trades.", "")
@@ -235,7 +316,7 @@ def main() -> None:
     else:
         raise SystemExit("必须提供 --run-id 或 --trades")
 
-    all_rows = [parse_trade(r) for r in read_jsonl(trades_path)]
+    all_rows = [parse_trade(r, data_dir=data_dir) for r in read_jsonl(trades_path)]
     risk_rows = [
         r for r in all_rows
         if is_high_risk(
@@ -255,6 +336,7 @@ def main() -> None:
     summary["run_id"] = run_id
     summary["trades_path"] = str(trades_path)
     summary["csv_path"] = str(out_csv)
+    summary["data_dir"] = str(data_dir)
     write_json(summary_out, summary)
 
     print(f"已读取交易数: {len(all_rows)}")

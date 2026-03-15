@@ -1,0 +1,574 @@
+我们继续推进 bn_research_core。请把下列内容视为本对话的唯一基线与协作规则，不要重新发散，不要失忆，不要把 Snapback 拉回别的策略世界观。
+
+0）当前项目定位
+
+当前仓库：
+
+bn_research_core
+
+当前主线：
+
+Snapback V2.4
+
+当前阶段定位：毕业前最后收尾 + 毕业实盘代码集成准备
+
+当前判断：
+
+V2.4 已经是有效升级版本
+
+二档止盈（BASE 2.5% / STRONG 3.5%）方向正确
+
+当前主要矛盾已不再是“止盈逻辑完全错误”，而是：
+
+极端 MAE / 尾部滑点风险审计
+
+毕业前最后风控收尾
+
+新库实盘公共基础设施逐步集成
+
+1）项目铁律（必须严格遵守）
+1.1 代码 = 金钱
+
+业务确定性高于技术惯例。
+
+1.2 先锁现场，再 patch
+
+任何 patch 前，必须先对齐：
+
+MD5
+
+行数
+
+对齐副本文件
+
+1.3 小步迭代，最小外科手术
+
+先方案
+
+后补丁
+
+不要大改
+
+不要多层混改
+
+1.4 显式优先，单义优先，快速失败优先
+
+禁止默认值兜底
+
+禁止隐式兼容
+
+禁止为了“向下兼容”破坏业务语义
+
+1.5 三类任务禁止混做
+
+所有修改必须先明确属于哪一类：
+
+PERF_ONLY
+
+ARCH_ONLY
+
+LOGIC_ONLY
+
+三类禁止混做。
+
+1.6 文件输出规则
+
+所有 .py / .diff / .patch 一律附件方式提供
+
+不在对话框贴整文件代码
+
+输出 patch 前必须检查 patch 头路径
+
+只允许仓库真实路径
+
+禁止再出现 /mnt/data/... 这类临时路径头错误
+
+1.7 协作方式
+
+我强烈偏好：先讨论方案，最后一步才 patch
+
+小步迭代
+
+外科手术式最小修改
+
+除非我明确要求，否则不要主动大段输出代码
+
+2）当前 Snapback 主线状态
+2.1 已完成的阶段
+PERF_ONLY
+
+已验收完成：
+
+schedule_backtests.py 并行调度已跑通
+
+30D × 5线、40D × 4线、40D × 3线均做过验证
+
+32G 内存升级后，40D × 4线运行正常
+
+全量一年级别回测 wall clock 已大幅压缩
+
+并行重叠区交易逐笔核对通过，交易语义一致
+
+ARCH_ONLY
+
+主要清理已完成：
+
+Snapback config 糊涂账已清
+
+ndays_lowest 已从 Snapback 链路摘除
+
+config_loader.py 已按策略分流
+
+broker 默认值兜底已清理
+
+schedule_backtests.py 已增强为并行回测总控器
+
+支持：
+
+post-merge
+
+merged trades / signals / viz
+
+_ALL summary
+
+_ALL summary 内嵌 run_config
+
+equity curve 生成
+
+--post-only 缺口已补并验证过
+
+3）当前数据基线
+
+主数据目录：
+
+/root/bn_research_core/data/klines_1m
+
+旧备份目录：
+
+/root/bn_research_core/data/klines_1m_bak_before_idx_20260312_123755
+
+已确认：
+
+原目录与备份目录总字节数一致
+
+文件数量一致
+
+备份成功可视为可信
+
+3.1 单目录主表升级
+
+当前单目录主表已从 6 列升级到 9 列：
+
+原 6 列：
+
+open_time_ms
+
+open
+
+high
+
+low
+
+close
+
+quote_asset_volume
+
+新增 3 列：
+
+high_idx
+
+low_idx
+
+close_idx
+
+3.2 augment-idx 语义
+
+augment-idx 的正确语义是：
+
+对已有 contract 记录补 idx 三列
+
+不删除旧记录
+
+不新增新记录
+
+不凭空造新 bar
+
+只按 open_time_ms 对已有记录补 *_idx
+
+3.3 idx 覆盖率结论
+
+已确认：
+
+idx 数据覆盖不是当前“无信号”的主因
+
+BTCUSDT 等品种 parquet 中 high_idx / low_idx / close_idx 已成功写入
+
+3.4 盘前合约 / pre-list
+
+例如 KATUSDT 一类盘前合约：
+
+有 contract 价格
+
+但不支持 indexPriceKlines
+
+会报 400
+
+当前决定：
+
+暂不为这个 400 单独 patch
+
+也不能永久黑名单化
+
+因为未来上现货后可能拥有 index
+
+4）当前 Snapback 策略语义
+
+Snapback 世界观：
+
+超跌反抽
+
+分两层：
+
+第一层：超跌层
+
+确认是否值得观察：
+
+min_drop_pct
+
+max_drop_pct
+
+min_vol_climax_ratio
+
+理解为：
+
+价格超跌
+
+成交放量
+
+价量共振
+
+第二层：反弹触发层
+
+两条分支 OR：
+
+branch 1：ABC_BINDEX
+
+逻辑：
+
+C：当前收盘 bar
+
+A：从 C 向前回溯 drop_window_mins 内最高点
+
+B_contract：A 到 C 之间最低合约价
+
+B_index：同时间戳 low_idx
+
+当前语义：
+
+rebound_ratio 基于 B_index
+
+sl_price 基于 B_index
+
+context 已写入：
+
+b_contract_price
+
+b_index_price
+
+branch 2：DISTORTION_PIN
+
+目标：
+
+抓流动性失真单针
+
+条件：
+
+当前 bar 是 drop_window_mins 窗口最低点
+
+当前 bar 有明显下影针
+
+针尖时 contract 显著低于 index
+
+收盘时失真明显收敛
+
+参数：
+
+min_distortion_wick_ratio
+
+min_basis_spike_pct
+
+max_basis_close_pct
+
+已明确业务语义：
+
+min_basis_spike_pct 不是绝对值，必须要求合约价显著低于指数价
+
+max_basis_close_pct 必须按绝对值判断收盘收敛：
+
+abs(basis_close_pct) <= max_basis_close_pct
+
+5）V2.4 当前主线配置与结论
+5.1 当前止盈逻辑
+
+V2.4 已引入二档止盈：
+
+base_take_profit_pct = 0.025
+
+strong_take_profit_pct = 0.035
+
+strong_tp_min_drop_pct = 0.14
+
+strong_tp_min_rebound_ratio = 0.20
+
+即：
+
+普通单：2.5%
+
+强结构单：3.5%
+
+5.2 已验证结论
+
+V2.4 相比 V2.3 的纯固定止盈版本：
+
+复利净值倍数更高
+
+Profit Factor 更高
+
+整体出场结构未明显破坏
+
+STRONG 档样本虽少，但质量高
+
+失败的 STRONG 单，大多不是“原本 2.5 就能轻松落袋”的那类
+
+结论：
+
+V2.4 是成功升级，且是成功得很干净的升级。
+
+当前判断：
+
+Snapback V2.4 可视为当前新基线候选
+
+6）当前最重要的新问题：极端 MAE / 尾部滑点风险
+6.1 已明确
+
+MFE / MAE 不是原始 sim_trades...jsonl 自带字段，
+而是由：
+
+tools/ai_feature_extractor.py
+
+后计算得到。
+
+这点已经确认。
+
+6.2 当前风险判断
+
+当前真正需要收尾的核心问题，不再是“止盈要不要再大改”，而是：
+
+极端 MAE 样本是否暴露了实盘级尾部滑点风险。
+
+6.3 已人工初审的 3 笔
+POLUSDT
+
+初判：
+
+主类：A
+
+副类：D
+
+含义：
+
+A：伪 ABC / 瀑布接刀
+
+D：回测止损成交模型偏理想化嫌疑
+
+MYXUSDT
+
+初判：
+
+主类：A
+
+副类：D
+
+POWERUSDT
+
+初判：
+
+主类：B
+
+副类：D
+
+含义：
+
+B：结构可能成立，但属于极端瞬时波动 / 深针流动性风险样本
+
+D：回测成交模型可能偏理想化
+
+6.4 当前初步结论
+
+前 3 笔已经说明：
+
+极端 MAE 坏单不只是“普通运气差”
+
+很可能主要混入两类高危样本：
+
+瀑布接刀型
+
+极端瞬时波动型
+
+且共同伴随：
+
+回测止损成交模型可能偏理想化
+
+7）当前审计工具状态
+
+已新增最小版专项工具：
+
+tools/audit_extreme_mae.py
+
+它的设计目标是：
+
+筛选高风险极端 MAE 样本
+
+计算：
+
+mae_to_loss_ratio = abs(MAE) / abs(PnL)
+
+mfe_to_tp_ratio = MFE / SelectedTP
+
+输出 csv / summary
+
+但当前已确认一个关键事实：
+
+它不能直接从原始 sim_trades...jsonl 中读到 mfe_pct / mae_pct，因为这两个字段不是原始 trades 自带，而是 tools/ai_feature_extractor.py 后算出来的。
+
+因此下一步需要决定：
+
+路线 A
+
+让极端 MAE 审计工具直接基于 ai_feature_extractor 的产物工作
+
+路线 B
+
+扩展回测产物，让 sim_trades...jsonl 自带 mfe_pct / mae_pct
+
+当前更倾向先讨论方案，再决定 patch。
+
+8）新库公共基础设施当前状态
+8.1 消息链路已跑通
+
+新库消息系统第一阶段已打通：
+
+core/runtime_state.py
+
+core/message_bridge.py
+
+tools/tg_queue_sender.py
+
+schedule_backtests.py 中文短消息通知
+
+已验证：
+
+scheduler 产消息
+
+queue 正常落盘
+
+sender 正常消费
+
+Telegram 成功收到中文短消息
+
+8.2 中文名字
+
+tg_queue_sender.py 当前中文定位：
+
+消息投递员
+
+8.3 当前消息样式
+
+已改成简短中文，手机端效果已验证 OK。
+
+8.4 后续要求
+
+后续新库实盘集成，要继续保持：
+
+新库就有新气象
+
+紧凑、清晰、易扩展
+
+不保留老库臃肿、歧义式设计
+
+9）新聊天的主要任务
+第一主任务：Snapback 毕业前最后收尾
+
+优先级顺序：
+
+极端 MAE / 尾部滑点风险专项审计
+
+明确坏单主因主要集中在哪一类：
+
+伪 ABC / 瀑布接刀
+
+极端瞬时波动
+
+成交模型偏理想化
+
+还是正常坏单
+
+再决定下一刀应该打在：
+
+入场过滤
+
+品种/环境过滤
+
+止损成交建模
+
+或暂不动主线
+
+第二主任务：毕业实盘代码集成准备
+
+方向是：
+
+新库公共基础设施继续新库化
+
+逐步集成老库里真正有价值的公共能力
+
+但必须按新库标准重做，不保留老库臃肿设计
+
+后续将逐步处理：
+
+币安 API 公共接口
+
+实盘消息体系
+
+权限 / 状态 / 路由
+
+最终形成 Snapback 毕业实盘链路
+
+10）对新聊天中的助手的额外要求
+
+请严格遵守：
+
+不要失忆
+
+不要把 Snapback 拉回 Top1 或别的策略世界观
+
+不要擅自删业务核心字段
+
+不要为了兼容回填旧字段
+
+不要在未锁现场时直接 patch
+
+不要输出整文件代码
+
+patch 前必须再次确认对齐版本
+
+patch 输出前必须检查路径头
+
+不能再出现 /mnt/data/... 作为 patch 头路径
+
+当前主要任务不是发散做新策略，而是：
+
+Snapback 毕业前最后收尾
+
+极端 MAE 风险审计
+
+毕业实盘基础设施集成
