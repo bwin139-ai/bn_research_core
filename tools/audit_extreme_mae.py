@@ -202,6 +202,160 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _safe_int_ms(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_symbol_df(data_dir: Path, symbol: str):
+    sym_dir = data_dir / symbol
+    if not sym_dir.is_dir():
+        return None
+    pq_files = sorted(sym_dir.glob("*.parquet"))
+    if not pq_files:
+        return None
+    try:
+        df = pq.read_table([str(x) for x in pq_files]).to_pandas()
+    except Exception:
+        return None
+    if "open_time_ms" not in df.columns:
+        return None
+    return df
+
+
+def _closest_row_time_ms(df, col: str, target: Optional[float]) -> Optional[int]:
+    if df is None or target is None or col not in df.columns or df.empty:
+        return None
+    try:
+        s = df[col].astype(float)
+        idx = (s - float(target)).abs().idxmin()
+        return int(df.loc[idx, "open_time_ms"])
+    except Exception:
+        return None
+
+
+def _bars_between_ms(start_ms: Optional[int], end_ms: Optional[int], bar_ms: int = 60_000) -> Optional[int]:
+    if start_ms is None or end_ms is None:
+        return None
+    if end_ms < start_ms:
+        return None
+    try:
+        return int((end_ms - start_ms) // bar_ms)
+    except Exception:
+        return None
+
+
+def _derive_abc_geometry(
+    row: Dict[str, Any],
+    context: Dict[str, Any],
+    params: Dict[str, Any],
+    data_dir: Path,
+) -> Dict[str, Any]:
+    a_time = _safe_int_ms(context.get("a_time"))
+    b_time = _safe_int_ms(context.get("b_time"))
+    c_time = _safe_int_ms(context.get("c_time", row.get("entry_time") or row.get("entry_time_bj")))
+
+    a_high_price = safe_float(context.get("a_high_price"))
+    b_contract_price = safe_float(context.get("b_contract_price"))
+    b_index_price = safe_float(context.get("b_index_price"))
+    c_price = safe_float(context.get("c_price", row.get("entry_price")))
+
+    need_fill_times = a_time is None or b_time is None
+    symbol = str(row.get("symbol") or "")
+    drop_window_mins = _safe_int_ms(
+        context.get("drop_window_mins", params.get("drop_window_mins"))
+    )
+
+    if need_fill_times and symbol and c_time is not None and drop_window_mins and drop_window_mins > 0:
+        df = _load_symbol_df(data_dir, symbol)
+        if df is not None:
+            try:
+                start_ms = c_time - int(drop_window_mins) * 60_000
+                win = df[(df["open_time_ms"] >= start_ms) & (df["open_time_ms"] <= c_time)].copy()
+            except Exception:
+                win = None
+
+            if win is not None and not win.empty:
+                if b_time is None:
+                    if b_index_price is not None and "low_idx" in win.columns:
+                        b_time = _closest_row_time_ms(win, "low_idx", b_index_price)
+                    if b_time is None and b_contract_price is not None and "low" in win.columns:
+                        b_time = _closest_row_time_ms(win, "low", b_contract_price)
+
+                if a_time is None:
+                    a_win = win
+                    if b_time is not None:
+                        try:
+                            a_win = win[win["open_time_ms"] <= b_time].copy()
+                        except Exception:
+                            a_win = win
+                    if a_win is not None and not a_win.empty:
+                        if a_high_price is not None and "high" in a_win.columns:
+                            a_time = _closest_row_time_ms(a_win, "high", a_high_price)
+                        if a_time is None and "high" in a_win.columns:
+                            try:
+                                idx = a_win["high"].astype(float).idxmax()
+                                a_time = int(a_win.loc[idx, "open_time_ms"])
+                            except Exception:
+                                pass
+
+    ab_bars = _bars_between_ms(a_time, b_time)
+    bc_bars = _bars_between_ms(b_time, c_time)
+    ac_bars = _bars_between_ms(a_time, c_time)
+
+    ab_drop_to_b_index_pct = None
+    if a_high_price is not None and b_index_price is not None and a_high_price > 0:
+        ab_drop_to_b_index_pct = (1.0 - b_index_price / a_high_price) * 100.0
+
+    ab_drop_to_b_contract_pct = None
+    if a_high_price is not None and b_contract_price is not None and a_high_price > 0:
+        ab_drop_to_b_contract_pct = (1.0 - b_contract_price / a_high_price) * 100.0
+
+    bc_rebound_from_b_index_pct = None
+    if c_price is not None and b_index_price is not None and b_index_price > 0:
+        bc_rebound_from_b_index_pct = (c_price / b_index_price - 1.0) * 100.0
+
+    bc_rebound_from_b_contract_pct = None
+    if c_price is not None and b_contract_price is not None and b_contract_price > 0:
+        bc_rebound_from_b_contract_pct = (c_price / b_contract_price - 1.0) * 100.0
+
+    bc_vs_ab_ratio_index = None
+    if (
+        bc_rebound_from_b_index_pct is not None
+        and ab_drop_to_b_index_pct is not None
+        and abs(ab_drop_to_b_index_pct) > 1e-12
+    ):
+        bc_vs_ab_ratio_index = bc_rebound_from_b_index_pct / ab_drop_to_b_index_pct
+
+    bc_vs_ab_ratio_contract = None
+    if (
+        bc_rebound_from_b_contract_pct is not None
+        and ab_drop_to_b_contract_pct is not None
+        and abs(ab_drop_to_b_contract_pct) > 1e-12
+    ):
+        bc_vs_ab_ratio_contract = bc_rebound_from_b_contract_pct / ab_drop_to_b_contract_pct
+
+    return {
+        "a_time": a_time,
+        "b_time": b_time,
+        "c_time": c_time,
+        "c_price": c_price,
+        "ab_bars": ab_bars,
+        "bc_bars": bc_bars,
+        "ac_bars": ac_bars,
+        "ab_drop_to_b_index_pct": ab_drop_to_b_index_pct,
+        "ab_drop_to_b_contract_pct": ab_drop_to_b_contract_pct,
+        "bc_rebound_from_b_index_pct": bc_rebound_from_b_index_pct,
+        "bc_rebound_from_b_contract_pct": bc_rebound_from_b_contract_pct,
+        "bc_vs_ab_ratio_index": bc_vs_ab_ratio_index,
+        "bc_vs_ab_ratio_contract": bc_vs_ab_ratio_contract,
+    }
+
+
 def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
     context = row.get("context") or {}
     params = row.get("params") or {}
@@ -248,7 +402,9 @@ def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
                     exit_time=exit_time,
                     entry_price=entry_price_raw,
                 )
-                mfe_mae_source = "recomputed_from_klines" if mfe_v is not None and mae_v is not None else "unavailable"
+                mfe_mae_source = (
+                    "recomputed_from_klines" if mfe_v is not None and mae_v is not None else "unavailable"
+                )
 
     mae_to_loss_ratio: Optional[float] = None
     if mae_v is not None and pnl_pct_v is not None and pnl_pct_v < 0 and abs(pnl_pct_v) > 1e-12:
@@ -258,7 +414,7 @@ def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
     if mfe_v is not None and selected_tp_v is not None and selected_tp_v > 1e-12:
         mfe_to_tp_ratio = mfe_v / selected_tp_v
 
-    abc = extract_abc_geometry(row, context)
+    abc_geo = _derive_abc_geometry(row=row, context=context, params=params, data_dir=data_dir)
 
     return {
         "symbol": row.get("symbol"),
@@ -285,11 +441,10 @@ def parse_trade(row: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
         "b_index_price": safe_float(context.get("b_index_price")),
         "entry_price": safe_float(row.get("entry_price")),
         "exit_price": safe_float(row.get("exit_price")),
+        **abc_geo,
         "mfe_mae_source": mfe_mae_source,
         "mfe_mae_note": mfe_mae_note,
-        **abc,
     }
-
 
 def is_high_risk(
     t: Dict[str, Any],
