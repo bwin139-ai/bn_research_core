@@ -1,4 +1,7 @@
 python3 -m py_compile klines_1m_store.py
+# ========= 项目根目录 =========
+cd ~/ai_projects/bn_research_core
+cd /root/bn_research_core
 
 # ========= 上传隐私数据 =========
 scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_research_core  
@@ -9,10 +12,6 @@ nohup bash -lc 'cd /root/bn_research_core && \
 set -a && source deploy.env && set +a && \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
-
-# ========= 项目根目录 =========
-cd ~/ai_projects/bn_research_core
-cd /root/bn_research_core
 
 # ========= 阿里云运行 拉取最新代码 =========
 cd /root/bn_research_core
@@ -28,11 +27,12 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
   --end 2026-03-11T00:00:00+00:00 \
   --batch-days 30 \
   --max-parallel 5 \
-  --kline-window 240 \
+  --kline-window 60 \
   --config snapback/config.json \
   --out-dir output/state \
   --logs-dir output/logs \
   --run-prefix "'"$RUNSET"'" \
+  --notify-label admin \
   --post-merge \
   --build-equity' \
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
@@ -60,9 +60,7 @@ cd /root/bn_research_core
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_30D_P3_0313T2134_ALL
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_40D_P4_0313T2338_ALL
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.3_30D_P5_0314T0815_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V2.4_30D_P5_0314T1212_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core
@@ -140,6 +138,33 @@ nohup /root/service_env/bin/python -u klines_1m_store.py sync \
 # ================== 服务器资源监控 =====================
 watch -n 2 'free -h'
 watch -n 2 "ps -eo pid,ppid,%mem,rss,vsz,etime,cmd --sort=-rss | egrep 'run_backtest.py|schedule_backtests.py|PID'"
+
+# ================== 冒烟测试bot消息 =====================
+RUNSET="SNAP_SmokeTest_V2.4_WIN30D_B5D_P5_$(date +%m%dT%H%M)"
+cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
+  --strategy snapback \
+  --start 2025-04-18T00:00:00+00:00 \
+  --end 2025-05-18T00:00:00+00:00 \
+  --batch-days 5 \
+  --max-parallel 5 \
+  --kline-window 240 \
+  --config snapback/config.json \
+  --out-dir output/state \
+  --logs-dir output/logs \
+  --run-prefix "$RUNSET" \
+  --notify-label admin \
+  --post-merge \
+  --build-equity 2>&1 | tee "output/logs/scheduler.${RUNSET}.console.log"
+
+
+如果子进程还残留，再一把强杀：
+pkill -f 'strategies/run_backtest.py --strategy snapback'
+pkill -f 'schedule_backtests.py --strategy snapback'
+
+如果还没干净，再用 -9：
+pkill -9 -f 'strategies/run_backtest.py --strategy snapback'
+pkill -9 -f 'schedule_backtests.py --strategy snapback'
+
 
 我想先做个思想准备有个预案，我们聊久了如果你再次出现幻觉，类似反复纠缠“之前上传的文件已过期，无法重新加载”，我可以怎样做
 已思考 12s
