@@ -94,6 +94,16 @@ class WashoutSnapbackStrategy:
             recent_drop_df = history_df.tail(self.drop_window)
             recent_high_ts = recent_drop_df["high"].idxmax()
             recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
+            # 真正的 ABC 语义：
+            # A = drop_window 窗口内最高点；
+            # C = 当前收盘；
+            # B = A 与 C 之间的最低点。
+            # 因此 branch1 后续找 B 时，必须只在 [A, C] 区间内取最低点，
+            # 不能再在整个 recent_drop_df 窗口上取最低点。
+            ac_df = recent_drop_df.loc[recent_high_ts:]
+            if ac_df.empty:
+                continue
+
             drop_pct = (
                 (recent_high_price - current_price) / recent_high_price
                 if recent_high_price > 0
@@ -163,9 +173,9 @@ class WashoutSnapbackStrategy:
 
             # branch 1：ABC 结构修复比例
             if trigger_name is None:
-                b_contract_ts = recent_drop_df["low"].idxmin()
-                b_contract_price = recent_drop_df.loc[b_contract_ts, "low"]
-                b_index_price = recent_drop_df.loc[b_contract_ts, "low_idx"]
+                b_contract_ts = ac_df["low"].idxmin()
+                b_contract_price = ac_df.loc[b_contract_ts, "low"]
+                b_index_price = ac_df.loc[b_contract_ts, "low_idx"]
                 if pd.isna(b_index_price):
                     continue
 
