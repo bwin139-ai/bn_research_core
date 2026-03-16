@@ -109,6 +109,18 @@ class StrategyVisualizerMatplotlib:
         def _fmt_time(value_dt):
             return value_dt.strftime("%H:%M")
 
+        def _bars_between(start_dt, end_dt):
+            try:
+                start_ts = pd.Timestamp(start_dt)
+                end_ts = pd.Timestamp(end_dt)
+                delta_min = (end_ts - start_ts).total_seconds() / 60.0
+                if pd.isna(delta_min):
+                    return None
+                bars = int(round(delta_min))
+                return max(bars, 0)
+            except Exception:
+                return None
+
         exit_reason_map = {
             "TAKE_PROFIT": "TP",
             "STOP_LOSS": "SL",
@@ -159,22 +171,48 @@ class StrategyVisualizerMatplotlib:
         c_idx = plot_df_1m.index.get_indexer([c_time_dt], method="nearest")[0]
         e_idx = plot_df_1m.index.get_indexer([e_time_dt], method="nearest")[0]
         signal_row = plot_df_1m.iloc[signal_idx]
-        ctx = trade.get("context", {}) or {}
 
         chg_val = signal_row.get("chg_24h", 0)
         chg_24h = 0.0 if pd.isna(chg_val) else float(chg_val) * 100
         vol_val = signal_row.get("vol_24h", 0)
         vol_24h_m = 0 if pd.isna(vol_val) else int(float(vol_val) / 1000000)
 
-        ab_bars = _ctx_first("ab_bars", "ab_bar_count", "ab_bars_count")
-        bc_bars = _ctx_first("bc_bars", "bc_bar_count", "bc_bars_count")
-        bc_ab_ratio = _ctx_first("bc_ab_ratio", "bc_ab", "bc_over_ab")
-        drop_pct = _ctx_first("drop_pct", "drop_ratio", "a_to_b_drop_pct")
-        rebound_ratio = _ctx_first("rebound_ratio", "bc_rebound_ratio", "rebound_pct_ratio")
-        bindex = _ctx_first("bindex", "b_index", "bindex_score", "b_idx")
-        tp_tier = _ctx_first("tp_tier", "selected_tp_tier")
-        selected_tp_pct = _ctx_first("selected_tp_pct", "tp_pct", "take_profit_pct")
-        vol_r = _ctx_first("micro_vol_ratio", "vol_r", "vol_ratio", "volume_ratio")
+        ab_bars = _ctx_first(
+            "ab_bars", "abBars", "ab_bar_count", "ab_bars_count"
+        )
+        bc_bars = _ctx_first(
+            "bc_bars", "bcBars", "bc_bar_count", "bc_bars_count"
+        )
+        if ab_bars is None:
+            ab_bars = _bars_between(a_time_dt, b_time_dt)
+        if bc_bars is None:
+            bc_bars = _bars_between(b_time_dt, c_time_dt)
+
+        bc_ab_ratio = _ctx_first(
+            "bc_ab_ratio", "bcAbRatio", "bc_ab", "bc_over_ab"
+        )
+        if bc_ab_ratio is None and ab_bars not in (None, 0) and bc_bars is not None:
+            bc_ab_ratio = float(bc_bars) / float(ab_bars)
+
+        drop_pct = _ctx_first(
+            "drop_pct", "dropPct", "drop_ratio", "a_to_b_drop_pct"
+        )
+        rebound_ratio = _ctx_first(
+            "rebound_ratio",
+            "reboundRatio",
+            "bc_rebound_ratio",
+            "rebound_pct_ratio",
+        )
+        bindex = _ctx_first(
+            "bindex", "bIndex", "b_index", "bindex_score", "b_idx"
+        )
+        tp_tier = _ctx_first("tp_tier", "tpTier", "selected_tp_tier")
+        selected_tp_pct = _ctx_first(
+            "selected_tp_pct", "selectedTpPct", "tp_pct", "take_profit_pct"
+        )
+        vol_r = _ctx_first(
+            "micro_vol_ratio", "vol_r", "volR", "vol_ratio", "volume_ratio"
+        )
 
         title_line3 = (
             f"Snap: abBars {ab_bars if ab_bars is not None else 'NA'} | "
@@ -217,7 +255,7 @@ class StrategyVisualizerMatplotlib:
         _ax_vol = axes[2]
 
         # 预留更高标题区，避免顶部裁切
-        fig.subplots_adjust(top=0.72, bottom=0.05, left=0.04, right=0.92)
+        fig.subplots_adjust(top=0.68, bottom=0.05, left=0.04, right=0.92)
 
         fig.text(
             0.5,
@@ -243,7 +281,7 @@ class StrategyVisualizerMatplotlib:
             0.5,
             0.922,
             title_line3,
-            fontsize=11,
+            fontsize=10,
             color="#333333",
             ha="center",
             va="top",
@@ -251,9 +289,9 @@ class StrategyVisualizerMatplotlib:
         )
         fig.text(
             0.5,
-            0.892,
+            0.888,
             title_line4,
-            fontsize=11,
+            fontsize=10,
             color="#333333",
             ha="center",
             va="top",
@@ -324,5 +362,5 @@ class StrategyVisualizerMatplotlib:
         # 6. 保存图表
         filename = f"SNAP_{entry_time_dt.strftime('%Y%m%d_%H%M')}_{symbol}_{exit_short}.png"
         save_path = os.path.join(self.output_dir, filename)
-        fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.25)
+        fig.savefig(save_path, dpi=100, pad_inches=0.25)
         plt.close(fig)
