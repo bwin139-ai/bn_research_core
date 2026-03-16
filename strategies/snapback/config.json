@@ -2,7 +2,7 @@
   "strategy_name": "snapback",
   "min_24h_quote_vol": 50000000,
   "drop_window_mins": 15,
-  "min_drop_pct": 0.07,
+  "min_drop_pct": 0.06,
   "max_drop_pct": 0.2,
   "vol_climax_window_mins": 5,
   "vol_baseline_window_mins": 120,
