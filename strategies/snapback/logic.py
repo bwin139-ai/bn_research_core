@@ -145,7 +145,12 @@ class WashoutSnapbackStrategy:
             if current_price <= b_index_price:
                 continue
 
-            bc_bars = len(ac_df) - 1
+            # 注意：bc_bars 的业务语义是 B -> C 之间相隔多少根 bars，
+            # 不是 A -> C 的总 bars 数。
+            b_pos = ac_df.index.get_indexer([b_contract_ts])[0]
+            if b_pos < 0:
+                continue
+            bc_bars = (len(ac_df) - 1) - b_pos
             if bc_bars < self.min_bc_bars:
                 continue
 
