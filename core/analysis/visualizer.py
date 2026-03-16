@@ -121,6 +121,22 @@ class StrategyVisualizerMatplotlib:
             except Exception:
                 return None
 
+        def _nearest_row(ts_dt):
+            try:
+                idx_pos = plot_df_1m.index.get_indexer([pd.Timestamp(ts_dt)], method="nearest")[0]
+                return plot_df_1m.iloc[idx_pos]
+            except Exception:
+                return None
+
+        def _fallback_price_from_bar(ts_dt, field, fallback_value):
+            row = _nearest_row(ts_dt)
+            if row is not None and field in row.index and not pd.isna(row[field]):
+                try:
+                    return float(row[field])
+                except Exception:
+                    pass
+            return float(fallback_value)
+
         exit_reason_map = {
             "TAKE_PROFIT": "TP",
             "STOP_LOSS": "SL",
@@ -141,13 +157,16 @@ class StrategyVisualizerMatplotlib:
         e_time_dt = exit_time_dt
 
         a_price = _to_float(
-            _ctx_first("a_price", "a_px", "point_a_price"), signal_price
+            _ctx_first("a_price", "a_px", "point_a_price"),
+            _fallback_price_from_bar(a_time_dt, "high", signal_price),
         )
         b_price = _to_float(
-            _ctx_first("b_price", "b_px", "point_b_price"), signal_price
+            _ctx_first("b_price", "b_px", "point_b_price"),
+            _fallback_price_from_bar(b_time_dt, "low", signal_price),
         )
         c_price = _to_float(
-            _ctx_first("c_price", "c_px", "point_c_price"), trade["entry_price"]
+            _ctx_first("c_price", "c_px", "point_c_price"),
+            _fallback_price_from_bar(c_time_dt, "close", trade["entry_price"]),
         )
         e_price = _to_float(trade.get("exit_price"), trade["exit_price"])
 
@@ -273,9 +292,9 @@ class StrategyVisualizerMatplotlib:
         ax = axes[0]
         _ax_vol = axes[2]
 
-        # 使用独立 header 区，并显著抬高 header 高度，彻底避免第 4 行压到主图区
-        fig.subplots_adjust(top=0.76, bottom=0.05, left=0.04, right=0.92)
-        header_ax = fig.add_axes([0.04, 0.78, 0.88, 0.20])
+        # 使用独立 header 区，并给主图区留出更大的硬隔离带，避免标题压到图表区
+        fig.subplots_adjust(top=0.62, bottom=0.05, left=0.04, right=0.92)
+        header_ax = fig.add_axes([0.04, 0.66, 0.88, 0.30])
         header_ax.axis("off")
 
         header_ax.text(
@@ -290,7 +309,7 @@ class StrategyVisualizerMatplotlib:
         )
         header_ax.text(
             0.5,
-            0.74,
+            0.72,
             title_line2,
             fontsize=13,
             color="black",
@@ -300,7 +319,7 @@ class StrategyVisualizerMatplotlib:
         )
         header_ax.text(
             0.5,
-            0.50,
+            0.46,
             title_line3,
             fontsize=13,
             color="#333333",
@@ -310,7 +329,7 @@ class StrategyVisualizerMatplotlib:
         )
         header_ax.text(
             0.5,
-            0.26,
+            0.20,
             title_line4,
             fontsize=13,
             color="#333333",
