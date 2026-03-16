@@ -292,14 +292,16 @@ class StrategyVisualizerMatplotlib:
         ax = axes[0]
         _ax_vol = axes[2]
 
-        # 使用独立 header 区，并给主图区留出更大的硬隔离带，避免标题压到图表区
-        fig.subplots_adjust(top=0.62, bottom=0.05, left=0.04, right=0.92)
-        header_ax = fig.add_axes([0.04, 0.66, 0.88, 0.30])
+        # 把副标题移出图表上方：只保留主标题在 header 区，三行副标题改放到底部页脚区
+        fig.subplots_adjust(top=0.82, bottom=0.18, left=0.04, right=0.92)
+        header_ax = fig.add_axes([0.04, 0.84, 0.88, 0.10])
         header_ax.axis("off")
+        footer_ax = fig.add_axes([0.04, 0.03, 0.88, 0.12])
+        footer_ax.axis("off")
 
         header_ax.text(
             0.5,
-            0.98,
+            0.90,
             title_line1,
             fontsize=18,
             fontweight="bold",
@@ -307,9 +309,9 @@ class StrategyVisualizerMatplotlib:
             ha="center",
             va="top",
         )
-        header_ax.text(
+        footer_ax.text(
             0.5,
-            0.72,
+            0.92,
             title_line2,
             fontsize=13,
             color="black",
@@ -317,9 +319,9 @@ class StrategyVisualizerMatplotlib:
             va="top",
             family="monospace",
         )
-        header_ax.text(
+        footer_ax.text(
             0.5,
-            0.46,
+            0.58,
             title_line3,
             fontsize=13,
             color="#333333",
@@ -327,9 +329,9 @@ class StrategyVisualizerMatplotlib:
             va="top",
             family="monospace",
         )
-        header_ax.text(
+        footer_ax.text(
             0.5,
-            0.20,
+            0.24,
             title_line4,
             fontsize=13,
             color="#333333",
@@ -355,10 +357,10 @@ class StrategyVisualizerMatplotlib:
         ax.annotate(
             "B",
             xy=(b_idx, b_price),
-            xytext=(0, -16),
+            xytext=(0, 14),
             textcoords="offset points",
             ha="center",
-            va="top",
+            va="bottom",
             fontsize=13,
             fontweight="bold",
             color="crimson",
