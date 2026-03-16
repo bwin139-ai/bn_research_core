@@ -53,14 +53,14 @@ cd /root/bn_research_core
   --strategy snapback \
   --start 2025-04-15T00:00:00+00:00 \
   --end   2025-04-23T00:12:00+00:00 \
-  --kline-window 240 \
+  --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V2.4_SmokeTest"
+  --run-id "Snapback_V4.1_SmokeTest"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.0_30D_P6_0316T0002_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.1_30D_P6_0316T0953_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core

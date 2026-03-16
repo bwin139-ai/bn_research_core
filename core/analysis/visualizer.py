@@ -227,6 +227,11 @@ class StrategyVisualizerMatplotlib:
         vol_r = _ctx_first(
             "micro_vol_ratio", "vol_r", "volR", "vol_ratio", "volume_ratio"
         )
+        b_index_price = _ctx_first(
+            "b_index_price", "bIndexPrice", "b_idx_price", "b_index_px"
+        )
+        if b_index_price is None:
+            b_index_price = trade.get("sl_price")
 
         title_line3 = (
             f"Snap: abBars {ab_bars if ab_bars is not None else 'NA'} | "
