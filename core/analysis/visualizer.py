@@ -140,10 +140,10 @@ class StrategyVisualizerMatplotlib:
         e_price = _to_float(trade.get("exit_price"), trade["exit_price"])
 
         # --- 2. 准备整合标题信息 ---
-        exit_str_full = exit_time_dt.strftime("%Y-%m-%d %H:%M")
+        entry_str_full = entry_time_dt.strftime("%Y-%m-%d %H:%M")
 
         title_line1 = (
-            f"{exit_str_full} | {symbol} | PnL: {trade['pnl_pct']*100:.2f}% | {exit_short}"
+            f"{entry_str_full} | {symbol} | PnL: {trade['pnl_pct']*100:.2f}% | {exit_short}"
         )
         title_line2 = (
             f"A: {_fmt_time(a_time_dt)} @ {_fmt_price(a_price)} | "
@@ -166,15 +166,15 @@ class StrategyVisualizerMatplotlib:
         vol_val = signal_row.get("vol_24h", 0)
         vol_24h_m = 0 if pd.isna(vol_val) else int(float(vol_val) / 1000000)
 
-        ab_bars = ctx.get("ab_bars")
-        bc_bars = ctx.get("bc_bars")
+        ab_bars = _ctx_first("ab_bars", "ab_bar_count", "ab_bars_count")
+        bc_bars = _ctx_first("bc_bars", "bc_bar_count", "bc_bars_count")
         bc_ab_ratio = _ctx_first("bc_ab_ratio", "bc_ab", "bc_over_ab")
-        drop_pct = _ctx_first("drop_pct")
-        rebound_ratio = _ctx_first("rebound_ratio")
-        bindex = _ctx_first("bindex", "b_index", "bindex_score")
-        tp_tier = _ctx_first("tp_tier")
-        selected_tp_pct = _ctx_first("selected_tp_pct")
-        vol_r = _ctx_first("micro_vol_ratio", "vol_r", "vol_ratio")
+        drop_pct = _ctx_first("drop_pct", "drop_ratio", "a_to_b_drop_pct")
+        rebound_ratio = _ctx_first("rebound_ratio", "bc_rebound_ratio", "rebound_pct_ratio")
+        bindex = _ctx_first("bindex", "b_index", "bindex_score", "b_idx")
+        tp_tier = _ctx_first("tp_tier", "selected_tp_tier")
+        selected_tp_pct = _ctx_first("selected_tp_pct", "tp_pct", "take_profit_pct")
+        vol_r = _ctx_first("micro_vol_ratio", "vol_r", "vol_ratio", "volume_ratio")
 
         title_line3 = (
             f"Snap: abBars {ab_bars if ab_bars is not None else 'NA'} | "
@@ -217,7 +217,7 @@ class StrategyVisualizerMatplotlib:
         _ax_vol = axes[2]
 
         # 预留更高标题区，避免顶部裁切
-        fig.subplots_adjust(top=0.78, bottom=0.05, left=0.04, right=0.92)
+        fig.subplots_adjust(top=0.72, bottom=0.05, left=0.04, right=0.92)
 
         fig.text(
             0.5,
@@ -241,9 +241,9 @@ class StrategyVisualizerMatplotlib:
         )
         fig.text(
             0.5,
-            0.919,
+            0.922,
             title_line3,
-            fontsize=12,
+            fontsize=11,
             color="#333333",
             ha="center",
             va="top",
@@ -251,9 +251,9 @@ class StrategyVisualizerMatplotlib:
         )
         fig.text(
             0.5,
-            0.888,
+            0.892,
             title_line4,
-            fontsize=12,
+            fontsize=11,
             color="#333333",
             ha="center",
             va="top",
