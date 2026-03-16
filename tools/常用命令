@@ -27,7 +27,7 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
   --end 2026-03-11T00:00:00+00:00 \
   --batch-days 30 \
   --max-parallel 6 \
-  --kline-window 60 \
+  --kline-window 90 \
   --config snapback/config.json \
   --out-dir output/state \
   --logs-dir output/logs \
