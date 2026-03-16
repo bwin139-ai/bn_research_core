@@ -293,10 +293,10 @@ class StrategyVisualizerMatplotlib:
         _ax_vol = axes[2]
 
         # 把副标题移出图表上方：只保留主标题在 header 区，三行副标题改放到底部页脚区
-        fig.subplots_adjust(top=0.82, bottom=0.18, left=0.04, right=0.92)
+        fig.subplots_adjust(top=0.82, bottom=0.24, left=0.04, right=0.92)
         header_ax = fig.add_axes([0.04, 0.84, 0.88, 0.10])
         header_ax.axis("off")
-        footer_ax = fig.add_axes([0.04, 0.03, 0.88, 0.12])
+        footer_ax = fig.add_axes([0.04, 0.01, 0.88, 0.10])
         footer_ax.axis("off")
 
         header_ax.text(
@@ -311,7 +311,7 @@ class StrategyVisualizerMatplotlib:
         )
         footer_ax.text(
             0.5,
-            0.92,
+            0.86,
             title_line2,
             fontsize=13,
             color="black",
@@ -321,7 +321,7 @@ class StrategyVisualizerMatplotlib:
         )
         footer_ax.text(
             0.5,
-            0.58,
+            0.53,
             title_line3,
             fontsize=13,
             color="#333333",
@@ -331,7 +331,7 @@ class StrategyVisualizerMatplotlib:
         )
         footer_ax.text(
             0.5,
-            0.24,
+            0.20,
             title_line4,
             fontsize=13,
             color="#333333",
