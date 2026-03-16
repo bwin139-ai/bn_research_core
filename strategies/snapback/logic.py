@@ -10,6 +10,8 @@ class WashoutSnapbackStrategy:
 
         # 基础过滤
         self.min_24h_vol = self.config["min_24h_quote_vol"]
+        self.min_24h_chg = self.config["min_24h_chg"]
+        self.max_24h_chg = self.config["max_24h_chg"]
 
         # 第一层：对超跌的观察（价 + 量 共振）
         self.drop_window = self.config["drop_window_mins"]
@@ -48,8 +50,10 @@ class WashoutSnapbackStrategy:
             return None
 
         # 1. 过滤垃圾币种，保证流动性底线
-        cs = cross_section.dropna(subset=["vol_24h"]).copy()
+        cs = cross_section.dropna(subset=["vol_24h", "chg_24h"]).copy()
         cs = cs[cs["vol_24h"] >= self.min_24h_vol]
+        cs = cs[cs["chg_24h"] * 100 >= self.min_24h_chg]
+        cs = cs[cs["chg_24h"] * 100 <= self.max_24h_chg]
         if cs.empty:
             return None
 
@@ -237,6 +241,8 @@ class WashoutSnapbackStrategy:
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
+                "min_24h_chg": self.min_24h_chg,
+                "max_24h_chg": self.max_24h_chg,
                 "timeout_sec": self.timeout_sec,
             },
             "context": {

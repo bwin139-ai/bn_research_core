@@ -17,6 +17,8 @@ class StrategyConfig:
         "scan_interval_sec",
         "min_24h_pct_chg",
         "min_24h_quote_vol",
+        "min_24h_chg",
+        "max_24h_chg",
         "ndays_lowest",
         "max_surge_from_lowest",
         "entry_pullback_pct",
