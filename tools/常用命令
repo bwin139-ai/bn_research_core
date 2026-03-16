@@ -20,7 +20,7 @@ git checkout main
 git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
-RUNSET="SNAP_V4.0_30D_P6_$(date +%m%dT%H%M)"
+RUNSET="SNAP_V4.1_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
@@ -60,7 +60,7 @@ cd /root/bn_research_core
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V3.1_30D_P6_0315T2217_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.0_30D_P6_0316T0002_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core
