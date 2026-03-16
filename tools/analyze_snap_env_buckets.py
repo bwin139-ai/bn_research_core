@@ -141,6 +141,12 @@ def _extract_trade_row(tr: Dict[str, Any]) -> Dict[str, Any]:
     chg_24h = _safe_float(
         _ctx_get(ctx, "chg_24h_pct", "change_24h_pct", "24hChg", "day_change_pct")
     )
+    if chg_24h is None:
+        chg_24h_raw = _safe_float(
+            _ctx_get(ctx, "chg_24h", "change_24h", "day_change", "change_24h_ratio")
+        )
+        if chg_24h_raw is not None:
+            chg_24h = chg_24h_raw * 100.0
     volr = _safe_float(
         _ctx_get(ctx, "vol_ratio", "volr", "VolR", "volume_ratio")
     )
