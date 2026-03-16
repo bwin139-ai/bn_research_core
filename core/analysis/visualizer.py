@@ -204,7 +204,21 @@ class StrategyVisualizerMatplotlib:
             "rebound_pct_ratio",
         )
         bindex = _ctx_first(
-            "bindex", "bIndex", "b_index", "bindex_score", "b_idx"
+            "bindex",
+            "BIndex",
+            "bIndex",
+            "b_index",
+            "bindex_score",
+            "bIndexScore",
+            "b_idx",
+            "b_idx_score",
+            "b_score",
+            "bindex_value",
+            "bIndexValue",
+            "b_index_value",
+            "bindex_raw",
+            "bIndexRaw",
+            "bindex_final",
         )
         tp_tier = _ctx_first("tp_tier", "tpTier", "selected_tp_tier")
         selected_tp_pct = _ctx_first(
@@ -249,17 +263,19 @@ class StrategyVisualizerMatplotlib:
             show_nontrading=False,
             datetime_format="%m-%d %H:%M",
             figscale=1.5,
-            tight_layout=False,  # 必须关闭紧凑布局，否则会覆盖我们的边界调整
+            tight_layout=False,
         )
         ax = axes[0]
         _ax_vol = axes[2]
 
-        # 预留更高标题区，避免顶部裁切
-        fig.subplots_adjust(top=0.68, bottom=0.05, left=0.04, right=0.92)
+        # 使用独立 header 区，而不是让标题与主图争抢同一块画布空间
+        fig.subplots_adjust(top=0.82, bottom=0.05, left=0.04, right=0.92)
+        header_ax = fig.add_axes([0.04, 0.84, 0.88, 0.14])
+        header_ax.axis("off")
 
-        fig.text(
+        header_ax.text(
             0.5,
-            0.985,
+            0.98,
             title_line1,
             fontsize=18,
             fontweight="bold",
@@ -267,9 +283,9 @@ class StrategyVisualizerMatplotlib:
             ha="center",
             va="top",
         )
-        fig.text(
+        header_ax.text(
             0.5,
-            0.952,
+            0.70,
             title_line2,
             fontsize=13,
             color="black",
@@ -277,21 +293,21 @@ class StrategyVisualizerMatplotlib:
             va="top",
             family="monospace",
         )
-        fig.text(
+        header_ax.text(
             0.5,
-            0.922,
+            0.42,
             title_line3,
-            fontsize=10,
+            fontsize=13,
             color="#333333",
             ha="center",
             va="top",
             family="monospace",
         )
-        fig.text(
+        header_ax.text(
             0.5,
-            0.888,
+            0.14,
             title_line4,
-            fontsize=10,
+            fontsize=13,
             color="#333333",
             ha="center",
             va="top",
