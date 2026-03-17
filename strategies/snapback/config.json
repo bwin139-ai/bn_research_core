@@ -4,6 +4,8 @@
   "min_24h_chg": -100.0,
   "max_24h_chg": 20.0,
   "drop_window_mins": 15,
+  "min_drop_window_chg": -1.0,
+  "max_drop_window_chg": 1.0,
   "min_drop_pct": 0.06,
   "max_drop_pct": 0.2,
   "vol_climax_window_mins": 5,

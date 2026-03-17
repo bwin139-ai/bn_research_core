@@ -15,6 +15,8 @@ class WashoutSnapbackStrategy:
 
         # 第一层：对超跌的观察（价 + 量 共振）
         self.drop_window = self.config["drop_window_mins"]
+        self.min_drop_window_chg = self.config["min_drop_window_chg"]
+        self.max_drop_window_chg = self.config["max_drop_window_chg"]
         self.min_drop_pct = self.config["min_drop_pct"]
         self.max_drop_pct = self.config["max_drop_pct"]
         self.vol_climax_window = self.config["vol_climax_window_mins"]
@@ -94,6 +96,25 @@ class WashoutSnapbackStrategy:
             # 虽然命名叫 ABC，但数据获取顺序必须严格按 CAB 理解。
             # ==============================
             recent_drop_df = history_df.tail(self.drop_window)
+            sc_window_df = history_df.tail(self.drop_window + 1)
+            if len(sc_window_df) < self.drop_window + 1:
+                continue
+
+            s_ts = sc_window_df.index[0]
+            s_close = sc_window_df.iloc[0]["close"]
+            if pd.isna(s_close) or s_close <= 0:
+                continue
+
+            # S 点定义：
+            # S = C 点向前数 drop_window_mins 根 K 线的那一点；
+            # 若 C.open_time=09:30, drop_window_mins=15，
+            # 则 S.open_time=09:15。
+            drop_window_chg = (current_price - s_close) / s_close
+            if drop_window_chg < self.min_drop_window_chg:
+                continue
+            if drop_window_chg > self.max_drop_window_chg:
+                continue
+
             recent_high_ts = recent_drop_df["high"].idxmax()
             recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
             # 真正的 ABC 语义：
@@ -181,8 +202,11 @@ class WashoutSnapbackStrategy:
                     "symbol": sym,
                     "current_price": current_price,
                     "drop_pct": drop_pct,
+                    "drop_window_chg": drop_window_chg,
                     "vol_ratio": vol_ratio,
                     "recent_high_price": recent_high_price,
+                    "s_time": s_ts,
+                    "s_close": s_close,
                     "a_time": recent_high_ts,
                     "a_high_price": recent_high_price,
                     "b_time": b_contract_ts,
@@ -238,6 +262,8 @@ class WashoutSnapbackStrategy:
                 "strong_tp_min_rebound_ratio": self.strong_tp_min_rebound_ratio,
                 "selected_take_profit_pct": selected_tp_pct,
                 "max_drop_pct": self.max_drop_pct,
+                "min_drop_window_chg": self.min_drop_window_chg,
+                "max_drop_window_chg": self.max_drop_window_chg,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
@@ -249,8 +275,11 @@ class WashoutSnapbackStrategy:
                 "chg_24h": target["chg_24h"],
                 "vol_24h": target["vol_24h"],
                 "drop_pct": target["drop_pct"],
+                "drop_window_chg": target["drop_window_chg"],
                 "vol_ratio": target["vol_ratio"],
                 "recent_high_price": target["recent_high_price"],
+                "s_time": target["s_time"],
+                "s_close": target["s_close"],
                 "a_time": target["a_time"],
                 "a_high_price": target["a_high_price"],
                 "b_time": target["b_time"],
