@@ -20,7 +20,7 @@ git checkout main
 git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
-RUNSET="SNAP_V5.0_30D_P6_$(date +%m%dT%H%M)"
+RUNSET="SNAP_V4.3_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
@@ -60,7 +60,7 @@ cd /root/bn_research_core
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.1_30D_P6_0316T1715_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.2_30D_P6_0316T2216_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core
@@ -89,14 +89,6 @@ cd ~/ai_projects/bn_research_core
 scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/sim_viz_Snapback_V2' ~/ai_projects/bn_research_core/viz
 
 # =========  k线落盘 =========
-# *** 只补 idx 列 ***
-nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
-  --start-date 2025-12-31 \
-  --end-date 2026-03-11 \
-  --limit 1500 \
-  --sleep-ms 400 \
-  >> logs/klines_1m_augment_idx_20251231_20260311.log 2>&1 &
-
 # *** 合约价 backfill ***
 cd /root/bn_research_core
 nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
@@ -107,33 +99,36 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   --sleep-ms 1000 \
   >> logs/klines_1m_backfill.log 2>&1 &
 
-# *** 合约价 sync ***
+# *** 1. 先运行 合约价 sync ***
 cd /root/bn_research_core
-nohup /root/service_env/bin/python -u klines_1m_store.py sync \
+nohup /root/service_env/bin/python -u klines_1m_store.py \
   --price-source contract \
-  --days 270 \
   --limit 1500 \
   --sleep-ms 1000 \
+  sync \
   >> logs/klines_1m_sync.log 2>&1 &
 
-# *** 指数价 backfill ***
-cd /root/bn_research_core
-nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
-  --symbols XAUUSDT \
-  --price-source index \
-  --days 365 \
+# *** 2.再运行 补 idx 列 ***
+nohup /root/service_env/bin/python -u klines_1m_store.py \
+  --days 7 \
   --limit 1500 \
   --sleep-ms 1000 \
-  >> logs/index_klines_1m_backfill.log 2>&1 &
+  augment-idx \
+  >> logs/klines_1m_augment_idx_7d.log 2>&1 &
 
-# *** 指数价 sync ***
-cd /root/bn_research_core
-nohup /root/service_env/bin/python -u klines_1m_store.py sync \
-  --price-source index \
-  --days 365 \
+# *** 单独运行 补 idx 列 ***
+nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
+  --start-date 2026-03-11 \
+  --end-date 2026-03-17 \
   --limit 1500 \
   --sleep-ms 1000 \
-  >> logs/index_klines_1m_sync.log 2>&1 &
+  >> logs/klines_1m_augment_idx_20260311_20260317.log 2>&1 &
+
+# *** 1m数据审计 ***
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_idx_completeness.py \
+  --data-dir data/klines_1m \
+  --out-csv output/state/idx_completeness_audit.csv \
+  --summary-json output/state/idx_completeness_audit.summary.json
 
 # ================== 服务器资源监控 =====================
 watch -n 2 'free -h'

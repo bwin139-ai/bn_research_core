@@ -18,9 +18,12 @@ TOP1_OPTIONAL_CONTEXT_FIELDS = [
 
 SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("drop_pct", "Drop(%)", "pct"),
+    ("drop_window_chg", "DropWinChg(%)", "pct"),
     ("vol_ratio", "VolR", "raw"),
     ("trigger_name", "Trigger", "str"),
     ("rebound_ratio", "Rebound(%)", "pct"),
+    ("s_time", "S_Time", "time"),
+    ("s_close", "S_Close", "price"),
     ("recent_high_price", "A_High", "price"),
     ("recent_low_price", "B_Low", "price"),
     ("b_contract_price", "B_Contract", "price"),
@@ -52,6 +55,17 @@ def fmt_value(value, kind):
         return round(float(value), 8)
     if kind == "raw":
         return round(float(value), 2)
+    if kind == "time":
+        try:
+            if isinstance(value, (int, float)):
+                dt = pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)
+                return dt.strftime("%Y-%m-%d %H:%M")
+            dt = pd.to_datetime(value)
+            if pd.isna(dt):
+                return "N/A"
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return value
     return value
 
 
@@ -82,6 +96,9 @@ def infer_strategy_name(run_id, config_data, trades):
             "basis_spike_pct",
             "basis_close_pct",
             "wick_ratio",
+            "drop_window_chg",
+            "s_time",
+            "s_close",
         ]
     ):
         return "snapback"
