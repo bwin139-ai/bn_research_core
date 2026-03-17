@@ -141,10 +141,10 @@ def _extract_row(tr: Dict[str, Any], run_config: Dict[str, Any]) -> Dict[str, An
         "exit_time": _fmt_time_ms(tr.get("exit_time")),
         "hold_mins": _safe_float(tr.get("hold_mins")),
         "pnl_pct": _safe_float(tr.get("pnl_pct")),
-        "mfe_pct": _safe_float(tr.get("mfe_pct")),
-        "mae_pct": _safe_float(tr.get("mae_pct")),
-        "chg_24h": _safe_float(tr.get("chg_24h")),
-        "vol_24h": _safe_float(tr.get("vol_24h")),
+        "mfe_pct": _safe_float(tr.get("mfe_pct", ctx.get("mfe_pct"))),
+        "mae_pct": _safe_float(tr.get("mae_pct", ctx.get("mae_pct"))),
+        "chg_24h": _safe_float(ctx.get("chg_24h", tr.get("chg_24h"))),
+        "vol_24h": _safe_float(ctx.get("vol_24h", tr.get("vol_24h"))),
         "drop_pct": _safe_float(ctx.get("drop_pct")),
         "rebound_ratio": _safe_float(ctx.get("rebound_ratio")),
         "vol_ratio": _safe_float(ctx.get("vol_ratio")),
@@ -154,7 +154,7 @@ def _extract_row(tr: Dict[str, Any], run_config: Dict[str, Any]) -> Dict[str, An
         "drop_window_mins": drop_window_mins,
         "drop_window_chg": drop_window_chg,
         "drop_window_chg_bucket": _bucket_value(drop_window_chg, DROP_WINDOW_BUCKETS),
-        "mae_bucket": _bucket_value(_safe_float(tr.get("mae_pct")), MAE_BUCKETS),
+        "mae_bucket": _bucket_value(_safe_float(tr.get("mae_pct", ctx.get("mae_pct"))), MAE_BUCKETS),
         "s_time": _fmt_time_ms(s_time_ms),
         "s_close": s_close,
         "a_time": _fmt_time_ms(a_time_ms),
@@ -191,6 +191,22 @@ def _series_stats(s: pd.Series) -> Dict[str, Any]:
 
 
 
+def _safe_mean(s: pd.Series) -> Optional[float]:
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if s.empty:
+        return None
+    return float(s.mean())
+
+
+
+def _safe_median(s: pd.Series) -> Optional[float]:
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if s.empty:
+        return None
+    return float(s.median())
+
+
+
 def build_summary(df: pd.DataFrame, run_id: str, run_config: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "run_id": run_id,
@@ -203,6 +219,9 @@ def build_summary(df: pd.DataFrame, run_id: str, run_config: Dict[str, Any]) -> 
             "rows_with_drop_window_chg": int(df["drop_window_chg"].notna().sum()),
             "rows_with_s_time": int(df["s_time"].notna().sum()),
             "rows_with_s_close": int(df["s_close"].notna().sum()),
+            "rows_with_chg_24h": int(pd.to_numeric(df["chg_24h"], errors="coerce").notna().sum()),
+            "rows_with_mfe_pct": int(pd.to_numeric(df["mfe_pct"], errors="coerce").notna().sum()),
+            "rows_with_mae_pct": int(pd.to_numeric(df["mae_pct"], errors="coerce").notna().sum()),
         },
         "drop_window_chg_overall": _series_stats(df["drop_window_chg"]),
         "by_reason": {},
@@ -210,16 +229,21 @@ def build_summary(df: pd.DataFrame, run_id: str, run_config: Dict[str, Any]) -> 
         "mae_bucket_by_drop_window_bucket": {},
         "segments": {},
         "extreme_samples": {},
+        "data_availability": {
+            "chg_24h_available": bool(pd.to_numeric(df["chg_24h"], errors="coerce").notna().any()),
+            "mfe_pct_available": bool(pd.to_numeric(df["mfe_pct"], errors="coerce").notna().any()),
+            "mae_pct_available": bool(pd.to_numeric(df["mae_pct"], errors="coerce").notna().any()),
+        },
     }
 
     for reason, g in df.groupby("reason", dropna=False):
         reason_key = str(reason)
         out["by_reason"][reason_key] = {
             "count": int(len(g)),
-            "avg_pnl_pct": float(pd.to_numeric(g["pnl_pct"], errors="coerce").mean()),
-            "median_pnl_pct": float(pd.to_numeric(g["pnl_pct"], errors="coerce").median()),
-            "avg_mae_pct": float(pd.to_numeric(g["mae_pct"], errors="coerce").mean()),
-            "median_mae_pct": float(pd.to_numeric(g["mae_pct"], errors="coerce").median()),
+            "avg_pnl_pct": _safe_mean(g["pnl_pct"]),
+            "median_pnl_pct": _safe_median(g["pnl_pct"]),
+            "avg_mae_pct": _safe_mean(g["mae_pct"]),
+            "median_mae_pct": _safe_median(g["mae_pct"]),
             "drop_window_chg": _series_stats(g["drop_window_chg"]),
         }
 
@@ -245,9 +269,10 @@ def build_summary(df: pd.DataFrame, run_id: str, run_config: Dict[str, Any]) -> 
     )
     out["mae_bucket_by_drop_window_bucket"] = mae_cross.to_dict(orient="records")
 
+    chg_24h_num = pd.to_numeric(df["chg_24h"], errors="coerce")
     segments = {
-        "positive_24h": df[df["chg_24h"].fillna(-999) > 0],
-        "non_positive_24h": df[df["chg_24h"].fillna(0) <= 0],
+        "positive_24h": df[chg_24h_num > 0],
+        "non_positive_24h": df[chg_24h_num.notna() & (chg_24h_num <= 0)],
         "extreme_mae": df[df["is_extreme_mae"]],
         "extreme_loss": df[df["is_extreme_loss"]],
         "stop_loss_only": df[df["reason"] == "STOP_LOSS"],
@@ -258,8 +283,8 @@ def build_summary(df: pd.DataFrame, run_id: str, run_config: Dict[str, Any]) -> 
         out["segments"][name] = {
             "count": int(len(g)),
             "drop_window_chg": _series_stats(g["drop_window_chg"]),
-            "avg_pnl_pct": None if g.empty else float(pd.to_numeric(g["pnl_pct"], errors="coerce").mean()),
-            "avg_mae_pct": None if g.empty else float(pd.to_numeric(g["mae_pct"], errors="coerce").mean()),
+            "avg_pnl_pct": _safe_mean(g["pnl_pct"]),
+            "avg_mae_pct": _safe_mean(g["mae_pct"]),
         }
 
     sort_cols = ["pnl_pct", "mae_pct"]
