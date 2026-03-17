@@ -71,6 +71,13 @@ class StrategyVisualizerMatplotlib:
                     return ctx_local[key]
             return default
 
+        def _param_first(*keys, default=None):
+            params_local = trade.get("params", {}) or {}
+            for key in keys:
+                if key in params_local and not pd.isna(params_local[key]):
+                    return params_local[key]
+            return default
+
         def _to_dt(value, fallback_dt):
             if value is None or pd.isna(value):
                 return fallback_dt
@@ -154,6 +161,9 @@ class StrategyVisualizerMatplotlib:
         c_time_dt = _to_dt(
             _ctx_first("c_time_ms", "c_ts_ms", "c_time", "c_ts"), entry_time_dt
         )
+        s_time_dt = _to_dt(
+            _ctx_first("s_time_ms", "s_ts_ms", "s_time", "s_ts"), c_time_dt
+        )
         e_time_dt = exit_time_dt
 
         a_price = _to_float(
@@ -168,6 +178,10 @@ class StrategyVisualizerMatplotlib:
             _ctx_first("c_price", "c_px", "point_c_price"),
             _fallback_price_from_bar(c_time_dt, "close", trade["entry_price"]),
         )
+        s_price = _to_float(
+            _ctx_first("s_close", "s_price", "s_px", "point_s_price"),
+            _fallback_price_from_bar(s_time_dt, "close", c_price),
+        )
         e_price = _to_float(trade.get("exit_price"), trade["exit_price"])
 
         # --- 2. 准备整合标题信息 ---
@@ -177,6 +191,7 @@ class StrategyVisualizerMatplotlib:
             f"{entry_str_full} | {symbol} | PnL: {trade['pnl_pct']*100:.2f}% | {exit_short}"
         )
         title_line2 = (
+            f"S: {_fmt_time(s_time_dt)} @ {_fmt_price(s_price)} | "
             f"A: {_fmt_time(a_time_dt)} @ {_fmt_price(a_price)} | "
             f"B: {_fmt_time(b_time_dt)} @ {_fmt_price(b_price)} | "
             f"C: {_fmt_time(c_time_dt)} @ {_fmt_price(c_price)} | "
@@ -185,6 +200,7 @@ class StrategyVisualizerMatplotlib:
 
         # 提取快照特征
         signal_idx = plot_df_1m.index.get_indexer([signal_time_dt], method="nearest")[0]
+        s_idx = plot_df_1m.index.get_indexer([s_time_dt], method="nearest")[0]
         a_idx = plot_df_1m.index.get_indexer([a_time_dt], method="nearest")[0]
         b_idx = plot_df_1m.index.get_indexer([b_time_dt], method="nearest")[0]
         c_idx = plot_df_1m.index.get_indexer([c_time_dt], method="nearest")[0]
@@ -252,6 +268,18 @@ class StrategyVisualizerMatplotlib:
         if b_index_price is None:
             b_index_price = trade.get("sl_price")
 
+        drop_window_mins = _param_first(
+            "drop_window_mins", "drop_window", "drop_window_mins_1m"
+        )
+        if drop_window_mins is None:
+            drop_window_mins = _bars_between(s_time_dt, c_time_dt)
+
+        drop_window_chg = _ctx_first(
+            "drop_window_chg", "dropWindowChg", "sc_window_chg"
+        )
+        if drop_window_chg is None and s_price > 0:
+            drop_window_chg = (c_price - s_price) / s_price
+
         title_line3 = (
             f"Snap: abBars {ab_bars if ab_bars is not None else 'NA'} | "
             f"bcBars {bc_bars if bc_bars is not None else 'NA'} | "
@@ -263,6 +291,8 @@ class StrategyVisualizerMatplotlib:
         title_line4 = (
             f"Env: 24hChg {chg_24h:.1f}% | 24hVol {vol_24h_m}M | "
             f"VolR {_fmt_num(vol_r, digits=2)} | "
+            f"{drop_window_mins if drop_window_mins is not None else 'NA'}mChg "
+            f"{_fmt_num(drop_window_chg, digits=2, scale=100, suffix='%')} | "
             f"tpTier {tp_tier if tp_tier is not None else 'NA'} | "
             f"selTP {_fmt_num(selected_tp_pct, digits=2, scale=100, suffix='%')}"
         )
@@ -340,7 +370,20 @@ class StrategyVisualizerMatplotlib:
             family="monospace",
         )
 
-        # 4. 绘制 A / B / C / E 字母标记
+        # 4. 绘制 S / A / B / C / E 字母标记
+        ax.annotate(
+            "S",
+            xy=(s_idx, s_price),
+            xytext=(0, 12),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=13,
+            fontweight="bold",
+            color="saddlebrown",
+            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="saddlebrown", alpha=0.9),
+            zorder=10,
+        )
         ax.annotate(
             "A",
             xy=(a_idx, a_price),
