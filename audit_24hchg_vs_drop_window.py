@@ -12,14 +12,15 @@ import pandas as pd
 
 
 CHG24_BUCKETS = [
-    (-math.inf, -20.0, "<=-20%"),
-    (-20.0, -10.0, "(-20%,-10%]"),
-    (-10.0, 0.0, "(-10%,0%]"),
-    (0.0, 10.0, "(0%,10%]"),
-    (10.0, 20.0, "(10%,20%]"),
-    (20.0, 40.0, "(20%,40%]"),
-    (40.0, 80.0, "(40%,80%]"),
-    (80.0, math.inf, "(80%,+inf)"),
+    # chg_24h in sim_trades context is stored as ratio, e.g. 0.10 == 10%
+    (-math.inf, -0.20, "<=-20%"),
+    (-0.20, -0.10, "(-20%,-10%]"),
+    (-0.10, 0.0, "(-10%,0%]"),
+    (0.0, 0.10, "(0%,10%]"),
+    (0.10, 0.20, "(10%,20%]"),
+    (0.20, 0.40, "(20%,40%]"),
+    (0.40, 0.80, "(40%,80%]"),
+    (0.80, math.inf, "(80%,+inf)"),
 ]
 
 DW_BUCKETS = [
@@ -162,8 +163,8 @@ def reason_stats(df: pd.DataFrame) -> dict[str, Any]:
             "median_pnl_pct": safe_median(g["pnl_pct"]),
             "avg_drop_window_chg_pct": pct(safe_mean(g["drop_window_chg"])),
             "median_drop_window_chg_pct": pct(safe_median(g["drop_window_chg"])),
-            "avg_24h_chg_pct": safe_mean(g["chg_24h"]),
-            "median_24h_chg_pct": safe_median(g["chg_24h"]),
+            "avg_24h_chg_pct": pct(safe_mean(g["chg_24h"])),
+            "median_24h_chg_pct": pct(safe_median(g["chg_24h"])),
         }
     return out
 
@@ -178,8 +179,8 @@ def build_grid(df: pd.DataFrame) -> pd.DataFrame:
             "count": int(len(g)),
             "avg_pnl_pct": safe_mean(g["pnl_pct"]),
             "median_pnl_pct": safe_median(g["pnl_pct"]),
-            "avg_chg_24h_pct": safe_mean(g["chg_24h"]),
-            "median_chg_24h_pct": safe_median(g["chg_24h"]),
+            "avg_chg_24h_pct": pct(safe_mean(g["chg_24h"])),
+            "median_chg_24h_pct": pct(safe_median(g["chg_24h"])),
             "avg_drop_window_chg_pct": pct(safe_mean(g["drop_window_chg"])),
             "median_drop_window_chg_pct": pct(safe_median(g["drop_window_chg"])),
             "avg_drop_pct": safe_mean(g["drop_pct"]),
@@ -288,8 +289,8 @@ def main() -> None:
         },
         "axis_distribution": {
             "chg_24h_stats": {
-                "avg_pct": safe_mean(df["chg_24h"]),
-                "median_pct": safe_median(df["chg_24h"]),
+                "avg_pct": pct(safe_mean(df["chg_24h"])),
+                "median_pct": pct(safe_median(df["chg_24h"])),
             },
             "drop_window_chg_stats": {
                 "avg_pct": pct(safe_mean(df["drop_window_chg"])),

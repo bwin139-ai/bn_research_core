@@ -3,16 +3,6 @@ python3 -m py_compile klines_1m_store.py
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
-# ========= 上传隐私数据 =========
-scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_research_core  
-
-# ========= 消息投递员 进程 =========
-cd /root/bn_research_core
-nohup bash -lc 'cd /root/bn_research_core && \
-set -a && source deploy.env && set +a && \
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
-> output/logs/tg_queue_sender.console.log 2>&1 &
-
 # ========= 阿里云运行 拉取最新代码 =========
 cd /root/bn_research_core
 git fetch --all
@@ -60,7 +50,7 @@ cd /root/bn_research_core
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.3_30D_P6_0317T1047_ALL
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.3_30D_P6_0317T1304_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core
@@ -151,6 +141,21 @@ cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py 
   --post-merge \
   --build-equity 2>&1 | tee "output/logs/scheduler.${RUNSET}.console.log"
 
+# ========= 上传隐私数据 =========
+scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_research_core  
+
+# ========= 消息投递员 进程 =========
+cd /root/bn_research_core
+nohup bash -lc 'cd /root/bn_research_core && \
+set -a && source deploy.env && set +a && \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
+> output/logs/tg_queue_sender.console.log 2>&1 &
+
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_drop_window_chg.py \
+  --run-id SNAP_V4.3_30D_P6_0317T1304_ALL \
+  --out-csv output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.csv \
+  --summary-json output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.summary.json \
+  --bucket-csv output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.bucket_by_reason.csv
 
 如果子进程还残留，再一把强杀：
 pkill -f 'strategies/run_backtest.py --strategy snapback'
