@@ -111,7 +111,10 @@ def main():
             feeder_ndays_lowest = config["ndays_lowest"]
         elif args.strategy == "snapback":
             feeder_ndays_lowest = max(
-                1, math.ceil(config["max_history_window_mins"] / (24 * 60))
+                1,
+                math.ceil(
+                    config["runtime"]["max_history_window_mins"] / (24 * 60)
+                ),
             )
         else:
             raise KeyError(f"【铁律违背】不支持的策略类型: {args.strategy!r}")

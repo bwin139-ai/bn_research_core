@@ -41,12 +41,12 @@ cd /root/bn_research_core
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2025-04-15T00:00:00+00:00 \
-  --end   2025-04-23T00:12:00+00:00 \
+  --start 2025-04-19T00:00:00+00:00 \
+  --end   2025-04-25T00:12:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V4.1_SmokeTest"
+  --run-id "Snapback_V4.3_SmokeTest"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 cd /root/bn_research_core
@@ -100,7 +100,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 7 \
+  --days 2 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
