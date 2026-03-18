@@ -79,7 +79,7 @@ class PerformanceAnalyzer:
         }
 
     def _calculate_benchmark(self) -> pd.Series:
-        weights = self.config.get("benchmark_index", {})
+        weights = self.config.get("benchmark", {}).get("index_weights", {})
         if not weights:
             return pd.Series(dtype=float)
 

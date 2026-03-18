@@ -61,10 +61,10 @@ class VirtualBroker:
 
         # 🛡️ 新增：解析防御引擎配置
         self.config = config if config is not None else {}
-        self.defense_trigger_pct = self.config["defense_trigger_pct"]
-        self.defense_lock_pct = self.config["defense_lock_pct"]
-        self.max_hold_mins = self.config["max_hold_mins"]
-        self.time_stop_min_profit = self.config["time_stop_min_profit"]
+        self.defense_trigger_pct = self.config["risk_controls"]["defense"]["trigger_pct"]
+        self.defense_lock_pct = self.config["risk_controls"]["defense"]["lock_pct"]
+        self.max_hold_mins = self.config["exit_policy"]["time_stop"]["max_hold_mins"]
+        self.time_stop_min_profit = self.config["exit_policy"]["time_stop"]["min_profit_pct"]
 
     def on_kline_close(self, current_time_ms: int, cross_section: pd.DataFrame):
         # 1. 检查持仓 (判断是否触发 TP/SL/超时)

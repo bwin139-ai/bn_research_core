@@ -30,34 +30,36 @@ class StrategyConfig:
         "benchmark_index",
     ]
 
-    # Snapback Phase 1：仅要求当前链路真实依赖的字段，不再为 Top1 字段买单
-    SNAPBACK_REQUIRED_KEYS = [
-        "strategy_name",
-        "min_24h_quote_vol",
-        "drop_window_mins",
-        "min_drop_window_chg",
-        "max_drop_window_chg",
-        "min_drop_pct",
-        "max_drop_pct",
-        "vol_climax_window_mins",
-        "vol_baseline_window_mins",
-        "min_vol_climax_ratio",
-        "min_rebound_ratio",
-        "max_rebound_ratio",
-        "min_bc_bars",
-        "entry_pullback_pct",
-        "base_take_profit_pct",
-        "strong_take_profit_pct",
-        "strong_tp_min_drop_pct",
-        "strong_tp_min_rebound_ratio",
-        "order_timeout_sec",
-        "cooldown_hours",
-        "max_history_window_mins",
-        "benchmark_index",
-        "max_hold_mins",
-        "time_stop_min_profit",
-        "defense_trigger_pct",
-        "defense_lock_pct",
+    # Snapback ARCH_ONLY：配置已改为分层 schema，必填校验改为嵌套路径校验
+    SNAPBACK_REQUIRED_PATHS = [
+        ("strategy_name",),
+        ("runtime", "max_history_window_mins"),
+        ("universe", "24h_quote_volume_min"),
+        ("universe", "24h_chg_pct", "min"),
+        ("universe", "24h_chg_pct", "max"),
+        ("structure", "s_to_c_window", "mins"),
+        ("structure", "s_to_c_window", "chg_pct", "min"),
+        ("structure", "s_to_c_window", "chg_pct", "max"),
+        ("structure", "selloff", "a_to_c_drop_pct", "min"),
+        ("structure", "selloff", "a_to_c_drop_pct", "max"),
+        ("structure", "selloff", "vol_climax", "recent_window_mins"),
+        ("structure", "selloff", "vol_climax", "baseline_window_mins"),
+        ("structure", "selloff", "vol_climax", "ratio_min"),
+        ("structure", "rebound", "ratio", "min"),
+        ("structure", "rebound", "ratio", "max"),
+        ("structure", "rebound", "bc_bars_min"),
+        ("execution", "entry_pullback_pct"),
+        ("execution", "order_timeout_sec"),
+        ("exit_policy", "take_profit", "base_pct"),
+        ("exit_policy", "take_profit", "strong_pct"),
+        ("exit_policy", "take_profit", "strong_mode", "a_to_c_drop_pct_min"),
+        ("exit_policy", "take_profit", "strong_mode", "rebound_ratio_min"),
+        ("exit_policy", "time_stop", "max_hold_mins"),
+        ("exit_policy", "time_stop", "min_profit_pct"),
+        ("risk_controls", "cooldown_hours"),
+        ("risk_controls", "defense", "trigger_pct"),
+        ("risk_controls", "defense", "lock_pct"),
+        ("benchmark", "index_weights"),
     ]
 
     @staticmethod
@@ -65,6 +67,19 @@ class StrategyConfig:
         for key in keys:
             if key not in raw_data:
                 raise KeyError(f"【铁律违背】配置文件缺少必要参数: '{key}'")
+
+    @staticmethod
+    def _require_paths(raw_data: Dict[str, Any], paths: List[tuple]) -> None:
+        for path in paths:
+            cur = raw_data
+            walked = []
+            for part in path:
+                walked.append(part)
+                if not isinstance(cur, dict) or part not in cur:
+                    raise KeyError(
+                        f"【铁律违背】配置文件缺少必要参数路径: '{'.'.join(walked)}'"
+                    )
+                cur = cur[part]
 
     @staticmethod
     def load(config_path: str) -> Dict[str, Any]:
@@ -80,7 +95,7 @@ class StrategyConfig:
         if strategy_name == "top1":
             StrategyConfig._require_keys(raw_data, StrategyConfig.TOP1_REQUIRED_KEYS)
         elif strategy_name == "snapback":
-            StrategyConfig._require_keys(raw_data, StrategyConfig.SNAPBACK_REQUIRED_KEYS)
+            StrategyConfig._require_paths(raw_data, StrategyConfig.SNAPBACK_REQUIRED_PATHS)
         else:
             raise KeyError(f"【铁律违背】未知 strategy_name: '{strategy_name}'")
 
