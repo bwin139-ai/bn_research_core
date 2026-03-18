@@ -135,6 +135,13 @@ class WashoutSnapbackStrategy:
             if drop_window_chg > self.max_drop_window_chg:
                 continue
 
+            # 方向 A：排除第一象限
+            # 语义：24h 偏热，且 S->C 窗口也偏热。
+            # 这类更像“热中更热”的延续，不属于 Snapback 想抓的
+            # “冷却后的反弹起点”。
+            if row["chg_24h"] > 0 and drop_window_chg > 0:
+                continue
+
             recent_high_ts = recent_drop_df["high"].idxmax()
             recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
             # 真正的 ABC 语义：

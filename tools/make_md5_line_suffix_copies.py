@@ -9,7 +9,7 @@ python3 tools/make_md5_line_suffix_copies.py
 FILES = [
     # "schedule_backtests.py",
     # "klines_1m_store.py",
-     "strategies/run_backtest.py",
+    # "strategies/run_backtest.py",
     # "PROJECT_IRON_LAWS.md",
     # "audit_24hchg_vs_drop_window.py",
     # "=================================",
@@ -28,7 +28,7 @@ FILES = [
     # "core/engine/data_feeder.py",
     # "=================================",
     # "strategies/snapback/config.json",
-    # "strategies/snapback/logic.py",
+     "strategies/snapback/logic.py",
     # "=================================",
     #"strategies/top1_hunter/config.json",
     #"strategies/top1_hunter/logic.py",
