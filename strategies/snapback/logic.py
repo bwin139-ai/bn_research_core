@@ -8,34 +8,54 @@ class WashoutSnapbackStrategy:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
+        runtime = self.config["runtime"]
+        universe = self.config["universe"]
+        structure = self.config["structure"]
+        s_to_c_window = structure["s_to_c_window"]
+        selloff = structure["selloff"]
+        rebound = structure["rebound"]
+        execution = self.config["execution"]
+        exit_policy = self.config["exit_policy"]
+        take_profit = exit_policy["take_profit"]
+        strong_mode = take_profit["strong_mode"]
+        time_stop = exit_policy["time_stop"]
+        risk_controls = self.config["risk_controls"]
+
+        # runtime / benchmark
+        self.max_history_window_mins = runtime["max_history_window_mins"]
+
         # 基础过滤
-        self.min_24h_vol = self.config["min_24h_quote_vol"]
-        self.min_24h_chg = self.config["min_24h_chg"]
-        self.max_24h_chg = self.config["max_24h_chg"]
+        self.min_24h_vol = universe["24h_quote_volume_min"]
+        self.min_24h_chg = universe["24h_chg_pct"]["min"]
+        self.max_24h_chg = universe["24h_chg_pct"]["max"]
 
         # 第一层：对超跌的观察（价 + 量 共振）
-        self.drop_window = self.config["drop_window_mins"]
-        self.min_drop_window_chg = self.config["min_drop_window_chg"]
-        self.max_drop_window_chg = self.config["max_drop_window_chg"]
-        self.min_drop_pct = self.config["min_drop_pct"]
-        self.max_drop_pct = self.config["max_drop_pct"]
-        self.vol_climax_window = self.config["vol_climax_window_mins"]
-        self.vol_baseline_window = self.config["vol_baseline_window_mins"]
-        self.min_vol_ratio = self.config["min_vol_climax_ratio"]
+        self.drop_window = s_to_c_window["mins"]
+        self.min_drop_window_chg = s_to_c_window["chg_pct"]["min"] / 100.0
+        self.max_drop_window_chg = s_to_c_window["chg_pct"]["max"] / 100.0
+        self.min_drop_pct = selloff["a_to_c_drop_pct"]["min"]
+        self.max_drop_pct = selloff["a_to_c_drop_pct"]["max"]
+        self.vol_climax_window = selloff["vol_climax"]["recent_window_mins"]
+        self.vol_baseline_window = selloff["vol_climax"]["baseline_window_mins"]
+        self.min_vol_ratio = selloff["vol_climax"]["ratio_min"]
 
         # 第二层：对反弹的观察（唯一结构：ABC_BINDEX）
-        self.min_rebound_ratio = self.config["min_rebound_ratio"]
-        self.max_rebound_ratio = self.config["max_rebound_ratio"]
-        self.min_bc_bars = self.config["min_bc_bars"]
+        self.min_rebound_ratio = rebound["ratio"]["min"]
+        self.max_rebound_ratio = rebound["ratio"]["max"]
+        self.min_bc_bars = rebound["bc_bars_min"]
 
         # 游击战交易参数
-        self.entry_pullback = self.config["entry_pullback_pct"]
-        self.base_tp_pct = self.config["base_take_profit_pct"]
-        self.strong_tp_pct = self.config["strong_take_profit_pct"]
-        self.strong_tp_min_drop_pct = self.config["strong_tp_min_drop_pct"]
-        self.strong_tp_min_rebound_ratio = self.config["strong_tp_min_rebound_ratio"]
-        self.timeout_sec = self.config["order_timeout_sec"]
-        self.cooldown_ms = self.config["cooldown_hours"] * 3600 * 1000
+        self.entry_pullback = execution["entry_pullback_pct"]
+        self.base_tp_pct = take_profit["base_pct"]
+        self.strong_tp_pct = take_profit["strong_pct"]
+        self.strong_tp_min_drop_pct = strong_mode["a_to_c_drop_pct_min"]
+        self.strong_tp_min_rebound_ratio = strong_mode["rebound_ratio_min"]
+        self.timeout_sec = execution["order_timeout_sec"]
+        self.cooldown_ms = risk_controls["cooldown_hours"] * 3600 * 1000
+        self.max_hold_mins = time_stop["max_hold_mins"]
+        self.time_stop_min_profit = time_stop["min_profit_pct"]
+        self.defense_trigger_pct = risk_controls["defense"]["trigger_pct"]
+        self.defense_lock_pct = risk_controls["defense"]["lock_pct"]
 
         self.cooldown_until: Dict[str, int] = {}
 

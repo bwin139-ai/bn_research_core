@@ -1,34 +1,73 @@
 {
   "strategy_name": "snapback",
-  "min_24h_quote_vol": 50000000,
-  "min_24h_chg": -100.0,
-  "max_24h_chg": 1000,
-  "drop_window_mins": 15,
-  "min_drop_window_chg": -1.0,
-  "max_drop_window_chg": 10,
-  "min_drop_pct": 0.06,
-  "max_drop_pct": 0.2,
-  "vol_climax_window_mins": 5,
-  "vol_baseline_window_mins": 120,
-  "min_vol_climax_ratio": 8.0,
-  "min_rebound_ratio": 0.1,
-  "max_rebound_ratio": 0.3,
-  "min_bc_bars": 1,
-  "entry_pullback_pct": -0.02,
-  "base_take_profit_pct": 0.025,
-  "strong_take_profit_pct": 0.035,
-  "strong_tp_min_drop_pct": 0.14,
-  "strong_tp_min_rebound_ratio": 0.2,
-  "order_timeout_sec": 180,
-  "cooldown_hours": 4,
-  "max_hold_mins": 10,
-  "time_stop_min_profit": 0.005,
-  "defense_trigger_pct": 0.06,
-  "defense_lock_pct": 0.005,
-  "max_history_window_mins": 130,
-  "benchmark_index": {
-    "BTCUSDT": 0.6,
-    "ETHUSDT": 0.3,
-    "BNBUSDT": 0.1
+  "runtime": {
+    "max_history_window_mins": 130
+  },
+  "universe": {
+    "24h_quote_volume_min": 50000000,
+    "24h_chg_pct": {
+      "min": -100.0,
+      "max": 1000
+    }
+  },
+  "structure": {
+    "s_to_c_window": {
+      "mins": 15,
+      "chg_pct": {
+        "min": -100.0,
+        "max": 1000
+      }
+    },
+    "selloff": {
+      "a_to_c_drop_pct": {
+        "min": 0.06,
+        "max": 0.2
+      },
+      "vol_climax": {
+        "recent_window_mins": 5,
+        "baseline_window_mins": 120,
+        "ratio_min": 8.0
+      }
+    },
+    "rebound": {
+      "ratio": {
+        "min": 0.1,
+        "max": 0.3
+      },
+      "bc_bars_min": 1
+    },
+    "joint_filters": {}
+  },
+  "execution": {
+    "entry_pullback_pct": -0.02,
+    "order_timeout_sec": 180
+  },
+  "exit_policy": {
+    "take_profit": {
+      "base_pct": 0.025,
+      "strong_pct": 0.035,
+      "strong_mode": {
+        "a_to_c_drop_pct_min": 0.14,
+        "rebound_ratio_min": 0.2
+      }
+    },
+    "time_stop": {
+      "max_hold_mins": 10,
+      "min_profit_pct": 0.005
+    }
+  },
+  "risk_controls": {
+    "cooldown_hours": 4,
+    "defense": {
+      "trigger_pct": 0.06,
+      "lock_pct": 0.005
+    }
+  },
+  "benchmark": {
+    "index_weights": {
+      "BTCUSDT": 0.6,
+      "ETHUSDT": 0.3,
+      "BNBUSDT": 0.1
+    }
   }
 }
