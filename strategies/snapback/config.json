@@ -4,7 +4,7 @@
     "max_history_window_mins": 130
   },
   "universe": {
-    "24h_quote_volume_min": 100000000,
+    "24h_quote_volume_min": 50000000,
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
@@ -12,7 +12,7 @@
   },
   "structure": {
     "s_to_c_window": {
-      "mins": 15,
+      "mins": 21,
       "chg_pct": {
         "min": -100.0,
         "max": 1000
@@ -24,7 +24,7 @@
         "max": 0.25
       },
       "vol_climax": {
-        "recent_window_mins": 5,
+        "recent_window_mins": 7,
         "baseline_window_mins": 120,
         "ratio_min": 8.0
       }
@@ -44,10 +44,10 @@
   },
   "exit_policy": {
     "take_profit": {
-      "base_pct": 0.03,
-      "strong_pct": 0.05,
+      "base_pct": 0.025,
+      "strong_pct": 0.035,
       "strong_mode": {
-        "a_to_c_drop_pct_min": 0.15,
+        "a_to_c_drop_pct_min": 0.14,
         "rebound_ratio_min": 0.2
       }
     },
