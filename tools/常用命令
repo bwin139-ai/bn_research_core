@@ -151,11 +151,17 @@ set -a && source deploy.env && set +a && \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
 
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_drop_window_chg.py \
-  --run-id SNAP_V4.3_30D_P6_0317T1304_ALL \
-  --out-csv output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.csv \
-  --summary-json output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.summary.json \
-  --bucket-csv output/state/drop_window_chg_audit.SNAP_V4.3_30D_P6_0317T1304_ALL.bucket_by_reason.csv
+# ========= 视觉审计工具 =========
+cd /root/bn_research_core
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
+  --run-id SNAP_V4.5_30D_P6_0318T2302_ALL \
+  --copy-mode copy
+  
+# ========= 拉 服务器回测数据 到 MacBook =========
+scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/*SNAP_V4.5_30D_P6_0319T1201_ALL.*' ~/ai_projects/bn_research_core/state
+sim_viz_SNAP_V4.5_30D_P6_0319T1201_ALL
+
+
 
 如果子进程还残留，再一把强杀：
 pkill -f 'strategies/run_backtest.py --strategy snapback'
@@ -165,7 +171,10 @@ pkill -f 'schedule_backtests.py --strategy snapback'
 pkill -9 -f 'strategies/run_backtest.py --strategy snapback'
 pkill -9 -f 'schedule_backtests.py --strategy snapback'
 
-
+######### 关于视觉审计工具 ############
+第一层 验语义 策略代码语义审计 / 视觉一致性审计
+第二层 优化语义 策略语义优化 / 结构因子发现
+第三层 审链路 图上看到的点位 / 图上看到的点位 / 审计工具算出的字段 / 审计工具算出的字段 四者是否一致
 我想先做个思想准备有个预案，我们聊久了如果你再次出现幻觉，类似反复纠缠“之前上传的文件已过期，无法重新加载”，我可以怎样做
 已思考 12s
 
