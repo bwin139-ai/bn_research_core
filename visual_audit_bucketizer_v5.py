@@ -61,12 +61,33 @@ def ensure_dir(p: Path):
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--png-dir", required=True)
-    ap.add_argument("--trades-jsonl", required=True)
-    ap.add_argument("--out-dir", required=True)
     ap.add_argument("--run-id", required=True)
+    ap.add_argument("--png-dir")
+    ap.add_argument("--trades-jsonl")
+    ap.add_argument("--out-dir")
     ap.add_argument("--copy-mode", choices=["copy", "symlink"], default="copy")
     return ap.parse_args()
+
+
+def resolve_paths(args):
+    run_id = args.run_id
+    png_dir = Path(args.png_dir) if args.png_dir else Path("output/state") / f"sim_viz_{run_id}"
+    trades_jsonl = Path(args.trades_jsonl) if args.trades_jsonl else Path("output/state") / f"sim_trades.{run_id}.jsonl"
+    out_dir = Path(args.out_dir) if args.out_dir else Path("output/visual_audit") / run_id
+
+    missing = []
+    if not png_dir.exists():
+        missing.append(f"png dir not found: {png_dir}")
+    if not png_dir.is_dir():
+        missing.append(f"png dir is not a directory: {png_dir}")
+    if not trades_jsonl.exists():
+        missing.append(f"trades jsonl not found: {trades_jsonl}")
+    if trades_jsonl.exists() and not trades_jsonl.is_file():
+        missing.append(f"trades jsonl is not a file: {trades_jsonl}")
+    if missing:
+        raise SystemExit("\n".join(missing))
+
+    return png_dir, trades_jsonl, out_dir
 
 
 def trade_key(obj):
@@ -131,9 +152,7 @@ def outcome_dir_name(outcome: str, rows) -> str:
 
 def main():
     args = parse_args()
-    png_dir = Path(args.png_dir)
-    trades_path = Path(args.trades_jsonl)
-    out_dir = Path(args.out_dir)
+    png_dir, trades_path, out_dir = resolve_paths(args)
     reports_dir = out_dir / "reports"
     ensure_dir(reports_dir)
 
