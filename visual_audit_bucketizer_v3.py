@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import argparse, csv, json, os, re, shutil
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-BJ = timezone(timedelta(hours=8))
+UTC = timezone.utc
 REASON_MAP = {"TAKE_PROFIT":"TP", "TIME_STOP":"TS", "STOP_LOSS":"SL"}
 PNG_RE = re.compile(r'^SNAP_(\d{8})_(\d{4})_(.+?)_(TP|TS|SL)\.png$')
 
@@ -17,6 +17,8 @@ def ab_bucket(v):
     return 'UNKNOWN'
 
 def rb_bucket(v):
+    if v is None:
+        return 'UNKNOWN'
     for lo,hi,label in RB_BUCKETS:
         if v <= hi and v > lo:
             return label
@@ -48,6 +50,10 @@ def compute_geom(ctx):
 
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
 
+def signal_time_utc_minute(ms):
+    dt = datetime.fromtimestamp(int(ms)/1000, tz=UTC)
+    return dt.strftime('%Y%m%d_%H%M')
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--png-dir', required=True)
@@ -73,23 +79,20 @@ def main():
             if ab is None:
                 unmatched_trades.append({
                     'symbol': t.get('symbol',''),
-                    'signal_time_bj': t.get('signal_time_bj',''),
+                    'signal_time': t.get('signal_time',''),
                     'reason': t.get('reason',''),
                     'why': 'missing_or_invalid_geometry_times'
                 })
                 continue
             symbol = t.get('symbol','')
-            signal_time_bj = t.get('signal_time_bj','')
+            signal_time = t.get('signal_time')
             reason_short = REASON_MAP.get(t.get('reason',''), '')
-            minute_key = ''
-            if signal_time_bj:
-                # expects 'YYYY-MM-DD HH:MM'
-                minute_key = signal_time_bj.replace('-','').replace(':','').replace(' ','_')
+            minute_key = signal_time_utc_minute(signal_time) if signal_time is not None else ''
             key = (minute_key, symbol, reason_short)
             rec = {
                 'symbol': symbol,
-                'signal_time_bj': signal_time_bj,
-                'signal_time': t.get('signal_time'),
+                'signal_time': signal_time,
+                'signal_time_bj': t.get('signal_time_bj',''),
                 'entry_time': t.get('entry_time'),
                 'exit_time': t.get('exit_time'),
                 'pnl_pct': safe_float(t.get('pnl_pct')),
@@ -123,7 +126,7 @@ def main():
         key = (minute_key, symbol, reason_short)
         rec = by_key.get(key)
         if rec is None:
-            unmatched_png.append({'png_filename': name, 'why': 'no_matching_trade'})
+            unmatched_png.append({'png_filename': name, 'why': 'no_matching_trade', 'minute_key': minute_key, 'symbol': symbol, 'reason_short': reason_short})
             continue
         matched += 1
         rec = rec.copy()
@@ -147,7 +150,7 @@ def main():
 
     cluster_index = os.path.join(reports_dir, 'cluster_index.csv')
     with open(cluster_index, 'w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=['cluster_id','bucket_path','png_filename','symbol','signal_time_bj','signal_time','entry_time','exit_time','pnl_pct','reason','ab_bars','bc_bars','bc_ab_ratio','drop_pct','rebound_ratio','drop_window_chg','vol_ratio'])
+        w = csv.DictWriter(f, fieldnames=['cluster_id','bucket_path','png_filename','symbol','signal_time','signal_time_bj','entry_time','exit_time','pnl_pct','reason','ab_bars','bc_bars','bc_ab_ratio','drop_pct','rebound_ratio','drop_window_chg','vol_ratio'])
         w.writeheader(); w.writerows(cluster_rows)
 
     cluster_summary_path = os.path.join(reports_dir, 'cluster_summary.csv')
