@@ -5,6 +5,20 @@ cd /root/bn_research_core
 
 # ========= 找 run-id =========
  ls -ldht output/state/*ALL* | head -n 1
+ # ========= 视觉审计工具 =========
+cd /root/bn_research_core
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
+  --run-id SNAP_V4.5_30D_P6_0319T2017_ALL \
+  --copy-mode copy
+
+# ========= 拉 服务器回测数据 到 MacBook =========
+RUNID="SNAP_V4.5_30D_P6_0319T2017_ALL"
+scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
+  ~/ai_projects/bn_research_core/state
+  
+RUNID="SNAP_V4.5_30D_P6_0319T2017_ALL"
+scp -r "root@8.218.96.252:/root/bn_research_core/output/visual_audit/${RUNID}" \
+  ~/ai_projects/bn_research_core/visual_audit/${RUNID}
 
 # ========= 阿里云运行 拉取最新代码 =========
 cd /root/bn_research_core
@@ -13,7 +27,7 @@ git checkout main
 git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
-RUNSET="SNAP_V4.5_30D_P6_$(date +%m%dT%H%M)"
+RUNSET="SNAP_V4.6_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
@@ -151,17 +165,6 @@ nohup bash -lc 'cd /root/bn_research_core && \
 set -a && source deploy.env && set +a && \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
-
-# ========= 视觉审计工具 =========
-cd /root/bn_research_core
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
-  --run-id SNAP_V4.5_30D_P6_0318T2302_ALL \
-  --copy-mode copy
-
-# ========= 拉 服务器回测数据 到 MacBook =========
-scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/*SNAP_V4.5_30D_P6_0319T1201_ALL.*' ~/ai_projects/bn_research_core/state
-sim_viz_SNAP_V4.5_30D_P6_0319T1201_ALL
-
 
 如果子进程还残留，再一把强杀：
 pkill -f 'strategies/run_backtest.py --strategy snapback'

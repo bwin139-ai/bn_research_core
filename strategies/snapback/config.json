@@ -20,7 +20,7 @@
     },
     "selloff": {
       "ab_bars": {
-        "min": 0,
+        "min": 3,
         "max": 999
       },
       "a_to_c_drop_pct": {
