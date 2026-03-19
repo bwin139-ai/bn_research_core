@@ -3,6 +3,9 @@ python3 -m py_compile klines_1m_store.py
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
+# ========= 找 run-id =========
+ ls -ldht output/state/*ALL* | head -n 1
+
 # ========= 阿里云运行 拉取最新代码 =========
 cd /root/bn_research_core
 git fetch --all
@@ -75,8 +78,6 @@ cd /root/bn_research_core
 # =========  从服务器拉取数据 =========
 cd ~/ai_projects/bn_research_core
 ~/ai_projects/bn_strategy/tools/fetch_all.sh A
-
-scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/sim_viz_Snapback_V2' ~/ai_projects/bn_research_core/viz
 
 # =========  k线落盘 =========
 # *** 合约价 backfill ***
@@ -156,11 +157,10 @@ cd /root/bn_research_core
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
   --run-id SNAP_V4.5_30D_P6_0318T2302_ALL \
   --copy-mode copy
-  
+
 # ========= 拉 服务器回测数据 到 MacBook =========
 scp -r 'root@8.218.96.252:/root/bn_research_core/output/state/*SNAP_V4.5_30D_P6_0319T1201_ALL.*' ~/ai_projects/bn_research_core/state
 sim_viz_SNAP_V4.5_30D_P6_0319T1201_ALL
-
 
 
 如果子进程还残留，再一把强杀：
