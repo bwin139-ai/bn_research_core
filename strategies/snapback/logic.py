@@ -33,6 +33,8 @@ class WashoutSnapbackStrategy:
         self.drop_window = s_to_c_window["mins"]
         self.min_drop_window_chg = s_to_c_window["chg_pct"]["min"] / 100.0
         self.max_drop_window_chg = s_to_c_window["chg_pct"]["max"] / 100.0
+        self.min_ab_bars = selloff["ab_bars"]["min"]
+        self.max_ab_bars = selloff["ab_bars"]["max"]
         self.min_drop_pct = selloff["a_to_c_drop_pct"]["min"]
         self.max_drop_pct = selloff["a_to_c_drop_pct"]["max"]
         self.vol_climax_window = selloff["vol_climax"]["recent_window_mins"]
@@ -197,11 +199,20 @@ class WashoutSnapbackStrategy:
             if current_price <= b_index_price:
                 continue
 
-            # 注意：bc_bars 的业务语义是 B -> C 之间相隔多少根 bars，
-            # 不是 A -> C 的总 bars 数。
+            # 注意：
+            # 1) ab_bars 的业务语义是 A -> B 之间相隔多少根 bars；
+            # 2) bc_bars 的业务语义是 B -> C 之间相隔多少根 bars；
+            # 3) b_pos 是 B 在 ac_df 中的位置；ac_df 的第 0 根就是 A。
             b_pos = ac_df.index.get_indexer([b_contract_ts])[0]
             if b_pos < 0:
                 continue
+
+            ab_bars = b_pos
+            if ab_bars < self.min_ab_bars:
+                continue
+            if ab_bars > self.max_ab_bars:
+                continue
+
             bc_bars = (len(ac_df) - 1) - b_pos
             if bc_bars < self.min_bc_bars:
                 continue
@@ -236,7 +247,9 @@ class WashoutSnapbackStrategy:
                     "s_close": s_close,
                     "a_time": recent_high_ts,
                     "a_high_price": recent_high_price,
+                    "ab_bars": ab_bars,
                     "b_time": b_contract_ts,
+                    "bc_bars": bc_bars,
                     "c_time": current_time_ms,
                     "c_price": current_price,
                     "b_contract_price": b_contract_price,
@@ -291,6 +304,8 @@ class WashoutSnapbackStrategy:
                 "max_drop_pct": self.max_drop_pct,
                 "min_drop_window_chg": self.min_drop_window_chg,
                 "max_drop_window_chg": self.max_drop_window_chg,
+                "min_ab_bars": self.min_ab_bars,
+                "max_ab_bars": self.max_ab_bars,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
@@ -309,7 +324,9 @@ class WashoutSnapbackStrategy:
                 "s_close": target["s_close"],
                 "a_time": target["a_time"],
                 "a_high_price": target["a_high_price"],
+                "ab_bars": target["ab_bars"],
                 "b_time": target["b_time"],
+                "bc_bars": target["bc_bars"],
                 "c_time": target["c_time"],
                 "c_price": target["c_price"],
                 "b_contract_price": target["b_contract_price"],
