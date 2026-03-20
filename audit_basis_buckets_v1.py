@@ -36,6 +36,7 @@ import os
 import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+import re
 
 
 def _first_not_none(*values: Any) -> Any:
@@ -66,9 +67,35 @@ def _safe_ratio(num: float, den: float) -> Optional[float]:
 def _parse_iso_to_dt(s: Any) -> Optional[datetime]:
     if s is None:
         return None
+
+    if isinstance(s, (int, float)):
+        try:
+            v = float(s)
+        except Exception:
+            return None
+        if math.isnan(v) or math.isinf(v):
+            return None
+        # 兼容 epoch ms / epoch sec
+        if abs(v) >= 1e12:
+            return datetime.fromtimestamp(v / 1000.0, tz=timezone.utc)
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+
     text = str(s).strip()
     if not text:
         return None
+
+    # 兼容纯数字字符串（epoch ms / sec）
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        try:
+            v = float(text)
+        except Exception:
+            return None
+        if math.isnan(v) or math.isinf(v):
+            return None
+        if abs(v) >= 1e12:
+            return datetime.fromtimestamp(v / 1000.0, tz=timezone.utc)
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
@@ -162,7 +189,7 @@ def load_trades(jsonl_path: str, start_iso: Optional[str] = None, end_iso: Optio
             if basis_b_pct is None:
                 continue
 
-            exit_reason = str(_first_not_none(obj.get("exit_reason"), ""))
+            exit_reason = str(_first_not_none(obj.get("exit_reason"), obj.get("reason"), ""))
 
             exit_time = _first_not_none(obj.get("exit_time"), "")
             exit_dt = _parse_iso_to_dt(exit_time)
