@@ -34,6 +34,7 @@ import json
 import math
 import os
 import statistics
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -60,6 +61,18 @@ def _safe_ratio(num: float, den: float) -> Optional[float]:
     if den == 0:
         return None
     return num / den
+
+
+def _parse_iso_to_dt(s: Any) -> Optional[datetime]:
+    if s is None:
+        return None
+    text = str(s).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
 
 
 def _bucket_label(i: int, lo: float, hi: float, total: int) -> str:
@@ -105,8 +118,14 @@ def _assign_bucket(value: float, edges: List[float]) -> int:
     return last
 
 
-def load_trades(jsonl_path: str) -> List[Dict[str, Any]]:
+def load_trades(jsonl_path: str, start_iso: Optional[str] = None, end_iso: Optional[str] = None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    start_dt = _parse_iso_to_dt(start_iso)
+    end_dt = _parse_iso_to_dt(end_iso)
+    if start_iso and start_dt is None:
+        raise RuntimeError(f"start-iso 非法: {start_iso}")
+    if end_iso and end_dt is None:
+        raise RuntimeError(f"end-iso 非法: {end_iso}")
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
             s = line.strip()
@@ -140,10 +159,19 @@ def load_trades(jsonl_path: str) -> List[Dict[str, Any]]:
 
             exit_reason = str(_first_not_none(obj.get("exit_reason"), ""))
 
+            exit_time = _first_not_none(obj.get("exit_time"), "")
+            exit_dt = _parse_iso_to_dt(exit_time)
+            if start_dt is not None:
+                if exit_dt is None or exit_dt < start_dt:
+                    continue
+            if end_dt is not None:
+                if exit_dt is None or exit_dt >= end_dt:
+                    continue
+
             row = {
                 "symbol": _first_not_none(obj.get("symbol"), ctx.get("symbol"), ""),
                 "signal_time": _first_not_none(obj.get("signal_time"), ctx.get("signal_time"), ""),
-                "exit_time": _first_not_none(obj.get("exit_time"), ""),
+                "exit_time": exit_time,
                 "pnl_pct": pnl_pct,
                 "exit_reason": exit_reason,
                 "b_contract_price": b_contract,
@@ -205,6 +233,8 @@ def main() -> None:
     ap.add_argument("--trades-jsonl", required=False, help="sim_trades JSONL；默认 output/state/sim_trades.{run_id}.jsonl")
     ap.add_argument("--out-dir", required=False, help="输出目录；默认 output/state/basis_audit.{run_id}")
     ap.add_argument("--quantiles", type=int, default=5, help="分位数桶数，默认 5")
+    ap.add_argument("--start-iso", required=False, help="按 exit_time 过滤；起始时间（含边界），默认不过滤")
+    ap.add_argument("--end-iso", required=False, help="按 exit_time 过滤；结束时间（不含边界），默认不过滤")
     args = ap.parse_args()
 
     if not args.trades_jsonl:
@@ -217,7 +247,7 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    rows = load_trades(args.trades_jsonl)
+    rows = load_trades(args.trades_jsonl, start_iso=args.start_iso, end_iso=args.end_iso)
     if not rows:
         raise RuntimeError("未读取到可用 trade；请检查 sim_trades 是否包含 pnl_pct / context.b_contract_price / context.b_index_price")
 
@@ -308,6 +338,8 @@ def main() -> None:
         "trades_jsonl": args.trades_jsonl,
         "out_dir": args.out_dir,
         "quantiles": args.quantiles,
+        "start_iso": args.start_iso,
+        "end_iso": args.end_iso,
         "basis_formula": "(b_contract_price - b_index_price) / b_index_price",
         "all_trades": len(rows),
         "bucket_count": len(edges) - 1,
@@ -327,6 +359,8 @@ def main() -> None:
     print(f"trades_jsonl  : {args.trades_jsonl}")
     print(f"out_dir       : {args.out_dir}")
     print(f"quantiles     : {args.quantiles}")
+    print(f"start_iso     : {args.start_iso}")
+    print(f"end_iso       : {args.end_iso}")
     print("basis_formula : (b_contract_price - b_index_price) / b_index_price")
     print(f"all_trades    : {len(rows)}")
     print(f"bucket_count  : {len(edges) - 1}")

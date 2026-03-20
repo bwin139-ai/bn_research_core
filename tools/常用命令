@@ -5,8 +5,9 @@ cd /root/bn_research_core
 
 # ========= 找 run-id =========
  ls -ldht output/state/*ALL* | head -n 1
- # ========= 视觉审计工具 =========
-cd /root/bn_research_core
+# ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
+/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.6_30D_P6_0319T2304_ALL
+# ========= 视觉审计工具 =========
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
   --run-id SNAP_V4.6_30D_P6_0319T2304_ALL \
   --copy-mode copy
@@ -44,6 +45,10 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
   --build-equity' \
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
+# ================== 服务器资源监控 =====================
+watch -n 2 'free -h'
+watch -n 2 "ps -eo pid,ppid,%mem,rss,vsz,etime,cmd --sort=-rss | egrep 'run_backtest.py|schedule_backtests.py|PID'"
+
 # ========= 前端冒烟测试 Top1 / Snapback =========
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
@@ -64,10 +69,6 @@ cd /root/bn_research_core
   --config strategies/top1_hunter/config.json \
   --out-dir "output/state" \
   --run-id "Top1_V4_SmokeTest"
-
-# ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
-cd /root/bn_research_core
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.5_30D_P6_0318T2302_ALL
 
 # =========== 批量运行Top1 / snapback ===========
 cd /root/bn_research_core
@@ -105,7 +106,6 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   >> logs/klines_1m_backfill.log 2>&1 &
 
 # *** 1. 先运行 合约价 sync ***
-cd /root/bn_research_core
 nohup /root/service_env/bin/python -u klines_1m_store.py \
   --price-source contract \
   --limit 1500 \
@@ -115,11 +115,11 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 2 \
+  --days 3 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
-  >> logs/klines_1m_augment_idx_7d.log 2>&1 &
+  >> logs/klines_1m_augment_idx_3d.log 2>&1 &
 
 # *** 单独运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
