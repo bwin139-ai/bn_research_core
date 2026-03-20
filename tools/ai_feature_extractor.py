@@ -28,6 +28,7 @@ SNAPBACK_OPTIONAL_CONTEXT_FIELDS = [
     ("recent_low_price", "B_Low", "price"),
     ("b_contract_price", "B_Contract", "price"),
     ("b_index_price", "B_Index", "price"),
+    ("basis_b_pct", "BasisB(%)", "pct"),
     ("wick_ratio", "WickRatio", "raw"),
     ("basis_spike_pct", "BasisSpike(%)", "pct"),
     ("basis_close_pct", "BasisClose(%)", "pct"),

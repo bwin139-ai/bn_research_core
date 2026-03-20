@@ -50,6 +50,7 @@ class StrategyConfig:
         ("structure", "rebound", "ratio", "min"),
         ("structure", "rebound", "ratio", "max"),
         ("structure", "rebound", "bc_bars_min"),
+        ("structure", "basis", "b_pct", "max"),
         ("execution", "entry_pullback_pct"),
         ("execution", "order_timeout_sec"),
         ("exit_policy", "take_profit", "base_pct"),

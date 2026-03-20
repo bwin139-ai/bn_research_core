@@ -40,6 +40,11 @@
       },
       "bc_bars_min": 1
     },
+    "basis": {
+      "b_pct": {
+        "max": -0.005
+      }
+    },
     "joint_filters": {}
   },
   "execution": {

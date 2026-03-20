@@ -268,6 +268,23 @@ class StrategyVisualizerMatplotlib:
         if b_index_price is None:
             b_index_price = trade.get("sl_price")
 
+        b_contract_price = _ctx_first(
+            "b_contract_price", "bContractPrice", "b_contract_px", "b_px"
+        )
+        basis_b_pct = _ctx_first("basis_b_pct", "basisBPct", "basis_b")
+        if basis_b_pct is None:
+            try:
+                if (
+                    b_contract_price is not None
+                    and not pd.isna(b_contract_price)
+                    and b_index_price is not None
+                    and not pd.isna(b_index_price)
+                    and float(b_index_price) != 0
+                ):
+                    basis_b_pct = (float(b_contract_price) - float(b_index_price)) / float(b_index_price)
+            except Exception:
+                basis_b_pct = None
+
         drop_window_mins = _param_first(
             "drop_window_mins", "drop_window", "drop_window_mins_1m"
         )
@@ -286,6 +303,7 @@ class StrategyVisualizerMatplotlib:
             f"bc/ab {_fmt_num(bc_ab_ratio, digits=2)} | "
             f"Drop {_fmt_num(drop_pct, digits=2, scale=100, suffix='%')} | "
             f"Rebound {_fmt_num(rebound_ratio, digits=2)} | "
+            f"BasisB {_fmt_num(basis_b_pct, digits=2, scale=100, suffix='%')} | "
             f"BIdxPx {_fmt_num(b_index_price, digits=6)}"
         )
         title_line4 = (

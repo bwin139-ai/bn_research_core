@@ -4,7 +4,7 @@ cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
 # ========= 找 run-id =========
- ls -ldht output/state/*ALL* | head -n 1
+ls -ldht output/state/*ALL* | head -n 1
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 /root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.6_30D_P6_0319T2304_ALL
 # ========= 视觉审计工具 =========
@@ -13,7 +13,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --copy-mode copy
 
 # ========= 拉 服务器回测数据 到 MacBook =========
-RUNID="SNAP_V4.6_30D_P6_0320T0052_ALL"
+RUNID="SNAP_V4.6_30D_P6_0320T1238_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
   ~/ai_projects/bn_research_core/state
 

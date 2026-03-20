@@ -14,6 +14,7 @@ class WashoutSnapbackStrategy:
         s_to_c_window = structure["s_to_c_window"]
         selloff = structure["selloff"]
         rebound = structure["rebound"]
+        basis = structure["basis"]
         execution = self.config["execution"]
         exit_policy = self.config["exit_policy"]
         take_profit = exit_policy["take_profit"]
@@ -45,6 +46,7 @@ class WashoutSnapbackStrategy:
         self.min_rebound_ratio = rebound["ratio"]["min"]
         self.max_rebound_ratio = rebound["ratio"]["max"]
         self.min_bc_bars = rebound["bc_bars_min"]
+        self.max_basis_b_pct = basis["b_pct"]["max"]
 
         # 游击战交易参数
         self.entry_pullback = execution["entry_pullback_pct"]
@@ -190,7 +192,11 @@ class WashoutSnapbackStrategy:
             b_contract_ts = ac_df["low"].idxmin()
             b_contract_price = ac_df.loc[b_contract_ts, "low"]
             b_index_price = ac_df.loc[b_contract_ts, "low_idx"]
-            if pd.isna(b_index_price):
+            if pd.isna(b_index_price) or b_index_price <= 0:
+                continue
+
+            basis_b_pct = (b_contract_price - b_index_price) / b_index_price
+            if basis_b_pct > self.max_basis_b_pct:
                 continue
 
             extreme_drop_range = recent_high_price - b_index_price
@@ -254,6 +260,7 @@ class WashoutSnapbackStrategy:
                     "c_price": current_price,
                     "b_contract_price": b_contract_price,
                     "b_index_price": b_index_price,
+                    "basis_b_pct": basis_b_pct,
                     "rebound_ratio": rebound_ratio,
                     "trigger_name": trigger_name,
                     "selected_tp_pct": selected_tp_pct,
@@ -309,6 +316,7 @@ class WashoutSnapbackStrategy:
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
+                "max_basis_b_pct": self.max_basis_b_pct,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
                 "timeout_sec": self.timeout_sec,
@@ -331,6 +339,7 @@ class WashoutSnapbackStrategy:
                 "c_price": target["c_price"],
                 "b_contract_price": target["b_contract_price"],
                 "b_index_price": target["b_index_price"],
+                "basis_b_pct": target["basis_b_pct"],
                 "rebound_ratio": target["rebound_ratio"],
                 "trigger_name": target["trigger_name"],
                 "selected_tp_pct": target["selected_tp_pct"],
