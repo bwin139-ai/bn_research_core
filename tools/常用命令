@@ -13,7 +13,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --copy-mode copy
 
 # ========= 拉 服务器回测数据 到 MacBook =========
-RUNID="SNAP_V4.6_30D_P6_0320T1238_ALL"
+RUNID="SNAP_V5.0_30D_P6_0320T1701_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
   ~/ai_projects/bn_research_core/state
 
