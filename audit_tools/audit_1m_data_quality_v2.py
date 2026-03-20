@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple, Set
 
 try:
     import pyarrow.parquet as pq
@@ -15,6 +15,7 @@ except Exception as e:
     raise SystemExit("Missing dependency: pyarrow. Install with: pip install -U pyarrow") from e
 
 INTERVAL_MS = 60_000
+HOUR_MS = 3_600_000
 BJT = timezone(timedelta(hours=8))
 REQUIRED_CONTRACT_COLS = ["open_time_ms", "open", "high", "low", "close", "quote_asset_volume"]
 IDX_COLS = ["high_idx", "low_idx", "close_idx"]
@@ -68,6 +69,11 @@ class SymbolStatus:
     idx_missing_rows: int
     schema_issue_count: int
     stale_tail: bool
+    tail_lag_hours: float
+    suspected_delisted: bool
+    confirmed_delisted: bool
+    exclude_from_formal_universe: bool
+    exclude_reason: str
     severity: str
 
 
@@ -76,6 +82,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data-dir", required=True, help="Root directory of per-symbol parquet shards")
     p.add_argument("--out-dir", required=True, help="Directory for audit outputs")
     p.add_argument("--tail-target-bjt", default="", help='Expected latest bar in Beijing time, e.g. "2026-03-20 23:59"')
+    p.add_argument(
+        "--delisted-threshold-hours",
+        type=int,
+        default=72,
+        help="If tail lag >= this threshold, list symbol as suspected delisted (default: 72)",
+    )
+    p.add_argument(
+        "--confirmed-delisted-file",
+        default="",
+        help="Optional txt file, one symbol per line, for manually confirmed delisted symbols",
+    )
     return p.parse_args()
 
 
@@ -115,6 +132,20 @@ def list_parquet_files(symbol_dir: str) -> List[str]:
                 files.append(os.path.join(root, n))
     files.sort()
     return files
+
+
+def load_symbol_set(path: str) -> Set[str]:
+    path = (path or "").strip()
+    if not path:
+        return set()
+    out: Set[str] = set()
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            out.add(s)
+    return out
 
 
 def load_symbol_rows(symbol: str, files: List[str]) -> Tuple[List[int], List[bool], List[SchemaIssue], int]:
@@ -244,10 +275,17 @@ def write_csv(path: str, rows: List[dict], fieldnames: List[str]) -> None:
             w.writerow(r)
 
 
+def write_symbol_txt(path: str, symbols: List[str]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for s in sorted(set(symbols)):
+            f.write(s + "\n")
+
+
 def main() -> None:
     args = parse_args()
     ensure_dir(args.out_dir)
     tail_target_ms = parse_tail_target_bjt(args.tail_target_bjt)
+    confirmed_delisted = load_symbol_set(args.confirmed_delisted_file)
 
     symbols = list_symbol_dirs(args.data_dir)
     symbol_status_rows: List[dict] = []
@@ -260,6 +298,8 @@ def main() -> None:
         "out_dir": args.out_dir,
         "symbols_audited": len(symbols),
         "tail_target_bjt": args.tail_target_bjt,
+        "delisted_threshold_hours": args.delisted_threshold_hours,
+        "confirmed_delisted_file": args.confirmed_delisted_file,
         "classification_counts": {},
         "severity_counts": {},
         "symbols_with_contract_gaps": 0,
@@ -269,7 +309,11 @@ def main() -> None:
         "symbols_stale_tail": 0,
         "symbols_all_missing_idx": [],
         "symbols_partial_missing_idx": [],
-        "symbols_with_other_problems": [],
+        "symbols_schema_or_other_fatal": [],
+        "symbols_suspected_delisted": [],
+        "symbols_confirmed_delisted": [],
+        "symbols_formal_exclude": [],
+        "symbols_warning_review": [],
     }
 
     for symbol in symbols:
@@ -289,6 +333,11 @@ def main() -> None:
         first_ms = sorted_times[0] if sorted_times else None
         last_ms = sorted_times[-1] if sorted_times else None
         stale_tail = bool(tail_target_ms is not None and last_ms is not None and last_ms < tail_target_ms)
+        tail_lag_hours = 0.0
+        if tail_target_ms is not None and last_ms is not None and last_ms < tail_target_ms:
+            tail_lag_hours = round((tail_target_ms - last_ms) / HOUR_MS, 2)
+        suspected_delisted = bool(stale_tail and tail_lag_hours >= float(args.delisted_threshold_hours))
+        confirmed = symbol in confirmed_delisted
 
         has_schema_issues = len(issues) > 0
         has_contract_gap = len(gaps) > 0
@@ -300,6 +349,13 @@ def main() -> None:
             severity = "FATAL"
         elif idx_status == "PARTIAL_MISSING" or stale_tail:
             severity = "WARNING"
+
+        exclude_reasons = []
+        if severity == "FATAL":
+            exclude_reasons.append("FATAL_DATA_QUALITY")
+        if confirmed:
+            exclude_reasons.append("CONFIRMED_DELISTED")
+        exclude_from_formal_universe = len(exclude_reasons) > 0
 
         status = SymbolStatus(
             symbol=symbol,
@@ -319,6 +375,11 @@ def main() -> None:
             idx_missing_rows=idx_missing_total,
             schema_issue_count=len(issues),
             stale_tail=stale_tail,
+            tail_lag_hours=tail_lag_hours,
+            suspected_delisted=suspected_delisted,
+            confirmed_delisted=confirmed,
+            exclude_from_formal_universe=exclude_from_formal_universe,
+            exclude_reason="|".join(exclude_reasons),
             severity=severity,
         )
         symbol_status_rows.append(asdict(status))
@@ -342,8 +403,16 @@ def main() -> None:
             summary["symbols_all_missing_idx"].append(symbol)
         elif idx_status == "PARTIAL_MISSING":
             summary["symbols_partial_missing_idx"].append(symbol)
-        if severity != "OK" and idx_status not in {"ALL_MISSING", "PARTIAL_MISSING"}:
-            summary["symbols_with_other_problems"].append(symbol)
+        if severity == "FATAL" and idx_status not in {"ALL_MISSING", "PARTIAL_MISSING"}:
+            summary["symbols_schema_or_other_fatal"].append(symbol)
+        if suspected_delisted:
+            summary["symbols_suspected_delisted"].append(symbol)
+        if confirmed:
+            summary["symbols_confirmed_delisted"].append(symbol)
+        if exclude_from_formal_universe:
+            summary["symbols_formal_exclude"].append(symbol)
+        if severity == "WARNING" or suspected_delisted:
+            summary["symbols_warning_review"].append(symbol)
 
     write_csv(
         os.path.join(args.out_dir, "symbol_status.csv"),
@@ -354,7 +423,10 @@ def main() -> None:
             "has_duplicate_ts", "duplicate_ts_rows",
             "has_non_monotonic_ts", "non_monotonic_pairs",
             "idx_status", "idx_missing_segments", "idx_missing_rows",
-            "schema_issue_count", "stale_tail", "severity",
+            "schema_issue_count", "stale_tail", "tail_lag_hours",
+            "suspected_delisted", "confirmed_delisted",
+            "exclude_from_formal_universe", "exclude_reason",
+            "severity",
         ],
     )
     write_csv(
@@ -372,6 +444,12 @@ def main() -> None:
         schema_issue_rows,
         ["symbol", "file_path", "issue_type", "missing_columns", "detail"],
     )
+
+    write_symbol_txt(os.path.join(args.out_dir, "symbols_suspected_delisted.txt"), summary["symbols_suspected_delisted"])
+    write_symbol_txt(os.path.join(args.out_dir, "symbols_confirmed_delisted.txt"), summary["symbols_confirmed_delisted"])
+    write_symbol_txt(os.path.join(args.out_dir, "symbols_formal_exclude.txt"), summary["symbols_formal_exclude"])
+    write_symbol_txt(os.path.join(args.out_dir, "symbols_warning_review.txt"), summary["symbols_warning_review"])
+
     with open(os.path.join(args.out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
@@ -382,6 +460,7 @@ def main() -> None:
     print(f"out_dir                  : {args.out_dir}")
     print(f"symbols_audited          : {len(symbols)}")
     print(f"tail_target_bjt          : {args.tail_target_bjt or '(not set)'}")
+    print(f"delisted_threshold_hours : {args.delisted_threshold_hours}")
     print("classification_counts    :")
     for k, v in sorted(summary["classification_counts"].items()):
         print(f"  - {k}: {v}")
@@ -395,6 +474,9 @@ def main() -> None:
     print(f"symbols_stale_tail             : {summary['symbols_stale_tail']}")
     print(f"all_missing_idx_symbols        : {len(summary['symbols_all_missing_idx'])}")
     print(f"partial_missing_idx_symbols    : {len(summary['symbols_partial_missing_idx'])}")
+    print(f"suspected_delisted_symbols     : {len(summary['symbols_suspected_delisted'])}")
+    print(f"confirmed_delisted_symbols     : {len(summary['symbols_confirmed_delisted'])}")
+    print(f"formal_exclude_symbols         : {len(summary['symbols_formal_exclude'])}")
 
 
 if __name__ == "__main__":
