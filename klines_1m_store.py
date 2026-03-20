@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import requests
 
@@ -86,6 +86,84 @@ def save_json(path: str, obj) -> None:
     atomic_write_bytes(
         path, json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
     )
+
+
+def load_symbol_lines(path: str) -> List[str]:
+    if not path or not os.path.exists(path):
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            s = raw.strip().upper()
+            if not s or s.startswith("#"):
+                continue
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+    return out
+
+
+def save_symbol_lines(path: str, symbols: List[str]) -> None:
+    ensure_dir(os.path.dirname(path) or ".")
+    uniq_sorted = sorted({str(x).strip().upper() for x in symbols if str(x).strip()})
+    payload = "\n".join(uniq_sorted)
+    if payload:
+        payload += "\n"
+    atomic_write_bytes(path, payload.encode("utf-8"))
+
+
+def list_local_symbol_dirs(data_dir: str) -> List[str]:
+    if not os.path.isdir(data_dir):
+        return []
+    out: List[str] = []
+    for name in sorted(os.listdir(data_dir)):
+        path = os.path.join(data_dir, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            has_parquet = any(fn.endswith(".parquet") for fn in os.listdir(path))
+        except Exception:
+            has_parquet = False
+        if has_parquet:
+            out.append(name.upper())
+    return out
+
+
+def refresh_confirmed_delisted(
+    live_symbols: List[str],
+    data_dir: str,
+    confirmed_delisted_path: str,
+    delisted_status_path: str,
+) -> Dict:
+    live_set = {s.upper() for s in live_symbols}
+    local_dirs = list_local_symbol_dirs(data_dir)
+    local_set = set(local_dirs)
+    existing_confirmed = load_symbol_lines(confirmed_delisted_path)
+    existing_set = set(existing_confirmed)
+
+    auto_confirmed = sorted(local_set - live_set)
+    merged_confirmed = sorted(existing_set | set(auto_confirmed))
+    newly_added = sorted(set(merged_confirmed) - existing_set)
+
+    save_symbol_lines(confirmed_delisted_path, merged_confirmed)
+
+    status = {
+        "updated_utc": utc_iso(),
+        "data_dir": data_dir,
+        "confirmed_delisted_path": confirmed_delisted_path,
+        "live_symbols_count": len(live_symbols),
+        "local_symbol_dirs_count": len(local_dirs),
+        "existing_confirmed_count": len(existing_confirmed),
+        "auto_confirmed_delisted_count": len(auto_confirmed),
+        "confirmed_delisted_count": len(merged_confirmed),
+        "newly_added_this_run_count": len(newly_added),
+        "newly_added_this_run": newly_added,
+        "auto_confirmed_delisted": auto_confirmed,
+        "confirmed_delisted": merged_confirmed,
+    }
+    save_json(delisted_status_path, status)
+    return status
 
 
 # ----------------------------
@@ -634,6 +712,16 @@ def main():
         "--state-path", default="", help="state json path (required to be explicit via --price-source defaults or manual override)"
     )
     ap.add_argument(
+        "--confirmed-delisted-path",
+        default="state/symbols_confirmed_delisted.txt",
+        help="confirmed delisted symbols text file (one symbol per line)",
+    )
+    ap.add_argument(
+        "--delisted-status-path",
+        default="state/delisted_status.json",
+        help="status json path for auto-confirmed delisted detection",
+    )
+    ap.add_argument(
         "--no-skip-existing",
         action="store_true",
         help="Backfill: do NOT skip symbols that already have local parquet shards",
@@ -679,10 +767,36 @@ def main():
     state = load_state(args.state_path, args.price_source)
 
     with requests.Session() as sess:
+        live_symbols = list_symbols_excluding_usdc(sess)
         if args.symbols.strip():
             symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
         else:
-            symbols = list_symbols_excluding_usdc(sess)
+            symbols = live_symbols
+
+        if args.cmd == "augment-idx" or args.price_source == PRICE_SOURCE_CONTRACT:
+            try:
+                delisted_status = refresh_confirmed_delisted(
+                    live_symbols=live_symbols,
+                    data_dir=args.data_dir,
+                    confirmed_delisted_path=args.confirmed_delisted_path,
+                    delisted_status_path=args.delisted_status_path,
+                )
+                logging.info(
+                    "[delisted] live=%s local=%s auto=%s confirmed=%s new=%s path=%s",
+                    delisted_status["live_symbols_count"],
+                    delisted_status["local_symbol_dirs_count"],
+                    delisted_status["auto_confirmed_delisted_count"],
+                    delisted_status["confirmed_delisted_count"],
+                    delisted_status["newly_added_this_run_count"],
+                    args.confirmed_delisted_path,
+                )
+                if delisted_status["newly_added_this_run"]:
+                    logging.info(
+                        "[delisted] newly_added=%s",
+                        ",".join(delisted_status["newly_added_this_run"]),
+                    )
+            except Exception as e:
+                logging.error("[delisted] refresh failed: %s", e)
 
         logging.info(
             "[start] cmd=%s price_source=%s symbols=%s interval=%s days=%s start=%s end=%s data_dir=%s",
