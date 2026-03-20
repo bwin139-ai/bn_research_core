@@ -166,6 +166,12 @@ set -a && source deploy.env && set +a && \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
 
+# ========= 1m 数据质量审计 =========
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_1m_data_quality_v2.py \
+  --data-dir data/klines_1m \
+  --out-dir output/state/1m_data_quality_audit \
+  --tail-target-bjt "2026-03-20 12:00"
+
 如果子进程还残留，再一把强杀：
 pkill -f 'strategies/run_backtest.py --strategy snapback'
 pkill -f 'schedule_backtests.py --strategy snapback'
