@@ -34,7 +34,7 @@ import json
 import math
 import os
 import statistics
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -69,10 +69,15 @@ def _parse_iso_to_dt(s: Any) -> Optional[datetime]:
     text = str(s).strip()
     if not text:
         return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text)
+        dt = datetime.fromisoformat(text)
     except Exception:
         return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _bucket_label(i: int, lo: float, hi: float, total: int) -> str:
