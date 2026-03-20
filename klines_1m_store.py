@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -133,6 +134,7 @@ def list_local_symbol_dirs(data_dir: str) -> List[str]:
 def refresh_confirmed_delisted(
     live_symbols: List[str],
     data_dir: str,
+    delisted_data_dir: str,
     confirmed_delisted_path: str,
     delisted_status_path: str,
 ) -> Dict:
@@ -146,19 +148,44 @@ def refresh_confirmed_delisted(
     merged_confirmed = sorted(existing_set | set(auto_confirmed))
     newly_added = sorted(set(merged_confirmed) - existing_set)
 
+    moved_this_run: List[str] = []
+    move_skipped_target_exists: List[str] = []
+    move_missing_source: List[str] = []
+
+    ensure_dir(delisted_data_dir)
+    move_candidates = sorted(local_set & set(merged_confirmed))
+    for sym in move_candidates:
+        src = os.path.join(data_dir, sym)
+        dst = os.path.join(delisted_data_dir, sym)
+        if not os.path.isdir(src):
+            move_missing_source.append(sym)
+            continue
+        if os.path.exists(dst):
+            move_skipped_target_exists.append(sym)
+            continue
+        shutil.move(src, dst)
+        moved_this_run.append(sym)
+
     save_symbol_lines(confirmed_delisted_path, merged_confirmed)
 
     status = {
         "updated_utc": utc_iso(),
         "data_dir": data_dir,
+        "delisted_data_dir": delisted_data_dir,
         "confirmed_delisted_path": confirmed_delisted_path,
         "live_symbols_count": len(live_symbols),
-        "local_symbol_dirs_count": len(local_dirs),
+        "local_symbol_dirs_count_before_move": len(local_dirs),
         "existing_confirmed_count": len(existing_confirmed),
         "auto_confirmed_delisted_count": len(auto_confirmed),
         "confirmed_delisted_count": len(merged_confirmed),
         "newly_added_this_run_count": len(newly_added),
         "newly_added_this_run": newly_added,
+        "moved_this_run_count": len(moved_this_run),
+        "moved_this_run": moved_this_run,
+        "move_skipped_target_exists_count": len(move_skipped_target_exists),
+        "move_skipped_target_exists": move_skipped_target_exists,
+        "move_missing_source_count": len(move_missing_source),
+        "move_missing_source": move_missing_source,
         "auto_confirmed_delisted": auto_confirmed,
         "confirmed_delisted": merged_confirmed,
     }
@@ -717,6 +744,11 @@ def main():
         help="confirmed delisted symbols text file (one symbol per line)",
     )
     ap.add_argument(
+        "--delisted-data-dir",
+        default="data/klines_1m_delisted",
+        help="archive dir for confirmed delisted symbol directories",
+    )
+    ap.add_argument(
         "--delisted-status-path",
         default="state/delisted_status.json",
         help="status json path for auto-confirmed delisted detection",
@@ -778,22 +810,35 @@ def main():
                 delisted_status = refresh_confirmed_delisted(
                     live_symbols=live_symbols,
                     data_dir=args.data_dir,
+                    delisted_data_dir=args.delisted_data_dir,
                     confirmed_delisted_path=args.confirmed_delisted_path,
                     delisted_status_path=args.delisted_status_path,
                 )
                 logging.info(
-                    "[delisted] live=%s local=%s auto=%s confirmed=%s new=%s path=%s",
+                    "[delisted] live=%s local_before=%s auto=%s confirmed=%s new=%s moved=%s path=%s archive=%s",
                     delisted_status["live_symbols_count"],
-                    delisted_status["local_symbol_dirs_count"],
+                    delisted_status["local_symbol_dirs_count_before_move"],
                     delisted_status["auto_confirmed_delisted_count"],
                     delisted_status["confirmed_delisted_count"],
                     delisted_status["newly_added_this_run_count"],
+                    delisted_status["moved_this_run_count"],
                     args.confirmed_delisted_path,
+                    args.delisted_data_dir,
                 )
                 if delisted_status["newly_added_this_run"]:
                     logging.info(
                         "[delisted] newly_added=%s",
                         ",".join(delisted_status["newly_added_this_run"]),
+                    )
+                if delisted_status["moved_this_run"]:
+                    logging.info(
+                        "[delisted] moved_to_archive=%s",
+                        ",".join(delisted_status["moved_this_run"]),
+                    )
+                if delisted_status["move_skipped_target_exists"]:
+                    logging.warning(
+                        "[delisted] archive_target_exists=%s",
+                        ",".join(delisted_status["move_skipped_target_exists"]),
                     )
             except Exception as e:
                 logging.error("[delisted] refresh failed: %s", e)
