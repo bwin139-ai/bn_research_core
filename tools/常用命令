@@ -13,7 +13,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --copy-mode copy
 
 # ========= 拉 服务器回测数据 到 MacBook =========
-RUNID="SNAP_V5.0_30D_P6_0320T1701_ALL"
+RUNID="SNAP_V5.0_30D_P6_0320T2045_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
   ~/ai_projects/bn_research_core/state
 
@@ -32,7 +32,7 @@ RUNSET="SNAP_V5.0_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
-  --end 2026-03-11T00:00:00+00:00 \
+  --end 2026-03-20T00:00:00+00:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -130,7 +130,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
   >> logs/klines_1m_augment_idx_20260311_20260317.log 2>&1 &
 
 # *** 1m数据审计 ***
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_idx_completeness.py \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_idx_completeness.py \
   --data-dir data/klines_1m \
   --out-csv output/state/idx_completeness_audit.csv \
   --summary-json output/state/idx_completeness_audit.summary.json
