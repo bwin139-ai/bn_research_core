@@ -115,11 +115,11 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 3 \
+  --days 2 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
-  >> logs/klines_1m_augment_idx_3d.log 2>&1 &
+  >> logs/klines_1m_augment_idx_2d.log 2>&1 &
 
 # *** 单独运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
