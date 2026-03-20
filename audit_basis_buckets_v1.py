@@ -201,11 +201,19 @@ def write_csv(path: str, fieldnames: List[str], rows: List[Dict[str, Any]]) -> N
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--trades-jsonl", required=True, help="sim_trades JSONL")
-    ap.add_argument("--out-dir", required=True, help="输出目录")
-    ap.add_argument("--run-id", required=True, help="运行标识，仅用于打印/summary")
+    ap.add_argument("--run-id", required=True, help="运行标识；未显式传路径时，会按 run-id 自动推导默认路径")
+    ap.add_argument("--trades-jsonl", required=False, help="sim_trades JSONL；默认 output/state/sim_trades.{run_id}.jsonl")
+    ap.add_argument("--out-dir", required=False, help="输出目录；默认 output/state/basis_audit.{run_id}")
     ap.add_argument("--quantiles", type=int, default=5, help="分位数桶数，默认 5")
     args = ap.parse_args()
+
+    if not args.trades_jsonl:
+        args.trades_jsonl = os.path.join("output", "state", f"sim_trades.{args.run_id}.jsonl")
+    if not args.out_dir:
+        args.out_dir = os.path.join("output", "state", f"basis_audit.{args.run_id}")
+
+    if not os.path.exists(args.trades_jsonl):
+        raise RuntimeError(f"sim_trades 文件不存在: {args.trades_jsonl}")
 
     os.makedirs(args.out_dir, exist_ok=True)
 
