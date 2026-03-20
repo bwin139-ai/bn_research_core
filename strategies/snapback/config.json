@@ -4,7 +4,7 @@
     "max_history_window_mins": 130
   },
   "universe": {
-    "24h_quote_volume_min": 50000000,
+    "24h_quote_volume_min": 30000000,
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
@@ -20,7 +20,7 @@
     },
     "selloff": {
       "ab_bars": {
-        "min": 0,
+        "min": 3,
         "max": 999
       },
       "a_to_c_drop_pct": {
