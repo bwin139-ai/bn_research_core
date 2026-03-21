@@ -100,7 +100,7 @@ def _extract_fee_side_from_config(run_config: Dict[str, Any] | None, fallback: f
 
 def _prepare_trade_rows(rows: List[Dict[str, Any]], fee_side: float) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    fee_pct = fee_side * 2.0 * 100.0
+    fee_frac = fee_side * 2.0
     for row in rows:
         gross_pct = _safe_float(row.get('pnl_pct'), None)
         if gross_pct is None:
@@ -109,7 +109,7 @@ def _prepare_trade_rows(rows: List[Dict[str, Any]], fee_side: float) -> List[Dic
             'symbol': str(row.get('symbol') or ''),
             'exit_time_ms': _extract_exit_time_ms(row),
             'gross_pct': float(gross_pct),
-            'net_pct': float(gross_pct) - fee_pct,
+            'net_pct': float(gross_pct) - fee_frac,
             'reason': row.get('reason'),
         })
     out.sort(key=lambda x: (x['exit_time_ms'], x['symbol']))
@@ -122,8 +122,8 @@ def _build_equity_curves(rows: List[Dict[str, Any]], initial_equity: float) -> D
     compound_gross = [initial_equity]
     compound_net = [initial_equity]
     for row in rows:
-        gp = row['gross_pct'] / 100.0
-        npct = row['net_pct'] / 100.0
+        gp = row['gross_pct']
+        npct = row['net_pct']
         simple_gross.append(simple_gross[-1] + initial_equity * gp)
         simple_net.append(simple_net[-1] + initial_equity * npct)
         compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + gp))
@@ -193,8 +193,8 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
             item['flat_count'] += 1
         item['gross_pnl_pct_sum'] += row['gross_pct']
         item['net_pnl_pct_sum'] += row['net_pct']
-        item['gross_pnl_amount_simple_100'] += initial_equity * row['gross_pct'] / 100.0
-        item['net_pnl_amount_simple_100'] += initial_equity * row['net_pct'] / 100.0
+        item['gross_pnl_amount_simple_100'] += initial_equity * row['gross_pct']
+        item['net_pnl_amount_simple_100'] += initial_equity * row['net_pct']
     out = []
     for key in sorted(monthly):
         item = monthly[key]
@@ -204,7 +204,7 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
             'win_count': item['win_count'],
             'loss_count': item['loss_count'],
             'flat_count': item['flat_count'],
-            'net_pnl': round(item['gross_pnl_amount_simple_100'], 12),
+            'net_pnl': round(item['net_pnl_amount_simple_100'], 12),
             'gross_pnl_pct_sum': round(item['gross_pnl_pct_sum'], 12),
             'net_pnl_pct_sum': round(item['net_pnl_pct_sum'], 12),
             'gross_pnl_amount_simple_100': round(item['gross_pnl_amount_simple_100'], 12),
@@ -227,8 +227,8 @@ def build_extended_metrics(trades: List[Dict[str, Any]], fee_side: float, initia
     times_ms = [rows[0]['exit_time_ms'] if rows else 0] + [r['exit_time_ms'] for r in rows]
     simple_gross_pct = sum(r['gross_pct'] for r in rows)
     simple_net_pct = sum(r['net_pct'] for r in rows)
-    compound_gross_pct = ((curves['compound_gross'][-1] / initial_equity) - 1.0) * 100.0 if curves['compound_gross'] else 0.0
-    compound_net_pct = ((curves['compound_net'][-1] / initial_equity) - 1.0) * 100.0 if curves['compound_net'] else 0.0
+    compound_gross_pct = ((curves['compound_gross'][-1] / initial_equity) - 1.0) if curves['compound_gross'] else 0.0
+    compound_net_pct = ((curves['compound_net'][-1] / initial_equity) - 1.0) if curves['compound_net'] else 0.0
     max_drawdown = {
         'simple_gross': _calc_max_drawdown(curves['simple_gross'], times_ms),
         'simple_net': _calc_max_drawdown(curves['simple_net'], times_ms),
@@ -266,7 +266,7 @@ def _plot_curve(path: Path, title: str, x_vals: List[int], gross_curve: List[flo
     ax.set_xlabel('交易笔序')
     ax.set_ylabel('权益')
     subtitle = (
-        f"累计盈利 不扣费={gross_profit_pct:.4f}% | 扣费={net_profit_pct:.4f}%    "
+        f"累计盈利 不扣费={gross_profit_pct * 100.0:.4f}% | 扣费={net_profit_pct * 100.0:.4f}%    "
         f"最大回撤 不扣费[{_format_dd(gross_dd)}]    扣费[{_format_dd(net_dd)}]"
     )
     ax.set_title(f"{title}\n{subtitle}")

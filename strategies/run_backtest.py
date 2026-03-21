@@ -91,7 +91,7 @@ def _extract_symbol(trade: Dict[str, Any]) -> str:
 
 def _prepare_trade_rows(trade_history: List[Dict[str, Any]], fee_side: float) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    fee_pct = fee_side * 2.0 * 100.0
+    fee_frac = fee_side * 2.0
     for t in trade_history:
         gross_pct = _safe_float(t.get("pnl_pct"), None)
         if gross_pct is None:
@@ -102,7 +102,7 @@ def _prepare_trade_rows(trade_history: List[Dict[str, Any]], fee_side: float) ->
                 "symbol": _extract_symbol(t),
                 "exit_time_ms": exit_ms,
                 "gross_pct": float(gross_pct),
-                "net_pct": float(gross_pct) - fee_pct,
+                "net_pct": float(gross_pct) - fee_frac,
             }
         )
     rows.sort(key=lambda x: (x["exit_time_ms"], x["symbol"]))
@@ -115,8 +115,8 @@ def _build_equity_curves(rows: List[Dict[str, Any]], initial_equity: float) -> D
     compound_gross = [initial_equity]
     compound_net = [initial_equity]
     for row in rows:
-        gp = row["gross_pct"] / 100.0
-        npct = row["net_pct"] / 100.0
+        gp = row["gross_pct"]
+        npct = row["net_pct"]
         simple_gross.append(simple_gross[-1] + initial_equity * gp)
         simple_net.append(simple_net[-1] + initial_equity * npct)
         compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + gp))
@@ -198,8 +198,8 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
             item["flat_count"] += 1
         item["gross_pnl_pct_sum"] += row["gross_pct"]
         item["net_pnl_pct_sum"] += row["net_pct"]
-        item["gross_pnl_amount_simple_100"] += initial_equity * row["gross_pct"] / 100.0
-        item["net_pnl_amount_simple_100"] += initial_equity * row["net_pct"] / 100.0
+        item["gross_pnl_amount_simple_100"] += initial_equity * row["gross_pct"]
+        item["net_pnl_amount_simple_100"] += initial_equity * row["net_pct"]
     out = []
     for key in sorted(monthly.keys()):
         item = monthly[key]
@@ -210,7 +210,7 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
                 "win_count": item["win_count"],
                 "loss_count": item["loss_count"],
                 "flat_count": item["flat_count"],
-                "net_pnl": round(item["gross_pnl_amount_simple_100"], 12),
+                "net_pnl": round(item["net_pnl_amount_simple_100"], 12),
                 "gross_pnl_pct_sum": round(item["gross_pnl_pct_sum"], 12),
                 "net_pnl_pct_sum": round(item["net_pnl_pct_sum"], 12),
                 "gross_pnl_amount_simple_100": round(item["gross_pnl_amount_simple_100"], 12),
@@ -226,8 +226,8 @@ def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side
     curves = _build_equity_curves(rows, initial_equity)
     simple_gross_sum_pct = sum(r["gross_pct"] for r in rows)
     simple_net_sum_pct = sum(r["net_pct"] for r in rows)
-    compound_gross_pct = ((curves["compound_gross"][-1] / initial_equity) - 1.0) * 100.0 if curves["compound_gross"] else 0.0
-    compound_net_pct = ((curves["compound_net"][-1] / initial_equity) - 1.0) * 100.0 if curves["compound_net"] else 0.0
+    compound_gross_pct = ((curves["compound_gross"][-1] / initial_equity) - 1.0) if curves["compound_gross"] else 0.0
+    compound_net_pct = ((curves["compound_net"][-1] / initial_equity) - 1.0) if curves["compound_net"] else 0.0
     return {
         "fee_side": fee_side,
         "pnl_pct_sum": round(simple_gross_sum_pct, 12),

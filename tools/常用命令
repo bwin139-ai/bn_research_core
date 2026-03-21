@@ -58,7 +58,7 @@ cd /root/bn_research_core
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V4.3_SmokeTest"
+  --run-id "Snapback_V5.0_SmokeTest"
 
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
