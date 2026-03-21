@@ -20,6 +20,7 @@ BJT = timezone(timedelta(hours=8))
 REQUIRED_CONTRACT_COLS = ["open_time_ms", "open", "high", "low", "close", "quote_asset_volume"]
 IDX_COLS = ["high_idx", "low_idx", "close_idx"]
 ALL_REQUIRED_COLS = REQUIRED_CONTRACT_COLS + IDX_COLS
+RECENT_COMPLETE_TAIL_MIN_ROWS = 1440  # 1 day of continuous 1m bars
 
 
 @dataclass
@@ -68,6 +69,9 @@ class SymbolStatus:
     idx_missing_segments: int
     idx_missing_rows: int
     schema_issue_count: int
+    recent_complete_tail_rows: int
+    recent_complete_tail_hours: float
+    historical_idx_only_normalized: bool
     stale_tail: bool
     tail_lag_hours: float
     suspected_delisted: bool
@@ -267,6 +271,27 @@ def classify_idx_status(row_count: int, idx_complete_count: int, schema_issues: 
     return "PARTIAL_MISSING"
 
 
+
+def compute_recent_complete_tail(open_times_sorted: List[int], idx_complete_sorted: List[bool]) -> Tuple[int, float]:
+    """
+    Return the trailing consecutive rows whose idx is fully available.
+    This is used to recognize symbols whose early history lacked idx, but whose
+    recent tail is complete and continuous after product evolution (e.g. pre-market -> normal).
+    """
+    if not open_times_sorted or not idx_complete_sorted or len(open_times_sorted) != len(idx_complete_sorted):
+        return 0, 0.0
+
+    i = len(idx_complete_sorted) - 1
+    while i >= 0 and idx_complete_sorted[i]:
+        i -= 1
+
+    trailing_rows = len(idx_complete_sorted) - 1 - i
+    if trailing_rows <= 1:
+        return trailing_rows, 0.0
+    trailing_hours = round((open_times_sorted[-1] - open_times_sorted[i + 1]) / HOUR_MS, 2)
+    return trailing_rows, trailing_hours
+
+
 def write_csv(path: str, rows: List[dict], fieldnames: List[str]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -329,6 +354,7 @@ def main() -> None:
         idx_complete_count = sum(1 for x in sorted_idx_complete if x)
         idx_status = classify_idx_status(row_count=len(sorted_times), idx_complete_count=idx_complete_count, schema_issues=issues)
         idx_segments, idx_missing_total = build_idx_segments(symbol, sorted_times, sorted_idx_complete, idx_status)
+        recent_complete_tail_rows, recent_complete_tail_hours = compute_recent_complete_tail(sorted_times, sorted_idx_complete)
 
         first_ms = sorted_times[0] if sorted_times else None
         last_ms = sorted_times[-1] if sorted_times else None
@@ -343,11 +369,23 @@ def main() -> None:
         has_contract_gap = len(gaps) > 0
         has_duplicate_ts = duplicate_rows > 0
         has_non_monotonic = non_mono > 0
+        historical_idx_only_normalized = bool(
+            idx_status == "PARTIAL_MISSING"
+            and recent_complete_tail_rows >= RECENT_COMPLETE_TAIL_MIN_ROWS
+            and not has_contract_gap
+            and not has_duplicate_ts
+            and not has_non_monotonic
+            and not stale_tail
+        )
 
         severity = "OK"
-        if has_contract_gap or has_duplicate_ts or has_non_monotonic or idx_status in {"ALL_MISSING", "SCHEMA_MISSING", "NO_ROWS"} or has_schema_issues:
+        if has_contract_gap or has_duplicate_ts or has_non_monotonic or idx_status in {"ALL_MISSING", "SCHEMA_MISSING", "NO_ROWS"}:
             severity = "FATAL"
-        elif idx_status == "PARTIAL_MISSING" or stale_tail:
+        elif idx_status == "PARTIAL_MISSING":
+            severity = "OK" if historical_idx_only_normalized else "WARNING"
+        elif has_schema_issues:
+            severity = "OK" if historical_idx_only_normalized else "FATAL"
+        elif stale_tail:
             severity = "WARNING"
 
         exclude_reasons = []
@@ -374,6 +412,9 @@ def main() -> None:
             idx_missing_segments=len(idx_segments),
             idx_missing_rows=idx_missing_total,
             schema_issue_count=len(issues),
+            recent_complete_tail_rows=recent_complete_tail_rows,
+            recent_complete_tail_hours=recent_complete_tail_hours,
+            historical_idx_only_normalized=historical_idx_only_normalized,
             stale_tail=stale_tail,
             tail_lag_hours=tail_lag_hours,
             suspected_delisted=suspected_delisted,
@@ -423,7 +464,8 @@ def main() -> None:
             "has_duplicate_ts", "duplicate_ts_rows",
             "has_non_monotonic_ts", "non_monotonic_pairs",
             "idx_status", "idx_missing_segments", "idx_missing_rows",
-            "schema_issue_count", "stale_tail", "tail_lag_hours",
+            "schema_issue_count", "recent_complete_tail_rows", "recent_complete_tail_hours",
+            "historical_idx_only_normalized", "stale_tail", "tail_lag_hours",
             "suspected_delisted", "confirmed_delisted",
             "exclude_from_formal_universe", "exclude_reason",
             "severity",

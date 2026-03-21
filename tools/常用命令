@@ -96,14 +96,13 @@ cd ~/ai_projects/bn_research_core
 
 # =========  k线落盘 =========
 # *** 合约价 backfill ***
-cd /root/bn_research_core
 nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   --symbols XAUUSDT \
   --price-source contract \
-  --days 270 \
+  --days 2 \
   --limit 1500 \
   --sleep-ms 1000 \
-  >> logs/klines_1m_backfill.log 2>&1 &
+  >> logs/klines_1m_backfill_XAUUSDT.log 2>&1 &
 
 # *** 1. 先运行 合约价 sync ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
@@ -129,11 +128,45 @@ nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
   --sleep-ms 1000 \
   >> logs/klines_1m_augment_idx_20260311_20260317.log 2>&1 &
 
-# *** 1m数据审计 ***
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_idx_completeness.py \
+# *** 1m 数据质量审计 ***
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_1m_data_quality_v2.py \
   --data-dir data/klines_1m \
-  --out-csv output/state/idx_completeness_audit.csv \
-  --summary-json output/state/idx_completeness_audit.summary.json
+  --out-dir output/state/1m_data_quality_audit \
+  --tail-target-bjt "2026-03-21 14:00"
+输出字段说明
+  symbols_with_contract_gaps    -- 存在合约主数据断行的品种数量
+  symbols_with_duplicate_ts     -- 存在重复时间戳的品种数量
+  symbols_with_non_monotonic_ts -- 时间戳不是严格递增的品种数量
+  symbols_with_schema_issues    -- 存在 schema 异常的品种数量（不是“值为空”，而更偏向文件结构本身有问题）
+  symbols_stale_tail            -- 尾部数据未更新到目标时间附近的品种数量
+  all_missing_idx_symbols       -- idx 三列全缺失的品种数量(所有行的 idx 三列都不完整,是值层面全缺；如果是 shard 直接缺列，更偏向被归到 schema_issues)
+  partial_missing_idx_symbols   -- idx 三列部分缺失的品种数量(只有部分时间段/部分行缺失 idx)
+  formal_exclude_symbols        -- 建议从正式数据池 / 正式回测 universe 中排除的品种数量
+  
+symbols_with_contract_gaps
+存在合约主数据断行的品种数量。只检查合约 1m 主时间轴是否连续，不检查 idx 数据。
+
+symbols_with_duplicate_ts
+存在重复时间戳的品种数量。表示同一品种中出现了重复的 open_time_ms。
+
+symbols_with_non_monotonic_ts
+时间戳不是严格递增的品种数量。通常表示数据顺序异常或分片拼接有问题。
+
+symbols_with_schema_issues
+存在 schema 异常的品种数量。表示一个或多个 shard 缺少必需字段，属于文件结构问题，不只是数值缺失。
+
+symbols_stale_tail
+尾部数据不新鲜的品种数量。表示该品种最后一根本地 1m 数据明显落后于指定的 tail-target-bjt。
+
+all_missing_idx_symbols
+idx 三列全缺失的品种数量。表示该品种所有行的 idx 数据都不可用。
+
+partial_missing_idx_symbols
+idx 三列部分缺失的品种数量。表示该品种只有部分时间段的 idx 数据缺失，idx 数据并非全量可用。
+
+formal_exclude_symbols
+建议从正式数据池或正式回测 universe 中排除的品种数量。通常对应 FATAL 级别问题，例如合约断行、schema 异常或严重 idx 缺失。
+
 
 # ================== 服务器资源监控 =====================
 watch -n 2 'free -h'
@@ -165,12 +198,6 @@ nohup bash -lc 'cd /root/bn_research_core && \
 set -a && source deploy.env && set +a && \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
-
-# ========= 1m 数据质量审计 =========
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_1m_data_quality_v2.py \
-  --data-dir data/klines_1m \
-  --out-dir output/state/1m_data_quality_audit \
-  --tail-target-bjt "2026-03-20 12:00"
 
 如果子进程还残留，再一把强杀：
 pkill -f 'strategies/run_backtest.py --strategy snapback'
@@ -580,3 +607,10 @@ PERF_ONLY 第一刀完成
 
 截图很有用，但很占上下文，也不利于精确定位。
 除非是 UI 证据、git 历史图、异常截图，否则优先用文字和命令输出。
+
+
+
+我想到两处优化：
+
+一、sim_summary文件，包括独立命令行运行的输出、以及批次运行后的merge输出，添加如下数据：
+1、现在只有pnl_pct_sum，需要添加扣除手续费后的收益、复利收益、扣除手续费后的复利收益
