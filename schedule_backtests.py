@@ -13,9 +13,268 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import matplotlib.pyplot as plt
+
 from core.message_bridge import send_to_bot
 
 UTC = timezone.utc
+BJ_TZ = timezone(timedelta(hours=8))
+DEFAULT_FEE_SIDE = 0.0005
+
+
+def parse_iso_utc(s: str) -> datetime:
+    dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        raise ValueError(f'timestamp must include timezone: {s}')
+    return dt.astimezone(UTC)
+
+
+def fmt_dt(dt: datetime) -> str:
+    return dt.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+
+
+def ymd(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime('%Y%m%d')
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def now_tag() -> str:
+    return datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+
+
+def notify_message(notify_label: Optional[str], text: str) -> None:
+    if not notify_label:
+        return
+    try:
+        send_to_bot(text, label=notify_label)
+    except Exception:
+        # best-effort only: scheduler semantics must not depend on notifications
+        pass
+
+
+def short_mmdd(iso_utc: str) -> str:
+    return parse_iso_utc(iso_utc).strftime('%m-%d')
+
+
+def fmt_seconds_cn(seconds: float) -> str:
+    return f'{seconds:.0f}秒'
+
+
+def _safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if v is None:
+            return default
+        if isinstance(v, str) and not v.strip():
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _extract_exit_time_ms(row: Dict[str, Any]) -> int:
+    for key in ('exit_time', 'entry_time', 'signal_time'):
+        v = row.get(key)
+        if isinstance(v, (int, float)):
+            return int(v)
+    return 0
+
+
+def _extract_fee_side_from_config(run_config: Dict[str, Any] | None, fallback: float) -> float:
+    if not isinstance(run_config, dict):
+        return fallback
+    candidates = [
+        run_config.get('fee_side'),
+        run_config.get('backtest', {}).get('fee_side') if isinstance(run_config.get('backtest'), dict) else None,
+        run_config.get('runtime', {}).get('fee_side') if isinstance(run_config.get('runtime'), dict) else None,
+        run_config.get('sim', {}).get('fee_side') if isinstance(run_config.get('sim'), dict) else None,
+    ]
+    for v in candidates:
+        fv = _safe_float(v, None)
+        if fv is not None:
+            return fv
+    return fallback
+
+
+def _prepare_trade_rows(rows: List[Dict[str, Any]], fee_side: float) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    fee_pct = fee_side * 2.0 * 100.0
+    for row in rows:
+        gross_pct = _safe_float(row.get('pnl_pct'), None)
+        if gross_pct is None:
+            continue
+        out.append({
+            'symbol': str(row.get('symbol') or ''),
+            'exit_time_ms': _extract_exit_time_ms(row),
+            'gross_pct': float(gross_pct),
+            'net_pct': float(gross_pct) - fee_pct,
+            'reason': row.get('reason'),
+        })
+    out.sort(key=lambda x: (x['exit_time_ms'], x['symbol']))
+    return out
+
+
+def _build_equity_curves(rows: List[Dict[str, Any]], initial_equity: float) -> Dict[str, List[float]]:
+    simple_gross = [initial_equity]
+    simple_net = [initial_equity]
+    compound_gross = [initial_equity]
+    compound_net = [initial_equity]
+    for row in rows:
+        gp = row['gross_pct'] / 100.0
+        npct = row['net_pct'] / 100.0
+        simple_gross.append(simple_gross[-1] + initial_equity * gp)
+        simple_net.append(simple_net[-1] + initial_equity * npct)
+        compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + gp))
+        compound_net.append(compound_net[-1] * max(0.0, 1.0 + npct))
+    return {
+        'simple_gross': simple_gross,
+        'simple_net': simple_net,
+        'compound_gross': compound_gross,
+        'compound_net': compound_net,
+    }
+
+
+def _calc_max_drawdown(curve: List[float], times_ms: List[int]) -> Dict[str, Any]:
+    peak_val = curve[0] if curve else 0.0
+    peak_idx = 0
+    best = {
+        'days': 0.0,
+        'trades': 0,
+        'amount': 0.0,
+        'pct': 0.0,
+        'peak_index': 0,
+        'trough_index': 0,
+    }
+    for i, val in enumerate(curve):
+        if val > peak_val:
+            peak_val = val
+            peak_idx = i
+        draw_amount = peak_val - val
+        draw_pct = (draw_amount / peak_val) if peak_val > 0 else 0.0
+        if draw_pct > best['pct']:
+            peak_time = times_ms[peak_idx] if peak_idx < len(times_ms) else 0
+            trough_time = times_ms[i] if i < len(times_ms) else peak_time
+            days = max(0.0, (trough_time - peak_time) / 1000.0 / 86400.0)
+            best = {
+                'days': round(days, 6),
+                'trades': max(0, i - peak_idx),
+                'amount': round(draw_amount, 12),
+                'pct': round(draw_pct * 100.0, 12),
+                'peak_index': peak_idx,
+                'trough_index': i,
+            }
+    return best
+
+
+def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> List[Dict[str, Any]]:
+    monthly: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        dt = datetime.fromtimestamp(row['exit_time_ms'] / 1000.0, tz=UTC).astimezone(BJ_TZ)
+        key = dt.strftime('%Y-%m')
+        item = monthly.setdefault(key, {
+            'month': key,
+            'trade_count': 0,
+            'win_count': 0,
+            'loss_count': 0,
+            'flat_count': 0,
+            'gross_pnl_pct_sum': 0.0,
+            'net_pnl_pct_sum': 0.0,
+            'gross_pnl_amount_simple_100': 0.0,
+            'net_pnl_amount_simple_100': 0.0,
+        })
+        item['trade_count'] += 1
+        if row['gross_pct'] > 0:
+            item['win_count'] += 1
+        elif row['gross_pct'] < 0:
+            item['loss_count'] += 1
+        else:
+            item['flat_count'] += 1
+        item['gross_pnl_pct_sum'] += row['gross_pct']
+        item['net_pnl_pct_sum'] += row['net_pct']
+        item['gross_pnl_amount_simple_100'] += initial_equity * row['gross_pct'] / 100.0
+        item['net_pnl_amount_simple_100'] += initial_equity * row['net_pct'] / 100.0
+    out = []
+    for key in sorted(monthly):
+        item = monthly[key]
+        out.append({
+            'month': item['month'],
+            'trade_count': item['trade_count'],
+            'win_count': item['win_count'],
+            'loss_count': item['loss_count'],
+            'flat_count': item['flat_count'],
+            'net_pnl': round(item['gross_pnl_amount_simple_100'], 12),
+            'gross_pnl_pct_sum': round(item['gross_pnl_pct_sum'], 12),
+            'net_pnl_pct_sum': round(item['net_pnl_pct_sum'], 12),
+            'gross_pnl_amount_simple_100': round(item['gross_pnl_amount_simple_100'], 12),
+            'net_pnl_amount_simple_100': round(item['net_pnl_amount_simple_100'], 12),
+        })
+    return out
+
+
+def build_extended_metrics(trades: List[Dict[str, Any]], fee_side: float, initial_equity: float) -> Dict[str, Any]:
+    rows = _prepare_trade_rows(trades, fee_side)
+    reason_counts: Dict[str, int] = {}
+    symbols = set()
+    for row in rows:
+        if row['symbol']:
+            symbols.add(row['symbol'])
+        reason = row.get('reason')
+        if reason:
+            reason_counts[str(reason)] = reason_counts.get(str(reason), 0) + 1
+    curves = _build_equity_curves(rows, initial_equity)
+    times_ms = [rows[0]['exit_time_ms'] if rows else 0] + [r['exit_time_ms'] for r in rows]
+    simple_gross_pct = sum(r['gross_pct'] for r in rows)
+    simple_net_pct = sum(r['net_pct'] for r in rows)
+    compound_gross_pct = ((curves['compound_gross'][-1] / initial_equity) - 1.0) * 100.0 if curves['compound_gross'] else 0.0
+    compound_net_pct = ((curves['compound_net'][-1] / initial_equity) - 1.0) * 100.0 if curves['compound_net'] else 0.0
+    max_drawdown = {
+        'simple_gross': _calc_max_drawdown(curves['simple_gross'], times_ms),
+        'simple_net': _calc_max_drawdown(curves['simple_net'], times_ms),
+        'compound_gross': _calc_max_drawdown(curves['compound_gross'], times_ms),
+        'compound_net': _calc_max_drawdown(curves['compound_net'], times_ms),
+    }
+    return {
+        'signals_count': None,
+        'total_trades': len(rows),
+        'symbols_count': len(symbols),
+        'reason_counts': reason_counts,
+        'pnl_pct_sum': round(simple_gross_pct, 12),
+        'pnl_pct_sum_net_fee': round(simple_net_pct, 12),
+        'compound_return_pct': round(compound_gross_pct, 12),
+        'compound_return_pct_net_fee': round(compound_net_pct, 12),
+        'max_drawdown': max_drawdown,
+        'monthly_stats': _build_monthly_stats(rows, initial_equity),
+        'equity_curves': curves,
+        'equity_initial': initial_equity,
+        'fee_side': fee_side,
+    }
+
+
+def _format_dd(dd: Dict[str, Any]) -> str:
+    return (
+        f"回撤: {dd['amount']:.2f} ({dd['pct']:.2f}%) / {dd['days']:.1f}天 / {dd['trades']}笔"
+    )
+
+
+def _plot_curve(path: Path, title: str, x_vals: List[int], gross_curve: List[float], net_curve: List[float], gross_profit_pct: float, net_profit_pct: float, gross_dd: Dict[str, Any], net_dd: Dict[str, Any]) -> None:
+    ensure_dir(path.parent)
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.plot(x_vals, gross_curve, label='不扣手续费')
+    ax.plot(x_vals, net_curve, label='扣手续费')
+    ax.set_xlabel('交易笔序')
+    ax.set_ylabel('权益')
+    subtitle = (
+        f"累计盈利 不扣费={gross_profit_pct:.4f}% | 扣费={net_profit_pct:.4f}%    "
+        f"最大回撤 不扣费[{_format_dd(gross_dd)}]    扣费[{_format_dd(net_dd)}]"
+    )
+    ax.set_title(f"{title}\n{subtitle}")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 def parse_iso_utc(s: str) -> datetime:
@@ -152,26 +411,18 @@ def build_all_summary(
     trades = load_jsonl(merged_trades_path) if merged_trades_path else []
     signals = load_jsonl(merged_signals_path) if merged_signals_path else []
 
-    reason_counts: Dict[str, int] = {}
-    symbols = set()
-    pnl_pct_sum = 0.0
-    pnl_pct_present = False
-    for row in trades:
-        sym = row.get('symbol')
-        if sym:
-            symbols.add(sym)
-        reason = row.get('reason')
-        if reason:
-            reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        if isinstance(row.get('pnl_pct'), (int, float)):
-            pnl_pct_sum += float(row['pnl_pct'])
-            pnl_pct_present = True
-
     config_path = resolve_config_path(args.config)
     run_config: Dict[str, Any] | None = None
     if config_path.exists():
         with config_path.open('r', encoding='utf-8') as f:
             run_config = json.load(f)
+
+    metrics = build_extended_metrics(
+        trades=trades,
+        fee_side=_extract_fee_side_from_config(run_config, args.equity_fee_side),
+        initial_equity=args.equity_initial,
+    )
+    metrics['signals_count'] = len(signals)
 
     return {
         'summary_scope': 'ALL',
@@ -186,16 +437,12 @@ def build_all_summary(
         'success_count': scheduler_summary['success_count'],
         'failed_count': scheduler_summary['failed_count'],
         'wall_clock_seconds': scheduler_summary['wall_clock_seconds'],
-        'signals_count': len(signals),
-        'total_trades': len(trades),
-        'symbols_count': len(symbols),
-        'reason_counts': reason_counts,
-        'pnl_pct_sum': round(pnl_pct_sum, 12) if pnl_pct_present else None,
         'batch_run_ids': [t.run_id for t in tasks],
         'batch_summaries': [str(Path(args.out_dir) / f'sim_summary.{t.run_id}.json') for t in tasks],
         'config_path': str(config_path),
         'run_config': run_config,
         'artifacts': artifacts,
+        **{k: v for k, v in metrics.items() if k != 'equity_curves'},
     }
 
 
@@ -275,34 +522,51 @@ def run_post_processing(
     if args.build_equity:
         append_line(scheduler_log, f'POST_EQUITY_START runset={runset}')
         print(f'POST_EQUITY_START runset={runset}')
-        equity_png = state_dir / f'sim_curve.{runset}_ALL.png'
-        equity_json = state_dir / f'sim_equity.{runset}_ALL.json'
-        logs_dir = Path(args.logs_dir)
-        ensure_dir(logs_dir)
-        equity_log = logs_dir / f'equity_{runset}_ALL.log'
-        cmd = [
-            args.python_bin,
-            args.equity_script,
-            '--trades', str(merged_trades),
-            '--kline-root', args.kline_root,
-            '--initial-equity', str(args.equity_initial),
-            '--fee-side', str(args.equity_fee_side),
-            '--out', str(equity_png),
-            '--summary-out', str(equity_json),
-        ]
         try:
-            with equity_log.open('w', encoding='utf-8') as f:
-                proc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, check=False)
-            if proc.returncode != 0:
-                raise RuntimeError(f'equity script rc={proc.returncode}; see {equity_log}')
-            artifacts['equity_curve_png'] = str(equity_png)
+            with merged_summary.open('r', encoding='utf-8') as f:
+                all_summary = json.load(f)
+            curves = build_extended_metrics(
+                trades=load_jsonl(merged_trades),
+                fee_side=all_summary.get('fee_side', args.equity_fee_side),
+                initial_equity=all_summary.get('equity_initial', args.equity_initial),
+            )
+            x_vals = list(range(len(curves['equity_curves']['simple_gross'])))
+            simple_png = state_dir / f'sim_curve_simple.{runset}_ALL.png'
+            compound_png = state_dir / f'sim_curve_compound.{runset}_ALL.png'
+            equity_json = state_dir / f'sim_equity.{runset}_ALL.json'
+            _plot_curve(
+                simple_png,
+                '单利资金曲线',
+                x_vals,
+                curves['equity_curves']['simple_gross'],
+                curves['equity_curves']['simple_net'],
+                curves['pnl_pct_sum'],
+                curves['pnl_pct_sum_net_fee'],
+                curves['max_drawdown']['simple_gross'],
+                curves['max_drawdown']['simple_net'],
+            )
+            _plot_curve(
+                compound_png,
+                '复利资金曲线',
+                x_vals,
+                curves['equity_curves']['compound_gross'],
+                curves['equity_curves']['compound_net'],
+                curves['compound_return_pct'],
+                curves['compound_return_pct_net_fee'],
+                curves['max_drawdown']['compound_gross'],
+                curves['max_drawdown']['compound_net'],
+            )
+            equity_summary = {k: v for k, v in curves.items() if k != 'equity_curves'}
+            with equity_json.open('w', encoding='utf-8') as f:
+                json.dump(equity_summary, f, ensure_ascii=False, indent=2)
+            artifacts['equity_curve_simple_png'] = str(simple_png)
+            artifacts['equity_curve_compound_png'] = str(compound_png)
             artifacts['equity_summary_json'] = str(equity_json)
-            artifacts['equity_log'] = str(equity_log)
-            append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} out={equity_png} summary={equity_json}')
-            print(f'POST_EQUITY_DONE runset={runset} out={equity_png}')
+            append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} simple={simple_png} compound={compound_png} summary={equity_json}')
+            print(f'POST_EQUITY_DONE runset={runset} simple={simple_png} compound={compound_png}')
             notify_message(
                 notify_label,
-                f'资金曲线已生成｜{args.strategy}\n文件：{equity_png.name}',
+                f'资金曲线已生成｜{args.strategy}\n单利：{simple_png.name}\n复利：{compound_png.name}',
             )
         except Exception as e:
             msg = f'build-equity failed: {e}'

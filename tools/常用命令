@@ -32,7 +32,7 @@ RUNSET="SNAP_V5.0_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+00:00 \
-  --end 2026-03-20T00:00:00+00:00 \
+  --end 2026-03-21T04:00:00+00:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -142,7 +142,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit
   all_missing_idx_symbols       -- idx 三列全缺失的品种数量(所有行的 idx 三列都不完整,是值层面全缺；如果是 shard 直接缺列，更偏向被归到 schema_issues)
   partial_missing_idx_symbols   -- idx 三列部分缺失的品种数量(只有部分时间段/部分行缺失 idx)
   formal_exclude_symbols        -- 建议从正式数据池 / 正式回测 universe 中排除的品种数量
-  
+
 symbols_with_contract_gaps
 存在合约主数据断行的品种数量。只检查合约 1m 主时间轴是否连续，不检查 idx 数据。
 
@@ -609,8 +609,3 @@ PERF_ONLY 第一刀完成
 除非是 UI 证据、git 历史图、异常截图，否则优先用文字和命令输出。
 
 
-
-我想到两处优化：
-
-一、sim_summary文件，包括独立命令行运行的输出、以及批次运行后的merge输出，添加如下数据：
-1、现在只有pnl_pct_sum，需要添加扣除手续费后的收益、复利收益、扣除手续费后的复利收益
