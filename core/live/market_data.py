@@ -1,187 +1,225 @@
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
-import pyarrow.parquet as pq
+
+from core.live.binance_client import get_client
 
 _BJ = timezone(timedelta(hours=8))
-_MAX_SYMBOL_STALE_MS = 2 * 60 * 1000
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def get_klines_root() -> Path:
-    raw = os.getenv("BN_KLINES_ROOT", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return _repo_root() / "data" / "klines_1m"
-
-
-def list_candidate_symbols(*, exclude_symbols: list[str] | None = None) -> list[str]:
-    root = get_klines_root()
-    if not root.exists():
-        raise FileNotFoundError(f"klines root not found: {root}")
-    exclude = {str(x).upper().strip() for x in (exclude_symbols or []) if str(x).strip()}
-    symbols: list[str] = []
-    for p in sorted(root.iterdir()):
-        if not p.is_dir():
-            continue
-        sym = p.name.upper().strip()
-        if sym in exclude:
-            continue
-        symbols.append(sym)
-    return symbols
+_INTERVAL = '1m'
+_BENCHMARK_WEIGHTS = {
+    'BTCUSDT': 0.56,
+    'ETHUSDT': 0.24,
+    'BNBUSDT': 0.12,
+    'SOLUSDT': 0.08,
+}
 
 
 def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
-    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(_BJ).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(_BJ).strftime('%Y-%m-%d %H:%M:%S')
 
 
-def _read_symbol_parquet(symbol: str) -> pd.DataFrame:
-    sym = str(symbol).upper().strip()
-    sym_dir = get_klines_root() / sym
-    if not sym_dir.exists():
-        raise FileNotFoundError(f"symbol dir not found: {sym_dir}")
-    files = sorted(sym_dir.glob('*.parquet'))
-    if not files:
-        raise FileNotFoundError(f"no parquet files found for {sym}")
-    table = pq.read_table([str(p) for p in files])
-    df = table.to_pandas()
-    if df.empty:
-        raise ValueError(f"empty parquet for {sym}")
-    return df
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
 
 
-def _prepare_symbol_df(symbol: str, df: pd.DataFrame, lookback_bars: int) -> pd.DataFrame:
-    required = ['open_time_ms', 'open', 'high', 'low', 'close', 'quote_asset_volume']
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise KeyError(f"{symbol} missing required columns: {missing}")
+def _to_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return int(default)
 
-    out = df.copy()
-    out = out.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last')
-    out = out.reset_index(drop=True)
-    out['symbol'] = symbol
 
-    for idx_col in ('high_idx', 'low_idx', 'close_idx'):
-        if idx_col not in out.columns:
-            out[idx_col] = float('nan')
+def _exchange_server_time_ms(account: str) -> int:
+    client = get_client(account)
+    return int(client.futures_time()['serverTime'])
 
-    window_24h = 24 * 60
-    out['chg_24h'] = out['close'] / out['close'].shift(window_24h) - 1.0
-    out['vol_24h'] = out['quote_asset_volume'].rolling(window=window_24h, min_periods=1).sum()
 
-    keep = max(int(lookback_bars), window_24h + 5)
-    if len(out) > keep:
-        out = out.iloc[-keep:].copy()
+def _last_closed_bar_open_time_ms(account: str) -> int:
+    server_ms = _exchange_server_time_ms(account)
+    return (server_ms // 60000) * 60000 - 60000
 
-    out.set_index('open_time_ms', inplace=True)
-    out.index = out.index.astype('int64')
-    out.sort_index(inplace=True)
+
+def list_candidate_symbols(account: str, *, exclude_symbols: list[str] | None = None) -> list[str]:
+    client = get_client(account)
+    info = client.futures_exchange_info()
+    exclude = {str(x).upper().strip() for x in (exclude_symbols or []) if str(x).strip()}
+    out: list[str] = []
+    for item in info.get('symbols', []):
+        if str(item.get('status')) != 'TRADING':
+            continue
+        if str(item.get('contractType')) != 'PERPETUAL':
+            continue
+        if str(item.get('quoteAsset')) != 'USDT':
+            continue
+        symbol = str(item.get('symbol', '')).upper().strip()
+        if not symbol or symbol in exclude:
+            continue
+        out.append(symbol)
+    out.sort()
     return out
 
 
-def load_symbol_history(symbol: str, lookback_bars: int) -> dict[str, Any]:
-    sym = str(symbol).upper().strip()
-    try:
-        df_raw = _read_symbol_parquet(sym)
-        df = _prepare_symbol_df(sym, df_raw, lookback_bars)
-        if df.empty:
-            return {'ok': False, 'reason': f'{sym} history empty after prepare', 'data': None}
-        latest_ts = int(df.index.max())
-        latest_row = df.loc[latest_ts]
-        return {
-            'ok': True,
-            'reason': '',
-            'data': {
-                'symbol': sym,
-                'df': df,
-                'latest_closed_bar_ts': latest_ts,
-                'latest_closed_bar_bj': _fmt_bj_from_ms(latest_ts),
-                'bars_count': int(len(df)),
-                'latest_close': float(latest_row['close']),
-            },
-        }
-    except Exception as e:
-        return {'ok': False, 'reason': str(e), 'data': None}
+def _ticker_map(account: str) -> dict[str, dict[str, Any]]:
+    client = get_client(account)
+    rows = client.futures_ticker()
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get('symbol', '')).upper().strip()
+        if symbol:
+            out[symbol] = row
+    return out
 
 
-def build_live_inputs(symbols: list[str], lookback_bars: int) -> dict[str, Any]:
-    histories: dict[str, pd.DataFrame] = {}
-    latest_map: dict[str, int] = {}
+def _filter_symbols_by_universe(symbols: list[str], ticker_map: dict[str, dict[str, Any]], strategy_cfg: dict[str, Any] | None) -> tuple[list[str], dict[str, str]]:
+    universe = (strategy_cfg or {}).get('universe') or {}
+    vol_min = _to_float(universe.get('24h_quote_volume_min'), 0.0)
+    chg_cfg = universe.get('24h_chg_pct') or {}
+    chg_min = _to_float(chg_cfg.get('min'), -1e18)
+    chg_max = _to_float(chg_cfg.get('max'), 1e18)
+    eligible: list[str] = []
     errors: dict[str, str] = {}
-
     for symbol in symbols:
-        res = load_symbol_history(symbol, lookback_bars)
-        if not res['ok']:
-            errors[str(symbol).upper().strip()] = res['reason']
+        ticker = ticker_map.get(symbol)
+        if not ticker:
+            errors[symbol] = 'missing_24h_ticker'
             continue
-        payload = res['data']
-        histories[payload['symbol']] = payload['df']
-        latest_map[payload['symbol']] = int(payload['latest_closed_bar_ts'])
+        quote_vol = _to_float(ticker.get('quoteVolume'))
+        chg_pct = _to_float(ticker.get('priceChangePercent'))
+        if quote_vol < vol_min:
+            continue
+        if chg_pct < chg_min or chg_pct > chg_max:
+            continue
+        eligible.append(symbol)
+    return eligible, errors
 
-    if not histories:
-        return {
-            'ok': False,
-            'reason': 'no symbol history loaded',
-            'data': None,
-            'errors': errors,
-        }
 
-    freshest_ts = max(latest_map.values())
-    stale_cutoff_ts = freshest_ts - _MAX_SYMBOL_STALE_MS
-    eligible_symbols = {
-        symbol: ts
-        for symbol, ts in latest_map.items()
-        if int(ts) >= stale_cutoff_ts
-    }
-    stale_symbols = {
-        symbol: _fmt_bj_from_ms(ts)
-        for symbol, ts in latest_map.items()
-        if symbol not in eligible_symbols
-    }
+def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    client = get_client(account)
+    return client.futures_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
 
+
+def _rows_to_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int, ticker_24h: dict[str, Any]) -> pd.DataFrame:
+    if not rows:
+        raise ValueError(f'{symbol} kline rows empty')
+    data = []
+    for row in rows:
+        open_time_ms = _to_int(row[0])
+        if open_time_ms > latest_closed_bar_ts:
+            continue
+        data.append({
+            'open_time_ms': open_time_ms,
+            'open': _to_float(row[1]),
+            'high': _to_float(row[2]),
+            'low': _to_float(row[3]),
+            'close': _to_float(row[4]),
+            'quote_asset_volume': _to_float(row[7]),
+        })
+    df = pd.DataFrame(data)
+    if df.empty:
+        raise ValueError(f'{symbol} has no closed 1m bars')
+    df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').reset_index(drop=True)
+    df['symbol'] = symbol
+    df['high_idx'] = float('nan')
+    df['low_idx'] = float('nan')
+    df['close_idx'] = float('nan')
+    chg_ratio = _to_float(ticker_24h.get('priceChangePercent')) / 100.0
+    vol_24h = _to_float(ticker_24h.get('quoteVolume'))
+    df['chg_24h'] = chg_ratio
+    df['vol_24h'] = vol_24h
+    df.set_index('open_time_ms', inplace=True)
+    df.index = df.index.astype('int64')
+    df.sort_index(inplace=True)
+    return df
+
+
+def _build_index_df(account: str, latest_closed_bar_ts: int, keep: int) -> pd.DataFrame:
+    series_map: dict[str, pd.DataFrame] = {}
+    for symbol, weight in _BENCHMARK_WEIGHTS.items():
+        rows = _fetch_symbol_klines(account, symbol, keep)
+        data = []
+        for row in rows:
+            open_time_ms = _to_int(row[0])
+            if open_time_ms > latest_closed_bar_ts:
+                continue
+            data.append({
+                'open_time_ms': open_time_ms,
+                'high': _to_float(row[2]),
+                'low': _to_float(row[3]),
+                'close': _to_float(row[4]),
+            })
+        df = pd.DataFrame(data)
+        if df.empty:
+            raise ValueError(f'benchmark {symbol} has no closed 1m bars')
+        df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').reset_index(drop=True)
+        df.set_index('open_time_ms', inplace=True)
+        df.index = df.index.astype('int64')
+        base_close = float(df['close'].iloc[0])
+        if base_close <= 0:
+            raise ValueError(f'benchmark {symbol} base close invalid')
+        part = pd.DataFrame(index=df.index)
+        part[f'{symbol}_close'] = (df['close'] / base_close) * float(weight)
+        part[f'{symbol}_high'] = (df['high'] / base_close) * float(weight)
+        part[f'{symbol}_low'] = (df['low'] / base_close) * float(weight)
+        series_map[symbol] = part
+    merged = pd.concat(series_map.values(), axis=1, join='inner').sort_index()
+    if merged.empty:
+        raise ValueError('benchmark merged index empty')
+    out = pd.DataFrame(index=merged.index)
+    out['close_idx'] = merged[[f'{s}_close' for s in _BENCHMARK_WEIGHTS]].sum(axis=1)
+    out['high_idx'] = merged[[f'{s}_high' for s in _BENCHMARK_WEIGHTS]].sum(axis=1)
+    out['low_idx'] = merged[[f'{s}_low' for s in _BENCHMARK_WEIGHTS]].sum(axis=1)
+    return out
+
+
+def build_live_inputs(account: str, symbols: list[str], lookback_bars: int, strategy_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    errors: dict[str, str] = {}
+    ticker_map = _ticker_map(account)
+    eligible_symbols, universe_errors = _filter_symbols_by_universe(symbols, ticker_map, strategy_cfg)
+    errors.update(universe_errors)
     if not eligible_symbols:
-        return {
-            'ok': False,
-            'reason': 'all symbols stale after freshness filter',
-            'data': None,
-            'errors': errors,
-        }
+        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': errors}
 
-    latest_common_ts = min(eligible_symbols.values())
+    keep = max(int(lookback_bars), 180)
+    latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
+    index_df = _build_index_df(account, latest_closed_bar_ts, keep)
+
+    histories: dict[str, pd.DataFrame] = {}
+    stale_symbols: dict[str, str] = {}
     cross_rows: list[pd.Series] = []
-    full_df: dict[str, pd.DataFrame] = {}
 
-    for symbol, df in histories.items():
-        if symbol not in eligible_symbols:
-            continue
-        clipped = df[df.index <= latest_common_ts].copy()
-        if clipped.empty or latest_common_ts not in clipped.index:
-            continue
-        full_df[symbol] = clipped
-        row = clipped.loc[latest_common_ts].copy()
-        row.name = symbol
-        cross_rows.append(row)
+    for symbol in eligible_symbols:
+        try:
+            rows = _fetch_symbol_klines(account, symbol, keep)
+            df = _rows_to_df(symbol, rows, latest_closed_bar_ts, ticker_map.get(symbol) or {})
+            if latest_closed_bar_ts not in df.index:
+                stale_symbols[symbol] = _fmt_bj_from_ms(_to_int(df.index.max()))
+                continue
+            aligned_idx = index_df.reindex(df.index)
+            if aligned_idx[['high_idx', 'low_idx', 'close_idx']].isna().any().any():
+                stale_symbols[symbol] = 'benchmark_alignment_missing'
+                continue
+            df[['high_idx', 'low_idx', 'close_idx']] = aligned_idx[['high_idx', 'low_idx', 'close_idx']]
+            histories[symbol] = df
+            row = df.loc[latest_closed_bar_ts].copy()
+            row.name = symbol
+            cross_rows.append(row)
+        except Exception as e:
+            errors[symbol] = str(e)
 
-    if not cross_rows:
-        return {
-            'ok': False,
-            'reason': 'no cross section rows at latest common closed bar',
-            'data': None,
-            'errors': errors,
-        }
+    if not histories or not cross_rows:
+        return {'ok': False, 'reason': 'no live symbol history loaded from binance', 'data': None, 'errors': errors | stale_symbols}
 
     cross_section = pd.DataFrame(cross_rows)
     cross_section.index.name = 'symbol'
+    freshest_ts = latest_closed_bar_ts
 
     return {
         'ok': True,
@@ -190,16 +228,16 @@ def build_live_inputs(symbols: list[str], lookback_bars: int) -> dict[str, Any]:
         'data': {
             'freshest_bar_ts': freshest_ts,
             'freshest_bar_bj': _fmt_bj_from_ms(freshest_ts),
-            'stale_cutoff_ts': stale_cutoff_ts,
-            'stale_cutoff_bj': _fmt_bj_from_ms(stale_cutoff_ts),
+            'stale_cutoff_ts': freshest_ts,
+            'stale_cutoff_bj': _fmt_bj_from_ms(freshest_ts),
             'stale_symbol_count': len(stale_symbols),
             'stale_symbols': stale_symbols,
-            'latest_closed_bar_ts': latest_common_ts,
-            'latest_closed_bar_bj': _fmt_bj_from_ms(latest_common_ts),
+            'latest_closed_bar_ts': latest_closed_bar_ts,
+            'latest_closed_bar_bj': _fmt_bj_from_ms(latest_closed_bar_ts),
             'cross_section': cross_section,
-            'full_df': full_df,
-            'symbol_count': len(full_df),
-            'bars_loaded_min': int(min(len(df) for df in full_df.values())),
-            'bars_loaded_max': int(max(len(df) for df in full_df.values())),
+            'full_df': histories,
+            'symbol_count': len(histories),
+            'bars_loaded_min': int(min(len(df) for df in histories.values())),
+            'bars_loaded_max': int(max(len(df) for df in histories.values())),
         },
     }

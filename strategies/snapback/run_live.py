@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -159,8 +158,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     lookback_bars = int(live_cfg['lookback_bars'])
-    symbols = list_candidate_symbols(exclude_symbols=live_cfg.get('exclude_symbols') or [])
-    md_res = build_live_inputs(symbols, lookback_bars)
+    symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
+    md_res = build_live_inputs(account, symbols, lookback_bars, strategy_cfg)
     if not md_res['ok']:
         if audit_enabled:
             write_event(account, 'data_error', {'reason': md_res['reason'], 'errors': md_res.get('errors')})
