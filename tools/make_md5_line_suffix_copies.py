@@ -7,7 +7,7 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-     "schedule_backtests.py",
+    # "schedule_backtests.py",
     # "klines_1m_store.py",
     # "strategies/run_backtest.py",
     # "PROJECT_IRON_LAWS.md",
@@ -23,6 +23,7 @@ FILES = [
     # "tools/analyze_snap_env_buckets.py",
     # "audit_tools/audit_1m_data_quality_v2.py",
     # "core/analysis/sim_equity_curves.py",
+    "core/analysis/postprocess_backtests.py",
     # "=================================",
     # "core/config_loader.py",
     # "core/analysis/analyzer.py",

@@ -34,11 +34,49 @@ def resolve_merge_meta_path(run_id: str, state_dir: Path, explicit: str | None) 
     return state_dir / f"sim_merge_meta.{run_id}.json"
 
 
+def load_meta_fallback(run_id: str, state_dir: Path, explicit_merge_meta: str | None) -> Dict[str, Any]:
+    merge_meta_path = resolve_merge_meta_path(run_id, state_dir, explicit_merge_meta)
+    if merge_meta_path.exists():
+        with merge_meta_path.open('r', encoding='utf-8') as f:
+            meta = json.load(f)
+        meta["_meta_source"] = "merge_meta"
+        meta["_meta_path"] = str(merge_meta_path)
+        return meta
+
+    summary_path = state_dir / f"sim_summary.{run_id}.json"
+    if summary_path.exists():
+        with summary_path.open('r', encoding='utf-8') as f:
+            old = json.load(f)
+        meta = {
+            "strategy_name": old.get("strategy_name") or old.get("strategy"),
+            "run_id": old.get("run_id", run_id),
+            "start": old.get("start"),
+            "end": old.get("end"),
+            "batch_days": old.get("batch_days"),
+            "max_parallel": old.get("max_parallel"),
+            "batch_count": old.get("batch_count"),
+            "success_count": old.get("success_count"),
+            "failed_count": old.get("failed_count"),
+            "wall_clock_seconds": old.get("wall_clock_seconds"),
+            "batch_run_ids": old.get("batch_run_ids", []),
+            "batch_summaries": old.get("batch_summaries", []),
+            "config_path": old.get("config_path") or old.get("config"),
+            "artifacts": dict(old.get("artifacts", {})),
+        }
+        meta["_meta_source"] = "summary_fallback"
+        meta["_meta_path"] = str(summary_path)
+        return meta
+
+    raise FileNotFoundError(
+        f"merge meta not found: {merge_meta_path}; fallback summary also not found: {summary_path}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Build merged backtest summary and optional equity curves.')
     ap.add_argument('--run-id', required=True)
     ap.add_argument('--state-dir', default='output/state')
-    ap.add_argument('--merge-meta', default=None, help='Optional. Defaults to state-dir/sim_merge_meta.<RUN_ID>.json')
+    ap.add_argument('--merge-meta', default=None, help='Optional. Defaults to state-dir/sim_merge_meta.<RUN_ID>.json; falls back to sim_summary.<RUN_ID>.json')
     ap.add_argument('--kline-root', default='data/klines_1m')
     ap.add_argument('--initial-equity', type=float, default=100.0)
     ap.add_argument('--fee-side', type=float, default=0.0005)
@@ -48,27 +86,20 @@ def main() -> int:
 
     state_dir = Path(args.state_dir)
     run_id = args.run_id
-    merge_meta_path = resolve_merge_meta_path(run_id, state_dir, args.merge_meta)
     merged_trades = state_dir / f'sim_trades.{run_id}.jsonl'
     merged_signals = state_dir / f'sim_signals.{run_id}.jsonl'
     merged_summary = state_dir / f'sim_summary.{run_id}.json'
 
-    if not merge_meta_path.exists():
-        raise FileNotFoundError(
-            f'merge meta not found: {merge_meta_path} '
-            f'(tip: if this file exists elsewhere, pass --merge-meta explicitly)'
-        )
     if not merged_trades.exists():
         raise FileNotFoundError(f'merged trades not found: {merged_trades}')
     if not merged_signals.exists():
         raise FileNotFoundError(f'merged signals not found: {merged_signals}')
 
-    with merge_meta_path.open('r', encoding='utf-8') as f:
-        merge_meta = json.load(f)
+    merge_meta = load_meta_fallback(run_id, state_dir, args.merge_meta)
 
-    config_path = Path(merge_meta['config_path'])
+    config_path = Path(merge_meta['config_path']) if merge_meta.get('config_path') else Path()
     run_config: Dict[str, Any] | None = None
-    if config_path.exists():
+    if config_path and config_path.exists():
         with config_path.open('r', encoding='utf-8') as f:
             run_config = json.load(f)
 
@@ -81,21 +112,23 @@ def main() -> int:
     out = {
         'summary_scope': 'ALL',
         'generated_by': 'core/analysis/postprocess_backtests.py',
-        'strategy_name': merge_meta['strategy_name'],
+        'strategy_name': merge_meta.get('strategy_name'),
         'run_id': run_id,
-        'start': merge_meta['start'],
-        'end': merge_meta['end'],
-        'batch_days': merge_meta['batch_days'],
-        'max_parallel': merge_meta['max_parallel'],
-        'batch_count': merge_meta['batch_count'],
-        'success_count': merge_meta['success_count'],
-        'failed_count': merge_meta['failed_count'],
-        'wall_clock_seconds': merge_meta['wall_clock_seconds'],
-        'batch_run_ids': merge_meta['batch_run_ids'],
-        'batch_summaries': merge_meta['batch_summaries'],
-        'config_path': str(config_path),
+        'start': merge_meta.get('start'),
+        'end': merge_meta.get('end'),
+        'batch_days': merge_meta.get('batch_days'),
+        'max_parallel': merge_meta.get('max_parallel'),
+        'batch_count': merge_meta.get('batch_count'),
+        'success_count': merge_meta.get('success_count'),
+        'failed_count': merge_meta.get('failed_count'),
+        'wall_clock_seconds': merge_meta.get('wall_clock_seconds'),
+        'batch_run_ids': merge_meta.get('batch_run_ids', []),
+        'batch_summaries': merge_meta.get('batch_summaries', []),
+        'config_path': str(config_path) if config_path else None,
         'run_config': run_config,
         'artifacts': dict(merge_meta.get('artifacts', {})),
+        'meta_source': merge_meta.get('_meta_source'),
+        'meta_path': merge_meta.get('_meta_path'),
         **metrics,
     }
 
