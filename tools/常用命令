@@ -13,7 +13,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --copy-mode copy
 
 # ========= 拉 服务器回测数据 到 MacBook =========
-RUNID="SNAP_V5.0_30D_P6_0320T2045_ALL"
+RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
   ~/ai_projects/bn_research_core/state
 
@@ -58,7 +58,7 @@ cd /root/bn_research_core
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/state" \
-  --run-id "Snapback_V5.0_SmokeTest"
+  --run-id "Snapback_V5.0_SmokeTest1"
 
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \

@@ -9,7 +9,7 @@ python3 tools/make_md5_line_suffix_copies.py
 FILES = [
      "schedule_backtests.py",
     # "klines_1m_store.py",
-     "strategies/run_backtest.py",
+    # "strategies/run_backtest.py",
     # "PROJECT_IRON_LAWS.md",
     # "audit_24hchg_vs_drop_window.py",
     #"visual_audit_bucketizer_v5.py",
