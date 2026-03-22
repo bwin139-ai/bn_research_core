@@ -96,31 +96,37 @@ def normalize_monthly_stats(monthly_stats: List[Dict[str, Any]]) -> List[Dict[st
     return out
 
 
-def build_normalized_metrics(trades: List[Dict[str, Any]], fee_side: float, initial_equity: float) -> Dict[str, Any]:
+def build_normalized_metrics(trades: List[Dict[str, Any]], fee_side: float, initial_equity: float, show_gross: bool = False) -> Dict[str, Any]:
     raw = build_extended_summary_metrics(trades, fee_side=fee_side, initial_equity=initial_equity)
     try:
         from core.analysis.sim_equity_curves import build_equity_payload, prepare_rows  # type: ignore
 
-        equity_metrics = build_equity_payload(prepare_rows(trades, fee_side), initial_equity)
+        equity_metrics = build_equity_payload(prepare_rows(trades, fee_side), initial_equity, show_gross=show_gross)
     except Exception as exc:
         raise RuntimeError(f"failed to build normalized equity metrics: {exc}") from exc
 
-    return {
+    out = {
         "equity_initial_usdt": round2(initial_equity),
         "fee_side_pct": round2(fee_side * 100.0),
         "trade_count": len(trades),
         "signals_count": 0,
-        "final_equity_simple_gross_usdt": equity_metrics["final_equity_simple_gross_usdt"],
         "final_equity_simple_net_usdt": equity_metrics["final_equity_simple_net_usdt"],
-        "final_equity_compound_gross_usdt": equity_metrics["final_equity_compound_gross_usdt"],
         "final_equity_compound_net_usdt": equity_metrics["final_equity_compound_net_usdt"],
-        "return_simple_gross_pct": equity_metrics["return_simple_gross_pct"],
         "return_simple_net_pct": equity_metrics["return_simple_net_pct"],
-        "return_compound_gross_pct": equity_metrics["return_compound_gross_pct"],
         "return_compound_net_pct": equity_metrics["return_compound_net_pct"],
         "max_drawdown": dict(equity_metrics["max_drawdown"]),
         "monthly_stats": normalize_monthly_stats(raw.get("monthly_stats", [])),
     }
+    if show_gross:
+        out.update(
+            {
+                "final_equity_simple_gross_usdt": equity_metrics["final_equity_simple_gross_usdt"],
+                "final_equity_compound_gross_usdt": equity_metrics["final_equity_compound_gross_usdt"],
+                "return_simple_gross_pct": equity_metrics["return_simple_gross_pct"],
+                "return_compound_gross_pct": equity_metrics["return_compound_gross_pct"],
+            }
+        )
+    return out
 
 
 def main() -> int:
@@ -133,6 +139,7 @@ def main() -> int:
     ap.add_argument('--fee-side', type=float, default=0.0005)
     ap.add_argument('--equity-script', default='core/analysis/sim_equity_curves.py')
     ap.add_argument('--build-equity', action='store_true')
+    ap.add_argument('--show-gross', action='store_true')
     args = ap.parse_args()
 
     state_dir = Path(args.state_dir)
@@ -157,7 +164,7 @@ def main() -> int:
     trades = load_jsonl(merged_trades)
     signals = load_jsonl(merged_signals)
     fee_side = _extract_fee_side(run_config or {}) if run_config is not None else args.fee_side
-    metrics = build_normalized_metrics(trades, fee_side=fee_side, initial_equity=args.initial_equity)
+    metrics = build_normalized_metrics(trades, fee_side=fee_side, initial_equity=args.initial_equity, show_gross=args.show_gross)
     metrics['signals_count'] = len(signals)
 
     out = {
@@ -193,6 +200,8 @@ def main() -> int:
             '--initial-equity', str(args.initial_equity),
             '--fee-side', str(fee_side),
         ]
+        if args.show_gross:
+            cmd.append('--show-gross')
         subprocess.run(cmd, check=True)
         out['artifacts'].update({
             'equity_curve_simple_png': str(state_dir / f'sim_curve_simple.{run_id}.png'),

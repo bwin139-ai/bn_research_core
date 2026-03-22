@@ -27,8 +27,6 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
 # *** 绩效统计 & 图表曲线绘制 ***
-cd /root/bn_research_core
-
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/postprocess_backtests.py \
   --run-id SNAP_V5.0_30D_P6_0321T1728_ALL \
   --state-dir output/state \

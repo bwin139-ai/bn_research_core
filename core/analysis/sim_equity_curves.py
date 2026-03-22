@@ -177,7 +177,7 @@ def build_index_series(exit_times_ms: List[int], kline_root: Path, initial_equit
     return [initial_equity * (float(v) / first) if v is not None else initial_equity for v in weighted]
 
 
-def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float) -> Dict[str, Any]:
+def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float, show_gross: bool = False) -> Dict[str, Any]:
     simple_gross, simple_net, compound_gross, compound_net = build_curves(rows, initial_equity)
     times_ms = [rows[0]["exit_time_ms"] if rows else 0] + [r["exit_time_ms"] for r in rows]
 
@@ -186,20 +186,14 @@ def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float) -> D
     compound_gross_return_pct = ((compound_gross[-1] / initial_equity) - 1.0) * 100.0 if compound_gross else 0.0
     compound_net_return_pct = ((compound_net[-1] / initial_equity) - 1.0) * 100.0 if compound_net else 0.0
 
-    return {
+    payload = {
         "equity_initial_usdt": round2(initial_equity),
-        "final_equity_simple_gross_usdt": round2(simple_gross[-1] if simple_gross else initial_equity),
         "final_equity_simple_net_usdt": round2(simple_net[-1] if simple_net else initial_equity),
-        "final_equity_compound_gross_usdt": round2(compound_gross[-1] if compound_gross else initial_equity),
         "final_equity_compound_net_usdt": round2(compound_net[-1] if compound_net else initial_equity),
-        "return_simple_gross_pct": round2(simple_gross_return_pct),
         "return_simple_net_pct": round2(simple_net_return_pct),
-        "return_compound_gross_pct": round2(compound_gross_return_pct),
         "return_compound_net_pct": round2(compound_net_return_pct),
         "max_drawdown": {
-            "simple_gross": calc_max_drawdown(simple_gross, times_ms),
             "simple_net": calc_max_drawdown(simple_net, times_ms),
-            "compound_gross": calc_max_drawdown(compound_gross, times_ms),
             "compound_net": calc_max_drawdown(compound_net, times_ms),
         },
         "_curves": {
@@ -209,6 +203,22 @@ def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float) -> D
             "compound_net": compound_net,
         },
     }
+    if show_gross:
+        payload.update(
+            {
+                "final_equity_simple_gross_usdt": round2(simple_gross[-1] if simple_gross else initial_equity),
+                "final_equity_compound_gross_usdt": round2(compound_gross[-1] if compound_gross else initial_equity),
+                "return_simple_gross_pct": round2(simple_gross_return_pct),
+                "return_compound_gross_pct": round2(compound_gross_return_pct),
+            }
+        )
+        payload["max_drawdown"].update(
+            {
+                "simple_gross": calc_max_drawdown(simple_gross, times_ms),
+                "compound_gross": calc_max_drawdown(compound_gross, times_ms),
+            }
+        )
+    return payload
 
 
 def fmt_dd(dd: Dict[str, Any]) -> str:
@@ -225,18 +235,20 @@ def plot_curve(
     times: List[datetime],
     gross_curve: List[float],
     net_curve: List[float],
-    gross_return_pct: float,
+    gross_return_pct: float | None,
     net_return_pct: float,
-    gross_dd: Dict[str, Any],
+    gross_dd: Dict[str, Any] | None,
     net_dd: Dict[str, Any],
     index_curve: List[float],
     initial_equity: float,
     final_equity: float,
     fee_side: float,
+    show_gross: bool = False,
 ):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(18, 8))
-    ax.plot(times, gross_curve[1:], label="Equity (gross)")
+    if show_gross:
+        ax.plot(times, gross_curve[1:], label="Equity (gross)")
     ax.plot(times, net_curve[1:], label="Equity (net after fees)")
     if index_curve:
         ax.plot(times, index_curve, "--", label="Crypto index (BTC56/ETH24/BNB12/SOL08)")
@@ -244,16 +256,25 @@ def plot_curve(
     ax.set_ylabel("Equity (USDT)")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
     ax.grid(True, alpha=0.3)
-    subtitle = (
-        f"Gross={gross_return_pct:.2f}% | Net={net_return_pct:.2f}%    "
-        f"MaxDD gross[{fmt_dd(gross_dd)}]    MaxDD net[{fmt_dd(net_dd)}]"
+
+    title_lines = [
+        f"{title} (initial={initial_equity:.2f} USDT, final={final_equity:.2f} USDT, fee/side={fee_side * 100.0:.2f}%)"
+    ]
+    if show_gross and gross_return_pct is not None and gross_dd is not None:
+        title_lines.append(
+            f"Gross={gross_return_pct:.2f}%    MaxDD gross[{fmt_dd(gross_dd)}]"
+        )
+    title_lines.append(
+        f"Net={net_return_pct:.2f}%    MaxDD net[{fmt_dd(net_dd)}]"
     )
     ax.set_title(
-        f"{title} (initial={initial_equity:.2f} USDT, final={final_equity:.2f} USDT, fee/side={fee_side * 100.0:.2f}%)\n{subtitle}",
+        "\n".join(title_lines),
         fontsize=16,
+        linespacing=1.25,
     )
     ax.legend(loc="upper left")
-    fig.tight_layout()
+    fig.subplots_adjust(top=0.82)
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -280,6 +301,7 @@ def main():
     ap.add_argument("--kline-root", default="data/klines_1m")
     ap.add_argument("--initial-equity", type=float, default=100.0)
     ap.add_argument("--fee-side", type=float, default=0.0005)
+    ap.add_argument("--show-gross", action="store_true")
     args = ap.parse_args()
 
     state_dir = Path(args.state_dir)
@@ -314,7 +336,7 @@ def main():
     fee_side = float(summary.get("fee_side", args.fee_side))
 
     rows = prepare_rows(load_jsonl(trades_path), fee_side)
-    payload = build_equity_payload(rows, initial_equity)
+    payload = build_equity_payload(rows, initial_equity, show_gross=args.show_gross)
     curves = payload.pop("_curves")
 
     times = [r["dt"] for r in rows]
@@ -326,14 +348,15 @@ def main():
         times,
         curves["simple_gross"],
         curves["simple_net"],
-        payload["return_simple_gross_pct"],
+        payload.get("return_simple_gross_pct"),
         payload["return_simple_net_pct"],
-        payload["max_drawdown"]["simple_gross"],
+        payload["max_drawdown"].get("simple_gross"),
         payload["max_drawdown"]["simple_net"],
         index_curve,
         initial_equity,
         payload["final_equity_simple_net_usdt"],
         fee_side,
+        show_gross=args.show_gross,
     )
     plot_curve(
         compound_out,
@@ -341,14 +364,15 @@ def main():
         times,
         curves["compound_gross"],
         curves["compound_net"],
-        payload["return_compound_gross_pct"],
+        payload.get("return_compound_gross_pct"),
         payload["return_compound_net_pct"],
-        payload["max_drawdown"]["compound_gross"],
+        payload["max_drawdown"].get("compound_gross"),
         payload["max_drawdown"]["compound_net"],
         index_curve,
         initial_equity,
         payload["final_equity_compound_net_usdt"],
         fee_side,
+        show_gross=args.show_gross,
     )
 
     summary_out.write_text(
