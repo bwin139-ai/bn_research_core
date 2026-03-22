@@ -4,6 +4,7 @@ cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
 # ========= 找 run-id =========
+ls -ldht output/logs | head -n 3
 ls -ldht output/state/*ALL* | head -n 1
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
 /root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.6_30D_P6_0319T2304_ALL
