@@ -62,7 +62,18 @@ def fmt_seconds_cn(seconds: float) -> str:
     return f'{seconds:.0f}秒'
 
 
-def _safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:\n    try:\n        if v is None:\n            return default\n        if isinstance(v, str) and not v.strip():\n            return default\n        return float(v)\n    except Exception:\n        return default\n\n\n@dataclass
+def _safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if v is None:
+            return default
+        if isinstance(v, str) and not v.strip():
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+@dataclass
 class Task:
     batch_id: int
     start: str
@@ -115,19 +126,19 @@ def merge_viz_dirs(paths: List[Path], out_dir: Path) -> int:
     for path in paths:
         if not path.exists() or not path.is_dir():
             continue
-        for png in sorted(path.glob('*.png')):
-            target = out_dir / png.name
-            if target.exists():
-                stem = png.stem
-                suffix = png.suffix
-                idx = 1
+        for src in path.glob('*.png'):
+            dst = out_dir / src.name
+            if dst.exists():
+                stem = src.stem
+                suffix = src.suffix
+                idx = 2
                 while True:
-                    alt = out_dir / f"{stem}__dup{idx}{suffix}"
+                    alt = out_dir / f'{stem}__dup{idx}{suffix}'
                     if not alt.exists():
-                        target = alt
+                        dst = alt
                         break
                     idx += 1
-            shutil.copy2(png, target)
+            shutil.copy2(src, dst)
             copied += 1
     return copied
 
@@ -142,34 +153,15 @@ def resolve_config_path(config_arg: str) -> Path:
     return raw
 
 
-def build_all_summary(
+def build_merge_meta(
     args: argparse.Namespace,
     runset: str,
     tasks: List[Task],
-    finished: List[dict],
     scheduler_summary: dict,
-    merged_trades_path: Optional[Path],
-    merged_signals_path: Optional[Path],
     artifacts: Dict[str, str],
 ) -> dict:
-    trades = load_jsonl(merged_trades_path) if merged_trades_path else []
-    signals = load_jsonl(merged_signals_path) if merged_signals_path else []
-
-    config_path = resolve_config_path(args.config)
-    run_config: Dict[str, Any] | None = None
-    if config_path.exists():
-        with config_path.open('r', encoding='utf-8') as f:
-            run_config = json.load(f)
-
-    metrics = build_extended_metrics(
-        trades=trades,
-        fee_side=_extract_fee_side_from_config(run_config, args.equity_fee_side),
-        initial_equity=args.equity_initial,
-    )
-    metrics['signals_count'] = len(signals)
-
     return {
-        'summary_scope': 'ALL',
+        'summary_scope': 'ALL_META',
         'generated_by': 'schedule_backtests.py',
         'strategy_name': args.strategy,
         'run_id': f'{runset}_ALL',
@@ -183,11 +175,10 @@ def build_all_summary(
         'wall_clock_seconds': scheduler_summary['wall_clock_seconds'],
         'batch_run_ids': [t.run_id for t in tasks],
         'batch_summaries': [str(Path(args.out_dir) / f'sim_summary.{t.run_id}.json') for t in tasks],
-        'config_path': str(config_path),
-        'run_config': run_config,
+        'config_path': str(resolve_config_path(args.config)),
         'artifacts': artifacts,
-        **{k: v for k, v in metrics.items() if k != 'equity_curves'},
     }
+
 
 
 def run_post_processing(
@@ -219,6 +210,7 @@ def run_post_processing(
     merged_trades = state_dir / f'sim_trades.{runset}_ALL.jsonl'
     merged_signals = state_dir / f'sim_signals.{runset}_ALL.jsonl'
     merged_viz_dir = state_dir / f'sim_viz_{runset}_ALL'
+    merged_merge_meta = state_dir / f'sim_merge_meta.{runset}_ALL.json'
     merged_summary = state_dir / f'sim_summary.{runset}_ALL.json'
 
     try:
@@ -229,23 +221,25 @@ def run_post_processing(
         viz_count = merge_viz_dirs(viz_dirs, merged_viz_dir)
         artifacts['merged_viz_dir'] = str(merged_viz_dir)
 
-        all_summary = build_all_summary(
+        merge_meta = build_merge_meta(
             args=args,
             runset=runset,
             tasks=tasks,
-            finished=finished,
             scheduler_summary=scheduler_summary,
-            merged_trades_path=merged_trades,
-            merged_signals_path=merged_signals,
             artifacts=artifacts.copy(),
         )
-        with merged_summary.open('w', encoding='utf-8') as f:
-            json.dump(all_summary, f, ensure_ascii=False, indent=2)
-        artifacts['merged_summary'] = str(merged_summary)
+        merge_meta.update({
+            'trades_count': trades_count,
+            'signals_count': signals_count,
+            'viz_png_count': viz_count,
+        })
+        with merged_merge_meta.open('w', encoding='utf-8') as f:
+            json.dump(merge_meta, f, ensure_ascii=False, indent=2)
+        artifacts['merged_merge_meta'] = str(merged_merge_meta)
 
         append_line(
             scheduler_log,
-            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count} merged_summary={merged_summary}',
+            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
         )
         print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count}')
         notify_message(
@@ -263,129 +257,138 @@ def run_post_processing(
         )
         return artifacts, errors
 
-if args.build_equity:
-    append_line(scheduler_log, f'POST_EQUITY_START runset={runset}')
-    print(f'POST_EQUITY_START runset={runset}')
+    append_line(scheduler_log, f'POST_ANALYSIS_START runset={runset}')
+    print(f'POST_ANALYSIS_START runset={runset}')
     try:
-        simple_png = state_dir / f'sim_curve_simple.{runset}_ALL.png'
-        compound_png = state_dir / f'sim_curve_compound.{runset}_ALL.png'
-        equity_json = state_dir / f'sim_equity.{runset}_ALL.json'
         cmd = [
             args.python_bin,
-            args.equity_script,
+            args.postprocess_script,
             '--run-id', f'{runset}_ALL',
             '--state-dir', str(state_dir),
+            '--merge-meta', str(merged_merge_meta),
             '--kline-root', args.kline_root,
             '--initial-equity', str(args.equity_initial),
             '--fee-side', str(args.equity_fee_side),
         ]
+        if args.build_equity:
+            cmd.append('--build-equity')
         subprocess.run(cmd, check=True)
-        artifacts['equity_curve_simple_png'] = str(simple_png)
-        artifacts['equity_curve_compound_png'] = str(compound_png)
-        artifacts['equity_summary_json'] = str(equity_json)
-        append_line(scheduler_log, f'POST_EQUITY_DONE runset={runset} simple={simple_png} compound={compound_png} summary={equity_json}')
-        print(f'POST_EQUITY_DONE runset={runset} simple={simple_png} compound={compound_png}')
-        notify_message(
-            notify_label,
-            f'资金曲线已生成｜{args.strategy}\n单利：{simple_png.name}\n复利：{compound_png.name}',
-        )
+
+        artifacts['merged_summary'] = str(merged_summary)
+        if args.build_equity:
+            artifacts['equity_curve_simple_png'] = str(state_dir / f'sim_curve_simple.{runset}_ALL.png')
+            artifacts['equity_curve_compound_png'] = str(state_dir / f'sim_curve_compound.{runset}_ALL.png')
+            artifacts['equity_summary_json'] = str(state_dir / f'sim_equity.{runset}_ALL.json')
+
+        append_line(scheduler_log, f'POST_ANALYSIS_DONE runset={runset} merged_summary={merged_summary}')
+        print(f'POST_ANALYSIS_DONE runset={runset} merged_summary={merged_summary}')
+        if args.build_equity:
+            notify_message(
+                notify_label,
+                f'绩效分析完成｜{args.strategy}\nSummary：{merged_summary.name}\n单利：sim_curve_simple.{runset}_ALL.png\n复利：sim_curve_compound.{runset}_ALL.png',
+            )
+        else:
+            notify_message(
+                notify_label,
+                f'绩效分析完成｜{args.strategy}\nSummary：{merged_summary.name}',
+            )
     except Exception as e:
-        msg = f'build-equity failed: {e}'
+        msg = f'post-analysis failed: {e}'
         errors.append(msg)
-        append_line(scheduler_log, f'POST_EQUITY_FAIL runset={runset} error={e}')
-        print(f'POST_EQUITY_FAIL runset={runset} error={e}')
+        append_line(scheduler_log, f'POST_ANALYSIS_FAIL runset={runset} error={e}')
+        print(f'POST_ANALYSIS_FAIL runset={runset} error={e}')
         notify_message(
             notify_label,
-            f'资金曲线生成失败｜{args.strategy}\n原因：{e}',
+            f'绩效分析失败｜{args.strategy}\n原因：{e}',
         )
 
     if artifacts.get('merged_summary'):
         merged_summary_path = Path(artifacts['merged_summary'])
-        with merged_summary_path.open('r', encoding='utf-8') as f:
-            all_summary = json.load(f)
-        all_summary['artifacts'] = artifacts
-        with merged_summary_path.open('w', encoding='utf-8') as f:
-            json.dump(all_summary, f, ensure_ascii=False, indent=2)
+        if merged_summary_path.exists():
+            with merged_summary_path.open('r', encoding='utf-8') as f:
+                all_summary = json.load(f)
+            all_summary['artifacts'] = artifacts
+            with merged_summary_path.open('w', encoding='utf-8') as f:
+                json.dump(all_summary, f, ensure_ascii=False, indent=2)
 
     return artifacts, errors
 
-
-def build_batches(start: datetime, end: datetime, batch_days: int) -> List[tuple[datetime, datetime]]:
-    if end <= start:
-        raise ValueError('--end must be later than --start')
+def build_batches(start_dt: datetime, end_dt: datetime, batch_days: int) -> List[tuple[datetime, datetime]]:
+    if end_dt <= start_dt:
+        raise ValueError('end must be > start')
     if batch_days <= 0:
-        raise ValueError('--batch-days must be > 0')
-
-    out: List[tuple[datetime, datetime]] = []
-    cur = start
-    step = timedelta(days=batch_days)
-    while cur < end:
-        nxt = min(cur + step, end)
-        out.append((cur, nxt))
-        cur = nxt
-    return out
+        raise ValueError('batch_days must be > 0')
+    batches: List[tuple[datetime, datetime]] = []
+    cursor = start_dt
+    while cursor < end_dt:
+        nxt = min(cursor + timedelta(days=batch_days), end_dt)
+        batches.append((cursor, nxt))
+        cursor = nxt
+    return batches
 
 
 def build_tasks(args: argparse.Namespace) -> List[Task]:
-    start = parse_iso_utc(args.start)
-    end = parse_iso_utc(args.end)
-    batches = build_batches(start, end, args.batch_days)
-
-    run_prefix = args.run_prefix or f"{args.strategy.upper()}_{args.batch_days}D_{now_tag()}"
+    start_dt = parse_iso_utc(args.start)
+    end_dt = parse_iso_utc(args.end)
+    batches = build_batches(start_dt, end_dt, args.batch_days)
+    out_dir = Path(args.out_dir)
+    ensure_dir(out_dir)
     logs_dir = Path(args.logs_dir)
     ensure_dir(logs_dir)
 
     tasks: List[Task] = []
-    for idx, (b_start, b_end) in enumerate(batches, start=1):
-        run_id = f"{run_prefix}_B{idx:02d}_{ymd(b_start)}_{ymd(b_end)}"
-        log_path = str(logs_dir / f"{run_id}.console.log")
+    for i, (b_start, b_end) in enumerate(batches, start=1):
+        run_id = f"{args.run_prefix or args.strategy.upper()}_{short_mmdd(fmt_dt(b_start))}_{short_mmdd(fmt_dt(b_end))}_B{i:02d}"
+        log_path = logs_dir / f"{run_id}.console.log"
         cmd = [
             args.python_bin,
-            'strategies/run_backtest.py',
-            '--strategy', args.strategy,
-            '--start', fmt_dt(b_start),
-            '--end', fmt_dt(b_end),
-            '--kline-window', str(args.kline_window),
-            '--config', args.config,
-            '--out-dir', args.out_dir,
-            '--run-id', run_id,
+            "strategies/run_backtest.py",
+            "--strategy", args.strategy,
+            "--start", fmt_dt(b_start),
+            "--end", fmt_dt(b_end),
+            "--kline-window", str(args.kline_window),
+            "--run-id", run_id,
+            "--config", args.config,
         ]
-        tasks.append(Task(
-            batch_id=idx,
-            start=fmt_dt(b_start),
-            end=fmt_dt(b_end),
-            run_id=run_id,
-            log_path=log_path,
-            cmd=cmd,
-        ))
+        tasks.append(
+            Task(
+                batch_id=i,
+                start=fmt_dt(b_start),
+                end=fmt_dt(b_end),
+                run_id=run_id,
+                log_path=str(log_path),
+                cmd=cmd,
+            )
+        )
     return tasks
 
 
-def append_line(path: Path, text: str) -> None:
+def append_line(path: Path, line: str) -> None:
+    ensure_dir(path.parent)
     with path.open('a', encoding='utf-8') as f:
-        f.write(text + '\n')
+        f.write(line.rstrip() + '\n')
 
 
 def launch_task(task: Task, scheduler_log: Path) -> RunningTask:
-    log_f = open(task.log_path, 'a', encoding='utf-8')
-    proc = subprocess.Popen(task.cmd, stdout=log_f, stderr=subprocess.STDOUT)
-    started_at_ts = time.time()
-    started_at_dt = datetime.now(UTC)
-    rt = RunningTask(task=task, proc=proc, started_at=started_at_ts)
-    stamp = fmt_dt(started_at_dt)
-    append_line(
-        scheduler_log,
-        f"[{stamp}] START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id} start={task.start} end={task.end} log={task.log_path}",
+    ensure_dir(Path(task.log_path).parent)
+    logf = open(task.log_path, 'w', encoding='utf-8')
+    proc = subprocess.Popen(
+        task.cmd,
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
-    print(f"[{stamp}] START batch={task.batch_id:02d} pid={proc.pid} run_id={task.run_id}")
-    return rt
+    line = f"LAUNCH batch={task.batch_id:02d} run_id={task.run_id} pid={proc.pid} start={task.start} end={task.end} log={task.log_path}"
+    append_line(scheduler_log, line)
+    print(line)
+    return RunningTask(task=task, proc=proc, started_at=time.time())
 
 
 def poll_running(
     running: List[RunningTask],
     scheduler_log: Path,
     finished: List[dict],
-    strategy: str,
+    strategy: Optional[str] = None,
     notify_label: Optional[str] = None,
 ) -> List[RunningTask]:
     keep: List[RunningTask] = []
@@ -394,40 +397,26 @@ def poll_running(
         if rc is None:
             keep.append(rt)
             continue
-        elapsed = time.time() - rt.started_at
-        finished_at_dt = datetime.now(UTC)
-        rec = {
+        elapsed = round(time.time() - rt.started_at, 3)
+        result = {
             'batch_id': rt.task.batch_id,
             'run_id': rt.task.run_id,
             'return_code': rc,
-            'elapsed_seconds': round(elapsed, 3),
+            'elapsed_seconds': elapsed,
             'log_path': rt.task.log_path,
             'start': rt.task.start,
             'end': rt.task.end,
-            'started_at': fmt_dt(datetime.fromtimestamp(rt.started_at, tz=UTC)),
-            'finished_at': fmt_dt(finished_at_dt),
         }
-        finished.append(rec)
-        status = 'DONE' if rc == 0 else 'FAIL'
-        stamp = fmt_dt(finished_at_dt)
-        append_line(
-            scheduler_log,
-            f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id} log={rt.task.log_path}",
-        )
-        print(f"[{stamp}] {status} batch={rt.task.batch_id:02d} rc={rc} elapsed={elapsed:.1f}s run_id={rt.task.run_id}")
-        if rc == 0:
-            msg = (
-                f'回测完成｜{strategy}｜第{rt.task.batch_id:02d}批\n'
-                f'区间：{short_mmdd(rt.task.start)} ~ {short_mmdd(rt.task.end)}\n'
-                f'耗时：{fmt_seconds_cn(elapsed)}'
+        finished.append(result)
+        line = f"DONE batch={rt.task.batch_id:02d} run_id={rt.task.run_id} rc={rc} elapsed={elapsed}s log={rt.task.log_path}"
+        append_line(scheduler_log, line)
+        print(line)
+        status_text = '成功' if rc == 0 else '失败'
+        if strategy:
+            notify_message(
+                notify_label,
+                f"批次{status_text}｜{strategy}\nrun_id：{rt.task.run_id}\n耗时：{fmt_seconds_cn(elapsed)}\n返回码：{rc}",
             )
-        else:
-            msg = (
-                f'回测失败｜{strategy}｜第{rt.task.batch_id:02d}批\n'
-                f'区间：{short_mmdd(rt.task.start)} ~ {short_mmdd(rt.task.end)}\n'
-                f'返回码：{rc}｜耗时：{fmt_seconds_cn(elapsed)}'
-            )
-        notify_message(notify_label, msg)
     return keep
 
 
@@ -472,6 +461,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--build-equity', action='store_true')
     ap.add_argument('--post-only', action='store_true')
     ap.add_argument('--equity-script', default='core/analysis/sim_equity_curves.py')
+    ap.add_argument('--postprocess-script', default='core/analysis/postprocess_backtests.py')
     ap.add_argument('--kline-root', default='data/klines_1m')
     ap.add_argument('--equity-initial', type=float, default=100.0)
     ap.add_argument('--equity-fee-side', type=float, default=0.0005)
@@ -493,9 +483,14 @@ def main() -> int:
     scheduler_log = logs_dir / f"scheduler_{scheduler_name}.log"
     summary_json = Path(args.summary_json) if args.summary_json else state_dir / f"scheduler_{scheduler_name}.summary.json"
 
-    append_line(scheduler_log, f"PLAN total_batches={len(tasks)} max_parallel={args.max_parallel}")
+    append_line(
+        scheduler_log,
+        f"START scheduler={scheduler_name} strategy={args.strategy} total_batches={len(tasks)} max_parallel={args.max_parallel}",
+    )
+    print(f"SCHEDULER {scheduler_name} batches={len(tasks)} max_parallel={args.max_parallel}")
+
     for t in tasks:
-        line = f"PLAN batch={t.batch_id:02d} start={t.start} end={t.end} run_id={t.run_id} log={t.log_path}"
+        line = f"PLAN batch={t.batch_id:02d} run_id={t.run_id} start={t.start} end={t.end} log={t.log_path}"
         append_line(scheduler_log, line)
         print(line)
         if args.dry_run:
