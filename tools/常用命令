@@ -27,10 +27,11 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
 # *** 绩效统计 & 图表曲线绘制 ***
+cd /root/bn_research_core
+
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/postprocess_backtests.py \
   --run-id SNAP_V5.0_30D_P6_0321T1728_ALL \
   --state-dir output/state \
-  --merge-meta output/state/sim_merge_meta.SNAP_V5.0_30D_P6_0321T1728_ALL.json \
   --kline-root data/klines_1m \
   --initial-equity 100 \
   --fee-side 0.0005 \
@@ -47,11 +48,23 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
 # ========= 找 run-id =========
 ls -ldht output/logs | head -n 3
 ls -ldht output/state/*ALL* | head -n 3
+ls -ldht output/state/* | head -n 5
 
 # ========= 拉 服务器回测数据 到 MacBook =========
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
+DEST=~/ai_projects/bn_research_core/state
+mkdir -p "$DEST"
+scp \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_equity.${RUNID}.json" \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_curve_compound.${RUNID}.png" \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_curve_simple.${RUNID}.png" \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
+  "$DEST"
+
+RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/state/*${RUNID}.*" \
-  ~/ai_projects/bn_research_core/state1
+  ~/ai_projects/bn_research_core/state
 
 RUNID="SNAP_V4.6_30D_P6_0319T2304_ALL"
 scp -r "root@8.218.96.252:/root/bn_research_core/output/visual_audit/${RUNID}" \

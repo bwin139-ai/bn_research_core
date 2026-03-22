@@ -15,6 +15,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from strategies.run_backtest import build_extended_summary_metrics, _extract_fee_side  # type: ignore
 
 
+def round2(value: float) -> float:
+    return round(float(value), 2)
+
+
 def load_jsonl(path: Path) -> List[dict]:
     rows: List[dict] = []
     if not path.exists():
@@ -72,6 +76,53 @@ def load_meta_fallback(run_id: str, state_dir: Path, explicit_merge_meta: str | 
     )
 
 
+def normalize_monthly_stats(monthly_stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for row in monthly_stats:
+        out.append(
+            {
+                "month": row.get("month"),
+                "trade_count": int(row.get("trade_count", 0)),
+                "win_count": int(row.get("win_count", 0)),
+                "loss_count": int(row.get("loss_count", 0)),
+                "flat_count": int(row.get("flat_count", 0)),
+                "net_pnl_usdt": round2(row.get("net_pnl", 0.0)),
+                "gross_return_pct": round2(float(row.get("gross_pnl_pct_sum", 0.0)) * 100.0),
+                "net_return_pct": round2(float(row.get("net_pnl_pct_sum", 0.0)) * 100.0),
+                "gross_pnl_usdt_simple_100": round2(row.get("gross_pnl_amount_simple_100", 0.0)),
+                "net_pnl_usdt_simple_100": round2(row.get("net_pnl_amount_simple_100", 0.0)),
+            }
+        )
+    return out
+
+
+def build_normalized_metrics(trades: List[Dict[str, Any]], fee_side: float, initial_equity: float) -> Dict[str, Any]:
+    raw = build_extended_summary_metrics(trades, fee_side=fee_side, initial_equity=initial_equity)
+    try:
+        from core.analysis.sim_equity_curves import build_equity_payload, prepare_rows  # type: ignore
+
+        equity_metrics = build_equity_payload(prepare_rows(trades, fee_side), initial_equity)
+    except Exception as exc:
+        raise RuntimeError(f"failed to build normalized equity metrics: {exc}") from exc
+
+    return {
+        "equity_initial_usdt": round2(initial_equity),
+        "fee_side_pct": round2(fee_side * 100.0),
+        "trade_count": len(trades),
+        "signals_count": 0,
+        "final_equity_simple_gross_usdt": equity_metrics["final_equity_simple_gross_usdt"],
+        "final_equity_simple_net_usdt": equity_metrics["final_equity_simple_net_usdt"],
+        "final_equity_compound_gross_usdt": equity_metrics["final_equity_compound_gross_usdt"],
+        "final_equity_compound_net_usdt": equity_metrics["final_equity_compound_net_usdt"],
+        "return_simple_gross_pct": equity_metrics["return_simple_gross_pct"],
+        "return_simple_net_pct": equity_metrics["return_simple_net_pct"],
+        "return_compound_gross_pct": equity_metrics["return_compound_gross_pct"],
+        "return_compound_net_pct": equity_metrics["return_compound_net_pct"],
+        "max_drawdown": equity_metrics["max_drawdown"],
+        "monthly_stats": normalize_monthly_stats(raw.get("monthly_stats", [])),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Build merged backtest summary and optional equity curves.')
     ap.add_argument('--run-id', required=True)
@@ -106,7 +157,7 @@ def main() -> int:
     trades = load_jsonl(merged_trades)
     signals = load_jsonl(merged_signals)
     fee_side = _extract_fee_side(run_config or {}) if run_config is not None else args.fee_side
-    metrics = build_extended_summary_metrics(trades, fee_side=fee_side, initial_equity=args.initial_equity)
+    metrics = build_normalized_metrics(trades, fee_side=fee_side, initial_equity=args.initial_equity)
     metrics['signals_count'] = len(signals)
 
     out = {
