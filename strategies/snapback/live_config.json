@@ -1,6 +1,6 @@
 {
-  "enabled": false,
-  "account": "",
+  "enabled": true,
+  "account": "mybwin139",
   "lookback_bars": 180,
   "exclude_symbols": [
     "BTCUSDT",
@@ -10,7 +10,7 @@
     "SOLUSDT"
   ],
   "entry_notional_usdt": 50.0,
-  "leverage": 1,
+  "leverage": 5,
   "cooldown_mins": 240,
   "order_retry_max": 2,
   "api_retry_delay_secs": 2,
@@ -18,7 +18,7 @@
   "fail_fast_on_state_mismatch": true,
   "audit_enabled": true,
   "notify_enabled": true,
-  "notify_on_signal_skip": false,
+  "notify_on_signal_skip": true,
   "notify_on_order_submit": true,
   "notify_on_order_error": true
 }

@@ -1,4 +1,8 @@
 python3 -m py_compile klines_1m_store.py
+
+cd /root/bn_research_core && nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' > output/logs/snapback_live.console.log 2>&1 &
+tail -f /root/bn_research_core/output/logs/snapback_live.console.log
+
 # ========= 项目根目录 =========
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
@@ -207,7 +211,8 @@ cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py 
   --build-equity 2>&1 | tee "output/logs/scheduler.${RUNSET}.console.log"
 
 # ========= 上传隐私数据 =========
-scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_research_core  
+scp -r ~/ai_projects/bn_research_core/deploy.env aliyun-bn:/root/bn_research_core  
+scp -r ~/ai_projects/bn_research_core/secrets_*.json aliyun-bn:/root/bn_research_core  
 
 # ========= 消息投递员 进程 =========
 cd /root/bn_research_core
