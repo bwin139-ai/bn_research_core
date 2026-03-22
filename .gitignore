@@ -19,6 +19,7 @@ visual_audit/
 
 *.parquet
 *.jsonl
+*_副本.py
 
 # Fingerprint suffix copies for AI alignment
 *_[0-9a-f][0-9a-f][0-9a-f][0-9a-f]_[0-9]*.py
