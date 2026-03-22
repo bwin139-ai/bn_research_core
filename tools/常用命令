@@ -35,7 +35,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/pos
   --fee-side 0.0005 \
   --build-equity
 
-# *** curve 资金曲线绘制 ***
+# *** 只绘制 curve 资金曲线 ***
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim_equity_curves.py \
   --run-id SNAP_V5.0_30D_P6_0321T1728_ALL \
   --state-dir output/state \
