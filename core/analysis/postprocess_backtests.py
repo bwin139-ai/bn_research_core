@@ -118,7 +118,7 @@ def build_normalized_metrics(trades: List[Dict[str, Any]], fee_side: float, init
         "return_simple_net_pct": equity_metrics["return_simple_net_pct"],
         "return_compound_gross_pct": equity_metrics["return_compound_gross_pct"],
         "return_compound_net_pct": equity_metrics["return_compound_net_pct"],
-        "max_drawdown": equity_metrics["max_drawdown"],
+        "max_drawdown": dict(equity_metrics["max_drawdown"]),
         "monthly_stats": normalize_monthly_stats(raw.get("monthly_stats", [])),
     }
 

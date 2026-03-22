@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 UTC = timezone.utc
+BJ = timezone(timedelta(hours=8))
 DEFAULT_INDEX_WEIGHTS = {
     "BTCUSDT": 0.56,
     "ETHUSDT": 0.24,
@@ -75,6 +76,12 @@ def build_curves(rows: List[Dict[str, Any]], initial_equity: float):
     return simple_gross, simple_net, compound_gross, compound_net
 
 
+def to_bj_datetime_str(ts_ms: int) -> str:
+    if ts_ms <= 0:
+        return ""
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def calc_max_drawdown(curve: List[float], times_ms: List[int]) -> Dict[str, Any]:
     if not curve:
         return {
@@ -82,8 +89,10 @@ def calc_max_drawdown(curve: List[float], times_ms: List[int]) -> Dict[str, Any]
             "pct": 0.00,
             "days": 0.00,
             "trades": 0,
-            "peak_index": 0,
-            "trough_index": 0,
+            "peak_date_bj": "",
+            "peak_amount_usdt": 0.00,
+            "trough_date_bj": "",
+            "trough_amount_usdt": 0.00,
         }
 
     peak_val = curve[0]
@@ -107,16 +116,22 @@ def calc_max_drawdown(curve: List[float], times_ms: List[int]) -> Dict[str, Any]
     draw_amount = peak_value - trough_value
     draw_pct = (draw_amount / peak_value * 100.0) if peak_value > 0 else 0.0
     days = 0.0
+    peak_time_ms = 0
+    trough_time_ms = 0
     if times_ms:
-        days = max(0.0, (times_ms[best_trough_idx] - times_ms[best_peak_idx]) / 1000.0 / 86400.0)
+        peak_time_ms = int(times_ms[best_peak_idx])
+        trough_time_ms = int(times_ms[best_trough_idx])
+        days = max(0.0, (trough_time_ms - peak_time_ms) / 1000.0 / 86400.0)
 
     return {
         "amount_usdt": round2(draw_amount),
         "pct": round2(draw_pct),
         "days": round2(days),
         "trades": max(0, best_trough_idx - best_peak_idx),
-        "peak_index": best_peak_idx,
-        "trough_index": best_trough_idx,
+        "peak_date_bj": to_bj_datetime_str(peak_time_ms),
+        "peak_amount_usdt": round2(peak_value),
+        "trough_date_bj": to_bj_datetime_str(trough_time_ms),
+        "trough_amount_usdt": round2(trough_value),
     }
 
 
@@ -197,7 +212,11 @@ def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float) -> D
 
 
 def fmt_dd(dd: Dict[str, Any]) -> str:
-    return f"{dd['amount_usdt']:.2f} USDT ({dd['pct']:.2f}%) / {dd['days']:.2f}d / {dd['trades']}t"
+    return (
+        f"{dd['amount_usdt']:.2f} USDT ({dd['pct']:.2f}%) / {dd['days']:.2f}d / {dd['trades']}t "
+        f"[peak {dd['peak_date_bj']} {dd['peak_amount_usdt']:.2f} -> "
+        f"trough {dd['trough_date_bj']} {dd['trough_amount_usdt']:.2f}]"
+    )
 
 
 def plot_curve(
@@ -212,6 +231,7 @@ def plot_curve(
     net_dd: Dict[str, Any],
     index_curve: List[float],
     initial_equity: float,
+    final_equity: float,
     fee_side: float,
 ):
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,7 +249,8 @@ def plot_curve(
         f"MaxDD gross[{fmt_dd(gross_dd)}]    MaxDD net[{fmt_dd(net_dd)}]"
     )
     ax.set_title(
-        f"{title} (initial={initial_equity:.2f} USDT, fee/side={fee_side * 100.0:.2f}%)\n{subtitle}"
+        f"{title} (initial={initial_equity:.2f} USDT, final={final_equity:.2f} USDT, fee/side={fee_side * 100.0:.2f}%)\n{subtitle}",
+        fontsize=16,
     )
     ax.legend(loc="upper left")
     fig.tight_layout()
@@ -311,6 +332,7 @@ def main():
         payload["max_drawdown"]["simple_net"],
         index_curve,
         initial_equity,
+        payload["final_equity_simple_net_usdt"],
         fee_side,
     )
     plot_curve(
@@ -325,6 +347,7 @@ def main():
         payload["max_drawdown"]["compound_net"],
         index_curve,
         initial_equity,
+        payload["final_equity_compound_net_usdt"],
         fee_side,
     )
 
