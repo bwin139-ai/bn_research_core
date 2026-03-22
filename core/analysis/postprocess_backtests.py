@@ -28,11 +28,17 @@ def load_jsonl(path: Path) -> List[dict]:
     return rows
 
 
+def resolve_merge_meta_path(run_id: str, state_dir: Path, explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit)
+    return state_dir / f"sim_merge_meta.{run_id}.json"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Build merged backtest summary and optional equity curves.')
     ap.add_argument('--run-id', required=True)
     ap.add_argument('--state-dir', default='output/state')
-    ap.add_argument('--merge-meta', required=True)
+    ap.add_argument('--merge-meta', default=None, help='Optional. Defaults to state-dir/sim_merge_meta.<RUN_ID>.json')
     ap.add_argument('--kline-root', default='data/klines_1m')
     ap.add_argument('--initial-equity', type=float, default=100.0)
     ap.add_argument('--fee-side', type=float, default=0.0005)
@@ -42,10 +48,20 @@ def main() -> int:
 
     state_dir = Path(args.state_dir)
     run_id = args.run_id
-    merge_meta_path = Path(args.merge_meta)
+    merge_meta_path = resolve_merge_meta_path(run_id, state_dir, args.merge_meta)
     merged_trades = state_dir / f'sim_trades.{run_id}.jsonl'
     merged_signals = state_dir / f'sim_signals.{run_id}.jsonl'
     merged_summary = state_dir / f'sim_summary.{run_id}.json'
+
+    if not merge_meta_path.exists():
+        raise FileNotFoundError(
+            f'merge meta not found: {merge_meta_path} '
+            f'(tip: if this file exists elsewhere, pass --merge-meta explicitly)'
+        )
+    if not merged_trades.exists():
+        raise FileNotFoundError(f'merged trades not found: {merged_trades}')
+    if not merged_signals.exists():
+        raise FileNotFoundError(f'merged signals not found: {merged_signals}')
 
     with merge_meta_path.open('r', encoding='utf-8') as f:
         merge_meta = json.load(f)
