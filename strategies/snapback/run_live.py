@@ -178,7 +178,15 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
 
     if not signal:
         if audit_enabled:
-            write_event(account, 'signal_none', {'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'symbol_count': payload['symbol_count']})
+            write_event(account, 'signal_none', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'freshest_bar_ts': payload.get('freshest_bar_ts'),
+                'freshest_bar_bj': payload.get('freshest_bar_bj'),
+                'stale_cutoff_bj': payload.get('stale_cutoff_bj'),
+                'symbol_count': payload['symbol_count'],
+                'stale_symbol_count': payload.get('stale_symbol_count', 0),
+            })
         for symbol in full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return

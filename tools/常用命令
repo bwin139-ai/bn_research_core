@@ -1,7 +1,10 @@
 python3 -m py_compile klines_1m_store.py
 
-cd /root/bn_research_core && nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' > output/logs/snapback_live.console.log 2>&1 &
+nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' > output/logs/snapback_live.console.log 2>&1 &
 tail -f /root/bn_research_core/output/logs/snapback_live.console.log
+
+ls -lht state/live_audit
+tail -n 20 state/live_audit/snapback_mybwin139.jsonl
 
 # ========= 项目根目录 =========
 cd ~/ai_projects/bn_research_core

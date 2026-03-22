@@ -9,6 +9,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 _BJ = timezone(timedelta(hours=8))
+_MAX_SYMBOL_STALE_MS = 2 * 60 * 1000
 
 
 def _repo_root() -> Path:
@@ -135,11 +136,34 @@ def build_live_inputs(symbols: list[str], lookback_bars: int) -> dict[str, Any]:
             'errors': errors,
         }
 
-    latest_common_ts = min(latest_map.values())
+    freshest_ts = max(latest_map.values())
+    stale_cutoff_ts = freshest_ts - _MAX_SYMBOL_STALE_MS
+    eligible_symbols = {
+        symbol: ts
+        for symbol, ts in latest_map.items()
+        if int(ts) >= stale_cutoff_ts
+    }
+    stale_symbols = {
+        symbol: _fmt_bj_from_ms(ts)
+        for symbol, ts in latest_map.items()
+        if symbol not in eligible_symbols
+    }
+
+    if not eligible_symbols:
+        return {
+            'ok': False,
+            'reason': 'all symbols stale after freshness filter',
+            'data': None,
+            'errors': errors,
+        }
+
+    latest_common_ts = min(eligible_symbols.values())
     cross_rows: list[pd.Series] = []
     full_df: dict[str, pd.DataFrame] = {}
 
     for symbol, df in histories.items():
+        if symbol not in eligible_symbols:
+            continue
         clipped = df[df.index <= latest_common_ts].copy()
         if clipped.empty or latest_common_ts not in clipped.index:
             continue
@@ -164,6 +188,12 @@ def build_live_inputs(symbols: list[str], lookback_bars: int) -> dict[str, Any]:
         'reason': '',
         'errors': errors,
         'data': {
+            'freshest_bar_ts': freshest_ts,
+            'freshest_bar_bj': _fmt_bj_from_ms(freshest_ts),
+            'stale_cutoff_ts': stale_cutoff_ts,
+            'stale_cutoff_bj': _fmt_bj_from_ms(stale_cutoff_ts),
+            'stale_symbol_count': len(stale_symbols),
+            'stale_symbols': stale_symbols,
             'latest_closed_bar_ts': latest_common_ts,
             'latest_closed_bar_bj': _fmt_bj_from_ms(latest_common_ts),
             'cross_section': cross_section,
