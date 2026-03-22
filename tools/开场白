@@ -462,7 +462,7 @@ core/runtime_state.py
 
 core/message_bridge.py
 
-tools/tg_queue_sender.py
+core/notify/tg_queue_sender.py
 
 schedule_backtests.py 中文短消息通知
 

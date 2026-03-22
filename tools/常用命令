@@ -213,7 +213,7 @@ scp -r ~/ai_projects/bn_research_core/deploy.env root@8.218.96.252:/root/bn_rese
 cd /root/bn_research_core
 nohup bash -lc 'cd /root/bn_research_core && \
 set -a && source deploy.env && set +a && \
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/tg_queue_sender.py' \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u core/notify/tg_queue_sender.py' \
 > output/logs/tg_queue_sender.console.log 2>&1 &
 
 如果子进程还残留，再一把强杀：
