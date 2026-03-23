@@ -674,6 +674,24 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             if status in TERMINAL_ORDER_STATUSES:
                 set_pending_entry_order(account, symbol, None)
                 if status in FILLED_ORDER_STATUSES:
+                    pending_terminal_trade = {
+                        'order_root': pending.get('order_root'),
+                        'entry_client_order_id': pending.get('client_order_id'),
+                        'entry_exchange_order_id': pending.get('exchange_order_id'),
+                        'tp_order_client_id': pending.get('tp_client_order_id'),
+                        'tp_order_exchange_id': None,
+                        'sl_order_client_id': pending.get('sl_client_order_id'),
+                        'sl_order_exchange_id': None,
+                        'time_stop_client_order_id': None,
+                        'time_stop_exchange_order_id': None,
+                    }
+                    exit_reason, order_checks = _infer_exit_reason(
+                        account,
+                        symbol,
+                        pending_terminal_trade,
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
                     tp_cancel = _cancel_order_if_present(
                         account,
                         symbol,
@@ -695,12 +713,28 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'bar_ts': current_time_ms,
                             'bar_bj': current_time_bj,
                             'source': source,
+                            'exit_reason': exit_reason,
+                            'order_root': pending.get('order_root'),
                             'exchange_snapshot': {
                                 'entry_order': entry_res,
                                 'position': pos_res,
+                                'order_checks': order_checks,
                                 'tp_cancel': tp_cancel,
                                 'sl_cancel': sl_cancel,
                             },
+                        })
+                        event_map = {
+                            'TAKE_PROFIT': 'tp_filled',
+                            'STOP_LOSS': 'sl_filled',
+                            'TIME_STOP': 'time_stop_filled',
+                            'UNKNOWN_EXIT': 'unknown_exit',
+                        }
+                        write_event(account, event_map.get(exit_reason, 'unknown_exit'), {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': f'{source}_pending_terminal',
+                            'order_root': pending.get('order_root'),
                         })
                         write_event(account, 'pending_terminal_cancel_tp', {
                             'symbol': symbol,
@@ -716,11 +750,19 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'source': source,
                             'exchange_snapshot': sl_cancel,
                         })
+                        write_event(account, 'state_cleared_after_exit', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': f'{source}_pending_terminal',
+                            'exit_reason': exit_reason,
+                        })
                         write_event(account, 'cooldown_refreshed_after_pending_filled_terminal', {
                             'symbol': symbol,
                             'bar_ts': current_time_ms,
                             'bar_bj': current_time_bj,
                             'source': source,
+                            'exit_reason': exit_reason,
                         })
                 elif audit_enabled:
                     write_event(account, 'entry_terminal_detected', {
