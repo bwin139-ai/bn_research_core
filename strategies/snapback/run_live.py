@@ -175,6 +175,66 @@ def _active_symbols_from_state(account: str) -> set[str]:
     return out
 
 
+def _symbols_with_local_activity(account: str) -> set[str]:
+    state = load_live_state(account)
+    out: set[str] = set()
+    for symbol, payload in (state.get('symbols') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        if payload.get('pending_entry_order') or payload.get('open_trade'):
+            out.add(str(symbol).upper().strip())
+    return out
+
+
+def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool) -> None:
+    if not audit_enabled:
+        return
+    local_active_symbols = _symbols_with_local_activity(account)
+    seen: set[str] = set()
+    for raw_symbol in symbols:
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        if symbol in local_active_symbols:
+            continue
+
+        exch = _precheck_exchange_blockers(account, symbol)
+        mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
+        mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
+
+        pos_res = exch.get('position') or {}
+        ord_res = exch.get('orders') or {}
+        has_position = bool(pos_res.get('ok') and pos_res.get('data'))
+        has_orders = bool(ord_res.get('ok') and ord_res.get('data'))
+        if not has_position and not has_orders:
+            continue
+
+        write_event(account, 'orphan_exchange_activity', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'exchange_snapshot': exch,
+        })
+        if has_position:
+            write_event(account, 'orphan_exchange_position', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': pos_res,
+            })
+        if has_orders:
+            write_event(account, 'orphan_exchange_open_orders', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': ord_res,
+            })
+
+
 def _sleep_until_next_closed_bar() -> None:
     now = datetime.now(timezone.utc)
     next_minute = (now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=1))
@@ -797,6 +857,15 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
+    startup_symbols = sorted(_symbols_with_local_activity(account) | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])))
+    _audit_orphan_exchange_activity(
+        account,
+        startup_symbols,
+        current_time_ms,
+        current_time_bj,
+        source='startup',
+        audit_enabled=bool(live_cfg.get('audit_enabled', True)),
+    )
 
 
 def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
@@ -821,6 +890,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
 
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
+    _audit_orphan_exchange_activity(
+        account,
+        symbols,
+        current_time_ms,
+        current_time_bj,
+        source='loop',
+        audit_enabled=audit_enabled,
+    )
 
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     active_symbols = _active_symbols_from_state(account)
