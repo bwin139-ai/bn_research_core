@@ -614,6 +614,49 @@ def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], p
         set_open_trade(account, symbol, open_trade)
     return open_trade
 
+def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str, Any], *, retry_max: int, retry_delay_secs: float) -> dict[str, Any]:
+    pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+    ord_res = get_open_orders(account, symbol)
+    if not pos_res.get('ok') or not ord_res.get('ok'):
+        return {
+            'ok': False,
+            'position': pos_res,
+            'orders': ord_res,
+            'position_open': None,
+            'tp_bound': None,
+            'sl_bound': None,
+        }
+    position = pos_res.get('data')
+    open_orders = ord_res.get('data') or []
+    if not position:
+        return {
+            'ok': True,
+            'position': pos_res,
+            'orders': ord_res,
+            'position_open': False,
+            'tp_bound': False,
+            'sl_bound': False,
+        }
+    tp_bound = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get('tp_order_exchange_id'),
+        client_order_id=open_trade.get('tp_order_client_id'),
+    ) is not None
+    sl_bound = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get('sl_order_exchange_id'),
+        client_order_id=open_trade.get('sl_order_client_id'),
+    ) is not None
+    return {
+        'ok': True,
+        'position': pos_res,
+        'orders': ord_res,
+        'position_open': True,
+        'tp_bound': tp_bound,
+        'sl_bound': sl_bound,
+    }
+
+
 def _refresh_entry_cooldown(account: str, symbol: str, current_time_ms: int, cooldown_mins: int) -> None:
     cooldown_until_ts, cooldown_until_bj = _cooldown_until(current_time_ms, cooldown_mins)
     set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
@@ -630,6 +673,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    notify_enabled = bool(live_cfg.get('notify_enabled', False))
     retry_max = int(live_cfg['order_retry_max'])
     retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
     cooldown_mins = int(live_cfg['cooldown_mins'])
@@ -956,6 +1000,64 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 current_time_bj,
                 source=source,
             )
+            verify_res = _verify_open_trade_brackets(
+                account,
+                symbol,
+                open_trade,
+                retry_max=retry_max,
+                retry_delay_secs=retry_delay_secs,
+            )
+            if not verify_res.get('ok'):
+                had_blocking_error = True
+                verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='open_trade_bracket_verify_failed',
+                    error_message=verify_reason,
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'open_trade_bracket_verify_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                if notify_enabled and live_cfg.get('notify_on_order_error', True):
+                    _notify(True, f'[Snapback-Live] 风险告警 {symbol} | 持仓期 bracket 验证失败 | {verify_reason or "unknown"}')
+            elif verify_res.get('position_open') and not (verify_res.get('tp_bound') and verify_res.get('sl_bound')):
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='open_trade_bracket_incomplete',
+                    error_message=f"tp_bound={verify_res.get('tp_bound')}, sl_bound={verify_res.get('sl_bound')}",
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'critical_bracket_gap_during_reconcile', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'tp_bound': verify_res.get('tp_bound'),
+                        'sl_bound': verify_res.get('sl_bound'),
+                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                if notify_enabled and live_cfg.get('notify_on_order_error', True):
+                    _notify(True, f'[Snapback-Live] 风险告警 {symbol} | 持仓期 bracket 仍不完整 | tp_bound={verify_res.get("tp_bound")} sl_bound={verify_res.get("sl_bound")}')
+            set_open_trade(account, symbol, open_trade)
 
         if open_trade.get('exit_submit_inflight'):
             open_trade, should_skip = _reconcile_inflight_exit(
