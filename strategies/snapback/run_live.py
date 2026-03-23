@@ -942,6 +942,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    notify_enabled = bool(live_cfg.get('notify_enabled', False))
     retry_max = int(live_cfg['order_retry_max'])
     retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
     cooldown_mins = int(live_cfg['cooldown_mins'])
