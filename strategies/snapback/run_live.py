@@ -187,21 +187,26 @@ def _symbols_with_local_activity(account: str) -> set[str]:
     return out
 
 
-def _collect_exchange_activity_symbols(account: str) -> set[str]:
-    out: set[str] = set()
+def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
+    symbols: set[str] = set()
     pos_res = get_positions(account)
     if pos_res.get('ok'):
         for row in pos_res.get('data') or []:
             symbol = str(row.get('symbol') or '').upper().strip()
             if symbol:
-                out.add(symbol)
+                symbols.add(symbol)
     ord_res = get_open_orders(account)
     if ord_res.get('ok'):
         for row in ord_res.get('data') or []:
             symbol = str(row.get('symbol') or '').upper().strip()
             if symbol:
-                out.add(symbol)
-    return out
+                symbols.add(symbol)
+    return {
+        'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
+        'symbols': symbols,
+        'positions': pos_res,
+        'orders': ord_res,
+    }
 
 
 def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool) -> None:
@@ -952,21 +957,33 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
 def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     current_time_ms = _now_utc_ms()
     current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
+    audit_enabled = bool(live_cfg.get('audit_enabled', True))
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
+    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
     startup_symbols = sorted(
         _symbols_with_local_activity(account)
         | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
-        | _collect_exchange_activity_symbols(account)
+        | set(exchange_activity_snapshot['symbols'])
     )
+    if audit_enabled and not exchange_activity_snapshot.get('ok'):
+        write_event(account, 'exchange_activity_snapshot_error', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': 'startup',
+            'exchange_snapshot': {
+                'positions': exchange_activity_snapshot.get('positions'),
+                'orders': exchange_activity_snapshot.get('orders'),
+            },
+        })
     _audit_orphan_exchange_activity(
         account,
         startup_symbols,
         current_time_ms,
         current_time_bj,
         source='startup',
-        audit_enabled=bool(live_cfg.get('audit_enabled', True)),
+        audit_enabled=audit_enabled,
     )
 
 
@@ -976,7 +993,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     lookback_bars = int(live_cfg['lookback_bars'])
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
-    exchange_activity_symbols = _collect_exchange_activity_symbols(account)
+    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
+    exchange_activity_symbols = set(exchange_activity_snapshot['symbols'])
     local_activity_symbols = _symbols_with_local_activity(account)
     extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
 
@@ -1017,6 +1035,17 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
 
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
+    if audit_enabled and not exchange_activity_snapshot.get('ok'):
+        write_event(account, 'exchange_activity_snapshot_error', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': 'loop',
+            'exchange_snapshot': {
+                'positions': exchange_activity_snapshot.get('positions'),
+                'orders': exchange_activity_snapshot.get('orders'),
+            },
+        })
+
     _audit_orphan_exchange_activity(
         account,
         sorted(set(candidate_symbols) | exchange_activity_symbols),
@@ -1051,6 +1080,22 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'candidate_reason': candidate_md_res.get('reason'),
                 'candidate_errors': candidate_md_res.get('errors'),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
+
+    if not exchange_activity_snapshot.get('ok'):
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_exchange_activity_query_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+                'exchange_snapshot': {
+                    'positions': exchange_activity_snapshot.get('positions'),
+                    'orders': exchange_activity_snapshot.get('orders'),
+                },
             })
         for symbol in merged_full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
