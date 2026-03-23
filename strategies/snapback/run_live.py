@@ -1286,6 +1286,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         set_open_trade(account, symbol, open_trade)
 
     entry_fast_terminal = False
+    entry_bracket_gap_critical = False
     verify_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
     verify_orders_res = get_open_orders(account, symbol)
     if not verify_pos_res.get('ok') or not verify_orders_res.get('ok'):
@@ -1321,6 +1322,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                     'orders': verify_orders_res,
                 },
             })
+        entry_bracket_gap_critical = True
         if notify_enabled and live_cfg.get('notify_on_order_error', True):
             _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_reason or "unknown"}')
     else:
@@ -1436,6 +1438,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                             'orders': verify_orders_res,
                         },
                     })
+                entry_bracket_gap_critical = True
                 if notify_enabled and live_cfg.get('notify_on_order_error', True):
                     _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
 
@@ -1443,9 +1446,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
         if audit_enabled:
             write_event(account, 'cooldown_set_after_entry', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'order_root': order_root})
+            if entry_bracket_gap_critical:
+                write_event(account, 'entry_submit_notify_suppressed_bracket_gap', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'order_root': order_root,
+                })
     mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
 
-    if (not entry_fast_terminal) and notify_enabled and live_cfg.get('notify_on_order_submit', True):
+    if (not entry_fast_terminal) and (not entry_bracket_gap_critical) and notify_enabled and live_cfg.get('notify_on_order_submit', True):
         tp_px = float(signal.get('tp_price') or 0.0)
         sl_px = float(signal.get('sl_price') or 0.0)
         _notify(True, f'[Snapback-Live] 开仓 {symbol} | entry≈{current_price:.6f} | TP={tp_px:.6f} | SL={sl_px:.6f}')
