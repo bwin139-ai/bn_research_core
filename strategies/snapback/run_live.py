@@ -263,6 +263,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     return 'UNKNOWN_EXIT', checks
 
 
+
 def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res: dict[str, Any], sl_res: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str) -> dict[str, Any]:
     entry = entry_res['data']
     tp = tp_res['data'] if tp_res.get('ok') else {}
@@ -295,6 +296,188 @@ def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res:
     }
 
 
+def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str) -> dict[str, Any]:
+    entry = entry_res['data']
+    return {
+        'symbol': signal['symbol'],
+        'order_root': order_root,
+        'client_order_id': entry.get('client_order_id', entry_client_order_id),
+        'exchange_order_id': entry.get('exchange_order_id'),
+        'signal_time': int(signal['signal_time']),
+        'signal_time_bj': signal['signal_time_bj'],
+        'current_price': float(signal.get('current_price') or 0.0),
+        'entry_notional_usdt': float(entry_notional_usdt),
+        'signal_digest': _signal_digest(signal),
+        'signal_snapshot': signal,
+        'tp_price': float(signal.get('tp_price') or 0.0),
+        'sl_price': float(signal.get('sl_price') or 0.0),
+        'tp_client_order_id': tp_client_order_id,
+        'sl_client_order_id': sl_client_order_id,
+        'created_bj': _now_bj_str(),
+    }
+
+
+def _recover_open_trade_from_pending(pending: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
+    signal_snapshot = pending.get('signal_snapshot') if isinstance(pending.get('signal_snapshot'), dict) else {}
+    return {
+        'symbol': str(pending.get('symbol') or position.get('symbol') or '').upper().strip(),
+        'side': FIXED_POSITION_SIDE,
+        'order_root': pending.get('order_root'),
+        'entry_client_order_id': pending.get('client_order_id'),
+        'entry_exchange_order_id': pending.get('exchange_order_id'),
+        'entry_ts': int(pending.get('signal_time') or 0),
+        'entry_bj': pending.get('signal_time_bj'),
+        'entry_price': float(position.get('entry_price') or pending.get('current_price') or 0.0),
+        'entry_qty': float(position.get('qty') or 0.0),
+        'entry_notional_usdt': float(pending.get('entry_notional_usdt') or 0.0),
+        'signal_digest': pending.get('signal_digest'),
+        'signal_snapshot': signal_snapshot,
+        'tp_order_client_id': pending.get('tp_client_order_id'),
+        'tp_order_exchange_id': None,
+        'sl_order_client_id': pending.get('sl_client_order_id'),
+        'sl_order_exchange_id': None,
+        'time_stop_client_order_id': None,
+        'time_stop_exchange_order_id': None,
+        'tp_price': float(pending.get('tp_price') or signal_snapshot.get('tp_price') or 0.0),
+        'sl_trigger_price': float(pending.get('sl_price') or signal_snapshot.get('sl_price') or 0.0),
+        'status': 'OPEN',
+        'exit_submit_inflight': False,
+        'last_status_bj': _now_bj_str(),
+        'time_stop_last_check_bj': None,
+    }
+
+
+def _find_open_order(open_orders: list[dict[str, Any]], *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any] | None:
+    if exchange_order_id is None and not client_order_id:
+        return None
+    for row in open_orders:
+        if exchange_order_id is not None and row.get('order_id') == exchange_order_id:
+            return row
+        if client_order_id and str(row.get('client_order_id') or '') == str(client_order_id):
+            return row
+    return None
+
+
+def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], position: dict[str, Any], open_orders: list[dict[str, Any]], live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> dict[str, Any]:
+    audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    retry_max = int(live_cfg['order_retry_max'])
+    retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
+    qty = float(position.get('qty') or open_trade.get('entry_qty') or 0.0)
+
+    tp_row = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get('tp_order_exchange_id'),
+        client_order_id=open_trade.get('tp_order_client_id'),
+    )
+    sl_row = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get('sl_order_exchange_id'),
+        client_order_id=open_trade.get('sl_order_client_id'),
+    )
+
+    changed = False
+    if tp_row:
+        if open_trade.get('tp_order_exchange_id') != tp_row.get('order_id') or open_trade.get('tp_order_client_id') != tp_row.get('client_order_id'):
+            open_trade['tp_order_exchange_id'] = tp_row.get('order_id')
+            open_trade['tp_order_client_id'] = tp_row.get('client_order_id')
+            changed = True
+    elif qty > 0 and float(open_trade.get('tp_price') or 0.0) > 0:
+        tp_client_order_id = open_trade.get('tp_order_client_id') or build_client_order_id(
+            broker_id=BROKER_ID,
+            strat=STRAT_CODE,
+            leg=LEG_TP,
+            root=open_trade.get('order_root') or make_order_root(),
+        )
+        tp_res = place_tp_order(
+            account,
+            symbol,
+            FIXED_POSITION_SIDE,
+            qty,
+            float(open_trade['tp_price']),
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+            client_order_id=tp_client_order_id,
+        )
+        if tp_res.get('ok'):
+            tp_data = tp_res['data']
+            open_trade['tp_order_client_id'] = tp_data.get('client_order_id', tp_client_order_id)
+            open_trade['tp_order_exchange_id'] = tp_data.get('exchange_order_id')
+            changed = True
+            if audit_enabled:
+                write_event(account, 'tp_recreated', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                    'exchange_snapshot': tp_res,
+                })
+        else:
+            mark_error(account, symbol, error_code='tp_recreate_failed', error_message=tp_res.get('reason'), error_bj=current_time_bj)
+            if audit_enabled:
+                write_event(account, 'tp_recreate_failed', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'exchange_snapshot': tp_res,
+                })
+
+    if sl_row:
+        if open_trade.get('sl_order_exchange_id') != sl_row.get('order_id') or open_trade.get('sl_order_client_id') != sl_row.get('client_order_id'):
+            open_trade['sl_order_exchange_id'] = sl_row.get('order_id')
+            open_trade['sl_order_client_id'] = sl_row.get('client_order_id')
+            changed = True
+    elif float(open_trade.get('sl_trigger_price') or 0.0) > 0:
+        sl_client_order_id = open_trade.get('sl_order_client_id') or build_client_order_id(
+            broker_id=BROKER_ID,
+            strat=STRAT_CODE,
+            leg=LEG_SL,
+            root=open_trade.get('order_root') or make_order_root(),
+        )
+        sl_res = place_sl_order(
+            account,
+            symbol,
+            FIXED_POSITION_SIDE,
+            float(open_trade['sl_trigger_price']),
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+            client_order_id=sl_client_order_id,
+        )
+        if sl_res.get('ok'):
+            sl_data = sl_res['data']
+            open_trade['sl_order_client_id'] = sl_data.get('client_order_id', sl_client_order_id)
+            open_trade['sl_order_exchange_id'] = sl_data.get('exchange_order_id')
+            changed = True
+            if audit_enabled:
+                write_event(account, 'sl_recreated', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                    'exchange_snapshot': sl_res,
+                })
+        else:
+            mark_error(account, symbol, error_code='sl_recreate_failed', error_message=sl_res.get('reason'), error_bj=current_time_bj)
+            if audit_enabled:
+                write_event(account, 'sl_recreate_failed', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'exchange_snapshot': sl_res,
+                })
+
+    if changed:
+        open_trade['last_status_bj'] = current_time_bj
+        set_open_trade(account, symbol, open_trade)
+    return open_trade
+
 def _refresh_entry_cooldown(account: str, symbol: str, current_time_ms: int, cooldown_mins: int) -> None:
     cooldown_until_ts, cooldown_until_bj = _cooldown_until(current_time_ms, cooldown_mins)
     set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
@@ -305,12 +488,14 @@ def _refresh_exit_cooldown(account: str, symbol: str, current_time_ms: int, cool
     return set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
 
 
+
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> None:
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     retry_max = int(live_cfg['order_retry_max'])
     retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
+    cooldown_mins = int(live_cfg['cooldown_mins'])
     for symbol, payload in symbols.items():
         if not isinstance(payload, dict):
             continue
@@ -321,19 +506,52 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
         if open_trade:
             set_pending_entry_order(account, symbol, None)
             continue
-        entry_res = _order_query(account, symbol, exchange_order_id=pending.get('exchange_order_id'), client_order_id=pending.get('client_order_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+        entry_res = _order_query(
+            account,
+            symbol,
+            exchange_order_id=pending.get('exchange_order_id'),
+            client_order_id=pending.get('client_order_id'),
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+        )
         pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
         if pos_res.get('ok') and pos_res.get('data'):
+            recovered_trade = _recover_open_trade_from_pending(pending, pos_res['data'])
+            set_open_trade(account, symbol, recovered_trade)
             set_pending_entry_order(account, symbol, None)
+            _refresh_entry_cooldown(account, symbol, current_time_ms, cooldown_mins)
             if audit_enabled:
-                write_event(account, 'entry_filled_detected', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': {'entry_order': entry_res, 'position': pos_res}})
+                write_event(account, 'entry_filled_recovered_to_open_trade', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': recovered_trade.get('order_root'),
+                    'entry_client_order_id': recovered_trade.get('entry_client_order_id'),
+                    'tp_client_order_id': recovered_trade.get('tp_order_client_id'),
+                    'sl_client_order_id': recovered_trade.get('sl_order_client_id'),
+                    'exchange_snapshot': {'entry_order': entry_res, 'position': pos_res},
+                })
+                write_event(account, 'cooldown_set_after_entry_recovery', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': recovered_trade.get('order_root'),
+                })
             continue
         if entry_res.get('ok') and entry_res.get('data'):
             status = str(entry_res['data'].get('status') or '').upper()
             if status in TERMINAL_ORDER_STATUSES:
                 set_pending_entry_order(account, symbol, None)
                 if audit_enabled:
-                    write_event(account, 'entry_terminal_detected', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': entry_res})
+                    write_event(account, 'entry_terminal_detected', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'exchange_snapshot': entry_res,
+                    })
 
 
 def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str) -> None:
@@ -358,6 +576,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 write_event(account, 'exit_reconcile_error', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': {'position': pos_res, 'orders': ord_res}})
             continue
         position = pos_res.get('data')
+        open_orders = ord_res.get('data') or []
         if not position:
             exit_reason, order_checks = _infer_exit_reason(account, symbol, open_trade, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
@@ -384,6 +603,19 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 write_event(account, 'state_cleared_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exit_reason': exit_reason})
                 write_event(account, 'cooldown_refreshed_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source})
             continue
+
+        if not open_trade.get('exit_submit_inflight'):
+            open_trade = _ensure_exit_orders(
+                account,
+                symbol,
+                open_trade,
+                position,
+                open_orders,
+                live_cfg,
+                current_time_ms,
+                current_time_bj,
+                source=source,
+            )
 
         if open_trade.get('exit_submit_inflight'):
             continue
@@ -460,7 +692,6 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
                 'exchange_snapshot': ts_res,
             })
-
 
 def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     current_time_ms = _now_utc_ms()
@@ -565,7 +796,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
 
-    set_pending_entry_order(account, symbol, entry_res['data'])
+    pending_entry = _build_pending_entry(
+        entry_res,
+        signal,
+        entry_notional_usdt,
+        order_root=order_root,
+        entry_client_order_id=entry_client_order_id,
+        tp_client_order_id=tp_client_order_id,
+        sl_client_order_id=sl_client_order_id,
+    )
+    set_pending_entry_order(account, symbol, pending_entry)
     entry_data = entry_res['data']
     qty_for_exit = float(entry_data.get('executed_qty') or entry_data.get('qty') or 0.0)
     if qty_for_exit <= 0:

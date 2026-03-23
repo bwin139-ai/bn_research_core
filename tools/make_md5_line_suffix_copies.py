@@ -37,6 +37,7 @@ FILES = [
      "core/live/live_state.py",
      "core/live/audit_log.py",
      "core/live/market_data.py",
+     "core/live/custom_id.py",
     # "=================================",
      "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
