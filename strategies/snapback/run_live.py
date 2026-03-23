@@ -1003,6 +1003,48 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             mark_error(account, symbol, error_code='time_stop_submit_failed', error_message=ts_res.get('reason'), error_bj=current_time_bj)
             if audit_enabled:
                 write_event(account, 'time_stop_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': ts_res})
+
+            restore_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+            restore_ord_res = get_open_orders(account, symbol)
+            if restore_pos_res.get('ok') and restore_pos_res.get('data') and restore_ord_res.get('ok'):
+                open_trade = _ensure_exit_orders(
+                    account,
+                    symbol,
+                    open_trade,
+                    restore_pos_res['data'],
+                    restore_ord_res.get('data') or [],
+                    live_cfg,
+                    current_time_ms,
+                    current_time_bj,
+                    source='time_stop_submit_failed_repair',
+                )
+                set_open_trade(account, symbol, open_trade)
+                if audit_enabled:
+                    write_event(account, 'time_stop_submit_failed_repair_attempted', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'position': restore_pos_res,
+                            'orders': restore_ord_res,
+                        },
+                    })
+            else:
+                had_blocking_error = True
+                if audit_enabled:
+                    write_event(account, 'time_stop_submit_failed_repair_query_error', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'position': restore_pos_res,
+                            'orders': restore_ord_res,
+                        },
+                    })
             continue
 
         open_trade['time_stop_client_order_id'] = ts_res['data'].get('client_order_id', ts_client_order_id)
