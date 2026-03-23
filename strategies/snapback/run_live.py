@@ -208,6 +208,14 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
     if not audit_enabled:
         return
     local_active_symbols = _symbols_with_local_activity(account)
+    all_positions_res = get_positions(account)
+    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    if all_positions_res.get('ok'):
+        for row in all_positions_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if not symbol:
+                continue
+            positions_by_symbol.setdefault(symbol, []).append(row)
     seen: set[str] = set()
     for raw_symbol in symbols:
         symbol = str(raw_symbol).upper().strip()
@@ -223,25 +231,44 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
 
         pos_res = exch.get('position') or {}
         ord_res = exch.get('orders') or {}
-        has_position = bool(pos_res.get('ok') and pos_res.get('data'))
+        symbol_positions = positions_by_symbol.get(symbol) or []
+        has_long_position = bool(pos_res.get('ok') and pos_res.get('data'))
+        has_any_position = bool(symbol_positions)
         has_orders = bool(ord_res.get('ok') and ord_res.get('data'))
-        if not has_position and not has_orders:
+        if not has_any_position and not has_orders:
             continue
 
+        exchange_snapshot = {
+            'position': pos_res,
+            'orders': ord_res,
+            'positions_all_sides': {
+                'ok': all_positions_res.get('ok', False),
+                'reason': all_positions_res.get('reason'),
+                'data': symbol_positions,
+            },
+        }
         write_event(account, 'orphan_exchange_activity', {
             'symbol': symbol,
             'bar_ts': current_time_ms,
             'bar_bj': current_time_bj,
             'source': source,
-            'exchange_snapshot': exch,
+            'exchange_snapshot': exchange_snapshot,
         })
-        if has_position:
+        if has_any_position:
             write_event(account, 'orphan_exchange_position', {
                 'symbol': symbol,
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'source': source,
-                'exchange_snapshot': pos_res,
+                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
+            })
+        if has_any_position and not has_long_position:
+            write_event(account, 'orphan_exchange_nonlong_position', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
             })
         if has_orders:
             write_event(account, 'orphan_exchange_open_orders', {
