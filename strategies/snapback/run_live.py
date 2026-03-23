@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.config_loader import StrategyConfig
-from core.live.audit_log import write_event, write_runner_heartbeat, write_runner_started
+from core.live.audit_log import get_live_audit_dir, write_event, write_runner_heartbeat, write_runner_started
 from core.live.binance_exec import (
     get_open_orders,
     get_position,
@@ -73,6 +74,63 @@ def _load_live_config(path: str) -> dict[str, Any]:
     if not isinstance(data.get('exclude_symbols'), list):
         raise TypeError('exclude_symbols 必须是 list')
     return data
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _json_sha256(data: Any) -> str:
+    return _sha256_text(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
+
+
+def _read_text(path: str) -> str:
+    return Path(path).read_text(encoding='utf-8')
+
+
+def _write_config_snapshot(account: str, config_path: str, live_config_path: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    ts_utc = now.strftime('%Y%m%dT%H%M%SZ')
+    ts_bj = now.astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
+    account_key = str(account).strip()
+    snapshot_dir = get_live_audit_dir() / 'config_snapshots'
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    config_abs = str(Path(config_path).resolve())
+    live_config_abs = str(Path(live_config_path).resolve())
+    config_text = _read_text(config_path)
+    live_config_text = _read_text(live_config_path)
+
+    snapshot = {
+        'schema_version': 1,
+        'run_mode': 'live',
+        'strategy': 'snapback',
+        'account': account_key,
+        'snapshot_ts_utc': now.isoformat(),
+        'snapshot_ts_bj': ts_bj,
+        'config_path': config_path,
+        'config_abs_path': config_abs,
+        'live_config_path': live_config_path,
+        'live_config_abs_path': live_config_abs,
+        'strategy_config_sha256': _json_sha256(strategy_cfg),
+        'live_config_sha256': _json_sha256(live_cfg),
+        'strategy_config_file_sha256': _sha256_text(config_text),
+        'live_config_file_sha256': _sha256_text(live_config_text),
+        'strategy_config': strategy_cfg,
+        'live_config': live_cfg,
+    }
+
+    snapshot_path = snapshot_dir / f'snapback_{account_key}_{ts_utc}.config_snapshot.json'
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+    return {
+        'snapshot_path': str(snapshot_path),
+        'snapshot_bj': ts_bj,
+        'strategy_config_sha256': snapshot['strategy_config_sha256'],
+        'live_config_sha256': snapshot['live_config_sha256'],
+        'strategy_config_file_sha256': snapshot['strategy_config_file_sha256'],
+        'live_config_file_sha256': snapshot['live_config_file_sha256'],
+    }
 
 
 def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
@@ -284,8 +342,19 @@ def main() -> None:
     if not account:
         raise SystemExit('live_config account 不能为空')
 
+    snapshot_meta = _write_config_snapshot(account, args.config, args.live_config, strategy_cfg, live_cfg)
+
     mark_loop_heartbeat(account, runner_pid=os.getpid())
-    write_runner_started(account, {'config_path': args.config, 'live_config_path': args.live_config, 'started_bj': _now_bj_str()})
+    write_runner_started(account, {
+        'config_path': args.config,
+        'live_config_path': args.live_config,
+        'config_snapshot_path': snapshot_meta['snapshot_path'],
+        'strategy_config_sha256': snapshot_meta['strategy_config_sha256'],
+        'live_config_sha256': snapshot_meta['live_config_sha256'],
+        'strategy_config_file_sha256': snapshot_meta['strategy_config_file_sha256'],
+        'live_config_file_sha256': snapshot_meta['live_config_file_sha256'],
+        'started_bj': _now_bj_str(),
+    })
     if bool(live_cfg.get('notify_enabled', False)):
         _notify(True, f'[Snapback-Live] runner started | account={account}')
 
