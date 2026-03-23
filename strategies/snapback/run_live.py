@@ -668,6 +668,10 @@ def _refresh_exit_cooldown(account: str, symbol: str, current_time_ms: int, cool
     return set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
 
 
+def _clear_symbol_error(account: str, symbol: str) -> None:
+    mark_error(account, symbol, error_code=None, error_message=None, error_bj=None)
+
+
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> bool:
     had_blocking_error = False
@@ -715,6 +719,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             recovered_trade = _recover_open_trade_from_pending(pending, pos_res['data'])
             set_open_trade(account, symbol, recovered_trade)
             set_pending_entry_order(account, symbol, None)
+            _clear_symbol_error(account, symbol)
             _refresh_entry_cooldown(account, symbol, current_time_ms, cooldown_mins)
             if audit_enabled:
                 write_event(account, 'entry_filled_recovered_to_open_trade', {
@@ -773,6 +778,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
+                    _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
                     if audit_enabled:
                         write_event(account, 'entry_filled_but_position_missing', {
@@ -969,6 +975,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             set_open_trade(account, symbol, None)
             set_pending_entry_order(account, symbol, None)
+            _clear_symbol_error(account, symbol)
             _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
             if audit_enabled:
                 write_event(account, 'position_closed_detected', {
@@ -1059,6 +1066,8 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     })
                 if notify_enabled and live_cfg.get('notify_on_order_error', True):
                     _notify(True, f'[Snapback-Live] 风险告警 {symbol} | 持仓期 bracket 仍不完整 | tp_bound={verify_res.get("tp_bound")} sl_bound={verify_res.get("sl_bound")}')
+            else:
+                _clear_symbol_error(account, symbol)
             set_open_trade(account, symbol, open_trade)
 
         if open_trade.get('exit_submit_inflight'):
@@ -1588,6 +1597,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 retry_delay_secs=retry_delay_secs,
             )
             set_open_trade(account, symbol, None)
+            _clear_symbol_error(account, symbol)
             _refresh_exit_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
             if audit_enabled:
                 write_event(account, 'entry_fast_terminal_detected', {
@@ -1704,6 +1714,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                     _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
 
     if not entry_fast_terminal:
+        if not entry_bracket_gap_critical:
+            _clear_symbol_error(account, symbol)
         _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
         if audit_enabled:
             write_event(account, 'cooldown_set_after_entry', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'order_root': order_root})
