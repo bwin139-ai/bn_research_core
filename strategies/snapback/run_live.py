@@ -496,6 +496,7 @@ def _find_open_order(open_orders: list[dict[str, Any]], *, exchange_order_id: in
 
 def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], position: dict[str, Any], open_orders: list[dict[str, Any]], live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> dict[str, Any]:
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    notify_enabled = bool(live_cfg.get('notify_enabled', False))
     retry_max = int(live_cfg['order_retry_max'])
     retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
     qty = float(position.get('qty') or open_trade.get('entry_qty') or 0.0)
