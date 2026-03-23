@@ -49,7 +49,6 @@ class Position:
         self.signal_time_ms = signal_time_ms
         self.signal_price = signal_price
         self.context = context if context is not None else {}
-        self.defense_activated = False  # 🛡️ 新增：保本防守状态标记
 
 
 class VirtualBroker:
@@ -59,10 +58,7 @@ class VirtualBroker:
         self.trade_history: List[dict] = []
         self.cooldown_until: Dict[str, int] = {}
 
-        # 🛡️ 新增：解析防御引擎配置
         self.config = config if config is not None else {}
-        self.defense_trigger_pct = self.config["risk_controls"]["defense"]["trigger_pct"]
-        self.defense_lock_pct = self.config["risk_controls"]["defense"]["lock_pct"]
         self.max_hold_mins = self.config["exit_policy"]["time_stop"]["max_hold_mins"]
         self.time_stop_min_profit = self.config["exit_policy"]["time_stop"]["min_profit_pct"]
 
@@ -85,29 +81,9 @@ class VirtualBroker:
                     closed_symbols.append(sym)
                     continue
 
-            # 🛡️ 模块一：保本防守 (Breakeven Stop)
-            if not pos.defense_activated:
-                if high >= pos.entry_price * (1.0 + self.defense_trigger_pct):
-                    pos.defense_activated = True
-                    new_sl = pos.entry_price * (1.0 + self.defense_lock_pct)
-                    # 确保止损线只上移，不下降
-                    if new_sl > pos.sl_price:
-                        pos.sl_price = new_sl
-                        time_str = pd.to_datetime(current_time_ms, unit="ms").strftime(
-                            "%Y-%m-%d %H:%M"
-                        )
-                        logging.info(
-                            f"[{time_str}] 🛡️ 防守启动: {sym} 触及 {self.defense_trigger_pct*100}% 浮盈，止损上移至 {pos.sl_price:.4f}"
-                        )
-
             # 原有 TP/SL 逻辑
             if low <= pos.sl_price:
-                reason = (
-                    "BREAKEVEN_STOP"
-                    if pos.defense_activated and pos.sl_price > pos.entry_price
-                    else "STOP_LOSS"
-                )
-                self._close_position(sym, pos.sl_price, current_time_ms, reason)
+                self._close_position(sym, pos.sl_price, current_time_ms, "STOP_LOSS")
                 closed_symbols.append(sym)
             elif high >= pos.tp_price:
                 self._close_position(sym, pos.tp_price, current_time_ms, "TAKE_PROFIT")

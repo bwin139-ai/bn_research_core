@@ -61,7 +61,7 @@ ls -ldht output/state/* | head -n 5
 
 # ========= 拉 服务器回测数据 到 MacBook =========
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
-DEST=~/ai_projects/bn_research_core/state3
+DEST=~/ai_projects/bn_research_core/state4
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
@@ -69,6 +69,13 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_curve_compound.${RUNID}.png" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_curve_simple.${RUNID}.png" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
+  "$DEST"
+# ********** 拉复盘k线图表 *********
+RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
+DEST=~/ai_projects/bn_research_core/state4
+mkdir -p "$DEST"
+scp -r \
+  "aliyun-bn:/root/bn_research_core/output/state/sim_viz_${RUNID}" \
   "$DEST"
 
 # ================== 服务器资源监控 =====================

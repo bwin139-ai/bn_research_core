@@ -58,8 +58,6 @@ class WashoutSnapbackStrategy:
         self.cooldown_ms = risk_controls["cooldown_hours"] * 3600 * 1000
         self.max_hold_mins = time_stop["max_hold_mins"]
         self.time_stop_min_profit = time_stop["min_profit_pct"]
-        self.defense_trigger_pct = risk_controls["defense"]["trigger_pct"]
-        self.defense_lock_pct = risk_controls["defense"]["lock_pct"]
 
         self.cooldown_until: Dict[str, int] = {}
 
