@@ -1232,6 +1232,55 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 source='entry_immediate_repair',
             )
             set_open_trade(account, symbol, open_trade)
+            verify_orders_res = get_open_orders(account, symbol)
+            if not verify_orders_res.get('ok'):
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='entry_immediate_repair_verify_failed',
+                    error_message=verify_orders_res.get('reason'),
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'entry_immediate_repair_verify_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'order_root': order_root,
+                        'exchange_snapshot': verify_orders_res,
+                    })
+            else:
+                verify_orders = verify_orders_res.get('data') or []
+                tp_bound = _find_open_order(
+                    verify_orders,
+                    exchange_order_id=open_trade.get('tp_order_exchange_id'),
+                    client_order_id=open_trade.get('tp_order_client_id'),
+                ) is not None
+                sl_bound = _find_open_order(
+                    verify_orders,
+                    exchange_order_id=open_trade.get('sl_order_exchange_id'),
+                    client_order_id=open_trade.get('sl_order_client_id'),
+                ) is not None
+                if not (tp_bound and sl_bound):
+                    mark_error(
+                        account,
+                        symbol,
+                        error_code='entry_immediate_repair_incomplete',
+                        error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
+                        error_bj=current_time_bj,
+                    )
+                    if audit_enabled:
+                        write_event(account, 'entry_immediate_repair_incomplete', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'order_root': order_root,
+                            'tp_bound': tp_bound,
+                            'sl_bound': sl_bound,
+                            'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                            'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                            'exchange_snapshot': verify_orders_res,
+                        })
 
     _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
     if audit_enabled:
