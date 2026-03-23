@@ -1418,11 +1418,38 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                     'TIME_STOP': 'time_stop_filled',
                     'UNKNOWN_EXIT': 'unknown_exit',
                 }
+                write_event(account, 'position_closed_detected', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': 'entry_fast_terminal',
+                    'exit_reason': exit_reason,
+                    'order_root': order_root,
+                    'entry_client_order_id': open_trade.get('entry_client_order_id'),
+                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                    'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
+                    'exchange_snapshot': {
+                        'position': verify_pos_res,
+                        'orders': verify_orders_res,
+                        'order_checks': order_checks,
+                        'tp_cancel': tp_cancel,
+                        'sl_cancel': sl_cancel,
+                    },
+                })
                 write_event(account, event_map.get(exit_reason, 'unknown_exit'), {
                     'symbol': symbol,
                     'bar_ts': current_time_ms,
                     'bar_bj': current_time_bj,
                     'source': 'entry_fast_terminal',
+                    'order_root': order_root,
+                })
+                write_event(account, 'state_cleared_after_exit', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': 'entry_fast_terminal',
+                    'exit_reason': exit_reason,
                     'order_root': order_root,
                 })
                 write_event(account, 'cooldown_refreshed_after_entry_fast_terminal', {
