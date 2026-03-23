@@ -1022,6 +1022,23 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         audit_enabled=audit_enabled,
     )
 
+    required_reconcile_symbols = sorted(local_activity_symbols | exchange_activity_symbols)
+    missing_reconcile_symbols = [symbol for symbol in required_reconcile_symbols if symbol not in latest_closes]
+    if missing_reconcile_symbols:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_missing_reconcile_data', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'missing_reconcile_symbols': missing_reconcile_symbols,
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+                'candidate_reason': candidate_md_res.get('reason'),
+                'extra_reason': (extra_md_res or {}).get('reason'),
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
+
     if not candidate_payload:
         if audit_enabled:
             write_event(account, 'signal_scan_skipped_no_candidate_data', {
