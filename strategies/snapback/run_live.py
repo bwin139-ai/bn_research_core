@@ -622,7 +622,23 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             status = str(entry_res['data'].get('status') or '').upper()
             if status in TERMINAL_ORDER_STATUSES:
                 set_pending_entry_order(account, symbol, None)
-                if audit_enabled:
+                if status in FILLED_ORDER_STATUSES:
+                    _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
+                    if audit_enabled:
+                        write_event(account, 'entry_filled_but_position_missing', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': {'entry_order': entry_res, 'position': pos_res},
+                        })
+                        write_event(account, 'cooldown_refreshed_after_pending_filled_terminal', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                        })
+                elif audit_enabled:
                     write_event(account, 'entry_terminal_detected', {
                         'symbol': symbol,
                         'bar_ts': current_time_ms,
