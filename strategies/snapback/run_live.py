@@ -603,7 +603,8 @@ def _refresh_exit_cooldown(account: str, symbol: str, current_time_ms: int, cool
 
 
 
-def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> None:
+def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> bool:
+    had_blocking_error = False
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
@@ -629,6 +630,20 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             retry_delay_secs=retry_delay_secs,
         )
         pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+        if not entry_res.get('ok') or not pos_res.get('ok'):
+            had_blocking_error = True
+            if audit_enabled:
+                write_event(account, 'pending_reconcile_error', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'exchange_snapshot': {
+                        'entry_order': entry_res,
+                        'position': pos_res,
+                    },
+                })
+            continue
         if pos_res.get('ok') and pos_res.get('data'):
             recovered_trade = _recover_open_trade_from_pending(pending, pos_res['data'])
             set_open_trade(account, symbol, recovered_trade)
@@ -716,6 +731,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         'exchange_snapshot': entry_res,
                     })
 
+    return had_blocking_error
 
 def _reset_inflight_exit_state(open_trade: dict[str, Any], current_time_bj: str) -> dict[str, Any]:
     open_trade['exit_submit_inflight'] = False
@@ -802,7 +818,8 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
     return open_trade, True
 
 
-def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str) -> None:
+def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str) -> bool:
+    had_blocking_error = False
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
@@ -820,6 +837,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
         if not pos_res.get('ok') or not ord_res.get('ok'):
+            had_blocking_error = True
             if audit_enabled:
                 write_event(account, 'exit_reconcile_error', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': {'position': pos_res, 'orders': ord_res}})
             continue
@@ -953,6 +971,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
                 'exchange_snapshot': ts_res,
             })
+    return had_blocking_error
 
 def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     current_time_ms = _now_utc_ms()
@@ -1033,8 +1052,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     }
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
 
-    _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
-    _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
+    pending_reconcile_error = _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
+    open_trade_reconcile_error = _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
     if audit_enabled and not exchange_activity_snapshot.get('ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
             'bar_ts': current_time_ms,
@@ -1054,6 +1073,20 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         source='loop',
         audit_enabled=audit_enabled,
     )
+
+    if pending_reconcile_error or open_trade_reconcile_error:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_reconcile_query_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'pending_reconcile_error': pending_reconcile_error,
+                'open_trade_reconcile_error': open_trade_reconcile_error,
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
 
     required_reconcile_symbols = sorted(local_activity_symbols | exchange_activity_symbols)
     missing_reconcile_symbols = [symbol for symbol in required_reconcile_symbols if symbol not in latest_closes]
