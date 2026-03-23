@@ -1236,110 +1236,130 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     set_open_trade(account, symbol, open_trade)
     set_pending_entry_order(account, symbol, None)
 
-    if not tp_res.get('ok') or not sl_res.get('ok'):
-        pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
-        orders_after_entry = get_open_orders(account, symbol)
-        pos_after_entry_data = pos_after_entry.get('data') if pos_after_entry.get('ok') else None
-        orders_after_entry_data = orders_after_entry.get('data') or [] if orders_after_entry.get('ok') else []
+    pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
+    orders_after_entry = get_open_orders(account, symbol)
+    pos_after_entry_data = pos_after_entry.get('data') if pos_after_entry.get('ok') else None
+    orders_after_entry_data = orders_after_entry.get('data') or [] if orders_after_entry.get('ok') else []
+    tp_bound_initial = _find_open_order(
+        orders_after_entry_data,
+        exchange_order_id=open_trade.get('tp_order_exchange_id'),
+        client_order_id=open_trade.get('tp_order_client_id'),
+    ) is not None if orders_after_entry.get('ok') else False
+    sl_bound_initial = _find_open_order(
+        orders_after_entry_data,
+        exchange_order_id=open_trade.get('sl_order_exchange_id'),
+        client_order_id=open_trade.get('sl_order_client_id'),
+    ) is not None if orders_after_entry.get('ok') else False
+    should_repair_brackets = bool(
+        pos_after_entry_data and (
+            (not tp_res.get('ok'))
+            or (not sl_res.get('ok'))
+            or (orders_after_entry.get('ok') and not (tp_bound_initial and sl_bound_initial))
+        )
+    )
+    if audit_enabled:
+        write_event(account, 'entry_immediate_bracket_check', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'order_root': order_root,
+            'tp_submit_ok': bool(tp_res.get('ok')),
+            'sl_submit_ok': bool(sl_res.get('ok')),
+            'tp_bound_initial': tp_bound_initial,
+            'sl_bound_initial': sl_bound_initial,
+            'position_snapshot': pos_after_entry,
+            'open_orders_snapshot': orders_after_entry,
+        })
+
+    if should_repair_brackets:
+        open_trade = _ensure_exit_orders(
+            account,
+            symbol,
+            open_trade,
+            pos_after_entry_data,
+            orders_after_entry_data,
+            live_cfg,
+            current_time_ms,
+            current_time_bj,
+            source='entry_immediate_repair',
+        )
+        set_open_trade(account, symbol, open_trade)
+
+    verify_orders_res = get_open_orders(account, symbol)
+    if not verify_orders_res.get('ok'):
+        mark_error(
+            account,
+            symbol,
+            error_code='entry_immediate_bracket_verify_failed',
+            error_message=verify_orders_res.get('reason'),
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
-            write_event(account, 'entry_immediate_repair_check', {
+            write_event(account, 'entry_immediate_bracket_verify_failed', {
                 'symbol': symbol,
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'order_root': order_root,
-                'tp_submit_ok': bool(tp_res.get('ok')),
-                'sl_submit_ok': bool(sl_res.get('ok')),
-                'position_snapshot': pos_after_entry,
-                'open_orders_snapshot': orders_after_entry,
+                'exchange_snapshot': verify_orders_res,
             })
-        if pos_after_entry_data:
-            open_trade = _ensure_exit_orders(
+            write_event(account, 'critical_bracket_gap_after_entry', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'reason': 'entry_immediate_bracket_verify_failed',
+                'order_root': order_root,
+                'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                'exchange_snapshot': verify_orders_res,
+            })
+        if notify_enabled and live_cfg.get('notify_on_order_error', True):
+            _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_orders_res.get("reason") or "unknown"}')
+    else:
+        verify_orders = verify_orders_res.get('data') or []
+        tp_bound = _find_open_order(
+            verify_orders,
+            exchange_order_id=open_trade.get('tp_order_exchange_id'),
+            client_order_id=open_trade.get('tp_order_client_id'),
+        ) is not None
+        sl_bound = _find_open_order(
+            verify_orders,
+            exchange_order_id=open_trade.get('sl_order_exchange_id'),
+            client_order_id=open_trade.get('sl_order_client_id'),
+        ) is not None
+        if not (tp_bound and sl_bound):
+            mark_error(
                 account,
                 symbol,
-                open_trade,
-                pos_after_entry_data,
-                orders_after_entry_data,
-                live_cfg,
-                current_time_ms,
-                current_time_bj,
-                source='entry_immediate_repair',
+                error_code='entry_immediate_bracket_incomplete',
+                error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
+                error_bj=current_time_bj,
             )
-            set_open_trade(account, symbol, open_trade)
-            verify_orders_res = get_open_orders(account, symbol)
-            if not verify_orders_res.get('ok'):
-                mark_error(
-                    account,
-                    symbol,
-                    error_code='entry_immediate_repair_verify_failed',
-                    error_message=verify_orders_res.get('reason'),
-                    error_bj=current_time_bj,
-                )
-                if audit_enabled:
-                    write_event(account, 'entry_immediate_repair_verify_failed', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'order_root': order_root,
-                        'exchange_snapshot': verify_orders_res,
-                    })
-                    write_event(account, 'critical_bracket_gap_after_entry', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'reason': 'entry_immediate_repair_verify_failed',
-                        'order_root': order_root,
-                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                        'exchange_snapshot': verify_orders_res,
-                    })
-                if notify_enabled and live_cfg.get('notify_on_order_error', True):
-                    _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_orders_res.get("reason") or "unknown"}')
-            else:
-                verify_orders = verify_orders_res.get('data') or []
-                tp_bound = _find_open_order(
-                    verify_orders,
-                    exchange_order_id=open_trade.get('tp_order_exchange_id'),
-                    client_order_id=open_trade.get('tp_order_client_id'),
-                ) is not None
-                sl_bound = _find_open_order(
-                    verify_orders,
-                    exchange_order_id=open_trade.get('sl_order_exchange_id'),
-                    client_order_id=open_trade.get('sl_order_client_id'),
-                ) is not None
-                if not (tp_bound and sl_bound):
-                    mark_error(
-                        account,
-                        symbol,
-                        error_code='entry_immediate_repair_incomplete',
-                        error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
-                        error_bj=current_time_bj,
-                    )
-                    if audit_enabled:
-                        write_event(account, 'entry_immediate_repair_incomplete', {
-                            'symbol': symbol,
-                            'bar_ts': current_time_ms,
-                            'bar_bj': current_time_bj,
-                            'order_root': order_root,
-                            'tp_bound': tp_bound,
-                            'sl_bound': sl_bound,
-                            'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                            'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                            'exchange_snapshot': verify_orders_res,
-                        })
-                        write_event(account, 'critical_bracket_gap_after_entry', {
-                            'symbol': symbol,
-                            'bar_ts': current_time_ms,
-                            'bar_bj': current_time_bj,
-                            'reason': 'entry_immediate_repair_incomplete',
-                            'order_root': order_root,
-                            'tp_bound': tp_bound,
-                            'sl_bound': sl_bound,
-                            'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                            'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                            'exchange_snapshot': verify_orders_res,
-                        })
-                    if notify_enabled and live_cfg.get('notify_on_order_error', True):
-                        _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
+            if audit_enabled:
+                write_event(account, 'entry_immediate_bracket_incomplete', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'order_root': order_root,
+                    'tp_bound': tp_bound,
+                    'sl_bound': sl_bound,
+                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                    'exchange_snapshot': verify_orders_res,
+                })
+                write_event(account, 'critical_bracket_gap_after_entry', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'reason': 'entry_immediate_bracket_incomplete',
+                    'order_root': order_root,
+                    'tp_bound': tp_bound,
+                    'sl_bound': sl_bound,
+                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                    'exchange_snapshot': verify_orders_res,
+                })
+            if notify_enabled and live_cfg.get('notify_on_order_error', True):
+                _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
 
     _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
     if audit_enabled:
