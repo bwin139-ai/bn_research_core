@@ -821,8 +821,18 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
     ts_order = ts_order_res.get('data') or {}
     ts_status = str(ts_order.get('status') or '').upper()
     if ts_status in FILLED_ORDER_STATUSES:
+        open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
         if audit_enabled:
             write_event(account, 'time_stop_filled_but_position_still_open', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'order_root': open_trade.get('order_root'),
+                'time_stop_client_order_id': ts_client_order_id,
+                'exchange_snapshot': ts_order_res,
+            })
+            write_event(account, 'time_stop_inflight_reset_after_filled_position_open', {
                 'symbol': symbol,
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
