@@ -22,6 +22,7 @@ from core.live.binance_exec import (
     get_open_orders,
     get_order,
     get_position,
+    get_positions,
     place_entry_order,
     place_sl_order,
     place_time_stop_order,
@@ -183,6 +184,23 @@ def _symbols_with_local_activity(account: str) -> set[str]:
             continue
         if payload.get('pending_entry_order') or payload.get('open_trade'):
             out.add(str(symbol).upper().strip())
+    return out
+
+
+def _collect_exchange_activity_symbols(account: str) -> set[str]:
+    out: set[str] = set()
+    pos_res = get_positions(account)
+    if pos_res.get('ok'):
+        for row in pos_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if symbol:
+                out.add(symbol)
+    ord_res = get_open_orders(account)
+    if ord_res.get('ok'):
+        for row in ord_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if symbol:
+                out.add(symbol)
     return out
 
 
@@ -857,7 +875,11 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
-    startup_symbols = sorted(_symbols_with_local_activity(account) | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])))
+    startup_symbols = sorted(
+        _symbols_with_local_activity(account)
+        | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
+        | _collect_exchange_activity_symbols(account)
+    )
     _audit_orphan_exchange_activity(
         account,
         startup_symbols,
@@ -892,7 +914,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
     _audit_orphan_exchange_activity(
         account,
-        symbols,
+        sorted(set(symbols) | _collect_exchange_activity_symbols(account)),
         current_time_ms,
         current_time_bj,
         source='loop',
