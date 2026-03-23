@@ -187,6 +187,28 @@ def _symbols_with_local_activity(account: str) -> set[str]:
     return out
 
 
+def _collect_active_state_errors(account: str) -> list[dict[str, Any]]:
+    state = load_live_state(account)
+    out: list[dict[str, Any]] = []
+    for raw_symbol, payload in (state.get('symbols') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        if not (payload.get('pending_entry_order') or payload.get('open_trade')):
+            continue
+        error_code = payload.get('last_error_code')
+        if not error_code:
+            continue
+        out.append({
+            'symbol': str(raw_symbol).upper().strip(),
+            'error_code': error_code,
+            'error_message': payload.get('last_error_message'),
+            'error_bj': payload.get('last_error_bj'),
+            'has_pending_entry_order': bool(payload.get('pending_entry_order')),
+            'has_open_trade': bool(payload.get('open_trade')),
+        })
+    return out
+
+
 def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     symbols: set[str] = set()
     pos_res = get_positions(account)
@@ -1223,6 +1245,20 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                     'positions': exchange_activity_snapshot.get('positions'),
                     'orders': exchange_activity_snapshot.get('orders'),
                 },
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
+
+    active_state_errors = _collect_active_state_errors(account)
+    if active_state_errors:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_active_state_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'active_state_errors': active_state_errors,
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
             })
         for symbol in merged_full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
