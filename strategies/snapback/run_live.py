@@ -895,34 +895,74 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     lookback_bars = int(live_cfg['lookback_bars'])
-    symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
-    md_res = build_live_inputs(account, symbols, lookback_bars, strategy_cfg)
-    if not md_res['ok']:
+    candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
+    exchange_activity_symbols = _collect_exchange_activity_symbols(account)
+    local_activity_symbols = _symbols_with_local_activity(account)
+    extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
+
+    candidate_md_res = build_live_inputs(account, candidate_symbols, lookback_bars, strategy_cfg)
+    extra_md_res: dict[str, Any] | None = None
+    if extra_reconcile_symbols:
+        extra_md_res = build_live_inputs(account, extra_reconcile_symbols, lookback_bars, None)
+
+    candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
+    extra_payload = extra_md_res.get('data') if extra_md_res and extra_md_res.get('ok') else None
+
+    payload = candidate_payload or extra_payload
+    if payload is None:
         if audit_enabled:
-            write_event(account, 'data_error', {'reason': md_res['reason'], 'errors': md_res.get('errors')})
+            write_event(account, 'data_error', {
+                'reason': candidate_md_res.get('reason') or (extra_md_res or {}).get('reason') or 'no_live_inputs',
+                'candidate_errors': candidate_md_res.get('errors'),
+                'extra_errors': (extra_md_res or {}).get('errors'),
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            })
         return
 
-    payload = md_res['data']
     current_time_ms = int(payload['latest_closed_bar_ts'])
     current_time_bj = payload['latest_closed_bar_bj']
-    cross_section = payload['cross_section']
-    full_df = payload['full_df']
-    latest_closes = {str(symbol).upper().strip(): float(df.loc[current_time_ms, 'close']) for symbol, df in full_df.items() if current_time_ms in df.index}
+
+    candidate_cross_section = candidate_payload['cross_section'] if candidate_payload else None
+    candidate_full_df = dict(candidate_payload['full_df']) if candidate_payload else {}
+    extra_full_df = dict(extra_payload['full_df']) if extra_payload else {}
+    merged_full_df = dict(candidate_full_df)
+    merged_full_df.update(extra_full_df)
+    latest_closes = {
+        str(symbol).upper().strip(): float(df.loc[current_time_ms, 'close'])
+        for symbol, df in merged_full_df.items()
+        if current_time_ms in df.index
+    }
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
 
     _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
     _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
     _audit_orphan_exchange_activity(
         account,
-        sorted(set(symbols) | _collect_exchange_activity_symbols(account)),
+        sorted(set(candidate_symbols) | exchange_activity_symbols),
         current_time_ms,
         current_time_bj,
         source='loop',
         audit_enabled=audit_enabled,
     )
 
+    if not candidate_payload:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_no_candidate_data', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'candidate_reason': candidate_md_res.get('reason'),
+                'candidate_errors': candidate_md_res.get('errors'),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
+
+    cross_section = candidate_cross_section
+    full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
-    active_symbols = _active_symbols_from_state(account)
+    active_symbols = _active_symbols_from_state(account) | exchange_activity_symbols
     signal = strategy.on_kline_close(current_time_ms, cross_section, active_symbols, full_df)
 
     if not signal:
@@ -930,13 +970,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             write_event(account, 'signal_none', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
-                'freshest_bar_ts': payload.get('freshest_bar_ts'),
-                'freshest_bar_bj': payload.get('freshest_bar_bj'),
-                'stale_cutoff_bj': payload.get('stale_cutoff_bj'),
-                'symbol_count': payload['symbol_count'],
-                'stale_symbol_count': payload.get('stale_symbol_count', 0),
+                'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
+                'freshest_bar_bj': candidate_payload.get('freshest_bar_bj'),
+                'stale_cutoff_bj': candidate_payload.get('stale_cutoff_bj'),
+                'symbol_count': candidate_payload['symbol_count'],
+                'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
             })
-        for symbol in full_df.keys():
+        for symbol in merged_full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
 
