@@ -1064,6 +1064,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     if not tp_res.get('ok') or not sl_res.get('ok'):
         pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
         orders_after_entry = get_open_orders(account, symbol)
+        pos_after_entry_data = pos_after_entry.get('data') if pos_after_entry.get('ok') else None
+        orders_after_entry_data = orders_after_entry.get('data') or [] if orders_after_entry.get('ok') else []
         if audit_enabled:
             write_event(account, 'entry_immediate_repair_check', {
                 'symbol': symbol,
@@ -1075,17 +1077,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'position_snapshot': pos_after_entry,
                 'open_orders_snapshot': orders_after_entry,
             })
-        if pos_after_entry.get('ok') and float(pos_after_entry.get('qty') or 0.0) > 0:
+        if pos_after_entry_data:
             open_trade = _ensure_exit_orders(
                 account,
                 symbol,
                 open_trade,
-                orders_after_entry,
-                current_time_ms=current_time_ms,
-                current_time_bj=current_time_bj,
-                retry_max=retry_max,
-                retry_delay_secs=retry_delay_secs,
-                audit_enabled=audit_enabled,
+                pos_after_entry_data,
+                orders_after_entry_data,
+                live_cfg,
+                current_time_ms,
+                current_time_bj,
                 source='entry_immediate_repair',
             )
             set_open_trade(account, symbol, open_trade)
