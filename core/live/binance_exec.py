@@ -13,6 +13,7 @@ POSITION_MODE = "HEDGE"
 ENTRY_ORDER_TYPE = "MARKET"
 TAKE_PROFIT_ORDER_TYPE = "LIMIT"
 STOP_LOSS_ORDER_TYPE = "STOP_MARKET"
+TIME_STOP_ORDER_TYPE = "MARKET"
 
 
 def _ok(data: Any = None, **extra: Any) -> dict[str, Any]:
@@ -111,6 +112,27 @@ def _extract_filters(raw_symbol: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_order_row(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": raw.get("symbol"),
+        "order_id": raw.get("orderId"),
+        "client_order_id": raw.get("clientOrderId"),
+        "side": raw.get("side"),
+        "position_side": raw.get("positionSide"),
+        "type": raw.get("type"),
+        "status": raw.get("status"),
+        "price": float(raw.get("price", 0.0) or 0.0),
+        "avg_price": float(raw.get("avgPrice", 0.0) or 0.0),
+        "orig_qty": float(raw.get("origQty", 0.0) or 0.0),
+        "executed_qty": float(raw.get("executedQty", 0.0) or 0.0),
+        "cum_quote": float(raw.get("cumQuote", 0.0) or 0.0),
+        "stop_price": float(raw.get("stopPrice", 0.0) or 0.0),
+        "reduce_only": bool(raw.get("reduceOnly", False)),
+        "close_position": bool(raw.get("closePosition", False)),
+        "raw": raw,
+    }
+
+
 def get_account_status(account: str) -> dict[str, Any]:
     client = get_client(account)
     res = _call_with_retry(client.futures_account)
@@ -156,26 +178,36 @@ def get_open_orders(account: str, symbol: str | None = None) -> dict[str, Any]:
     res = _call_with_retry(lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
     if not res["ok"]:
         return res
-    rows = []
-    for o in res["data"]:
-        rows.append(
-            {
-                "symbol": o.get("symbol"),
-                "order_id": o.get("orderId"),
-                "client_order_id": o.get("clientOrderId"),
-                "side": o.get("side"),
-                "position_side": o.get("positionSide"),
-                "type": o.get("type"),
-                "status": o.get("status"),
-                "price": float(o.get("price", 0.0) or 0.0),
-                "orig_qty": float(o.get("origQty", 0.0) or 0.0),
-                "executed_qty": float(o.get("executedQty", 0.0) or 0.0),
-                "stop_price": float(o.get("stopPrice", 0.0) or 0.0),
-                "reduce_only": bool(o.get("reduceOnly", False)),
-                "raw": o,
-            }
-        )
+    rows = [_normalize_order_row(o) for o in res["data"]]
     return _ok(rows)
+
+
+def get_order(
+    account: str,
+    symbol: str,
+    *,
+    exchange_order_id: int | None = None,
+    client_order_id: str | None = None,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+) -> dict[str, Any]:
+    if exchange_order_id is None and not client_order_id:
+        return _err("查询订单必须提供 exchange_order_id 或 client_order_id")
+    client = get_client(account)
+    su = (symbol or "").upper().strip()
+    payload: dict[str, Any] = {"symbol": su}
+    if exchange_order_id is not None:
+        payload["orderId"] = int(exchange_order_id)
+    if client_order_id:
+        payload["origClientOrderId"] = client_order_id
+    res = _call_with_retry(
+        lambda: client.futures_get_order(**payload),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    return _ok(_normalize_order_row(res["data"]), attempts=res.get("attempts"))
 
 
 def get_positions(account: str, symbol: str | None = None) -> dict[str, Any]:
@@ -437,6 +469,59 @@ def place_sl_order(
             "client_order_id": raw.get("clientOrderId", cid),
             "exchange_order_id": raw.get("orderId"),
             "status": raw.get("status"),
+            "payload": payload,
+            "raw": raw,
+        },
+        attempts=res.get("attempts"),
+    )
+
+
+def place_time_stop_order(
+    account: str,
+    symbol: str,
+    position_side: str,
+    quantity: float,
+    *,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+    client_order_id: str | None = None,
+) -> dict[str, Any]:
+    client = get_client(account)
+    su = (symbol or "").upper().strip()
+    pos = _normalize_position_side(position_side)
+    qty_res = _normalize_quantity(account, su, quantity)
+    if not qty_res["ok"]:
+        return qty_res
+    cid = client_order_id or _gen_client_order_id("TS", su)
+    payload = {
+        "symbol": su,
+        "side": _exit_side_for_position(pos),
+        "positionSide": pos,
+        "type": TIME_STOP_ORDER_TYPE,
+        "quantity": qty_res["data"]["qty"],
+        "newClientOrderId": cid,
+    }
+    res = _call_with_retry(
+        lambda: client.futures_create_order(**payload),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    raw = res["data"]
+    return _ok(
+        {
+            "symbol": su,
+            "order_role": "TIME_STOP",
+            "order_type": TIME_STOP_ORDER_TYPE,
+            "side": payload["side"],
+            "position_side": pos,
+            "qty": qty_res["data"]["qty"],
+            "client_order_id": raw.get("clientOrderId", cid),
+            "exchange_order_id": raw.get("orderId"),
+            "status": raw.get("status"),
+            "avg_price": float(raw.get("avgPrice", 0.0) or 0.0),
+            "executed_qty": float(raw.get("executedQty", 0.0) or 0.0),
             "payload": payload,
             "raw": raw,
         },
