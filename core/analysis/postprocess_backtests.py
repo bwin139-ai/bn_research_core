@@ -48,6 +48,12 @@ def _avg_or_none(values: List[float]) -> float | None:
     return round2(sum(values) / len(values))
 
 
+def _max_or_none(values: List[float]) -> float | None:
+    if not values:
+        return None
+    return round2(max(values))
+
+
 def build_exit_stats(trades: List[Dict[str, object]], initial_equity: float) -> Dict[str, object]:
     take_profit_pnls: List[float] = []
     take_profit_holds: List[float] = []
@@ -75,12 +81,15 @@ def build_exit_stats(trades: List[Dict[str, object]], initial_equity: float) -> 
         'take_profit_count': len(take_profit_pnls),
         'average_take_profit_usdt': _avg_or_none(take_profit_pnls),
         'average_take_profit_hold_minutes': _avg_or_none(take_profit_holds),
+        'max_take_profit_hold_minutes': _max_or_none(take_profit_holds),
         'stop_loss_count': len(stop_loss_pnls),
         'average_stop_loss_usdt': _avg_or_none(stop_loss_pnls),
         'average_stop_loss_hold_minutes': _avg_or_none(stop_loss_holds),
+        'max_stop_loss_hold_minutes': _max_or_none(stop_loss_holds),
         'timeout_count': len(timeout_pnls),
         'average_timeout_pnl_usdt': _avg_or_none(timeout_pnls),
         'average_timeout_hold_minutes': _avg_or_none(timeout_holds),
+        'max_timeout_hold_minutes': _max_or_none(timeout_holds),
     }
 
 
