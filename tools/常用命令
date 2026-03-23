@@ -61,7 +61,7 @@ ls -ldht output/state/* | head -n 5
 
 # ========= 拉 服务器回测数据 到 MacBook =========
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
-DEST=~/ai_projects/bn_research_core/state
+DEST=~/ai_projects/bn_research_core/state2
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \

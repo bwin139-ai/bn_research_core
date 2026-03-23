@@ -14,7 +14,7 @@ output/
 logs/
 figs/
 state/
-state1/
+state*/
 viz/
 visual_audit/
 
