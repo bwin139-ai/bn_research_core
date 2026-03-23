@@ -623,6 +623,20 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             if status in TERMINAL_ORDER_STATUSES:
                 set_pending_entry_order(account, symbol, None)
                 if status in FILLED_ORDER_STATUSES:
+                    tp_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('tp_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
+                    sl_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('sl_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
                     if audit_enabled:
                         write_event(account, 'entry_filled_but_position_missing', {
@@ -630,7 +644,26 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'bar_ts': current_time_ms,
                             'bar_bj': current_time_bj,
                             'source': source,
-                            'exchange_snapshot': {'entry_order': entry_res, 'position': pos_res},
+                            'exchange_snapshot': {
+                                'entry_order': entry_res,
+                                'position': pos_res,
+                                'tp_cancel': tp_cancel,
+                                'sl_cancel': sl_cancel,
+                            },
+                        })
+                        write_event(account, 'pending_terminal_cancel_tp', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': tp_cancel,
+                        })
+                        write_event(account, 'pending_terminal_cancel_sl', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': sl_cancel,
                         })
                         write_event(account, 'cooldown_refreshed_after_pending_filled_terminal', {
                             'symbol': symbol,
