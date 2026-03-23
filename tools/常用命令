@@ -1,4 +1,4 @@
-python3 -m py_compile klines_1m_store.py
+python3 -m py_compile 
 ps aux | grep python
 ```bash
 

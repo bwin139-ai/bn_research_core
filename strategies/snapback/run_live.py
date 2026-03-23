@@ -554,6 +554,91 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     })
 
 
+def _reset_inflight_exit_state(open_trade: dict[str, Any], current_time_bj: str) -> dict[str, Any]:
+    open_trade['exit_submit_inflight'] = False
+    open_trade['status'] = 'OPEN'
+    open_trade['last_status_bj'] = current_time_bj
+    return open_trade
+
+
+def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, retry_max: int, retry_delay_secs: float, audit_enabled: bool) -> tuple[dict[str, Any], bool]:
+    ts_exchange_order_id = open_trade.get('time_stop_exchange_order_id')
+    ts_client_order_id = open_trade.get('time_stop_client_order_id')
+    if ts_exchange_order_id is None and not ts_client_order_id:
+        open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
+        if audit_enabled:
+            write_event(account, 'time_stop_inflight_missing_identity', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'order_root': open_trade.get('order_root'),
+            })
+        return open_trade, True
+
+    ts_order_res = _order_query(
+        account,
+        symbol,
+        exchange_order_id=ts_exchange_order_id,
+        client_order_id=ts_client_order_id,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not ts_order_res.get('ok'):
+        if audit_enabled:
+            write_event(account, 'time_stop_inflight_query_error', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'order_root': open_trade.get('order_root'),
+                'time_stop_client_order_id': ts_client_order_id,
+                'exchange_snapshot': ts_order_res,
+            })
+        return open_trade, True
+
+    ts_order = ts_order_res.get('data') or {}
+    ts_status = str(ts_order.get('status') or '').upper()
+    if ts_status in FILLED_ORDER_STATUSES:
+        if audit_enabled:
+            write_event(account, 'time_stop_filled_but_position_still_open', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'order_root': open_trade.get('order_root'),
+                'time_stop_client_order_id': ts_client_order_id,
+                'exchange_snapshot': ts_order_res,
+            })
+        return open_trade, True
+
+    if ts_status in TERMINAL_ORDER_STATUSES:
+        open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
+        if audit_enabled:
+            write_event(account, 'time_stop_terminal_but_position_open', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'order_root': open_trade.get('order_root'),
+                'time_stop_client_order_id': ts_client_order_id,
+                'exchange_snapshot': ts_order_res,
+            })
+        return open_trade, True
+
+    if audit_enabled:
+        write_event(account, 'time_stop_inflight_waiting', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'order_root': open_trade.get('order_root'),
+            'time_stop_client_order_id': ts_client_order_id,
+            'exchange_snapshot': ts_order_res,
+        })
+    return open_trade, True
+
+
 def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str) -> None:
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
@@ -618,7 +703,20 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             )
 
         if open_trade.get('exit_submit_inflight'):
-            continue
+            open_trade, should_skip = _reconcile_inflight_exit(
+                account,
+                symbol,
+                open_trade,
+                current_time_ms,
+                current_time_bj,
+                source=source,
+                retry_max=retry_max,
+                retry_delay_secs=retry_delay_secs,
+                audit_enabled=audit_enabled,
+            )
+            set_open_trade(account, symbol, open_trade)
+            if should_skip:
+                continue
 
         latest_close = latest_closes.get(symbol)
         if latest_close is None:
