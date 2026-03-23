@@ -1060,6 +1060,36 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     open_trade = _build_open_trade(entry_res, signal, tp_res, sl_res, entry_notional_usdt, order_root=order_root, entry_client_order_id=entry_client_order_id, tp_client_order_id=tp_client_order_id, sl_client_order_id=sl_client_order_id)
     set_open_trade(account, symbol, open_trade)
     set_pending_entry_order(account, symbol, None)
+
+    if not tp_res.get('ok') or not sl_res.get('ok'):
+        pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
+        orders_after_entry = get_open_orders(account, symbol)
+        if audit_enabled:
+            write_event(account, 'entry_immediate_repair_check', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'order_root': order_root,
+                'tp_submit_ok': bool(tp_res.get('ok')),
+                'sl_submit_ok': bool(sl_res.get('ok')),
+                'position_snapshot': pos_after_entry,
+                'open_orders_snapshot': orders_after_entry,
+            })
+        if pos_after_entry.get('ok') and float(pos_after_entry.get('qty') or 0.0) > 0:
+            open_trade = _ensure_exit_orders(
+                account,
+                symbol,
+                open_trade,
+                orders_after_entry,
+                current_time_ms=current_time_ms,
+                current_time_bj=current_time_bj,
+                retry_max=retry_max,
+                retry_delay_secs=retry_delay_secs,
+                audit_enabled=audit_enabled,
+                source='entry_immediate_repair',
+            )
+            set_open_trade(account, symbol, open_trade)
+
     _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
     if audit_enabled:
         write_event(account, 'cooldown_set_after_entry', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'order_root': order_root})
