@@ -1,12 +1,16 @@
 python3 -m py_compile klines_1m_store.py
+ps aux | grep python
+```bash
 
-nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' > output/logs/snapback_live.console.log 2>&1 &
-tail -f /root/bn_research_core/output/logs/snapback_live.console.log
+```
+# ============== snapback 实盘运行 ===============
+nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' >> output/logs/snapback_live.console.log 2>&1 &
+tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
 
 ls -lht state/live_audit
-tail -n 20 state/live_audit/snapback_mybwin139.jsonl
+tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
-# ========= 项目根目录 =========
+# ============== 项目根目录 ===============
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
@@ -90,8 +94,8 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 cd /root/bn_research_core
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2025-04-19T00:00:00+00:00 \
-  --end   2025-04-25T00:12:00+00:00 \
+  --start 2026-03-22T00:00:00+00:00 \
+  --end   2026-03-23T00:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/state" \
@@ -127,11 +131,11 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 2 \
+  --days 3 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
-  >> logs/klines_1m_augment_idx_2d.log 2>&1 &
+  >> logs/klines_1m_augment_idx.log 2>&1 &
 
 # *** 单独运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \

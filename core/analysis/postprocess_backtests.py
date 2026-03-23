@@ -32,6 +32,136 @@ def load_jsonl(path: Path) -> List[dict]:
     return rows
 
 
+def _first_present(row: Dict[str, Any], keys: List[str]) -> Any:
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_exit_bucket(row: Dict[str, Any]) -> str | None:
+    raw = _first_present(
+        row,
+        [
+            'exit_reason',
+            'close_reason',
+            'reason',
+            'exit_type',
+            'close_type',
+        ],
+    )
+    if raw is None:
+        return None
+
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+
+    if text in {'tp', 'take_profit', 'takeprofit'} or 'take_profit' in text or text == 'tp':
+        return 'take_profit'
+    if text in {'sl', 'stop_loss', 'stoploss'} or 'stop_loss' in text or text == 'sl':
+        return 'stop_loss'
+    if text in {'timeout', 'time_out'} or 'timeout' in text or 'time_out' in text:
+        return 'timeout'
+    return None
+
+
+def _extract_pnl_usdt(row: Dict[str, Any]) -> float | None:
+    return _to_float(
+        _first_present(
+            row,
+            [
+                'net_pnl_usdt',
+                'pnl_usdt',
+                'pnl_amount',
+                'pnl',
+            ],
+        )
+    )
+
+
+def _extract_hold_minutes(row: Dict[str, Any]) -> float | None:
+    return _to_float(
+        _first_present(
+            row,
+            [
+                'hold_minutes',
+                'holding_minutes',
+                'hold_mins',
+                'duration_minutes',
+            ],
+        )
+    )
+
+
+def _avg_or_none(values: List[float]) -> float | None:
+    if not values:
+        return None
+    return round2(sum(values) / len(values))
+
+
+def build_exit_stats(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    buckets: Dict[str, Dict[str, List[float]]] = {
+        'take_profit': {'pnl_values': [], 'hold_minutes': []},
+        'stop_loss': {'pnl_values': [], 'hold_minutes': []},
+        'timeout': {'pnl_values': [], 'hold_minutes': []},
+    }
+    counts = {
+        'take_profit': 0,
+        'stop_loss': 0,
+        'timeout': 0,
+    }
+
+    for trade in trades:
+        bucket = _normalize_exit_bucket(trade)
+        if bucket is None:
+            continue
+
+        counts[bucket] += 1
+
+        pnl = _extract_pnl_usdt(trade)
+        hold_minutes = _extract_hold_minutes(trade)
+
+        if pnl is not None:
+            if bucket == 'stop_loss':
+                buckets[bucket]['pnl_values'].append(abs(pnl))
+            else:
+                buckets[bucket]['pnl_values'].append(pnl)
+
+        if hold_minutes is not None:
+            buckets[bucket]['hold_minutes'].append(hold_minutes)
+
+    return {
+        'take_profit_count': counts['take_profit'],
+        'average_take_profit_usdt': _avg_or_none(buckets['take_profit']['pnl_values']),
+        'average_take_profit_hold_minutes': _avg_or_none(buckets['take_profit']['hold_minutes']),
+        'stop_loss_count': counts['stop_loss'],
+        'average_stop_loss_usdt': _avg_or_none(buckets['stop_loss']['pnl_values']),
+        'average_stop_loss_hold_minutes': _avg_or_none(buckets['stop_loss']['hold_minutes']),
+        'timeout_count': counts['timeout'],
+        'average_timeout_pnl_usdt': _avg_or_none(buckets['timeout']['pnl_values']),
+        'average_timeout_hold_minutes': _avg_or_none(buckets['timeout']['hold_minutes']),
+    }
+
+
+def count_signal_symbols(signals: List[Dict[str, Any]]) -> int:
+    symbols = {
+        str(row.get('symbol')).strip()
+        for row in signals
+        if row.get('symbol') is not None and str(row.get('symbol')).strip()
+    }
+    return len(symbols)
+
+
 def resolve_merge_meta_path(run_id: str, state_dir: Path, explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
@@ -166,6 +296,8 @@ def main() -> int:
     fee_side = _extract_fee_side(run_config or {}) if run_config is not None else args.fee_side
     metrics = build_normalized_metrics(trades, fee_side=fee_side, initial_equity=args.initial_equity, show_gross=args.show_gross)
     metrics['signals_count'] = len(signals)
+    metrics['symbols_count'] = count_signal_symbols(signals)
+    metrics.update(build_exit_stats(trades))
 
     out = {
         'summary_scope': 'ALL',
