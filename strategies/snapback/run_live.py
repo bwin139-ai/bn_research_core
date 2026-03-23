@@ -308,9 +308,13 @@ def _precheck_exchange_blockers(account: str, symbol: str) -> dict[str, Any]:
 def _has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
     pos_res = snapshot['position']
     ord_res = snapshot['orders']
-    if pos_res.get('ok') and pos_res.get('data'):
+    if not pos_res.get('ok'):
+        return True, 'precheck_position_query_failed'
+    if not ord_res.get('ok'):
+        return True, 'precheck_orders_query_failed'
+    if pos_res.get('data'):
         return True, 'exchange_has_position'
-    if ord_res.get('ok') and ord_res.get('data'):
+    if ord_res.get('data'):
         return True, 'exchange_has_open_orders'
     return False, ''
 
