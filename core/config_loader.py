@@ -60,8 +60,6 @@ class StrategyConfig:
         ("exit_policy", "time_stop", "max_hold_mins"),
         ("exit_policy", "time_stop", "min_profit_pct"),
         ("risk_controls", "cooldown_hours"),
-        ("risk_controls", "defense", "trigger_pct"),
-        ("risk_controls", "defense", "lock_pct"),
         ("benchmark", "index_weights"),
     ]
 

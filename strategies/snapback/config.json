@@ -66,11 +66,7 @@
     }
   },
   "risk_controls": {
-    "cooldown_hours": 4,
-    "defense": {
-      "trigger_pct": 0.06,
-      "lock_pct": 0.005
-    }
+    "cooldown_hours": 4
   },
   "benchmark": {
     "index_weights": {
