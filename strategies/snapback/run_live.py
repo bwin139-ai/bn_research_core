@@ -1515,13 +1515,10 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         open_trade = payload.get('open_trade')
         if not isinstance(open_trade, dict):
             continue
-        if snapshot is not None:
-            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
-            pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
-            ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
-        else:
-            pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-            ord_res = get_open_orders(account, symbol)
+        precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot) if snapshot is not None else _precheck_exchange_blockers(account, symbol)
+        pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
+        ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+        all_pos_res_from_precheck = precheck.get('positions_all_sides') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
         if not pos_res.get('ok') or not ord_res.get('ok'):
@@ -1540,10 +1537,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         position = pos_res.get('data')
         open_orders = ord_res.get('data') or []
         if not position:
-            if snapshot is not None:
-                all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
-            else:
-                all_pos_res = get_positions(account)
+            all_pos_res = all_pos_res_from_precheck
             if not all_pos_res.get('ok'):
                 had_blocking_error = True
                 mark_error(
