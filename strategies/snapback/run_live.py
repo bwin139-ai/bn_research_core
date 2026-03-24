@@ -1274,6 +1274,40 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             ts_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('time_stop_exchange_order_id'), client_order_id=open_trade.get('time_stop_client_order_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+
+            if (not tp_cancel.get('ok')) or (not sl_cancel.get('ok')) or (not ts_cancel.get('ok')):
+                had_blocking_error = True
+                cleanup_reason = tp_cancel.get('reason') or sl_cancel.get('reason') or ts_cancel.get('reason')
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='position_closed_cleanup_cancel_failed',
+                    error_message=cleanup_reason,
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'position_closed_cleanup_cancel_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'exit_reason': exit_reason,
+                        'order_root': open_trade.get('order_root'),
+                        'entry_client_order_id': open_trade.get('entry_client_order_id'),
+                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                        'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
+                        'exchange_snapshot': {
+                            'position': pos_res,
+                            'orders': ord_res,
+                            'order_checks': order_checks,
+                            'tp_cancel': tp_cancel,
+                            'sl_cancel': sl_cancel,
+                            'ts_cancel': ts_cancel,
+                        },
+                    })
+                continue
+
             set_open_trade(account, symbol, None)
             set_pending_entry_order(account, symbol, None)
             _clear_symbol_error(account, symbol)
