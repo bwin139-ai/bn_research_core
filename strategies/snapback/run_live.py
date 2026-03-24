@@ -1155,27 +1155,33 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'exit_reason': exit_reason,
                         })
                 else:
-                    tp_cancel = _cancel_order_if_present(
-                        account,
-                        symbol,
-                        client_order_id=pending.get('tp_client_order_id'),
-                        retry_max=retry_max,
-                        retry_delay_secs=retry_delay_secs,
-                    )
-                    sl_cancel = _cancel_order_if_present(
-                        account,
-                        symbol,
-                        client_order_id=pending.get('sl_client_order_id'),
-                        retry_max=retry_max,
-                        retry_delay_secs=retry_delay_secs,
-                    )
-                    ts_cancel = _cancel_order_if_present(
-                        account,
-                        symbol,
-                        client_order_id=pending.get('time_stop_client_order_id'),
-                        retry_max=retry_max,
-                        retry_delay_secs=retry_delay_secs,
-                    )
+                    symbol_orders_res = (precheck or {}).get('orders') if snapshot is not None else None
+                    if symbol_orders_res and symbol_orders_res.get('ok') and not (symbol_orders_res.get('data') or []):
+                        tp_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+                        sl_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+                        ts_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+                    else:
+                        tp_cancel = _cancel_order_if_present(
+                            account,
+                            symbol,
+                            client_order_id=pending.get('tp_client_order_id'),
+                            retry_max=retry_max,
+                            retry_delay_secs=retry_delay_secs,
+                        )
+                        sl_cancel = _cancel_order_if_present(
+                            account,
+                            symbol,
+                            client_order_id=pending.get('sl_client_order_id'),
+                            retry_max=retry_max,
+                            retry_delay_secs=retry_delay_secs,
+                        )
+                        ts_cancel = _cancel_order_if_present(
+                            account,
+                            symbol,
+                            client_order_id=pending.get('time_stop_client_order_id'),
+                            retry_max=retry_max,
+                            retry_delay_secs=retry_delay_secs,
+                        )
                     if (not tp_cancel.get('ok')) or (not sl_cancel.get('ok')) or (not ts_cancel.get('ok')):
                         had_blocking_error = True
                         cleanup_reason = tp_cancel.get('reason') or sl_cancel.get('reason') or ts_cancel.get('reason')
