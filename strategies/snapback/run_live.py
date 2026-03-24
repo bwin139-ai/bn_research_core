@@ -760,10 +760,18 @@ def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str,
     symbol_key = str(symbol).upper().strip()
 
     if snapshot is not None:
-        all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
-        all_ord_res = snapshot.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
-        symbol_positions = list((snapshot.get('positions_by_symbol') or {}).get(symbol_key) or [])
-        symbol_open_orders = list((snapshot.get('open_orders_by_symbol') or {}).get(symbol_key) or [])
+        positions_by_symbol = snapshot.get('positions_by_symbol') or {}
+        open_orders_by_symbol = snapshot.get('open_orders_by_symbol') or {}
+        symbol_positions = list(positions_by_symbol.get(symbol_key) or [])
+        symbol_open_orders = list(open_orders_by_symbol.get(symbol_key) or [])
+
+        all_pos_res = snapshot.get('positions')
+        if all_pos_res is None:
+            all_pos_res = {'ok': True, 'reason': '', 'data': symbol_positions}
+
+        all_ord_res = snapshot.get('orders')
+        if all_ord_res is None:
+            all_ord_res = {'ok': True, 'reason': '', 'data': symbol_open_orders}
 
         position = None
         if all_pos_res.get('ok'):
