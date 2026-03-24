@@ -1348,8 +1348,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         open_trade = payload.get('open_trade')
         if not isinstance(open_trade, dict):
             continue
-        pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-        ord_res = get_open_orders(account, symbol)
+        if snapshot is not None:
+            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+            pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
+            ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+        else:
+            pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+            ord_res = get_open_orders(account, symbol)
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
         if not pos_res.get('ok') or not ord_res.get('ok'):
@@ -2008,38 +2013,30 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
         snapshot=startup_snapshot,
     )
 
-    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
-    exchange_activity_snapshot['local_active_symbols'] = local_active_symbols
-    startup_symbols = sorted(
-        local_active_symbols
-        | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
-        | set(exchange_activity_snapshot['symbols'])
-    )
-    exchange_activity_snapshot['startup_symbols'] = startup_symbols
-    if audit_enabled and not exchange_activity_snapshot.get('ok'):
+    if audit_enabled and not startup_snapshot.get('ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
             'bar_ts': current_time_ms,
             'bar_bj': current_time_bj,
             'source': 'startup',
             'exchange_snapshot': {
-                'positions': exchange_activity_snapshot.get('positions'),
-                'orders': exchange_activity_snapshot.get('orders'),
+                'positions': startup_snapshot.get('positions'),
+                'orders': startup_snapshot.get('orders'),
             },
         })
     orphan_findings = _audit_orphan_exchange_activity(
         account,
-        startup_symbols,
+        startup_snapshot['startup_symbols'],
         current_time_ms,
         current_time_bj,
         source='startup',
         audit_enabled=audit_enabled,
-        snapshot=exchange_activity_snapshot,
+        snapshot=startup_snapshot,
     )
     active_state_errors = _collect_active_state_errors(account)
     blocking = bool(
         pending_reconcile_error
         or open_trade_reconcile_error
-        or (not exchange_activity_snapshot.get('ok'))
+        or (not startup_snapshot.get('ok'))
         or orphan_findings
         or active_state_errors
     )
@@ -2049,7 +2046,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
         'bar_bj': current_time_bj,
         'pending_reconcile_error': pending_reconcile_error,
         'open_trade_reconcile_error': open_trade_reconcile_error,
-        'exchange_activity_snapshot_ok': bool(exchange_activity_snapshot.get('ok')),
+        'exchange_activity_snapshot_ok': bool(startup_snapshot.get('ok')),
         'orphan_findings': orphan_findings,
         'active_state_errors': active_state_errors,
     }
