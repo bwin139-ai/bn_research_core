@@ -337,19 +337,42 @@ def _signal_digest(signal: dict[str, Any]) -> str:
 
 def _precheck_exchange_blockers(account: str, symbol: str) -> dict[str, Any]:
     pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+    all_pos_res = get_positions(account)
     ord_res = get_open_orders(account, symbol)
-    return {'position': pos_res, 'orders': ord_res}
+
+    symbol_key = str(symbol).upper().strip()
+    symbol_positions: list[dict[str, Any]] = []
+    if all_pos_res.get('ok'):
+        for row in all_pos_res.get('data') or []:
+            row_symbol = str(row.get('symbol') or '').upper().strip()
+            if row_symbol == symbol_key:
+                symbol_positions.append(row)
+
+    return {
+        'position': pos_res,
+        'positions_all_sides': {
+            'ok': bool(all_pos_res.get('ok')),
+            'reason': all_pos_res.get('reason'),
+            'data': symbol_positions,
+        },
+        'orders': ord_res,
+    }
 
 
 def _has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
     pos_res = snapshot['position']
+    all_pos_res = snapshot.get('positions_all_sides') or {}
     ord_res = snapshot['orders']
     if not pos_res.get('ok'):
         return True, 'precheck_position_query_failed'
+    if not all_pos_res.get('ok'):
+        return True, 'precheck_positions_query_failed'
     if not ord_res.get('ok'):
         return True, 'precheck_orders_query_failed'
     if pos_res.get('data'):
         return True, 'exchange_has_position'
+    if all_pos_res.get('data'):
+        return True, 'exchange_has_nonlong_position'
     if ord_res.get('data'):
         return True, 'exchange_has_open_orders'
     return False, ''
