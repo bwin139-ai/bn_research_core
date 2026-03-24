@@ -748,9 +748,106 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 })
             continue
         if pos_res.get('ok') and pos_res.get('data'):
+            ord_res = get_open_orders(account, symbol)
+            if not ord_res.get('ok'):
+                had_blocking_error = True
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='entry_recovery_orders_query_failed',
+                    error_message=ord_res.get('reason'),
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'entry_recovery_orders_query_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': pending.get('order_root'),
+                        'exchange_snapshot': {
+                            'entry_order': entry_res,
+                            'position': pos_res,
+                            'orders': ord_res,
+                        },
+                    })
+                continue
+
             recovered_trade = _recover_open_trade_from_pending(pending, pos_res['data'])
             set_open_trade(account, symbol, recovered_trade)
             set_pending_entry_order(account, symbol, None)
+
+            recovered_trade = _ensure_exit_orders(
+                account,
+                symbol,
+                recovered_trade,
+                pos_res['data'],
+                ord_res.get('data') or [],
+                live_cfg,
+                current_time_ms,
+                current_time_bj,
+                source='pending_recovery',
+            )
+            set_open_trade(account, symbol, recovered_trade)
+
+            verify_res = _verify_open_trade_brackets(
+                account,
+                symbol,
+                recovered_trade,
+                retry_max=retry_max,
+                retry_delay_secs=retry_delay_secs,
+            )
+            if not verify_res.get('ok'):
+                had_blocking_error = True
+                verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='entry_recovery_bracket_verify_failed',
+                    error_message=verify_reason,
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'entry_recovery_bracket_verify_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': recovered_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                continue
+
+            if verify_res.get('position_open') and not (verify_res.get('tp_bound') and verify_res.get('sl_bound')):
+                had_blocking_error = True
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='entry_recovery_bracket_incomplete',
+                    error_message=f"tp_bound={verify_res.get('tp_bound')}, sl_bound={verify_res.get('sl_bound')}",
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'entry_recovery_bracket_incomplete', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': recovered_trade.get('order_root'),
+                        'tp_bound': verify_res.get('tp_bound'),
+                        'sl_bound': verify_res.get('sl_bound'),
+                        'tp_client_order_id': recovered_trade.get('tp_order_client_id'),
+                        'sl_client_order_id': recovered_trade.get('sl_order_client_id'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                continue
+
             _clear_symbol_error(account, symbol)
             _refresh_entry_cooldown(account, symbol, current_time_ms, cooldown_mins)
             if audit_enabled:
@@ -763,7 +860,11 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     'entry_client_order_id': recovered_trade.get('entry_client_order_id'),
                     'tp_client_order_id': recovered_trade.get('tp_order_client_id'),
                     'sl_client_order_id': recovered_trade.get('sl_order_client_id'),
-                    'exchange_snapshot': {'entry_order': entry_res, 'position': pos_res},
+                    'exchange_snapshot': {
+                        'entry_order': entry_res,
+                        'position': pos_res,
+                        'orders': ord_res,
+                    },
                 })
                 write_event(account, 'cooldown_set_after_entry_recovery', {
                     'symbol': symbol,
