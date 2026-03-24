@@ -869,14 +869,52 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'source': source,
                             'exit_reason': exit_reason,
                         })
-                elif audit_enabled:
-                    write_event(account, 'entry_terminal_detected', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'source': source,
-                        'exchange_snapshot': entry_res,
-                    })
+                else:
+                    tp_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('tp_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
+                    sl_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('sl_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
+                    _clear_symbol_error(account, symbol)
+                    if audit_enabled:
+                        write_event(account, 'entry_terminal_detected', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': entry_res,
+                        })
+                        write_event(account, 'pending_terminal_cancel_tp', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': tp_cancel,
+                        })
+                        write_event(account, 'pending_terminal_cancel_sl', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': sl_cancel,
+                        })
+                        write_event(account, 'state_cleared_after_entry_terminal_without_fill', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'entry_status': status,
+                            'order_root': pending.get('order_root'),
+                        })
 
     return had_blocking_error
 
