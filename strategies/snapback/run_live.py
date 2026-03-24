@@ -810,6 +810,13 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
+                    ts_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('time_stop_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
                     _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
                     if audit_enabled:
@@ -826,6 +833,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                                 'order_checks': order_checks,
                                 'tp_cancel': tp_cancel,
                                 'sl_cancel': sl_cancel,
+                                'ts_cancel': ts_cancel,
                             },
                         })
                         event_map = {
@@ -854,6 +862,13 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'bar_bj': current_time_bj,
                             'source': source,
                             'exchange_snapshot': sl_cancel,
+                        })
+                        write_event(account, 'pending_terminal_cancel_time_stop', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': ts_cancel,
                         })
                         write_event(account, 'state_cleared_after_exit', {
                             'symbol': symbol,
@@ -884,6 +899,13 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
+                    ts_cancel = _cancel_order_if_present(
+                        account,
+                        symbol,
+                        client_order_id=pending.get('time_stop_client_order_id'),
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
                     _clear_symbol_error(account, symbol)
                     if audit_enabled:
                         write_event(account, 'entry_terminal_detected', {
@@ -906,6 +928,13 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'bar_bj': current_time_bj,
                             'source': source,
                             'exchange_snapshot': sl_cancel,
+                        })
+                        write_event(account, 'pending_terminal_cancel_time_stop', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'exchange_snapshot': ts_cancel,
                         })
                         write_event(account, 'state_cleared_after_entry_terminal_without_fill', {
                             'symbol': symbol,
@@ -1043,6 +1072,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             exit_reason, order_checks = _infer_exit_reason(account, symbol, open_trade, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+            ts_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('time_stop_exchange_order_id'), client_order_id=open_trade.get('time_stop_client_order_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             set_open_trade(account, symbol, None)
             set_pending_entry_order(account, symbol, None)
             _clear_symbol_error(account, symbol)
@@ -1059,10 +1089,11 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     'tp_client_order_id': open_trade.get('tp_order_client_id'),
                     'sl_client_order_id': open_trade.get('sl_order_client_id'),
                     'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
-                    'exchange_snapshot': {'position': pos_res, 'orders': ord_res, 'order_checks': order_checks, 'tp_cancel': tp_cancel, 'sl_cancel': sl_cancel},
+                    'exchange_snapshot': {'position': pos_res, 'orders': ord_res, 'order_checks': order_checks, 'tp_cancel': tp_cancel, 'sl_cancel': sl_cancel, 'ts_cancel': ts_cancel},
                 })
                 event_map = {'TAKE_PROFIT': 'tp_filled', 'STOP_LOSS': 'sl_filled', 'TIME_STOP': 'time_stop_filled', 'UNKNOWN_EXIT': 'unknown_exit'}
                 write_event(account, event_map.get(exit_reason, 'unknown_exit'), {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'order_root': open_trade.get('order_root')})
+                write_event(account, 'position_closed_cancel_time_stop', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': ts_cancel})
                 write_event(account, 'state_cleared_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exit_reason': exit_reason})
                 write_event(account, 'cooldown_refreshed_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source})
             continue
