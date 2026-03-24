@@ -1109,6 +1109,119 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 audit_enabled=audit_enabled,
             )
             set_open_trade(account, symbol, open_trade)
+
+            if not open_trade.get('exit_submit_inflight'):
+                reset_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+                reset_ord_res = get_open_orders(account, symbol)
+                if not reset_pos_res.get('ok') or not reset_ord_res.get('ok'):
+                    had_blocking_error = True
+                    verify_reason = reset_ord_res.get('reason') or reset_pos_res.get('reason')
+                    mark_error(
+                        account,
+                        symbol,
+                        error_code='time_stop_inflight_reset_repair_query_failed',
+                        error_message=verify_reason,
+                        error_bj=current_time_bj,
+                    )
+                    if audit_enabled:
+                        write_event(account, 'time_stop_inflight_reset_repair_query_failed', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'order_root': open_trade.get('order_root'),
+                            'exchange_snapshot': {
+                                'position': reset_pos_res,
+                                'orders': reset_ord_res,
+                            },
+                        })
+                    continue
+
+                reset_position = reset_pos_res.get('data')
+                reset_orders = reset_ord_res.get('data') or []
+                if reset_position:
+                    open_trade = _ensure_exit_orders(
+                        account,
+                        symbol,
+                        open_trade,
+                        reset_position,
+                        reset_orders,
+                        live_cfg,
+                        current_time_ms,
+                        current_time_bj,
+                        source='time_stop_inflight_reset_repair',
+                    )
+                    set_open_trade(account, symbol, open_trade)
+                    reset_verify_res = _verify_open_trade_brackets(
+                        account,
+                        symbol,
+                        open_trade,
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
+                    if audit_enabled:
+                        write_event(account, 'time_stop_inflight_reset_repair_attempted', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'order_root': open_trade.get('order_root'),
+                            'exchange_snapshot': {
+                                'position': reset_pos_res,
+                                'orders': reset_ord_res,
+                            },
+                        })
+                    if not reset_verify_res.get('ok'):
+                        had_blocking_error = True
+                        verify_reason = (reset_verify_res.get('orders') or {}).get('reason') or (reset_verify_res.get('position') or {}).get('reason')
+                        mark_error(
+                            account,
+                            symbol,
+                            error_code='time_stop_inflight_reset_repair_verify_failed',
+                            error_message=verify_reason,
+                            error_bj=current_time_bj,
+                        )
+                        if audit_enabled:
+                            write_event(account, 'time_stop_inflight_reset_repair_verify_failed', {
+                                'symbol': symbol,
+                                'bar_ts': current_time_ms,
+                                'bar_bj': current_time_bj,
+                                'source': source,
+                                'order_root': open_trade.get('order_root'),
+                                'exchange_snapshot': {
+                                    'position': reset_verify_res.get('position'),
+                                    'orders': reset_verify_res.get('orders'),
+                                },
+                            })
+                        continue
+                    if reset_verify_res.get('position_open') and not (reset_verify_res.get('tp_bound') and reset_verify_res.get('sl_bound')):
+                        had_blocking_error = True
+                        mark_error(
+                            account,
+                            symbol,
+                            error_code='time_stop_inflight_reset_repair_bracket_incomplete',
+                            error_message=f"tp_bound={reset_verify_res.get('tp_bound')}, sl_bound={reset_verify_res.get('sl_bound')}",
+                            error_bj=current_time_bj,
+                        )
+                        if audit_enabled:
+                            write_event(account, 'time_stop_inflight_reset_repair_bracket_incomplete', {
+                                'symbol': symbol,
+                                'bar_ts': current_time_ms,
+                                'bar_bj': current_time_bj,
+                                'source': source,
+                                'order_root': open_trade.get('order_root'),
+                                'tp_bound': reset_verify_res.get('tp_bound'),
+                                'sl_bound': reset_verify_res.get('sl_bound'),
+                                'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                                'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                                'exchange_snapshot': {
+                                    'position': reset_verify_res.get('position'),
+                                    'orders': reset_verify_res.get('orders'),
+                                },
+                            })
+                        continue
+                    _clear_symbol_error(account, symbol)
+
             if should_skip:
                 continue
 
