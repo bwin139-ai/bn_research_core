@@ -1642,13 +1642,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             })
     return had_blocking_error
 
-def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
+def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> dict[str, Any]:
     current_time_ms = _now_utc_ms()
     current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
-    _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
+    pending_reconcile_error = _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
-    _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
+    open_trade_reconcile_error = _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
     exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
     startup_symbols = sorted(
         _symbols_with_local_activity(account)
@@ -1665,7 +1665,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
                 'orders': exchange_activity_snapshot.get('orders'),
             },
         })
-    _audit_orphan_exchange_activity(
+    orphan_findings = _audit_orphan_exchange_activity(
         account,
         startup_symbols,
         current_time_ms,
@@ -1673,6 +1673,24 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
         source='startup',
         audit_enabled=audit_enabled,
     )
+    active_state_errors = _collect_active_state_errors(account)
+    blocking = bool(
+        pending_reconcile_error
+        or open_trade_reconcile_error
+        or (not exchange_activity_snapshot.get('ok'))
+        or orphan_findings
+        or active_state_errors
+    )
+    return {
+        'blocking': blocking,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'pending_reconcile_error': pending_reconcile_error,
+        'open_trade_reconcile_error': open_trade_reconcile_error,
+        'exchange_activity_snapshot_ok': bool(exchange_activity_snapshot.get('ok')),
+        'orphan_findings': orphan_findings,
+        'active_state_errors': active_state_errors,
+    }
 
 
 def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
@@ -2211,7 +2229,20 @@ def main() -> None:
         'live_config_file_sha256': snapshot_meta['live_config_file_sha256'],
         'started_bj': _now_bj_str(),
     })
-    _bootstrap_reconcile(account, strategy_cfg, live_cfg)
+    bootstrap_res = _bootstrap_reconcile(account, strategy_cfg, live_cfg)
+    if bootstrap_res.get('blocking'):
+        write_event(account, 'startup_reconcile_blocked', {
+            'bar_ts': bootstrap_res.get('bar_ts'),
+            'bar_bj': bootstrap_res.get('bar_bj'),
+            'pending_reconcile_error': bootstrap_res.get('pending_reconcile_error'),
+            'open_trade_reconcile_error': bootstrap_res.get('open_trade_reconcile_error'),
+            'exchange_activity_snapshot_ok': bootstrap_res.get('exchange_activity_snapshot_ok'),
+            'orphan_findings': bootstrap_res.get('orphan_findings'),
+            'active_state_errors': bootstrap_res.get('active_state_errors'),
+        })
+        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
+            _notify(True, f'[Snapback-Live] startup blocked | account={account} | reconcile/orphan/state error detected')
+        raise SystemExit('startup blocked: reconcile/orphan/state error detected')
     if bool(live_cfg.get('notify_enabled', False)):
         _notify(True, f'[Snapback-Live] runner started | account={account}')
 
