@@ -1515,8 +1515,6 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         write_event(account, 'sl_submitted' if sl_res.get('ok') else 'sl_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': sl_res, 'order_root': order_root, 'sl_client_order_id': sl_client_order_id})
 
     open_trade = _build_open_trade(entry_res, signal, tp_res, sl_res, entry_notional_usdt, order_root=order_root, entry_client_order_id=entry_client_order_id, tp_client_order_id=tp_client_order_id, sl_client_order_id=sl_client_order_id)
-    set_open_trade(account, symbol, open_trade)
-    set_pending_entry_order(account, symbol, None)
 
     pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
     orders_after_entry = get_open_orders(account, symbol)
@@ -1565,104 +1563,15 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             current_time_bj,
             source='entry_immediate_repair',
         )
-        set_open_trade(account, symbol, open_trade)
 
     entry_fast_terminal = False
+    entry_still_pending = False
     entry_bracket_gap_critical = False
     verify_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
     verify_orders_res = get_open_orders(account, symbol)
     verify_position = verify_pos_res.get('data') if verify_pos_res.get('ok') else None
     verify_orders = verify_orders_res.get('data') or [] if verify_orders_res.get('ok') else []
-    if verify_pos_res.get('ok') and not verify_position:
-        entry_fast_terminal = True
-        exit_reason, order_checks = _infer_exit_reason(
-            account,
-            symbol,
-            open_trade,
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
-        )
-        tp_cancel = _cancel_order_if_present(
-            account,
-            symbol,
-            exchange_order_id=open_trade.get('tp_order_exchange_id'),
-            client_order_id=open_trade.get('tp_order_client_id'),
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
-        )
-        sl_cancel = _cancel_order_if_present(
-            account,
-            symbol,
-            exchange_order_id=open_trade.get('sl_order_exchange_id'),
-            client_order_id=open_trade.get('sl_order_client_id'),
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
-        )
-        set_open_trade(account, symbol, None)
-        _clear_symbol_error(account, symbol)
-        _refresh_exit_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
-        if audit_enabled:
-            write_event(account, 'entry_fast_terminal_detected', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'order_root': order_root,
-                'exit_reason': exit_reason,
-                'exchange_snapshot': {
-                    'position': verify_pos_res,
-                    'orders': verify_orders_res,
-                    'order_checks': order_checks,
-                    'tp_cancel': tp_cancel,
-                    'sl_cancel': sl_cancel,
-                },
-            })
-            event_map = {
-                'TAKE_PROFIT': 'tp_filled',
-                'STOP_LOSS': 'sl_filled',
-                'TIME_STOP': 'time_stop_filled',
-                'UNKNOWN_EXIT': 'unknown_exit',
-            }
-            write_event(account, 'position_closed_detected', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': 'entry_fast_terminal',
-                'exit_reason': exit_reason,
-                'order_root': order_root,
-                'entry_client_order_id': open_trade.get('entry_client_order_id'),
-                'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
-                'exchange_snapshot': {
-                    'position': verify_pos_res,
-                    'orders': verify_orders_res,
-                    'order_checks': order_checks,
-                    'tp_cancel': tp_cancel,
-                    'sl_cancel': sl_cancel,
-                },
-            })
-            write_event(account, event_map.get(exit_reason, 'unknown_exit'), {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': 'entry_fast_terminal',
-                'order_root': order_root,
-            })
-            write_event(account, 'state_cleared_after_exit', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': 'entry_fast_terminal',
-                'exit_reason': exit_reason,
-                'order_root': order_root,
-            })
-            write_event(account, 'cooldown_refreshed_after_entry_fast_terminal', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'order_root': order_root,
-            })
-    elif not verify_pos_res.get('ok') or not verify_orders_res.get('ok'):
+    if not verify_pos_res.get('ok') or not verify_orders_res.get('ok'):
         verify_reason = verify_orders_res.get('reason') or verify_pos_res.get('reason')
         mark_error(
             account,
@@ -1698,7 +1607,25 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         entry_bracket_gap_critical = True
         if notify_enabled and live_cfg.get('notify_on_order_error', True):
             _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_reason or "unknown"}')
+    elif not verify_position:
+        entry_still_pending = True
+        if audit_enabled:
+            write_event(account, 'entry_pending_waiting_fill', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'order_root': order_root,
+                'entry_client_order_id': open_trade.get('entry_client_order_id'),
+                'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                'exchange_snapshot': {
+                    'position': verify_pos_res,
+                    'orders': verify_orders_res,
+                },
+            })
     else:
+        set_open_trade(account, symbol, open_trade)
+        set_pending_entry_order(account, symbol, None)
         tp_bound = _find_open_order(
             verify_orders,
             exchange_order_id=open_trade.get('tp_order_exchange_id'),
@@ -1751,7 +1678,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             if notify_enabled and live_cfg.get('notify_on_order_error', True):
                 _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
 
-    if not entry_fast_terminal:
+    if (not entry_fast_terminal) and (not entry_still_pending):
         if not entry_bracket_gap_critical:
             _clear_symbol_error(account, symbol)
         _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
@@ -1766,7 +1693,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 })
     mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
 
-    if (not entry_fast_terminal) and (not entry_bracket_gap_critical) and notify_enabled and live_cfg.get('notify_on_order_submit', True):
+    if (not entry_fast_terminal) and (not entry_still_pending) and (not entry_bracket_gap_critical) and notify_enabled and live_cfg.get('notify_on_order_submit', True):
         tp_px = float(signal.get('tp_price') or 0.0)
         sl_px = float(signal.get('sl_price') or 0.0)
         _notify(True, f'[Snapback-Live] 开仓 {symbol} | entry≈{current_price:.6f} | TP={tp_px:.6f} | SL={sl_px:.6f}')
