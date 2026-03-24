@@ -1563,6 +1563,30 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             write_event(account, 'time_stop_cancel_tp_ok' if tp_cancel.get('ok') else 'time_stop_cancel_tp_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': tp_cancel})
             write_event(account, 'time_stop_cancel_sl_ok' if sl_cancel.get('ok') else 'time_stop_cancel_sl_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': sl_cancel})
 
+        if not tp_cancel.get('ok') or not sl_cancel.get('ok'):
+            had_blocking_error = True
+            cancel_reason = tp_cancel.get('reason') or sl_cancel.get('reason')
+            mark_error(
+                account,
+                symbol,
+                error_code='time_stop_pre_submit_cancel_failed',
+                error_message=cancel_reason,
+                error_bj=current_time_bj,
+            )
+            if audit_enabled:
+                write_event(account, 'time_stop_pre_submit_cancel_failed', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'exchange_snapshot': {
+                        'tp_cancel': tp_cancel,
+                        'sl_cancel': sl_cancel,
+                    },
+                })
+            continue
+
         ts_client_order_id = build_client_order_id(broker_id=BROKER_ID, strat=STRAT_CODE, leg=LEG_TIME_STOP, root=open_trade.get('order_root') or make_order_root())
         qty = float(position.get('qty') or open_trade.get('entry_qty') or 0.0)
         ts_res = place_time_stop_order(account, symbol, FIXED_POSITION_SIDE, qty, retry_max=retry_max, retry_delay_secs=retry_delay_secs, client_order_id=ts_client_order_id)
