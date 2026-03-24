@@ -390,19 +390,33 @@ def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, A
             },
         }
 
-    pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
     all_pos_res = get_positions(account)
     ord_res = get_open_orders(account, symbol)
 
     symbol_positions: list[dict[str, Any]] = []
+    long_position = None
     if all_pos_res.get('ok'):
         for row in all_pos_res.get('data') or []:
             row_symbol = str(row.get('symbol') or '').upper().strip()
-            if row_symbol == symbol_key:
-                symbol_positions.append(row)
+            if row_symbol != symbol_key:
+                continue
+            symbol_positions.append(row)
+            if long_position is not None:
+                continue
+            position_side = str(row.get('position_side') or '').upper().strip()
+            try:
+                qty = abs(float(row.get('qty') or 0.0))
+            except (TypeError, ValueError):
+                qty = 0.0
+            if position_side == FIXED_POSITION_SIDE and qty > 0:
+                long_position = row
 
     return {
-        'position': pos_res,
+        'position': {
+            'ok': bool(all_pos_res.get('ok')),
+            'reason': all_pos_res.get('reason'),
+            'data': long_position,
+        },
         'positions_all_sides': {
             'ok': bool(all_pos_res.get('ok')),
             'reason': all_pos_res.get('reason'),
