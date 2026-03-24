@@ -1998,57 +1998,107 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         open_trade = confirmed_trade
         set_open_trade(account, symbol, open_trade)
         set_pending_entry_order(account, symbol, None)
-        tp_bound = _find_open_order(
+
+        open_trade = _ensure_exit_orders(
+            account,
+            symbol,
+            open_trade,
+            verify_position,
             verify_orders,
-            exchange_order_id=open_trade.get('tp_order_exchange_id'),
-            client_order_id=open_trade.get('tp_order_client_id'),
-        ) is not None
-        sl_bound = _find_open_order(
-            verify_orders,
-            exchange_order_id=open_trade.get('sl_order_exchange_id'),
-            client_order_id=open_trade.get('sl_order_client_id'),
-        ) is not None
-        if not (tp_bound and sl_bound):
+            live_cfg,
+            current_time_ms,
+            current_time_bj,
+            source='entry_immediate_confirmed_repair',
+        )
+        set_open_trade(account, symbol, open_trade)
+
+        verify_res = _verify_open_trade_brackets(
+            account,
+            symbol,
+            open_trade,
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+        )
+        if not verify_res.get('ok'):
+            verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
             mark_error(
                 account,
                 symbol,
-                error_code='entry_immediate_bracket_incomplete',
-                error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
+                error_code='entry_immediate_bracket_verify_failed',
+                error_message=verify_reason,
                 error_bj=current_time_bj,
             )
             if audit_enabled:
-                write_event(account, 'entry_immediate_bracket_incomplete', {
+                write_event(account, 'entry_immediate_bracket_verify_failed', {
                     'symbol': symbol,
                     'bar_ts': current_time_ms,
                     'bar_bj': current_time_bj,
                     'order_root': order_root,
-                    'tp_bound': tp_bound,
-                    'sl_bound': sl_bound,
-                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
                     'exchange_snapshot': {
-                        'position': verify_pos_res,
-                        'orders': verify_orders_res,
+                        'position': verify_res.get('position'),
+                        'orders': verify_res.get('orders'),
                     },
                 })
                 write_event(account, 'critical_bracket_gap_after_entry', {
                     'symbol': symbol,
                     'bar_ts': current_time_ms,
                     'bar_bj': current_time_bj,
-                    'reason': 'entry_immediate_bracket_incomplete',
+                    'reason': 'entry_immediate_bracket_verify_failed',
                     'order_root': order_root,
-                    'tp_bound': tp_bound,
-                    'sl_bound': sl_bound,
                     'tp_client_order_id': open_trade.get('tp_order_client_id'),
                     'sl_client_order_id': open_trade.get('sl_order_client_id'),
                     'exchange_snapshot': {
-                        'position': verify_pos_res,
-                        'orders': verify_orders_res,
+                        'position': verify_res.get('position'),
+                        'orders': verify_res.get('orders'),
                     },
                 })
             entry_bracket_gap_critical = True
             if notify_enabled and live_cfg.get('notify_on_order_error', True):
-                _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
+                _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_reason or "unknown"}')
+        else:
+            tp_bound = bool(verify_res.get('tp_bound'))
+            sl_bound = bool(verify_res.get('sl_bound'))
+            if not (tp_bound and sl_bound):
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='entry_immediate_bracket_incomplete',
+                    error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'entry_immediate_bracket_incomplete', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'order_root': order_root,
+                        'tp_bound': tp_bound,
+                        'sl_bound': sl_bound,
+                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                    write_event(account, 'critical_bracket_gap_after_entry', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'reason': 'entry_immediate_bracket_incomplete',
+                        'order_root': order_root,
+                        'tp_bound': tp_bound,
+                        'sl_bound': sl_bound,
+                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                        'exchange_snapshot': {
+                            'position': verify_res.get('position'),
+                            'orders': verify_res.get('orders'),
+                        },
+                    })
+                entry_bracket_gap_critical = True
+                if notify_enabled and live_cfg.get('notify_on_order_error', True):
+                    _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
 
     if entry_position_confirmed:
         if not entry_bracket_gap_critical:
