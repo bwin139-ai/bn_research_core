@@ -1068,6 +1068,13 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
     ts_client_order_id = open_trade.get('time_stop_client_order_id')
     if ts_exchange_order_id is None and not ts_client_order_id:
         open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
+        mark_error(
+            account,
+            symbol,
+            error_code='time_stop_inflight_missing_identity',
+            error_message='missing time-stop order identity while exit_submit_inflight=true',
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
             write_event(account, 'time_stop_inflight_missing_identity', {
                 'symbol': symbol,
@@ -1110,6 +1117,13 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
     ts_status = str(ts_order.get('status') or '').upper()
     if ts_status in FILLED_ORDER_STATUSES:
         open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
+        mark_error(
+            account,
+            symbol,
+            error_code='time_stop_filled_but_position_still_open',
+            error_message='time-stop order filled but position still open during inflight reconcile',
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
             write_event(account, 'time_stop_filled_but_position_still_open', {
                 'symbol': symbol,
@@ -1133,6 +1147,13 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
 
     if ts_status in TERMINAL_ORDER_STATUSES:
         open_trade = _reset_inflight_exit_state(open_trade, current_time_bj)
+        mark_error(
+            account,
+            symbol,
+            error_code='time_stop_terminal_but_position_open',
+            error_message=f'time-stop terminal status={ts_status} while position still open during inflight reconcile',
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
             write_event(account, 'time_stop_terminal_but_position_open', {
                 'symbol': symbol,
