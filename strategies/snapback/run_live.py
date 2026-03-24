@@ -1035,14 +1035,29 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     'order_root': recovered_trade.get('order_root'),
                 })
             continue
-        entry_res = _order_query(
-            account,
-            symbol,
+        known_symbol_open_orders = list(((precheck or {}).get('orders') or {}).get('data') or []) if snapshot is not None and ((precheck or {}).get('orders') or {}).get('ok') else None
+        matched_pending_open_order = _find_open_order(
+            known_symbol_open_orders or [],
             exchange_order_id=pending.get('exchange_order_id'),
             client_order_id=pending.get('client_order_id'),
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
         )
+        if matched_pending_open_order is not None:
+            entry_res = {
+                'ok': True,
+                'reason': '',
+                'data': matched_pending_open_order,
+                'skipped': True,
+                'known_open_order_snapshot': True,
+            }
+        else:
+            entry_res = _order_query(
+                account,
+                symbol,
+                exchange_order_id=pending.get('exchange_order_id'),
+                client_order_id=pending.get('client_order_id'),
+                retry_max=retry_max,
+                retry_delay_secs=retry_delay_secs,
+            )
         if not entry_res.get('ok'):
             had_blocking_error = True
             mark_error(
