@@ -1215,13 +1215,36 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         open_orders = ord_res.get('data') or []
         if not position:
             all_pos_res = get_positions(account)
+            if not all_pos_res.get('ok'):
+                had_blocking_error = True
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='open_trade_all_positions_query_failed',
+                    error_message=all_pos_res.get('reason'),
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'open_trade_all_positions_query_failed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'long_position': pos_res,
+                            'orders': ord_res,
+                            'positions_all_sides': all_pos_res,
+                        },
+                    })
+                continue
+
             symbol_key = str(symbol).upper().strip()
             symbol_positions = []
-            if all_pos_res.get('ok'):
-                for row in all_pos_res.get('data') or []:
-                    row_symbol = str(row.get('symbol') or '').upper().strip()
-                    if row_symbol == symbol_key:
-                        symbol_positions.append(row)
+            for row in all_pos_res.get('data') or []:
+                row_symbol = str(row.get('symbol') or '').upper().strip()
+                if row_symbol == symbol_key:
+                    symbol_positions.append(row)
 
             if symbol_positions:
                 had_blocking_error = True
