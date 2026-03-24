@@ -1180,6 +1180,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     source='time_stop_submit_failed_repair',
                 )
                 set_open_trade(account, symbol, open_trade)
+                repair_verify_res = _verify_open_trade_brackets(
+                    account,
+                    symbol,
+                    open_trade,
+                    retry_max=retry_max,
+                    retry_delay_secs=retry_delay_secs,
+                )
                 if audit_enabled:
                     write_event(account, 'time_stop_submit_failed_repair_attempted', {
                         'symbol': symbol,
@@ -1192,6 +1199,55 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                             'orders': restore_ord_res,
                         },
                     })
+                if not repair_verify_res.get('ok'):
+                    had_blocking_error = True
+                    verify_reason = (repair_verify_res.get('orders') or {}).get('reason') or (repair_verify_res.get('position') or {}).get('reason')
+                    mark_error(
+                        account,
+                        symbol,
+                        error_code='time_stop_submit_failed_repair_verify_failed',
+                        error_message=verify_reason,
+                        error_bj=current_time_bj,
+                    )
+                    if audit_enabled:
+                        write_event(account, 'time_stop_submit_failed_repair_verify_failed', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'order_root': open_trade.get('order_root'),
+                            'exchange_snapshot': {
+                                'position': repair_verify_res.get('position'),
+                                'orders': repair_verify_res.get('orders'),
+                            },
+                        })
+                elif repair_verify_res.get('position_open') and not (repair_verify_res.get('tp_bound') and repair_verify_res.get('sl_bound')):
+                    had_blocking_error = True
+                    mark_error(
+                        account,
+                        symbol,
+                        error_code='time_stop_submit_failed_repair_bracket_incomplete',
+                        error_message=f"tp_bound={repair_verify_res.get('tp_bound')}, sl_bound={repair_verify_res.get('sl_bound')}",
+                        error_bj=current_time_bj,
+                    )
+                    if audit_enabled:
+                        write_event(account, 'time_stop_submit_failed_repair_bracket_incomplete', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': source,
+                            'order_root': open_trade.get('order_root'),
+                            'tp_bound': repair_verify_res.get('tp_bound'),
+                            'sl_bound': repair_verify_res.get('sl_bound'),
+                            'tp_client_order_id': open_trade.get('tp_order_client_id'),
+                            'sl_client_order_id': open_trade.get('sl_order_client_id'),
+                            'exchange_snapshot': {
+                                'position': repair_verify_res.get('position'),
+                                'orders': repair_verify_res.get('orders'),
+                            },
+                        })
+                else:
+                    _clear_symbol_error(account, symbol)
             else:
                 had_blocking_error = True
                 if audit_enabled:
