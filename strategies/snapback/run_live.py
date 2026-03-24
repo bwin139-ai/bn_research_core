@@ -1654,6 +1654,32 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             write_event(account, 'time_stop_cancel_tp_ok' if tp_cancel.get('ok') else 'time_stop_cancel_tp_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': tp_cancel})
             write_event(account, 'time_stop_cancel_sl_ok' if sl_cancel.get('ok') else 'time_stop_cancel_sl_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': sl_cancel})
 
+        tp_cancel_status = str(((tp_cancel.get('data') or {}).get('status')) or '').upper()
+        sl_cancel_status = str(((sl_cancel.get('data') or {}).get('status')) or '').upper()
+        if tp_cancel_status in FILLED_ORDER_STATUSES or sl_cancel_status in FILLED_ORDER_STATUSES:
+            had_blocking_error = True
+            filled_reason = f'tp_status={tp_cancel_status or "NA"}, sl_status={sl_cancel_status or "NA"}'
+            mark_error(
+                account,
+                symbol,
+                error_code='time_stop_pre_submit_exit_already_filled',
+                error_message=filled_reason,
+                error_bj=current_time_bj,
+            )
+            if audit_enabled:
+                write_event(account, 'time_stop_pre_submit_exit_already_filled', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'exchange_snapshot': {
+                        'tp_cancel': tp_cancel,
+                        'sl_cancel': sl_cancel,
+                    },
+                })
+            continue
+
         if not tp_cancel.get('ok') or not sl_cancel.get('ok'):
             had_blocking_error = True
             cancel_reason = tp_cancel.get('reason') or sl_cancel.get('reason')
