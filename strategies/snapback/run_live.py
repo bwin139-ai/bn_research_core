@@ -700,9 +700,45 @@ def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], p
         set_open_trade(account, symbol, open_trade)
     return open_trade
 
-def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str, Any], *, retry_max: int, retry_delay_secs: float) -> dict[str, Any]:
-    pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-    ord_res = get_open_orders(account, symbol)
+def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str, Any], *, retry_max: int, retry_delay_secs: float, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    symbol_key = str(symbol).upper().strip()
+
+    if snapshot is not None:
+        all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
+        all_ord_res = snapshot.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+        symbol_positions = list((snapshot.get('positions_by_symbol') or {}).get(symbol_key) or [])
+        symbol_open_orders = list((snapshot.get('open_orders_by_symbol') or {}).get(symbol_key) or [])
+
+        position = None
+        if all_pos_res.get('ok'):
+            for row in symbol_positions:
+                position_side = str(row.get('position_side') or '').upper().strip()
+                try:
+                    qty = abs(float(row.get('qty') or 0.0))
+                except (TypeError, ValueError):
+                    qty = 0.0
+                if position_side == FIXED_POSITION_SIDE and qty > 0:
+                    position = row
+                    break
+
+        pos_res = {
+            'ok': bool(all_pos_res.get('ok')),
+            'reason': all_pos_res.get('reason'),
+            'data': position,
+        }
+        ord_res = {
+            'ok': bool(all_ord_res.get('ok')),
+            'reason': all_ord_res.get('reason'),
+            'data': symbol_open_orders,
+        }
+    else:
+        if snapshot is not None:
+            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+            pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
+            ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+        else:
+            pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+            ord_res = get_open_orders(account, symbol)
     if not pos_res.get('ok') or not ord_res.get('ok'):
         return {
             'ok': False,
@@ -758,7 +794,7 @@ def _clear_symbol_error(account: str, symbol: str) -> None:
 
 
 
-def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> bool:
+def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
@@ -785,7 +821,11 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
         )
-        pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+        if snapshot is not None:
+            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+            pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
+        else:
+            pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
         if not entry_res.get('ok') or not pos_res.get('ok'):
             had_blocking_error = True
             reconcile_reason = entry_res.get('reason') or pos_res.get('reason')
@@ -809,7 +849,10 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 })
             continue
         if pos_res.get('ok') and pos_res.get('data'):
-            ord_res = get_open_orders(account, symbol)
+            if snapshot is not None:
+                ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+            else:
+                ord_res = get_open_orders(account, symbol)
             if not ord_res.get('ok'):
                 had_blocking_error = True
                 mark_error(
@@ -857,6 +900,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 recovered_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
+                snapshot=snapshot,
             )
             if not verify_res.get('ok'):
                 had_blocking_error = True
@@ -1289,7 +1333,7 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
     return open_trade, True
 
 
-def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str) -> bool:
+def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
     state = load_live_state(account)
     symbols = state.get('symbols') or {}
@@ -1324,7 +1368,10 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         position = pos_res.get('data')
         open_orders = ord_res.get('data') or []
         if not position:
-            all_pos_res = get_positions(account)
+            if snapshot is not None:
+                all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
+            else:
+                all_pos_res = get_positions(account)
             if not all_pos_res.get('ok'):
                 had_blocking_error = True
                 mark_error(
@@ -1493,6 +1540,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 open_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
+                snapshot=snapshot,
             )
             bracket_gap_blocking = False
             if not verify_res.get('ok'):
@@ -1627,6 +1675,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                         open_trade,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
+                        snapshot=snapshot,
                     )
                     if audit_enabled:
                         write_event(account, 'time_stop_inflight_reset_repair_attempted', {
@@ -1928,11 +1977,38 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     current_time_ms = _now_utc_ms()
     current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
-    pending_reconcile_error = _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='startup')
-    max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
-    open_trade_reconcile_error = _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
-    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
+
+    startup_snapshot = _collect_exchange_activity_snapshot(account)
     local_active_symbols = _symbols_with_local_activity(account)
+    startup_snapshot['local_active_symbols'] = local_active_symbols
+    startup_snapshot['startup_symbols'] = sorted(
+        local_active_symbols
+        | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
+        | set(startup_snapshot['symbols'])
+    )
+
+    pending_reconcile_error = _reconcile_pending_entries(
+        account,
+        live_cfg,
+        current_time_ms,
+        current_time_bj,
+        source='startup',
+        snapshot=startup_snapshot,
+    )
+    max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
+    open_trade_reconcile_error = _reconcile_open_trades(
+        account,
+        live_cfg,
+        current_time_ms,
+        current_time_bj,
+        {},
+        max_hold_mins,
+        min_profit_pct,
+        source='startup',
+        snapshot=startup_snapshot,
+    )
+
+    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
     exchange_activity_snapshot['local_active_symbols'] = local_active_symbols
     startup_symbols = sorted(
         local_active_symbols
