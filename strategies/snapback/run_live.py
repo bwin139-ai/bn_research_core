@@ -211,39 +211,55 @@ def _collect_active_state_errors(account: str) -> list[dict[str, Any]]:
 
 def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     symbols: set[str] = set()
+    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    open_orders_by_symbol: dict[str, list[dict[str, Any]]] = {}
+
     pos_res = get_positions(account)
     if pos_res.get('ok'):
         for row in pos_res.get('data') or []:
             symbol = str(row.get('symbol') or '').upper().strip()
-            if symbol:
-                symbols.add(symbol)
+            if not symbol:
+                continue
+            symbols.add(symbol)
+            positions_by_symbol.setdefault(symbol, []).append(row)
+
     ord_res = get_open_orders(account)
     if ord_res.get('ok'):
         for row in ord_res.get('data') or []:
             symbol = str(row.get('symbol') or '').upper().strip()
-            if symbol:
-                symbols.add(symbol)
+            if not symbol:
+                continue
+            symbols.add(symbol)
+            open_orders_by_symbol.setdefault(symbol, []).append(row)
+
     return {
         'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
         'symbols': symbols,
         'positions': pos_res,
         'orders': ord_res,
+        'positions_by_symbol': positions_by_symbol,
+        'open_orders_by_symbol': open_orders_by_symbol,
     }
 
 
-def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool) -> list[dict[str, Any]]:
+def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool, snapshot: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if not audit_enabled:
         return findings
-    local_active_symbols = _symbols_with_local_activity(account)
-    all_positions_res = get_positions(account)
-    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    if all_positions_res.get('ok'):
+
+    local_active_symbols = set(snapshot.get('local_active_symbols') or []) if snapshot else _symbols_with_local_activity(account)
+    all_positions_res = (snapshot or {}).get('positions') if snapshot else None
+    if not all_positions_res:
+        all_positions_res = get_positions(account)
+
+    positions_by_symbol: dict[str, list[dict[str, Any]]] = dict((snapshot or {}).get('positions_by_symbol') or {})
+    if not positions_by_symbol and all_positions_res.get('ok'):
         for row in all_positions_res.get('data') or []:
             symbol = str(row.get('symbol') or '').upper().strip()
             if not symbol:
                 continue
             positions_by_symbol.setdefault(symbol, []).append(row)
+
     seen: set[str] = set()
     for raw_symbol in symbols:
         symbol = str(raw_symbol).upper().strip()
@@ -253,7 +269,7 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
         if symbol in local_active_symbols:
             continue
 
-        exch = _precheck_exchange_blockers(account, symbol)
+        exch = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
 
@@ -335,12 +351,49 @@ def _signal_digest(signal: dict[str, Any]) -> str:
     return json.dumps(base, ensure_ascii=False, sort_keys=True)
 
 
-def _precheck_exchange_blockers(account: str, symbol: str) -> dict[str, Any]:
+def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    symbol_key = str(symbol).upper().strip()
+
+    if snapshot is not None:
+        all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
+        all_ord_res = snapshot.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+        symbol_positions = list((snapshot.get('positions_by_symbol') or {}).get(symbol_key) or [])
+        symbol_open_orders = list((snapshot.get('open_orders_by_symbol') or {}).get(symbol_key) or [])
+
+        long_position = None
+        if all_pos_res.get('ok'):
+            for row in symbol_positions:
+                position_side = str(row.get('position_side') or '').upper().strip()
+                try:
+                    qty = abs(float(row.get('qty') or 0.0))
+                except (TypeError, ValueError):
+                    qty = 0.0
+                if position_side == FIXED_POSITION_SIDE and qty > 0:
+                    long_position = row
+                    break
+
+        return {
+            'position': {
+                'ok': bool(all_pos_res.get('ok')),
+                'reason': all_pos_res.get('reason'),
+                'data': long_position,
+            },
+            'positions_all_sides': {
+                'ok': bool(all_pos_res.get('ok')),
+                'reason': all_pos_res.get('reason'),
+                'data': symbol_positions,
+            },
+            'orders': {
+                'ok': bool(all_ord_res.get('ok')),
+                'reason': all_ord_res.get('reason'),
+                'data': symbol_open_orders,
+            },
+        }
+
     pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
     all_pos_res = get_positions(account)
     ord_res = get_open_orders(account, symbol)
 
-    symbol_key = str(symbol).upper().strip()
     symbol_positions: list[dict[str, Any]] = []
     if all_pos_res.get('ok'):
         for row in all_pos_res.get('data') or []:
@@ -1879,11 +1932,14 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
     open_trade_reconcile_error = _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, {}, max_hold_mins, min_profit_pct, source='startup')
     exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
+    local_active_symbols = _symbols_with_local_activity(account)
+    exchange_activity_snapshot['local_active_symbols'] = local_active_symbols
     startup_symbols = sorted(
-        _symbols_with_local_activity(account)
+        local_active_symbols
         | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
         | set(exchange_activity_snapshot['symbols'])
     )
+    exchange_activity_snapshot['startup_symbols'] = startup_symbols
     if audit_enabled and not exchange_activity_snapshot.get('ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
             'bar_ts': current_time_ms,
@@ -1901,6 +1957,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
         current_time_bj,
         source='startup',
         audit_enabled=audit_enabled,
+        snapshot=exchange_activity_snapshot,
     )
     active_state_errors = _collect_active_state_errors(account)
     blocking = bool(
@@ -1981,6 +2038,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             },
         })
 
+    exchange_activity_snapshot['local_active_symbols'] = local_activity_symbols
     orphan_findings = _audit_orphan_exchange_activity(
         account,
         sorted(set(candidate_symbols) | exchange_activity_symbols),
@@ -1988,6 +2046,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         current_time_bj,
         source='loop',
         audit_enabled=audit_enabled,
+        snapshot=exchange_activity_snapshot,
     )
 
     if orphan_findings:
@@ -2114,7 +2173,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
 
-    exch = _precheck_exchange_blockers(account, symbol)
+    exch = _precheck_exchange_blockers(account, symbol, snapshot=exchange_activity_snapshot)
     mark_position_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     mark_order_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     blocked, block_reason = _has_position_or_orders(exch)
