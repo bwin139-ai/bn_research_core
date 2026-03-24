@@ -1214,6 +1214,39 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         position = pos_res.get('data')
         open_orders = ord_res.get('data') or []
         if not position:
+            all_pos_res = get_positions(account)
+            symbol_key = str(symbol).upper().strip()
+            symbol_positions = []
+            if all_pos_res.get('ok'):
+                for row in all_pos_res.get('data') or []:
+                    row_symbol = str(row.get('symbol') or '').upper().strip()
+                    if row_symbol == symbol_key:
+                        symbol_positions.append(row)
+
+            if symbol_positions:
+                had_blocking_error = True
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='open_trade_nonlong_position_detected',
+                    error_message='local LONG open_trade exists but exchange has non-LONG position on same symbol',
+                    error_bj=current_time_bj,
+                )
+                if audit_enabled:
+                    write_event(account, 'open_trade_nonlong_position_detected', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'exchange_snapshot': {
+                            'long_position': pos_res,
+                            'orders': ord_res,
+                            'positions_all_sides': all_pos_res,
+                        },
+                    })
+                continue
+
             exit_reason, order_checks = _infer_exit_reason(account, symbol, open_trade, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
             sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
