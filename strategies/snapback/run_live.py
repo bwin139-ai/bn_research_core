@@ -1343,6 +1343,30 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
             })
         return open_trade, True
 
+    known_open_orders = None
+    if snapshot is not None:
+        known_open_orders = list(((snapshot.get('open_orders_by_symbol') or {}).get(str(symbol).upper().strip()) or []))
+        matched_ts_open_order = _find_open_order(
+            known_open_orders,
+            exchange_order_id=ts_exchange_order_id,
+            client_order_id=ts_client_order_id,
+        )
+        if matched_ts_open_order is not None:
+            if audit_enabled:
+                write_event(account, 'time_stop_inflight_waiting', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'time_stop_client_order_id': ts_client_order_id,
+                    'exchange_snapshot': {
+                        'known_open_order': matched_ts_open_order,
+                        'known_open_orders_count': len(known_open_orders),
+                    },
+                })
+            return open_trade, True
+
     ts_order_res = _order_query(
         account,
         symbol,
