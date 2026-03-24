@@ -926,6 +926,35 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
+                    if (not tp_cancel.get('ok')) or (not sl_cancel.get('ok')) or (not ts_cancel.get('ok')):
+                        had_blocking_error = True
+                        cleanup_reason = tp_cancel.get('reason') or sl_cancel.get('reason') or ts_cancel.get('reason')
+                        mark_error(
+                            account,
+                            symbol,
+                            error_code='pending_terminal_cleanup_cancel_failed',
+                            error_message=cleanup_reason,
+                            error_bj=current_time_bj,
+                        )
+                        if audit_enabled:
+                            write_event(account, 'pending_terminal_cleanup_cancel_failed', {
+                                'symbol': symbol,
+                                'bar_ts': current_time_ms,
+                                'bar_bj': current_time_bj,
+                                'source': source,
+                                'order_root': pending.get('order_root'),
+                                'exit_reason': exit_reason,
+                                'entry_status': status,
+                                'exchange_snapshot': {
+                                    'entry_order': entry_res,
+                                    'position': pos_res,
+                                    'order_checks': order_checks,
+                                    'tp_cancel': tp_cancel,
+                                    'sl_cancel': sl_cancel,
+                                    'ts_cancel': ts_cancel,
+                                },
+                            })
+                        continue
                     _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
                     if audit_enabled:
@@ -1015,6 +1044,33 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
+                    if (not tp_cancel.get('ok')) or (not sl_cancel.get('ok')) or (not ts_cancel.get('ok')):
+                        had_blocking_error = True
+                        cleanup_reason = tp_cancel.get('reason') or sl_cancel.get('reason') or ts_cancel.get('reason')
+                        mark_error(
+                            account,
+                            symbol,
+                            error_code='pending_terminal_cleanup_cancel_failed',
+                            error_message=cleanup_reason,
+                            error_bj=current_time_bj,
+                        )
+                        if audit_enabled:
+                            write_event(account, 'pending_terminal_cleanup_cancel_failed', {
+                                'symbol': symbol,
+                                'bar_ts': current_time_ms,
+                                'bar_bj': current_time_bj,
+                                'source': source,
+                                'order_root': pending.get('order_root'),
+                                'entry_status': status,
+                                'exchange_snapshot': {
+                                    'entry_order': entry_res,
+                                    'position': pos_res,
+                                    'tp_cancel': tp_cancel,
+                                    'sl_cancel': sl_cancel,
+                                    'ts_cancel': ts_cancel,
+                                },
+                            })
+                        continue
                     _clear_symbol_error(account, symbol)
                     if audit_enabled:
                         write_event(account, 'entry_terminal_detected', {
