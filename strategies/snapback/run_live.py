@@ -2546,8 +2546,9 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             'open_orders_snapshot': orders_after_entry,
         })
 
+    entry_immediate_repair_changed = False
     if should_repair_brackets:
-        open_trade, _ = _ensure_exit_orders(
+        open_trade, entry_immediate_repair_changed = _ensure_exit_orders(
             account,
             symbol,
             open_trade,
@@ -2563,8 +2564,12 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     entry_still_pending = False
     entry_position_confirmed = False
     entry_bracket_gap_critical = False
-    verify_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-    verify_orders_res = get_open_orders(account, symbol)
+    if entry_immediate_repair_changed:
+        verify_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+        verify_orders_res = get_open_orders(account, symbol)
+    else:
+        verify_pos_res = pos_after_entry
+        verify_orders_res = orders_after_entry
     verify_position = verify_pos_res.get('data') if verify_pos_res.get('ok') else None
     verify_orders = verify_orders_res.get('data') or [] if verify_orders_res.get('ok') else []
     if not verify_pos_res.get('ok') or not verify_orders_res.get('ok'):
