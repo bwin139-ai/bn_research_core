@@ -1016,8 +1016,10 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
             )
+            bracket_gap_blocking = False
             if not verify_res.get('ok'):
                 had_blocking_error = True
+                bracket_gap_blocking = True
                 verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
                 mark_error(
                     account,
@@ -1041,6 +1043,8 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 if notify_enabled and live_cfg.get('notify_on_order_error', True):
                     _notify(True, f'[Snapback-Live] 风险告警 {symbol} | 持仓期 bracket 验证失败 | {verify_reason or "unknown"}')
             elif verify_res.get('position_open') and not (verify_res.get('tp_bound') and verify_res.get('sl_bound')):
+                had_blocking_error = True
+                bracket_gap_blocking = True
                 mark_error(
                     account,
                     symbol,
@@ -1069,6 +1073,19 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             else:
                 _clear_symbol_error(account, symbol)
             set_open_trade(account, symbol, open_trade)
+            if bracket_gap_blocking:
+                if audit_enabled:
+                    write_event(account, 'open_trade_reconcile_blocked_after_bracket_gap', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'source': source,
+                        'order_root': open_trade.get('order_root'),
+                        'verify_ok': verify_res.get('ok'),
+                        'tp_bound': verify_res.get('tp_bound'),
+                        'sl_bound': verify_res.get('sl_bound'),
+                    })
+                continue
 
         if open_trade.get('exit_submit_inflight'):
             open_trade, should_skip = _reconcile_inflight_exit(
