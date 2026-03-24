@@ -2020,7 +2020,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 restore_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
                 restore_ord_res = get_open_orders(account, symbol)
             if restore_pos_res.get('ok') and restore_pos_res.get('data') and restore_ord_res.get('ok'):
-                open_trade, _ = _ensure_exit_orders(
+                open_trade, repair_changed = _ensure_exit_orders(
                     account,
                     symbol,
                     open_trade,
@@ -2032,13 +2032,27 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     source='time_stop_submit_failed_repair',
                 )
                 set_open_trade(account, symbol, open_trade)
-                repair_verify_res = _verify_open_trade_brackets(
-                    account,
-                    symbol,
-                    open_trade,
-                    retry_max=retry_max,
-                    retry_delay_secs=retry_delay_secs,
-                )
+                if repair_changed:
+                    repair_verify_res = _verify_open_trade_brackets(
+                        account,
+                        symbol,
+                        open_trade,
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
+                else:
+                    time_stop_fail_repair_snapshot = {
+                        'positions_by_symbol': {symbol: [restore_pos_res.get('data')]},
+                        'open_orders_by_symbol': {symbol: list((restore_ord_res.get('data') or []))},
+                    }
+                    repair_verify_res = _verify_open_trade_brackets(
+                        account,
+                        symbol,
+                        open_trade,
+                        snapshot=time_stop_fail_repair_snapshot,
+                        retry_max=retry_max,
+                        retry_delay_secs=retry_delay_secs,
+                    )
                 if audit_enabled:
                     write_event(account, 'time_stop_submit_failed_repair_attempted', {
                         'symbol': symbol,
