@@ -1579,6 +1579,14 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     _clear_symbol_error(account, symbol)
             else:
                 had_blocking_error = True
+                repair_reason = restore_ord_res.get('reason') or restore_pos_res.get('reason')
+                mark_error(
+                    account,
+                    symbol,
+                    error_code='time_stop_submit_failed_repair_query_failed',
+                    error_message=repair_reason,
+                    error_bj=current_time_bj,
+                )
                 if audit_enabled:
                     write_event(account, 'time_stop_submit_failed_repair_query_error', {
                         'symbol': symbol,

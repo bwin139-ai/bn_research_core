@@ -9,17 +9,14 @@ git push origin main && python3 tools/make_md5_line_suffix_copies.py
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' >> output/logs/snapback_live.console.log 2>&1 &
 tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
 
-ls -lht state/live_audit
-tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
+ls -lht state/live_audit  && tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
 # ============== 项目根目录 ===============
 cd ~/ai_projects/bn_research_core
 cd /root/bn_research_core
 
 # ========= 阿里云运行 拉取最新代码 =========
-git fetch --all
-git checkout main
-git pull --ff-only origin main
+git fetch --all && git switch main && git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
 RUNSET="SNAP_V5.0_30D_P6_$(date +%m%dT%H%M)"
