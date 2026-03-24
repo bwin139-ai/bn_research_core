@@ -1890,6 +1890,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     mark_order_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     blocked, block_reason = _has_position_or_orders(exch)
     if blocked:
+        if block_reason in {'precheck_position_query_failed', 'precheck_positions_query_failed', 'precheck_orders_query_failed'}:
+            mark_error(
+                account,
+                symbol,
+                error_code=block_reason,
+                error_message=(exch.get('orders') or {}).get('reason') or (exch.get('positions_all_sides') or {}).get('reason') or (exch.get('position') or {}).get('reason'),
+                error_bj=current_time_bj,
+            )
         if audit_enabled:
             write_event(account, 'precheck_skip', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'reason': block_reason, 'exchange_snapshot': exch})
         mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
