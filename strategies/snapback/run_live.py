@@ -900,7 +900,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 recovered_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=snapshot,
+                snapshot=None if source == 'startup' else snapshot,
             )
             if not verify_res.get('ok'):
                 had_blocking_error = True
@@ -1545,7 +1545,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 open_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=snapshot,
+                snapshot=None if source == 'startup' else snapshot,
             )
             bracket_gap_blocking = False
             if not verify_res.get('ok'):
@@ -1686,7 +1686,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                         open_trade,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
-                        snapshot=snapshot,
+                        snapshot=None if source == 'startup' else snapshot,
                     )
                     if audit_enabled:
                         write_event(account, 'time_stop_inflight_reset_repair_attempted', {
@@ -2029,6 +2029,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
                 'orders': startup_snapshot.get('orders'),
             },
         })
+    startup_snapshot['local_active_symbols'] = _symbols_with_local_activity(account)
     orphan_findings = _audit_orphan_exchange_activity(
         account,
         startup_snapshot['startup_symbols'],
