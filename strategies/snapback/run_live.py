@@ -900,7 +900,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 recovered_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=None if source == 'startup' else snapshot,
+                snapshot=None,
             )
             if not verify_res.get('ok'):
                 had_blocking_error = True
@@ -1545,7 +1545,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 open_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=None if source == 'startup' else snapshot,
+                snapshot=None,
             )
             bracket_gap_blocking = False
             if not verify_res.get('ok'):
@@ -1686,7 +1686,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                         open_trade,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
-                        snapshot=None if source == 'startup' else snapshot,
+                        snapshot=None,
                     )
                     if audit_enabled:
                         write_event(account, 'time_stop_inflight_reset_repair_attempted', {
