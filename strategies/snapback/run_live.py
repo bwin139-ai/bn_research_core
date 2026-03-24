@@ -1906,8 +1906,22 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     entry_notional_usdt = float(live_cfg['entry_notional_usdt'])
     current_price = float(signal.get('current_price') or 0.0)
     if current_price <= 0:
+        mark_error(
+            account,
+            symbol,
+            error_code='invalid_current_price',
+            error_message=f'current_price={current_price}',
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
-            write_event(account, 'precheck_error', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'reason': 'invalid_current_price'})
+            write_event(account, 'precheck_error', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'reason': 'invalid_current_price',
+                'signal_snapshot': signal,
+            })
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
 
     quantity = entry_notional_usdt / current_price
