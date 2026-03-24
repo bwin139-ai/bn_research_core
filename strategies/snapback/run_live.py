@@ -2105,8 +2105,25 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     }
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
 
-    pending_reconcile_error = _reconcile_pending_entries(account, live_cfg, current_time_ms, current_time_bj, source='loop')
-    open_trade_reconcile_error = _reconcile_open_trades(account, live_cfg, current_time_ms, current_time_bj, latest_closes, max_hold_mins, min_profit_pct, source='loop')
+    pending_reconcile_error = _reconcile_pending_entries(
+        account,
+        live_cfg,
+        current_time_ms,
+        current_time_bj,
+        source='loop',
+        snapshot=exchange_activity_snapshot,
+    )
+    open_trade_reconcile_error = _reconcile_open_trades(
+        account,
+        live_cfg,
+        current_time_ms,
+        current_time_bj,
+        latest_closes,
+        max_hold_mins,
+        min_profit_pct,
+        source='loop',
+        snapshot=exchange_activity_snapshot,
+    )
     if audit_enabled and not exchange_activity_snapshot.get('ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
             'bar_ts': current_time_ms,
