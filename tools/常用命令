@@ -3,19 +3,19 @@ ps aux | grep python
 ```bash
 
 ```
-rm patch_* && git add . && git status
-git push origin main && python3 tools/make_md5_line_suffix_copies.py
+ rm patch_* && git add . && git status
+ git push origin main && python3 tools/make_md5_line_suffix_copies.py
 # ============== snapback 实盘运行 ===============
-nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' >> /root/bn_research_core/output/logs/snapback_live.console.log 2>&1 ; ps -ef | grep 'strategies/snapback/run_live.py' | grep -v grep ; tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
+ nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' >> /root/bn_research_core/output/logs/snapback_live.console.log 2>&1 ; ps -ef | grep 'strategies/snapback/run_live.py' | grep -v grep ; tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
 
-ls -lht state/live_audit  && tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
+ ls -lht state/live_audit  && tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
 # ============== 项目根目录 ===============
-cd ~/ai_projects/bn_research_core
-cd /root/bn_research_core
+ cd ~/ai_projects/bn_research_core
+ cd /root/bn_research_core
 
 # ========= 阿里云运行 拉取最新代码 =========
-git fetch --all && git switch main && git pull --ff-only origin main
+ git fetch --all && git switch main && git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
 RUNSET="SNAP_V5.0_30D_P6_$(date +%m%dT%H%M)"
@@ -77,11 +77,11 @@ scp -r \
   "$DEST"
 
 # ================== 服务器资源监控 =====================
-watch -n 2 'free -h'
-watch -n 2 "ps -eo pid,ppid,%mem,rss,vsz,etime,cmd --sort=-rss | egrep 'run_backtest.py|schedule_backtests.py|PID'"
+ watch -n 2 'free -h'
+ watch -n 2 "ps -eo pid,ppid,%mem,rss,vsz,etime,cmd --sort=-rss | egrep 'run_backtest.py|schedule_backtests.py|PID'"
 
 # ========= AI 深度复盘特征提取器，用于生成高维交易诊断矩阵 ##########
-/root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.6_30D_P6_0319T2304_ALL
+ /root/service_env/bin/python tools/ai_feature_extractor.py --run-id SNAP_V4.6_30D_P6_0319T2304_ALL
 # ========= 视觉审计工具 =========
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_bucketizer_v5.py \
   --run-id SNAP_V4.6_30D_P6_0319T2304_ALL \
