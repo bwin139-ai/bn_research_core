@@ -452,8 +452,7 @@ def _order_query(account: str, symbol: str, *, exchange_order_id: int | None = N
 def _cancel_order_if_present(account: str, symbol: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None, prefetched_order_res: dict[str, Any] | None = None, known_open_orders: list[dict[str, Any]] | None = None, retry_max: int = 0, retry_delay_secs: float = 1.0) -> dict[str, Any]:
     if exchange_order_id is None and not client_order_id:
         return {'ok': True, 'reason': '', 'data': None, 'skipped': True}
-    order_res = prefetched_order_res if isinstance(prefetched_order_res, dict) else None
-    if not order_res and known_open_orders is not None:
+    if known_open_orders is not None:
         matched_open_order = _find_open_order(
             known_open_orders,
             exchange_order_id=exchange_order_id,
@@ -461,6 +460,7 @@ def _cancel_order_if_present(account: str, symbol: str, *, exchange_order_id: in
         )
         if matched_open_order is None:
             return {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'not_in_open_orders_snapshot': True}
+    order_res = prefetched_order_res if isinstance(prefetched_order_res, dict) else None
     if not order_res:
         order_res = _order_query(account, symbol, exchange_order_id=exchange_order_id, client_order_id=client_order_id, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
     if order_res.get('ok') and order_res.get('data'):
@@ -1034,6 +1034,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         'time_stop_client_order_id': None,
                         'time_stop_exchange_order_id': None,
                     }
+                    known_open_orders = list(((precheck or {}).get('orders') or {}).get('data') or []) if snapshot is not None and ((precheck or {}).get('orders') or {}).get('ok') else None
                     exit_reason, order_checks = _infer_exit_reason(
                         account,
                         symbol,
@@ -1046,6 +1047,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         symbol,
                         client_order_id=pending.get('tp_client_order_id'),
                         prefetched_order_res=order_checks.get('tp'),
+                        known_open_orders=known_open_orders,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
@@ -1054,6 +1056,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         symbol,
                         client_order_id=pending.get('sl_client_order_id'),
                         prefetched_order_res=order_checks.get('sl'),
+                        known_open_orders=known_open_orders,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
@@ -1062,6 +1065,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         symbol,
                         client_order_id=pending.get('time_stop_client_order_id'),
                         prefetched_order_res=order_checks.get('time_stop'),
+                        known_open_orders=known_open_orders,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
                     )
