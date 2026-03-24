@@ -885,7 +885,6 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
         if entry_res.get('ok') and entry_res.get('data'):
             status = str(entry_res['data'].get('status') or '').upper()
             if status in TERMINAL_ORDER_STATUSES:
-                set_pending_entry_order(account, symbol, None)
                 if status in FILLED_ORDER_STATUSES:
                     pending_terminal_trade = {
                         'order_root': pending.get('order_root'),
@@ -955,6 +954,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                                 },
                             })
                         continue
+                    set_pending_entry_order(account, symbol, None)
                     _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
                     if audit_enabled:
@@ -1071,6 +1071,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                                 },
                             })
                         continue
+                    set_pending_entry_order(account, symbol, None)
                     _clear_symbol_error(account, symbol)
                     if audit_enabled:
                         write_event(account, 'entry_terminal_detected', {
