@@ -1797,13 +1797,11 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             set_open_trade(account, symbol, open_trade)
 
             if not open_trade.get('exit_submit_inflight'):
-                if snapshot is not None:
-                    reset_precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
-                    reset_pos_res = reset_precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
-                    reset_ord_res = reset_precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
-                else:
-                    reset_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-                    reset_ord_res = get_open_orders(account, symbol)
+                # _reconcile_inflight_exit() only queries exchange state and mutates local flags;
+                # it does not place/cancel any exchange orders. Reuse the symbol snapshot/query
+                # we already fetched at the top of this reconcile cycle instead of querying again.
+                reset_pos_res = pos_res
+                reset_ord_res = ord_res
                 if not reset_pos_res.get('ok') or not reset_ord_res.get('ok'):
                     had_blocking_error = True
                     verify_reason = reset_ord_res.get('reason') or reset_pos_res.get('reason')
