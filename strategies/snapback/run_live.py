@@ -2012,8 +2012,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             if audit_enabled:
                 write_event(account, 'time_stop_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': ts_res})
 
-            restore_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-            restore_ord_res = get_open_orders(account, symbol)
+            no_pre_submit_cancel_actions = bool(tp_cancel.get('skipped')) and bool(sl_cancel.get('skipped'))
+            if no_pre_submit_cancel_actions:
+                restore_pos_res = pos_res
+                restore_ord_res = ord_res
+            else:
+                restore_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+                restore_ord_res = get_open_orders(account, symbol)
             if restore_pos_res.get('ok') and restore_pos_res.get('data') and restore_ord_res.get('ok'):
                 open_trade, _ = _ensure_exit_orders(
                     account,
