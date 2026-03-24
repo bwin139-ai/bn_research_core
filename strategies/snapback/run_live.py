@@ -579,7 +579,7 @@ def _find_open_order(open_orders: list[dict[str, Any]], *, exchange_order_id: in
     return None
 
 
-def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], position: dict[str, Any], open_orders: list[dict[str, Any]], live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> dict[str, Any]:
+def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], position: dict[str, Any], open_orders: list[dict[str, Any]], live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> tuple[dict[str, Any], bool]:
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     retry_max = int(live_cfg['order_retry_max'])
@@ -698,7 +698,7 @@ def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], p
     if changed:
         open_trade['last_status_bj'] = current_time_bj
         set_open_trade(account, symbol, open_trade)
-    return open_trade
+    return open_trade, changed
 
 def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str, Any], *, retry_max: int, retry_delay_secs: float, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     symbol_key = str(symbol).upper().strip()
@@ -881,7 +881,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             set_open_trade(account, symbol, recovered_trade)
             set_pending_entry_order(account, symbol, None)
 
-            recovered_trade = _ensure_exit_orders(
+            recovered_trade, exit_orders_changed = _ensure_exit_orders(
                 account,
                 symbol,
                 recovered_trade,
@@ -900,7 +900,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                 recovered_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=None,
+                snapshot=None if exit_orders_changed else snapshot,
             )
             if not verify_res.get('ok'):
                 had_blocking_error = True
@@ -1528,7 +1528,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             continue
 
         if not open_trade.get('exit_submit_inflight'):
-            open_trade = _ensure_exit_orders(
+            open_trade, exit_orders_changed = _ensure_exit_orders(
                 account,
                 symbol,
                 open_trade,
@@ -1545,7 +1545,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 open_trade,
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
-                snapshot=None,
+                snapshot=None if exit_orders_changed else snapshot,
             )
             bracket_gap_blocking = False
             if not verify_res.get('ok'):
@@ -1668,7 +1668,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 reset_position = reset_pos_res.get('data')
                 reset_orders = reset_ord_res.get('data') or []
                 if reset_position:
-                    open_trade = _ensure_exit_orders(
+                    open_trade, exit_orders_changed = _ensure_exit_orders(
                         account,
                         symbol,
                         open_trade,
@@ -1686,7 +1686,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                         open_trade,
                         retry_max=retry_max,
                         retry_delay_secs=retry_delay_secs,
-                        snapshot=None,
+                        snapshot=None if exit_orders_changed else snapshot,
                     )
                     if audit_enabled:
                         write_event(account, 'time_stop_inflight_reset_repair_attempted', {
@@ -1860,7 +1860,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             restore_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
             restore_ord_res = get_open_orders(account, symbol)
             if restore_pos_res.get('ok') and restore_pos_res.get('data') and restore_ord_res.get('ok'):
-                open_trade = _ensure_exit_orders(
+                open_trade, _ = _ensure_exit_orders(
                     account,
                     symbol,
                     open_trade,
@@ -2392,7 +2392,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         })
 
     if should_repair_brackets:
-        open_trade = _ensure_exit_orders(
+        open_trade, _ = _ensure_exit_orders(
             account,
             symbol,
             open_trade,
@@ -2477,7 +2477,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         set_open_trade(account, symbol, open_trade)
         set_pending_entry_order(account, symbol, None)
 
-        open_trade = _ensure_exit_orders(
+        open_trade, _ = _ensure_exit_orders(
             account,
             symbol,
             open_trade,
