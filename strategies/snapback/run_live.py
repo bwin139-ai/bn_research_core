@@ -2637,7 +2637,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         set_open_trade(account, symbol, open_trade)
         set_pending_entry_order(account, symbol, None)
 
-        open_trade, _ = _ensure_exit_orders(
+        open_trade, entry_confirm_repair_changed = _ensure_exit_orders(
             account,
             symbol,
             open_trade,
@@ -2650,12 +2650,35 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         )
         set_open_trade(account, symbol, open_trade)
 
+        entry_confirm_verify_snapshot = None
+        if not entry_confirm_repair_changed:
+            symbol_key = str(symbol).upper().strip()
+            entry_confirm_verify_snapshot = {
+                'positions': {
+                    'ok': bool(verify_pos_res.get('ok')),
+                    'reason': verify_pos_res.get('reason'),
+                    'data': [verify_position] if verify_position else [],
+                },
+                'orders': {
+                    'ok': bool(verify_orders_res.get('ok')),
+                    'reason': verify_orders_res.get('reason'),
+                    'data': verify_orders,
+                },
+                'positions_by_symbol': {
+                    symbol_key: [verify_position] if verify_position else [],
+                },
+                'open_orders_by_symbol': {
+                    symbol_key: list(verify_orders or []),
+                },
+            }
+
         verify_res = _verify_open_trade_brackets(
             account,
             symbol,
             open_trade,
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
+            snapshot=entry_confirm_verify_snapshot,
         )
         if not verify_res.get('ok'):
             verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
