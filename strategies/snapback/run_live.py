@@ -813,27 +813,21 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
         if open_trade:
             set_pending_entry_order(account, symbol, None)
             continue
-        entry_res = _order_query(
-            account,
-            symbol,
-            exchange_order_id=pending.get('exchange_order_id'),
-            client_order_id=pending.get('client_order_id'),
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
-        )
+
+        precheck = None
         if snapshot is not None:
             precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
             pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
         else:
             pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-        if not entry_res.get('ok') or not pos_res.get('ok'):
+
+        if not pos_res.get('ok'):
             had_blocking_error = True
-            reconcile_reason = entry_res.get('reason') or pos_res.get('reason')
             mark_error(
                 account,
                 symbol,
                 error_code='pending_reconcile_query_failed',
-                error_message=reconcile_reason,
+                error_message=pos_res.get('reason'),
                 error_bj=current_time_bj,
             )
             if audit_enabled:
@@ -843,12 +837,18 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     'bar_bj': current_time_bj,
                     'source': source,
                     'exchange_snapshot': {
-                        'entry_order': entry_res,
                         'position': pos_res,
                     },
                 })
             continue
-        if pos_res.get('ok') and pos_res.get('data'):
+
+        entry_res = {
+            'ok': True,
+            'reason': '',
+            'data': None,
+            'skipped': bool(pos_res.get('data')),
+        }
+        if pos_res.get('data'):
             if snapshot is not None:
                 ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
             else:
@@ -979,6 +979,36 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     'order_root': recovered_trade.get('order_root'),
                 })
             continue
+        entry_res = _order_query(
+            account,
+            symbol,
+            exchange_order_id=pending.get('exchange_order_id'),
+            client_order_id=pending.get('client_order_id'),
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+        )
+        if not entry_res.get('ok'):
+            had_blocking_error = True
+            mark_error(
+                account,
+                symbol,
+                error_code='pending_reconcile_query_failed',
+                error_message=entry_res.get('reason'),
+                error_bj=current_time_bj,
+            )
+            if audit_enabled:
+                write_event(account, 'pending_reconcile_error', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'exchange_snapshot': {
+                        'entry_order': entry_res,
+                        'position': pos_res,
+                    },
+                })
+            continue
+
         if entry_res.get('ok') and entry_res.get('data'):
             status = str(entry_res['data'].get('status') or '').upper()
             if status in TERMINAL_ORDER_STATUSES:
