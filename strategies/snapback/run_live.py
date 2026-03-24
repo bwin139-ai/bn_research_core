@@ -534,21 +534,23 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
         exchange_order_id=open_trade.get('time_stop_exchange_order_id'),
         client_order_id=open_trade.get('time_stop_client_order_id'),
     )
+    checks['time_stop'] = ts_res
+    if ts_res.get('ok') and ts_res.get('data') and str(ts_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
+        return 'TIME_STOP', checks
+
     tp_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('tp_order_exchange_id'),
         client_order_id=open_trade.get('tp_order_client_id'),
     )
+    checks['tp'] = tp_res
+    if tp_res.get('ok') and tp_res.get('data') and str(tp_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
+        return 'TAKE_PROFIT', checks
+
     sl_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('sl_order_exchange_id'),
         client_order_id=open_trade.get('sl_order_client_id'),
     )
-    checks['time_stop'] = ts_res
-    checks['tp'] = tp_res
     checks['sl'] = sl_res
-    if ts_res.get('ok') and ts_res.get('data') and str(ts_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'TIME_STOP', checks
-    if tp_res.get('ok') and tp_res.get('data') and str(tp_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'TAKE_PROFIT', checks
     if sl_res.get('ok') and sl_res.get('data') and str(sl_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
         return 'STOP_LOSS', checks
     return 'UNKNOWN_EXIT', checks
