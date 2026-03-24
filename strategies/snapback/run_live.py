@@ -1988,6 +1988,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             })
     else:
         entry_position_confirmed = True
+        confirmed_trade = _recover_open_trade_from_pending(pending_entry, verify_position)
+        confirmed_trade['tp_order_client_id'] = open_trade.get('tp_order_client_id')
+        confirmed_trade['tp_order_exchange_id'] = open_trade.get('tp_order_exchange_id')
+        confirmed_trade['sl_order_client_id'] = open_trade.get('sl_order_client_id')
+        confirmed_trade['sl_order_exchange_id'] = open_trade.get('sl_order_exchange_id')
+        confirmed_trade['time_stop_client_order_id'] = open_trade.get('time_stop_client_order_id')
+        confirmed_trade['time_stop_exchange_order_id'] = open_trade.get('time_stop_exchange_order_id')
+        open_trade = confirmed_trade
         set_open_trade(account, symbol, open_trade)
         set_pending_entry_order(account, symbol, None)
         tp_bound = _find_open_order(
