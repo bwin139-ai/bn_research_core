@@ -2135,7 +2135,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             },
         })
 
-    exchange_activity_snapshot['local_active_symbols'] = local_activity_symbols
+    exchange_activity_snapshot['local_active_symbols'] = _symbols_with_local_activity(account)
     orphan_findings = _audit_orphan_exchange_activity(
         account,
         sorted(set(candidate_symbols) | exchange_activity_symbols),
