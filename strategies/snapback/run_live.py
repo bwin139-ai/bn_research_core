@@ -1079,6 +1079,13 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
         retry_delay_secs=retry_delay_secs,
     )
     if not ts_order_res.get('ok'):
+        mark_error(
+            account,
+            symbol,
+            error_code='time_stop_inflight_query_error',
+            error_message=ts_order_res.get('reason'),
+            error_bj=current_time_bj,
+        )
         if audit_enabled:
             write_event(account, 'time_stop_inflight_query_error', {
                 'symbol': symbol,
