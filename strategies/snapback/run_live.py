@@ -1486,9 +1486,14 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 continue
 
             exit_reason, order_checks = _infer_exit_reason(account, symbol, open_trade, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
-            tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), prefetched_order_res=order_checks.get('tp'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
-            sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), prefetched_order_res=order_checks.get('sl'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
-            ts_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('time_stop_exchange_order_id'), client_order_id=open_trade.get('time_stop_client_order_id'), prefetched_order_res=order_checks.get('time_stop'), retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+            if ord_res.get('ok') and not open_orders:
+                tp_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+                sl_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+                ts_cancel = {'ok': True, 'reason': '', 'data': None, 'skipped': True, 'no_open_orders_snapshot': True}
+            else:
+                tp_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('tp_order_exchange_id'), client_order_id=open_trade.get('tp_order_client_id'), prefetched_order_res=order_checks.get('tp'), known_open_orders=open_orders, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+                sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), prefetched_order_res=order_checks.get('sl'), known_open_orders=open_orders, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
+                ts_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('time_stop_exchange_order_id'), client_order_id=open_trade.get('time_stop_client_order_id'), prefetched_order_res=order_checks.get('time_stop'), known_open_orders=open_orders, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
 
             infer_reason = (order_checks.get('time_stop') or {}).get('reason') or (order_checks.get('tp') or {}).get('reason') or (order_checks.get('sl') or {}).get('reason')
             if infer_reason:
