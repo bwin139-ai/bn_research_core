@@ -148,7 +148,7 @@ def _write_config_snapshot(account: str, config_path: str, live_config_path: str
     }
 
     snapshot_path = snapshot_dir / f'snapback_{account_key}_{ts_utc}.config_snapshot.json'
-    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\\n', encoding='utf-8')
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
     return {
         'snapshot_path': str(snapshot_path),
@@ -1217,7 +1217,7 @@ def _reset_inflight_exit_state(open_trade: dict[str, Any], current_time_bj: str)
     return open_trade
 
 
-def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, retry_max: int, retry_delay_secs: float, audit_enabled: bool) -> tuple[dict[str, Any], bool]:
+def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, retry_max: int, retry_delay_secs: float, audit_enabled: bool, snapshot: dict[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     ts_exchange_order_id = open_trade.get('time_stop_exchange_order_id')
     ts_client_order_id = open_trade.get('time_stop_client_order_id')
     if ts_exchange_order_id is None and not ts_client_order_id:
@@ -1629,12 +1629,18 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 retry_max=retry_max,
                 retry_delay_secs=retry_delay_secs,
                 audit_enabled=audit_enabled,
+                snapshot=snapshot,
             )
             set_open_trade(account, symbol, open_trade)
 
             if not open_trade.get('exit_submit_inflight'):
-                reset_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-                reset_ord_res = get_open_orders(account, symbol)
+                if snapshot is not None:
+                    reset_precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+                    reset_pos_res = reset_precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
+                    reset_ord_res = reset_precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+                else:
+                    reset_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+                    reset_ord_res = get_open_orders(account, symbol)
                 if not reset_pos_res.get('ok') or not reset_ord_res.get('ok'):
                     had_blocking_error = True
                     verify_reason = reset_ord_res.get('reason') or reset_pos_res.get('reason')
