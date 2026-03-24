@@ -735,6 +735,14 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
         pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
         if not entry_res.get('ok') or not pos_res.get('ok'):
             had_blocking_error = True
+            reconcile_reason = entry_res.get('reason') or pos_res.get('reason')
+            mark_error(
+                account,
+                symbol,
+                error_code='pending_reconcile_query_failed',
+                error_message=reconcile_reason,
+                error_bj=current_time_bj,
+            )
             if audit_enabled:
                 write_event(account, 'pending_reconcile_error', {
                     'symbol': symbol,

@@ -3,6 +3,8 @@ ps aux | grep python
 ```bash
 
 ```
+rm patch_* && git add . && git status
+git push origin main && python3 tools/make_md5_line_suffix_copies.py
 # ============== snapback 实盘运行 ===============
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.json --live-config strategies/snapback/live_config.json' >> output/logs/snapback_live.console.log 2>&1 &
 tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
