@@ -1179,6 +1179,14 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
         if not pos_res.get('ok') or not ord_res.get('ok'):
             had_blocking_error = True
+            reconcile_reason = ord_res.get('reason') or pos_res.get('reason')
+            mark_error(
+                account,
+                symbol,
+                error_code='open_trade_reconcile_query_failed',
+                error_message=reconcile_reason,
+                error_bj=current_time_bj,
+            )
             if audit_enabled:
                 write_event(account, 'exit_reconcile_error', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': {'position': pos_res, 'orders': ord_res}})
             continue
