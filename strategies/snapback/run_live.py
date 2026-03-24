@@ -231,9 +231,10 @@ def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     }
 
 
-def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool) -> None:
+def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
     if not audit_enabled:
-        return
+        return findings
     local_active_symbols = _symbols_with_local_activity(account)
     all_positions_res = get_positions(account)
     positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
@@ -264,6 +265,13 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
         has_orders = bool(ord_res.get('ok') and ord_res.get('data'))
         if not has_any_position and not has_orders:
             continue
+
+        findings.append({
+            'symbol': symbol,
+            'has_any_position': has_any_position,
+            'has_long_position': has_long_position,
+            'has_orders': has_orders,
+        })
 
         exchange_snapshot = {
             'position': pos_res,
@@ -305,6 +313,7 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
                 'source': source,
                 'exchange_snapshot': ord_res,
             })
+    return findings
 
 
 def _sleep_until_next_closed_bar() -> None:
@@ -1311,7 +1320,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             },
         })
 
-    _audit_orphan_exchange_activity(
+    orphan_findings = _audit_orphan_exchange_activity(
         account,
         sorted(set(candidate_symbols) | exchange_activity_symbols),
         current_time_ms,
@@ -1319,6 +1328,19 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         source='loop',
         audit_enabled=audit_enabled,
     )
+
+    if orphan_findings:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_orphan_exchange_activity', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'orphan_exchange_activity': orphan_findings,
+                'candidate_symbols_count': len(candidate_symbols),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            })
+        for symbol in merged_full_df.keys():
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return
 
     if pending_reconcile_error or open_trade_reconcile_error:
         if audit_enabled:
