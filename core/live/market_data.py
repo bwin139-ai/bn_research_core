@@ -195,6 +195,11 @@ def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any
     return client.futures_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
 
 
+def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    client = get_client(account)
+    return client.futures_index_price_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
+
+
 def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
     if not rows:
         raise ValueError(f'{symbol} kline rows empty')
@@ -234,51 +239,28 @@ def _rows_to_df(raw_df: pd.DataFrame, ticker_24h: dict[str, Any]) -> pd.DataFram
     return df
 
 
-def _build_index_df(account: str, latest_closed_bar_ts: int, keep: int) -> pd.DataFrame:
-    # NOTE: benchmark/index logic intentionally left untouched in this batch.
-    # This patch batch only adds live-input audit and removes lookback/default-value issues.
-    benchmark_weights = {
-        'BTCUSDT': 0.56,
-        'ETHUSDT': 0.24,
-        'BNBUSDT': 0.12,
-        'SOLUSDT': 0.08,
-    }
-    series_map: dict[str, pd.DataFrame] = {}
-    for symbol, weight in benchmark_weights.items():
-        rows = _fetch_symbol_klines(account, symbol, keep)
-        data = []
-        for row in rows:
-            open_time_ms = _to_int(row[0])
-            if open_time_ms > latest_closed_bar_ts:
-                continue
-            data.append({
-                'open_time_ms': open_time_ms,
-                'high': _to_float(row[2]),
-                'low': _to_float(row[3]),
-                'close': _to_float(row[4]),
-            })
-        df = pd.DataFrame(data)
-        if df.empty:
-            raise ValueError(f'benchmark {symbol} has no closed 1m bars')
-        df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').reset_index(drop=True)
-        df.set_index('open_time_ms', inplace=True)
-        df.index = df.index.astype('int64')
-        base_close = float(df['close'].iloc[0])
-        if base_close <= 0:
-            raise ValueError(f'benchmark {symbol} base close invalid')
-        part = pd.DataFrame(index=df.index)
-        part[f'{symbol}_close'] = (df['close'] / base_close) * float(weight)
-        part[f'{symbol}_high'] = (df['high'] / base_close) * float(weight)
-        part[f'{symbol}_low'] = (df['low'] / base_close) * float(weight)
-        series_map[symbol] = part
-    merged = pd.concat(series_map.values(), axis=1, join='inner').sort_index()
-    if merged.empty:
-        raise ValueError('benchmark merged index empty')
-    out = pd.DataFrame(index=merged.index)
-    out['close_idx'] = merged[[f'{s}_close' for s in benchmark_weights]].sum(axis=1)
-    out['high_idx'] = merged[[f'{s}_high' for s in benchmark_weights]].sum(axis=1)
-    out['low_idx'] = merged[[f'{s}_low' for s in benchmark_weights]].sum(axis=1)
-    return out
+def _rows_to_index_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
+    if not rows:
+        raise ValueError(f'{symbol} index price kline rows empty')
+    data = []
+    for row in rows:
+        open_time_ms = _to_int(row[0])
+        if open_time_ms > latest_closed_bar_ts:
+            continue
+        data.append({
+            'open_time_ms': open_time_ms,
+            'high_idx': _to_float(row[2]),
+            'low_idx': _to_float(row[3]),
+            'close_idx': _to_float(row[4]),
+        })
+    df = pd.DataFrame(data)
+    if df.empty:
+        raise ValueError(f'{symbol} has no closed 1m index bars')
+    df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').reset_index(drop=True)
+    df.set_index('open_time_ms', inplace=True)
+    df.index = df.index.astype('int64')
+    df.sort_index(inplace=True)
+    return df
 
 
 def build_live_inputs(
@@ -309,7 +291,6 @@ def build_live_inputs(
         return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': errors}
 
     keep = int(history_window_mins)
-    index_df = _build_index_df(account, latest_closed_bar_ts, keep)
 
     histories: dict[str, pd.DataFrame] = {}
     stale_symbols: dict[str, str] = {}
@@ -325,9 +306,11 @@ def build_live_inputs(
             if latest_closed_bar_ts not in df.index:
                 stale_symbols[symbol] = _fmt_bj_from_ms(_to_int(df.index.max()))
                 continue
+            index_rows = _fetch_symbol_index_price_klines(account, symbol, keep)
+            index_df = _rows_to_index_df(symbol, index_rows, latest_closed_bar_ts)
             aligned_idx = index_df.reindex(df.index)
             if aligned_idx[['high_idx', 'low_idx', 'close_idx']].isna().any().any():
-                stale_symbols[symbol] = 'benchmark_alignment_missing'
+                stale_symbols[symbol] = 'index_alignment_missing'
                 continue
             df[['high_idx', 'low_idx', 'close_idx']] = aligned_idx[['high_idx', 'low_idx', 'close_idx']]
             histories[symbol] = df
