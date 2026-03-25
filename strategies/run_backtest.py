@@ -385,9 +385,7 @@ def main():
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单
             order = Order(
                 symbol=signal["symbol"],
-                limit_price=signal["limit_price"],
                 create_time_ms=signal["signal_time"],
-                timeout_sec=signal["params"]["timeout_sec"],
                 signal_time_ms=signal["signal_time"],
                 signal_price=signal["current_price"],
                 context=signal.get("context", {}),

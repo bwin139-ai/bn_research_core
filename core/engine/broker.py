@@ -8,22 +8,18 @@ class Order:
     def __init__(
         self,
         symbol: str,
-        limit_price: float,
         create_time_ms: int,
-        timeout_sec: int,
         signal_time_ms: int = None,
         signal_price: float = None,
         context: dict = None,
     ):
         self.symbol = symbol
-        self.limit_price = limit_price
         self.create_time_ms = create_time_ms
-        self.expire_time_ms = create_time_ms + timeout_sec * 1000
         self.status = "OPEN"
         self.signal_time_ms = (
             signal_time_ms if signal_time_ms is not None else create_time_ms
         )
-        self.signal_price = signal_price if signal_price is not None else limit_price
+        self.signal_price = signal_price if signal_price is not None else 0.0
         self.tp_price = 0.0
         self.sl_price = 0.0
         self.context = context if context is not None else {}
@@ -63,9 +59,26 @@ class VirtualBroker:
         self.time_stop_min_profit = self.config["exit_policy"]["time_stop"]["min_profit_pct"]
 
     def on_kline_close(self, current_time_ms: int, cross_section: pd.DataFrame):
-        # 1. 检查持仓 (判断是否触发 TP/SL/超时)
+        # 1. 先处理上一根 bar 收盘后产生的入场意图：
+        #    在当前这根 bar 的 open 以“市价近似”成交。
+        filled_symbols = []
+        for sym, order in list(self.active_orders.items()):
+            if sym not in cross_section.index:
+                continue
+
+            row = cross_section.loc[sym]
+            exec_price = row["open"]
+            self._fill_order(sym, order, current_time_ms, exec_price)
+            filled_symbols.append(sym)
+
+        for sym in filled_symbols:
+            if sym in self.active_orders:
+                del self.active_orders[sym]
+
+        # 2. 再检查持仓（包括刚刚在当前 bar open 成交的新仓），
+        #    因此同一根 bar 内允许发生 entry -> TP/SL。
         closed_symbols = []
-        for sym, pos in self.active_positions.items():
+        for sym, pos in list(self.active_positions.items()):
             if sym not in cross_section.index:
                 continue
 
@@ -81,7 +94,7 @@ class VirtualBroker:
                     closed_symbols.append(sym)
                     continue
 
-            # 原有 TP/SL 逻辑
+            # 原有 TP/SL 逻辑（保持 STOP_LOSS 优先于 TAKE_PROFIT）
             if low <= pos.sl_price:
                 self._close_position(sym, pos.sl_price, current_time_ms, "STOP_LOSS")
                 closed_symbols.append(sym)
@@ -90,41 +103,14 @@ class VirtualBroker:
                 closed_symbols.append(sym)
 
         for sym in closed_symbols:
-            del self.active_positions[sym]
-
-        # 2. 检查挂单 ...
-        canceled_or_filled_symbols = []
-        for sym, order in self.active_orders.items():
-            if current_time_ms >= order.expire_time_ms:
-                time_str = pd.to_datetime(current_time_ms, unit="ms").strftime(
-                    "%Y-%m-%d %H:%M"
-                )
-                logging.info(f"[{time_str}] {sym} 订单超时撤销")
-                canceled_or_filled_symbols.append(sym)
-                continue
-
-            if sym not in cross_section.index:
-                continue
-
-            row = cross_section.loc[sym]
-            low = row["low"]
-            open_price = row["open"]
-
-            if low <= order.limit_price:
-                # 🚀 核心修复：真实市场撮合逻辑 (Next Open Execution)
-                exec_price = min(order.limit_price, open_price)
-                self._fill_order(sym, order, current_time_ms, exec_price)
-                canceled_or_filled_symbols.append(sym)
-
-        for sym in canceled_or_filled_symbols:
-            if sym in self.active_orders:
-                del self.active_orders[sym]
+            if sym in self.active_positions:
+                del self.active_positions[sym]
 
     def _fill_order(
         self, symbol: str, order: Order, time_ms: int, exec_price: float = None
     ):
         if exec_price is None:
-            exec_price = order.limit_price
+            exec_price = order.signal_price
 
         pos = Position(
             symbol=symbol,
@@ -139,7 +125,7 @@ class VirtualBroker:
         self.active_positions[symbol] = pos
         time_str = pd.to_datetime(time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
         logging.info(
-            f"[{time_str}] 挂单成交: {symbol} 进场多单 @ {exec_price:.4f} (最高容忍 {order.limit_price:.4f}) | "
+            f"[{time_str}] 市价开仓成交: {symbol} 进场多单 @ {exec_price:.4f} | "
             f"止盈: {order.tp_price:.4f} | 止损: {order.sl_price:.4f}"
         )
 

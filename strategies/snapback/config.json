@@ -47,10 +47,6 @@
     },
     "joint_filters": {}
   },
-  "execution": {
-    "entry_pullback_pct": -0.02,
-    "order_timeout_sec": 180
-  },
   "exit_policy": {
     "take_profit": {
       "base_pct": 0.01,

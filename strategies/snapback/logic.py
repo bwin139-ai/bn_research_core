@@ -15,7 +15,6 @@ class WashoutSnapbackStrategy:
         selloff = structure["selloff"]
         rebound = structure["rebound"]
         basis = structure["basis"]
-        execution = self.config["execution"]
         exit_policy = self.config["exit_policy"]
         take_profit = exit_policy["take_profit"]
         strong_mode = take_profit["strong_mode"]
@@ -49,12 +48,10 @@ class WashoutSnapbackStrategy:
         self.max_basis_b_pct = basis["b_pct"]["max"]
 
         # 游击战交易参数
-        self.entry_pullback = execution["entry_pullback_pct"]
         self.base_tp_pct = take_profit["base_pct"]
         self.strong_tp_pct = take_profit["strong_pct"]
         self.strong_tp_min_drop_pct = strong_mode["a_to_c_drop_pct_min"]
         self.strong_tp_min_rebound_ratio = strong_mode["rebound_ratio_min"]
-        self.timeout_sec = execution["order_timeout_sec"]
         self.cooldown_ms = risk_controls["cooldown_hours"] * 3600 * 1000
         self.max_hold_mins = time_stop["max_hold_mins"]
         self.time_stop_min_profit = time_stop["min_profit_pct"]
@@ -279,8 +276,7 @@ class WashoutSnapbackStrategy:
         top1_symbol = target["symbol"]
         current_price = target["current_price"]
 
-        limit_price = current_price * (1 - self.entry_pullback)
-        # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算，不能受追高/回踩限价的影响
+        # 🚀 核心修复：止盈止损必须基于真实的当前价格 (current_price) 计算
         selected_tp_pct = target["selected_tp_pct"]
         tp_price = current_price * (1 + selected_tp_pct)
         sl_price = target["b_index_price"]
@@ -296,11 +292,9 @@ class WashoutSnapbackStrategy:
             "symbol": top1_symbol,
             "action": "BUY",
             "current_price": current_price,
-            "limit_price": limit_price,
             "tp_price": tp_price,
             "sl_price": sl_price,
             "params": {
-                "entry_pullback_pct": self.entry_pullback,
                 "base_take_profit_pct": self.base_tp_pct,
                 "strong_take_profit_pct": self.strong_tp_pct,
                 "strong_tp_min_drop_pct": self.strong_tp_min_drop_pct,
@@ -317,7 +311,6 @@ class WashoutSnapbackStrategy:
                 "max_basis_b_pct": self.max_basis_b_pct,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
-                "timeout_sec": self.timeout_sec,
             },
             "context": {
                 "chg_24h": target["chg_24h"],
