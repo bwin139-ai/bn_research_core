@@ -35,6 +35,22 @@ def get_live_audit_path(account: str) -> Path:
     return get_live_audit_dir() / f"snapback_{account_key}.jsonl"
 
 
+def get_stage_audit_dir() -> Path:
+    path = get_live_audit_dir() / "stage_audit"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_stage_audit_path(account: str, stage: str) -> Path:
+    account_key = str(account).strip()
+    if not account_key:
+        raise ValueError("account must not be empty")
+    stage_key = str(stage).strip()
+    if not stage_key:
+        raise ValueError("stage must not be empty")
+    return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.jsonl"
+
+
 def _build_record(account: str, event: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     now = _now_utc()
     record: dict[str, Any] = {
@@ -50,9 +66,7 @@ def _build_record(account: str, event: str, payload: dict[str, Any] | None = Non
     return record
 
 
-def append_audit_record(account: str, event: str, payload: dict[str, Any] | None = None) -> Path:
-    path = get_live_audit_path(account)
-    record = _build_record(account, event, payload)
+def _append_json_record(path: Path, record: dict[str, Any]) -> Path:
     lock = FileLock(str(path) + ".lock")
     with lock:
         with path.open("a", encoding="utf-8") as f:
@@ -60,6 +74,26 @@ def append_audit_record(account: str, event: str, payload: dict[str, Any] | None
             f.flush()
             os.fsync(f.fileno())
     return path
+
+
+def append_audit_record(account: str, event: str, payload: dict[str, Any] | None = None) -> Path:
+    path = get_live_audit_path(account)
+    record = _build_record(account, event, payload)
+    return _append_json_record(path, record)
+
+
+def append_stage_record(account: str, stage: str, payload: dict[str, Any] | None = None) -> Path:
+    now = _now_utc()
+    record: dict[str, Any] = {
+        "ts_utc": now.isoformat(),
+        "ts_bj": _fmt_bj(now),
+        "account": str(account),
+        "run_mode": "live",
+        "stage": str(stage),
+    }
+    if payload:
+        record.update(payload)
+    return _append_json_record(get_stage_audit_path(account, stage), record)
 
 
 def write_runner_started(account: str, payload: dict[str, Any] | None = None) -> Path:

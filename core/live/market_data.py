@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.live.audit_log import get_live_audit_dir
+from core.live.audit_log import append_stage_record, get_stage_audit_dir
 from core.live.binance_client import get_client
 
 _BJ = timezone(timedelta(hours=8))
@@ -45,26 +45,16 @@ def _last_closed_bar_open_time_ms(account: str) -> int:
     return (server_ms // 60000) * 60000 - 60000
 
 
+def _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts: int) -> int:
+    return int(latest_closed_bar_ts) + 60000
+
+
 def _stage_audit_dir() -> Path:
-    path = get_live_audit_dir() / _STAGE_AUDIT_DIRNAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return get_stage_audit_dir()
 
 
 def _append_stage_jsonl(account: str, stage: str, payload: dict[str, Any]) -> Path:
-    account_key = str(account).strip()
-    path = _stage_audit_dir() / f'snapback_{account_key}.{stage}.jsonl'
-    record = {
-        'ts_utc': datetime.now(timezone.utc).isoformat(),
-        'ts_bj': datetime.now(timezone.utc).astimezone(_BJ).strftime('%Y-%m-%d %H:%M:%S'),
-        'account': account_key,
-        'run_mode': 'live',
-        'stage': stage,
-    }
-    record.update(payload)
-    with path.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
-    return path
+    return append_stage_record(account, stage, payload)
 
 
 def _write_stage3_parquet(account: str, audit_label: str, bar_ts: int, rows: pd.DataFrame) -> Path:
@@ -138,7 +128,9 @@ def _filter_symbols_by_universe(
     vol_min, chg_min, chg_max = _require_universe_cfg(strategy_cfg)
     eligible: list[str] = []
     errors: dict[str, str] = {}
-    bar_bj = _fmt_bj_from_ms(latest_closed_bar_ts)
+    c_bar_bj = _fmt_bj_from_ms(latest_closed_bar_ts)
+    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
+    signal_time_bj = _fmt_bj_from_ms(signal_time_ts)
     for symbol in symbols:
         ticker = ticker_map.get(symbol)
         if not ticker:
@@ -146,8 +138,12 @@ def _filter_symbols_by_universe(
             errors[symbol] = reason
             _append_stage_jsonl(account, 'stage2_universe', {
                 'audit_label': audit_label,
-                'bar_ts': latest_closed_bar_ts,
-                'bar_bj': bar_bj,
+                'bar_ts': signal_time_ts,
+                'bar_bj': signal_time_bj,
+                'signal_time_ts': signal_time_ts,
+                'signal_time_bj': signal_time_bj,
+                'c_bar_ts': latest_closed_bar_ts,
+                'c_bar_bj': c_bar_bj,
                 'symbol': symbol,
                 'ticker_quote_volume': None,
                 'ticker_chg_pct': None,
@@ -167,8 +163,12 @@ def _filter_symbols_by_universe(
         if reason:
             _append_stage_jsonl(account, 'stage2_universe', {
                 'audit_label': audit_label,
-                'bar_ts': latest_closed_bar_ts,
-                'bar_bj': bar_bj,
+                'bar_ts': signal_time_ts,
+                'bar_bj': signal_time_bj,
+                'signal_time_ts': signal_time_ts,
+                'signal_time_bj': signal_time_bj,
+                'c_bar_ts': latest_closed_bar_ts,
+                'c_bar_bj': c_bar_bj,
                 'symbol': symbol,
                 'ticker_quote_volume': quote_vol,
                 'ticker_chg_pct': chg_pct,
@@ -179,8 +179,12 @@ def _filter_symbols_by_universe(
         eligible.append(symbol)
         _append_stage_jsonl(account, 'stage2_universe', {
             'audit_label': audit_label,
-            'bar_ts': latest_closed_bar_ts,
-            'bar_bj': bar_bj,
+            'bar_ts': signal_time_ts,
+            'bar_bj': signal_time_bj,
+            'signal_time_ts': signal_time_ts,
+            'signal_time_bj': signal_time_bj,
+            'c_bar_ts': latest_closed_bar_ts,
+            'c_bar_bj': c_bar_bj,
             'symbol': symbol,
             'ticker_quote_volume': quote_vol,
             'ticker_chg_pct': chg_pct,
@@ -277,6 +281,7 @@ def build_live_inputs(
         raise ValueError('history_window_mins must be > 0')
 
     latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
+    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
     ticker_map = _ticker_map(account)
     eligible_symbols, universe_errors = _filter_symbols_by_universe(
         symbols,
@@ -322,7 +327,7 @@ def build_live_inputs(
 
     if stage3_frames:
         stage3_df = pd.concat(stage3_frames, ignore_index=True)
-        _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, stage3_df)
+        _write_stage3_parquet(account, audit_label, signal_time_ts, stage3_df)
 
     if not histories or not cross_rows:
         return {'ok': False, 'reason': 'no live symbol history loaded from binance', 'data': None, 'errors': errors | stale_symbols}
@@ -344,6 +349,8 @@ def build_live_inputs(
             'stale_symbols': stale_symbols,
             'latest_closed_bar_ts': latest_closed_bar_ts,
             'latest_closed_bar_bj': _fmt_bj_from_ms(latest_closed_bar_ts),
+            'signal_time_ts': signal_time_ts,
+            'signal_time_bj': _fmt_bj_from_ms(signal_time_ts),
             'cross_section': cross_section,
             'full_df': histories,
             'symbol_count': len(histories),

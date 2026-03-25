@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.config_loader import StrategyConfig
-from core.live.audit_log import get_live_audit_dir, write_event, write_runner_heartbeat, write_runner_started
+from core.live.audit_log import append_stage_record, get_live_audit_dir, get_stage_audit_dir, write_event, write_runner_heartbeat, write_runner_started
 from core.live.binance_exec import (
     cancel_order,
     get_open_orders,
@@ -169,9 +169,7 @@ def _stage_audit_path(account: str, stage: str) -> Path:
     account_key = str(account).strip()
     if not account_key:
         raise ValueError('account must not be empty')
-    path = get_live_audit_dir() / 'stage_audit'
-    path.mkdir(parents=True, exist_ok=True)
-    return path / f'snapback_{account_key}.{stage}.jsonl'
+    return get_stage_audit_dir() / f'snapback_{account_key}.{stage}.jsonl'
 
 
 def _json_default(v: Any) -> Any:
@@ -181,19 +179,7 @@ def _json_default(v: Any) -> Any:
 
 
 def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
-    path = _stage_audit_path(account, stage)
-    now = datetime.now(timezone.utc)
-    record: dict[str, Any] = {
-        'ts_utc': now.isoformat(),
-        'ts_bj': now.astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S'),
-        'account': str(account),
-        'run_mode': 'live',
-        'stage': stage,
-    }
-    record.update(payload)
-    with path.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + '\n')
-    return path
+    return append_stage_record(account, stage, payload)
 
 
 def _series_value(row: Any, key: str) -> Any:
@@ -279,7 +265,7 @@ def _write_stage3_enriched_snapshot(account: str, audit_label: str, current_time
         })
 
 
-def _build_stage5_structure_rows(current_time_ms: int, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
+def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
     import pandas as pd  # type: ignore
 
     universe = (strategy_cfg or {}).get('universe') or {}
@@ -329,8 +315,12 @@ def _build_stage5_structure_rows(current_time_ms: int, cross_section: Any, activ
         symbol = str(sym).upper().strip()
         base = {
             'symbol': symbol,
-            'bar_ts': current_time_ms,
-            'bar_bj': _fmt_bj_from_ms(current_time_ms),
+            'bar_ts': signal_time_ms,
+            'bar_bj': signal_time_bj,
+            'signal_time_ts': signal_time_ms,
+            'signal_time_bj': signal_time_bj,
+            'c_bar_ts': c_bar_ts,
+            'c_bar_bj': _fmt_bj_from_ms(c_bar_ts),
             'active_symbols_contains': bool(symbol in active_symbols),
             'logic_selected_symbol': logic_selected_symbol,
             'logic_selected': bool(logic_selected_symbol == symbol),
@@ -367,7 +357,7 @@ def _build_stage5_structure_rows(current_time_ms: int, cross_section: Any, activ
             audit_rows.append(base)
             continue
 
-        idx = sym_df.index.searchsorted(current_time_ms, side='right')
+        idx = sym_df.index.searchsorted(c_bar_ts, side='right')
         base['history_searchsorted_idx'] = int(idx)
         if idx < vol_baseline_window:
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'history_too_short_before_baseline_window'})
@@ -397,8 +387,8 @@ def _build_stage5_structure_rows(current_time_ms: int, cross_section: Any, activ
             's_time': s_ts,
             's_time_bj': _fmt_bj_from_ms(s_ts),
             's_close': _normalize_scalar(s_close),
-            'c_time': current_time_ms,
-            'c_time_bj': _fmt_bj_from_ms(current_time_ms),
+            'c_time': c_bar_ts,
+            'c_time_bj': _fmt_bj_from_ms(c_bar_ts),
             'c_price': _normalize_scalar(current_price),
         })
         if pd.isna(s_close) or s_close <= 0:
@@ -2708,8 +2698,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             })
         return
 
-    current_time_ms = int(payload['latest_closed_bar_ts'])
-    current_time_bj = payload['latest_closed_bar_bj']
+    c_bar_ts = int(payload['latest_closed_bar_ts'])
+    c_bar_bj = payload['latest_closed_bar_bj']
+    current_time_ms = int(payload.get('signal_time_ts') or (c_bar_ts + 60000))
+    current_time_bj = str(payload.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
         'loop_started_bj': loop_started_bj,
@@ -2723,8 +2715,12 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'extra_md_started_bj': _fmt_bj_from_ms(extra_md_started_utc_ms) if extra_md_started_utc_ms is not None else None,
         'extra_md_finished_utc_ms': extra_md_finished_utc_ms,
         'extra_md_finished_bj': _fmt_bj_from_ms(extra_md_finished_utc_ms) if extra_md_finished_utc_ms is not None else None,
-        'latest_closed_bar_ts': current_time_ms,
-        'latest_closed_bar_bj': current_time_bj,
+        'signal_time_ts': current_time_ms,
+        'signal_time_bj': current_time_bj,
+        'c_bar_ts': c_bar_ts,
+        'c_bar_bj': c_bar_bj,
+        'latest_closed_bar_ts': c_bar_ts,
+        'latest_closed_bar_bj': c_bar_bj,
     }
 
     candidate_cross_section = candidate_payload['cross_section'] if candidate_payload else None
@@ -2740,9 +2736,9 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             _write_stage3_enriched_snapshot(account, 'reconcile', current_time_ms, current_time_bj, extra_full_df, timing_fields)
 
     latest_closes = {
-        str(symbol).upper().strip(): float(df.loc[current_time_ms, 'close'])
+        str(symbol).upper().strip(): float(df.loc[c_bar_ts, 'close'])
         for symbol, df in merged_full_df.items()
-        if current_time_ms in df.index
+        if c_bar_ts in df.index
     }
     max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
 
@@ -2900,11 +2896,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             })
 
     signal_eval_started_utc_ms = _now_utc_ms()
-    signal = strategy.on_kline_close(current_time_ms, cross_section, active_symbols, full_df)
+    signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
     signal_eval_finished_utc_ms = _now_utc_ms()
     signal_digest_preview = _signal_digest(signal) if signal else None
     stage5_rows = _build_stage5_structure_rows(
+        c_bar_ts,
         current_time_ms,
+        current_time_bj,
         cross_section,
         active_symbols,
         full_df,
@@ -2957,7 +2955,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if symbol_state.get('last_processed_bar_ts') == current_time_ms:
         return
 
-    mark_signal(account, symbol, signal_side=FIXED_POSITION_SIDE, signal_bar_ts=current_time_ms, signal_digest=signal_digest, signal_snapshot=signal)
+    mark_signal(account, symbol, signal_side=FIXED_POSITION_SIDE, signal_time_ts=int(signal.get('signal_time') or current_time_ms), signal_time_bj=signal.get('signal_time_bj'), c_bar_ts=c_bar_ts, c_bar_bj=c_bar_bj, signal_digest=signal_digest, signal_snapshot=signal)
 
     cooldown_until_ts = symbol_state.get('cooldown_until_ts')
     if cooldown_until_ts and int(cooldown_until_ts) > current_time_ms:
@@ -3038,7 +3036,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     sl_client_order_id = build_client_order_id(broker_id=BROKER_ID, strat=STRAT_CODE, leg=LEG_SL, root=order_root)
 
     if audit_enabled:
-        write_event(account, 'signal_detected', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'signal_snapshot': signal, 'order_root': order_root})
+        write_event(account, 'signal_detected', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'c_bar_ts': c_bar_ts, 'c_bar_bj': c_bar_bj, 'signal_snapshot': signal, 'order_root': order_root})
         _write_stage_record(account, 'stage6_signal', {
             'event': 'signal_selected',
             'bar_ts': current_time_ms,
@@ -3103,7 +3101,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     sl_res = place_sl_order(account, symbol, FIXED_POSITION_SIDE, float(signal['sl_price']), retry_max=retry_max, retry_delay_secs=retry_delay_secs, client_order_id=sl_client_order_id)
 
     if audit_enabled:
-        write_event(account, 'entry_submitted', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': entry_res, 'signal_snapshot': signal, 'order_root': order_root, 'entry_client_order_id': entry_res['data'].get('client_order_id', entry_client_order_id)})
+        write_event(account, 'entry_submitted', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'c_bar_ts': c_bar_ts, 'c_bar_bj': c_bar_bj, 'exchange_snapshot': entry_res, 'signal_snapshot': signal, 'order_root': order_root, 'entry_client_order_id': entry_res['data'].get('client_order_id', entry_client_order_id)})
         write_event(account, 'tp_submitted' if tp_res.get('ok') else 'tp_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': tp_res, 'order_root': order_root, 'tp_client_order_id': tp_client_order_id})
         write_event(account, 'sl_submitted' if sl_res.get('ok') else 'sl_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': sl_res, 'order_root': order_root, 'sl_client_order_id': sl_client_order_id})
         _write_stage_record(account, 'stage8_exec', {

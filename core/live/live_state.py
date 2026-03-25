@@ -24,6 +24,11 @@ def _default_symbol_state() -> dict[str, Any]:
         "last_processed_bar_bj": None,
         "last_signal_side": None,
         "last_signal_bar_ts": None,
+        "last_signal_bar_bj": None,
+        "last_signal_c_bar_ts": None,
+        "last_signal_c_bar_bj": None,
+        "last_signal_time_ts": None,
+        "last_signal_time_bj": None,
         "last_signal_digest": None,
         "last_signal_snapshot": None,
         "cooldown_until_ts": None,
@@ -137,10 +142,26 @@ def set_open_trade(account: str, symbol: str, trade: dict[str, Any] | None) -> d
     return symbol_state
 
 
-def mark_signal(account: str, symbol: str, *, signal_side: str | None, signal_bar_ts: int | None, signal_digest: str | None, signal_snapshot: dict[str, Any] | None) -> dict[str, Any]:
+def mark_signal(
+    account: str,
+    symbol: str,
+    *,
+    signal_side: str | None,
+    signal_time_ts: int | None,
+    signal_time_bj: str | None,
+    c_bar_ts: int | None,
+    c_bar_bj: str | None,
+    signal_digest: str | None,
+    signal_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
     symbol_state = load_symbol_state(account, symbol)
     symbol_state["last_signal_side"] = signal_side
-    symbol_state["last_signal_bar_ts"] = signal_bar_ts
+    symbol_state["last_signal_bar_ts"] = signal_time_ts
+    symbol_state["last_signal_bar_bj"] = signal_time_bj
+    symbol_state["last_signal_c_bar_ts"] = c_bar_ts
+    symbol_state["last_signal_c_bar_bj"] = c_bar_bj
+    symbol_state["last_signal_time_ts"] = signal_time_ts
+    symbol_state["last_signal_time_bj"] = signal_time_bj
     symbol_state["last_signal_digest"] = signal_digest
     symbol_state["last_signal_snapshot"] = deepcopy(signal_snapshot) if isinstance(signal_snapshot, dict) else signal_snapshot
     save_symbol_state(account, symbol, symbol_state)
