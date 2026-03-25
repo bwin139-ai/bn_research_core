@@ -94,7 +94,7 @@ def _load_json(path: str) -> dict[str, Any]:
 
 def _load_live_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
-    required = ['enabled', 'account', 'lookback_bars', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'audit_enabled', 'notify_enabled']
+    required = ['enabled', 'account', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'audit_enabled', 'notify_enabled']
     for key in required:
         if key not in data:
             raise KeyError(f'live_config 缺少必要字段: {key}')
@@ -163,6 +163,51 @@ def _write_config_snapshot(account: str, config_path: str, live_config_path: str
 def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
     if enabled:
         send_to_bot(message, label=label)
+
+
+def _stage_audit_path(account: str, stage: str) -> Path:
+    account_key = str(account).strip()
+    if not account_key:
+        raise ValueError('account must not be empty')
+    path = get_live_audit_dir() / 'stage_audit'
+    path.mkdir(parents=True, exist_ok=True)
+    return path / f'snapback_{account_key}.{stage}.jsonl'
+
+
+def _json_default(v: Any) -> Any:
+    if hasattr(v, 'item'):
+        return v.item()
+    raise TypeError(f'Object of type {type(v).__name__} is not JSON serializable')
+
+
+def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
+    path = _stage_audit_path(account, stage)
+    now = datetime.now(timezone.utc)
+    record: dict[str, Any] = {
+        'ts_utc': now.isoformat(),
+        'ts_bj': now.astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S'),
+        'account': str(account),
+        'run_mode': 'live',
+        'stage': stage,
+    }
+    record.update(payload)
+    with path.open('a', encoding='utf-8') as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + '\n')
+    return path
+
+
+def _series_value(row: Any, key: str) -> Any:
+    try:
+        value = row.get(key)
+    except Exception:
+        value = None
+    try:
+        import pandas as _pd  # type: ignore
+        if _pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return value
 
 
 def _active_symbols_from_state(account: str) -> set[str]:
@@ -2253,17 +2298,22 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     account = str(live_cfg['account']).strip()
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
-    lookback_bars = int(live_cfg['lookback_bars'])
+    runtime_cfg = (strategy_cfg or {}).get('runtime') or {}
+    if 'max_history_window_mins' not in runtime_cfg:
+        raise KeyError('strategy_cfg.runtime.max_history_window_mins missing')
+    history_window_mins = int(runtime_cfg['max_history_window_mins'])
+    if history_window_mins <= 0:
+        raise ValueError('strategy_cfg.runtime.max_history_window_mins must be > 0')
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
     exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
     exchange_activity_symbols = set(exchange_activity_snapshot['symbols'])
     local_activity_symbols = _symbols_with_local_activity(account)
     extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
 
-    candidate_md_res = build_live_inputs(account, candidate_symbols, lookback_bars, strategy_cfg)
+    candidate_md_res = build_live_inputs(account, candidate_symbols, history_window_mins, strategy_cfg, audit_label='candidate')
     extra_md_res: dict[str, Any] | None = None
     if extra_reconcile_symbols:
-        extra_md_res = build_live_inputs(account, extra_reconcile_symbols, lookback_bars, None)
+        extra_md_res = build_live_inputs(account, extra_reconcile_symbols, history_window_mins, strategy_cfg, audit_label='reconcile')
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
     extra_payload = extra_md_res.get('data') if extra_md_res and extra_md_res.get('ok') else None
@@ -2428,11 +2478,30 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     active_symbols = _active_symbols_from_state(account) | exchange_activity_symbols
+
+    if audit_enabled:
+        for stage_symbol, row in cross_section.iterrows():
+            symbol_key = str(stage_symbol).upper().strip()
+            _write_stage_record(account, 'stage4_input_snapshot', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol_key,
+                'close': _series_value(row, 'close'),
+                'quote_asset_volume': _series_value(row, 'quote_asset_volume'),
+                'chg_24h': _series_value(row, 'chg_24h'),
+                'vol_24h': _series_value(row, 'vol_24h'),
+                'high_idx': _series_value(row, 'high_idx'),
+                'low_idx': _series_value(row, 'low_idx'),
+                'close_idx': _series_value(row, 'close_idx'),
+                'active_symbols_contains': bool(symbol_key in active_symbols),
+                'input_pass_to_logic': True,
+            })
+
     signal = strategy.on_kline_close(current_time_ms, cross_section, active_symbols, full_df)
 
     if not signal:
         if audit_enabled:
-            write_event(account, 'signal_none', {
+            payload = {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
@@ -2441,6 +2510,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'symbol_count': candidate_payload['symbol_count'],
                 'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
+            }
+            write_event(account, 'signal_none', payload)
+            _write_stage_record(account, 'stage6_signal', {
+                **payload,
+                'event': 'signal_none',
+                'selected_symbol': None,
+                'signal_digest': None,
             })
         for symbol in merged_full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
@@ -2476,8 +2552,32 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             )
         if audit_enabled:
             write_event(account, 'precheck_skip', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'reason': block_reason, 'exchange_snapshot': exch})
+            _write_stage_record(account, 'stage7_precheck', {
+                'event': 'precheck_skip',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'precheck_blocked': True,
+                'precheck_block_reason': block_reason,
+                'precheck_position_exists': bool((exch.get('position') or {}).get('data')),
+                'precheck_orders_exist': bool((exch.get('orders') or {}).get('data')),
+                'precheck_any_position_exists': bool((exch.get('positions_all_sides') or {}).get('data')),
+            })
         mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
+
+    if audit_enabled:
+        _write_stage_record(account, 'stage7_precheck', {
+            'event': 'precheck_pass',
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'symbol': symbol,
+            'precheck_blocked': False,
+            'precheck_block_reason': '',
+            'precheck_position_exists': bool((exch.get('position') or {}).get('data')),
+            'precheck_orders_exist': bool((exch.get('orders') or {}).get('data')),
+            'precheck_any_position_exists': bool((exch.get('positions_all_sides') or {}).get('data')),
+        })
 
     entry_notional_usdt = float(live_cfg['entry_notional_usdt'])
     current_price = float(signal.get('current_price') or 0.0)
@@ -2510,12 +2610,32 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
 
     if audit_enabled:
         write_event(account, 'signal_detected', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'signal_snapshot': signal, 'order_root': order_root})
+        _write_stage_record(account, 'stage6_signal', {
+            'event': 'signal_selected',
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'selected_symbol': symbol,
+            'signal_digest': signal_digest,
+            'signal_snapshot': signal,
+            'symbol_count': candidate_payload['symbol_count'],
+            'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
+        })
 
     entry_res = place_entry_order(account, symbol, FIXED_POSITION_SIDE, quantity, retry_max=retry_max, retry_delay_secs=retry_delay_secs, client_order_id=entry_client_order_id)
     if not entry_res['ok']:
         mark_error(account, symbol, error_code='entry_submit_failed', error_message=entry_res['reason'], error_bj=_now_bj_str())
         if audit_enabled:
             write_event(account, 'entry_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'reason': entry_res['reason'], 'exchange_snapshot': entry_res, 'order_root': order_root, 'entry_client_order_id': entry_client_order_id})
+            _write_stage_record(account, 'stage8_exec', {
+                'event': 'entry_submit_failed',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'order_root': order_root,
+                'entry_client_order_id': entry_client_order_id,
+                'reason': entry_res['reason'],
+                'entry_ok': False,
+            })
         if notify_enabled and live_cfg.get('notify_on_order_error', True):
             _notify(True, f'[Snapback-Live] 入场失败 {symbol} | {entry_res["reason"]}')
         mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
@@ -2543,6 +2663,19 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
         write_event(account, 'entry_submitted', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': entry_res, 'signal_snapshot': signal, 'order_root': order_root, 'entry_client_order_id': entry_res['data'].get('client_order_id', entry_client_order_id)})
         write_event(account, 'tp_submitted' if tp_res.get('ok') else 'tp_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': tp_res, 'order_root': order_root, 'tp_client_order_id': tp_client_order_id})
         write_event(account, 'sl_submitted' if sl_res.get('ok') else 'sl_submit_failed', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'exchange_snapshot': sl_res, 'order_root': order_root, 'sl_client_order_id': sl_client_order_id})
+        _write_stage_record(account, 'stage8_exec', {
+            'event': 'entry_submit',
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'symbol': symbol,
+            'order_root': order_root,
+            'entry_ok': bool(entry_res.get('ok')),
+            'tp_ok': bool(tp_res.get('ok')),
+            'sl_ok': bool(sl_res.get('ok')),
+            'entry_client_order_id': entry_res['data'].get('client_order_id', entry_client_order_id),
+            'tp_client_order_id': tp_client_order_id,
+            'sl_client_order_id': sl_client_order_id,
+        })
 
     open_trade = _build_open_trade(entry_res, signal, tp_res, sl_res, entry_notional_usdt, order_root=order_root, entry_client_order_id=entry_client_order_id, tp_client_order_id=tp_client_order_id, sl_client_order_id=sl_client_order_id)
 

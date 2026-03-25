@@ -1,7 +1,6 @@
 {
   "enabled": true,
   "account": "mybwin139",
-  "lookback_bars": 180,
   "exclude_symbols": [
     "BTCUSDT",
     "ETHUSDT",
