@@ -4,7 +4,7 @@
     "max_history_window_mins": 130
   },
   "universe": {
-    "24h_quote_volume_min": 50000000,
+    "24h_quote_volume_min": 30000000,
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
@@ -24,13 +24,13 @@
         "max": 999
       },
       "a_to_c_drop_pct": {
-        "min": 0.06,
+        "min": 0.03,
         "max": 0.25
       },
       "vol_climax": {
         "recent_window_mins": 5,
         "baseline_window_mins": 120,
-        "ratio_min": 8.0
+        "ratio_min": 4.0
       }
     },
     "rebound": {
@@ -49,16 +49,16 @@
   },
   "exit_policy": {
     "take_profit": {
-      "base_pct": 0.025,
-      "strong_pct": 0.035,
+      "base_pct": 0.01,
+      "strong_pct": 0.02,
       "strong_mode": {
-        "a_to_c_drop_pct_min": 0.14,
+        "a_to_c_drop_pct_min": 0.9,
         "rebound_ratio_min": 0.2
       }
     },
     "time_stop": {
       "max_hold_mins": 10,
-      "min_profit_pct": 0.005
+      "min_profit_pct": 0.002
     }
   },
   "risk_controls": {

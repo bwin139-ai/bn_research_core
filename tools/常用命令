@@ -59,7 +59,7 @@ ls -ldht output/state/*ALL* | head -n 3
 ls -ldht output/state/* | head -n 5
 
 # ========= 拉 服务器回测数据 到 MacBook =========
-RUNID="SNAP_V6.1_30D_P6_0325T1858_ALL"
+RUNID="SNAP_V6.1_30D_P6_0325T2335_ALL"
 DEST=~/ai_projects/bn_research_core/state1
 mkdir -p "$DEST"
 scp \
