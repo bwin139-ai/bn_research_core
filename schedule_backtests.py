@@ -349,6 +349,7 @@ def build_tasks(args: argparse.Namespace) -> List[Task]:
             "--kline-window", str(args.kline_window),
             "--run-id", run_id,
             "--config", args.config,
+            "--out-dir", args.out_dir,
         ]
         tasks.append(
             Task(

@@ -7,7 +7,7 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-    # "schedule_backtests.py",
+     "schedule_backtests.py",
     # "klines_1m_store.py",
     # "strategies/run_backtest.py",
     # "PROJECT_IRON_LAWS.md",
@@ -39,7 +39,7 @@ FILES = [
     # "core/live/market_data.py",
     # "core/live/custom_id.py",
     # "=================================",
-     "strategies/snapback/run_live.py",
+    # "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
