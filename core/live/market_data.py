@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 
 from core.live.audit_log import append_stage_record, get_stage_audit_dir
-from core.live.binance_client import get_client
+from core.live.binance_client import get_client, get_index_price_klines
 
 _BJ = timezone(timedelta(hours=8))
 _INTERVAL = '1m'
@@ -200,8 +200,7 @@ def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any
 
 
 def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
-    client = get_client(account)
-    return client.futures_index_price_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
+    return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
 
 
 def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:

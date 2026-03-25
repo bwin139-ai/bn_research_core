@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import requests
 from binance.client import Client
 
 _CLIENTS: dict[str, Client] = {}
@@ -77,3 +78,71 @@ def ping(account: str) -> dict[str, Any]:
         return {"ok": True, "reason": ""}
     except Exception as e:
         return {"ok": False, "reason": str(e)}
+
+
+def get_index_price_klines(
+    account: str,
+    symbol: str,
+    *,
+    interval: str = "1m",
+    limit: int = 500,
+    start_time: int | None = None,
+    end_time: int | None = None,
+) -> list[list[Any]]:
+    client = get_client(account)
+    pair = (symbol or "").upper().strip()
+    if not pair:
+        raise ValueError("symbol 不能为空")
+    params: dict[str, Any] = {
+        "pair": pair,
+        "interval": str(interval),
+        "limit": int(limit),
+    }
+    if start_time is not None:
+        params["startTime"] = int(start_time)
+    if end_time is not None:
+        params["endTime"] = int(end_time)
+
+    method = getattr(client, "futures_index_price_klines", None)
+    if callable(method):
+        try:
+            rows = method(pair=pair, interval=str(interval), limit=int(limit), **{
+                k: v for k, v in {
+                    "startTime": params.get("startTime"),
+                    "endTime": params.get("endTime"),
+                }.items() if v is not None
+            })
+            if isinstance(rows, list):
+                return rows
+        except TypeError:
+            try:
+                rows = method(symbol=pair, interval=str(interval), limit=int(limit), **{
+                    k: v for k, v in {
+                        "startTime": params.get("startTime"),
+                        "endTime": params.get("endTime"),
+                    }.items() if v is not None
+                })
+                if isinstance(rows, list):
+                    return rows
+            except Exception:
+                pass
+
+    raw_method = getattr(client, "_request_futures_api", None)
+    if callable(raw_method):
+        try:
+            rows = raw_method("get", "indexPriceKlines", data=params)
+            if isinstance(rows, list):
+                return rows
+        except Exception:
+            pass
+
+    resp = requests.get(
+        "https://fapi.binance.com/fapi/v1/indexPriceKlines",
+        params=params,
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, list):
+        raise RuntimeError(f"indexPriceKlines 返回异常: {data}")
+    return data
