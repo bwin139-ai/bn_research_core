@@ -282,13 +282,14 @@ class WashoutSnapbackStrategy:
         sl_price = target["b_index_price"]
 
         self.cooldown_until[top1_symbol] = current_time_ms + self.cooldown_ms
-        time_bj_str = (
-            pd.to_datetime(current_time_ms, unit="ms") + pd.Timedelta(hours=8)
+        signal_time_ms = current_time_ms + 60000
+        signal_time_bj_str = (
+            pd.to_datetime(signal_time_ms, unit="ms") + pd.Timedelta(hours=8)
         ).strftime("%Y-%m-%d %H:%M")
 
         signal = {
-            "signal_time": current_time_ms,
-            "signal_time_bj": time_bj_str,
+            "signal_time": signal_time_ms,
+            "signal_time_bj": signal_time_bj_str,
             "symbol": top1_symbol,
             "action": "BUY",
             "current_price": current_price,
@@ -339,7 +340,7 @@ class WashoutSnapbackStrategy:
         }
 
         logging.info(
-            f"[{time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}% | TP档位: {target['tp_tier']}({target['selected_tp_pct']*100:.2f}%)"
+            f"[{signal_time_bj_str} BJ] 🦅 洗盘反抽雷达锁定: {top1_symbol} | 当前价: {current_price:.4f} | 15m跌幅: {target['drop_pct']*100:.2f}% | 爆量倍数: {target['vol_ratio']:.2f} | ABC反弹比例: {target['rebound_ratio']*100:.2f}% | TP档位: {target['tp_tier']}({target['selected_tp_pct']*100:.2f}%)"
         )
 
         return signal

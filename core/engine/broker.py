@@ -84,22 +84,43 @@ class VirtualBroker:
 
             row = cross_section.loc[sym]
             high, low, close = row["high"], row["low"], row["close"]
+            exit_bar_tp_sl_both_hit = bool(
+                low <= pos.sl_price and high >= pos.tp_price
+            )
 
             # ⏱️ 模块二：时间熔断 (Time Stop)
             held_mins = int((current_time_ms - pos.entry_time_ms) / 60000)
             if held_mins >= self.max_hold_mins:
                 current_profit_pct = (close / pos.entry_price) - 1.0
                 if current_profit_pct < self.time_stop_min_profit:
-                    self._close_position(sym, close, current_time_ms, "TIME_STOP")
+                    self._close_position(
+                        sym,
+                        close,
+                        current_time_ms,
+                        "TIME_STOP",
+                        exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                    )
                     closed_symbols.append(sym)
                     continue
 
             # 原有 TP/SL 逻辑（保持 STOP_LOSS 优先于 TAKE_PROFIT）
             if low <= pos.sl_price:
-                self._close_position(sym, pos.sl_price, current_time_ms, "STOP_LOSS")
+                self._close_position(
+                    sym,
+                    pos.sl_price,
+                    current_time_ms,
+                    "STOP_LOSS",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
                 closed_symbols.append(sym)
             elif high >= pos.tp_price:
-                self._close_position(sym, pos.tp_price, current_time_ms, "TAKE_PROFIT")
+                self._close_position(
+                    sym,
+                    pos.tp_price,
+                    current_time_ms,
+                    "TAKE_PROFIT",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
                 closed_symbols.append(sym)
 
         for sym in closed_symbols:
@@ -129,7 +150,14 @@ class VirtualBroker:
             f"止盈: {order.tp_price:.4f} | 止损: {order.sl_price:.4f}"
         )
 
-    def _close_position(self, symbol: str, price: float, time_ms: int, reason: str):
+    def _close_position(
+        self,
+        symbol: str,
+        price: float,
+        time_ms: int,
+        reason: str,
+        exit_bar_tp_sl_both_hit: bool = False,
+    ):
         pos = self.active_positions[symbol]
         pct_pnl = (price / pos.entry_price) - 1.0
 
@@ -144,6 +172,7 @@ class VirtualBroker:
                 "exit_price": price,
                 "pnl_pct": pct_pnl,
                 "reason": reason,
+                "exit_bar_tp_sl_both_hit": bool(exit_bar_tp_sl_both_hit),
                 "context": pos.context,
             }
         )

@@ -383,10 +383,12 @@ def main():
         if signal:
             signals_history.append(signal)
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单
+            # signal_time 已按策略语义记为 CB（观察/开仓发生时刻）
+            signal_time_ms = int(signal["signal_time"])
             order = Order(
                 symbol=signal["symbol"],
-                create_time_ms=signal["signal_time"],
-                signal_time_ms=signal["signal_time"],
+                create_time_ms=signal_time_ms,
+                signal_time_ms=signal_time_ms,
                 signal_price=signal["current_price"],
                 context=signal.get("context", {}),
             )
