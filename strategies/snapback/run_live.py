@@ -377,11 +377,34 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
     return findings
 
 
-def _sleep_until_next_closed_bar() -> None:
-    now = datetime.now(timezone.utc)
-    next_minute = (now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=1))
-    delay = max(0.2, (next_minute - now).total_seconds())
-    time.sleep(delay)
+def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
+    if now_epoch is None:
+        now_epoch = time.time()
+    now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+    current_minute_first_second = now.replace(second=1, microsecond=0)
+    if now < current_minute_first_second:
+        return current_minute_first_second.timestamp()
+    next_minute_first_second = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=1)
+    return next_minute_first_second.timestamp()
+
+
+def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
+    if target_epoch is None:
+        target_epoch = _next_signal_check_epoch()
+    now_epoch = time.time()
+    while target_epoch <= now_epoch:
+        target_epoch += 60.0
+    while True:
+        remaining = target_epoch - time.time()
+        if remaining <= 0:
+            break
+        if remaining > 1.0:
+            time.sleep(min(remaining - 0.2, 10.0))
+        elif remaining > 0.2:
+            time.sleep(max(0.05, remaining - 0.05))
+        else:
+            time.sleep(min(remaining, 0.02))
+    return target_epoch
 
 
 def _signal_digest(signal: dict[str, Any]) -> str:
@@ -3005,10 +3028,16 @@ def main() -> None:
     if bool(live_cfg.get('notify_enabled', False)):
         _notify(True, f'[Snapback-Live] runner started | account={account}')
 
+    next_signal_check_epoch: float | None = None
     while True:
         try:
+            next_signal_check_epoch = _sleep_until_next_signal_check(next_signal_check_epoch)
             mark_loop_heartbeat(account, runner_pid=os.getpid())
-            write_runner_heartbeat(account, {'heartbeat_bj': _now_bj_str()})
+            write_runner_heartbeat(account, {
+                'heartbeat_bj': _now_bj_str(),
+                'scheduled_signal_check_utc': datetime.fromtimestamp(next_signal_check_epoch, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                'scheduled_signal_check_bj': datetime.fromtimestamp(next_signal_check_epoch, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S'),
+            })
             _run_once(strategy_cfg, live_cfg)
         except KeyboardInterrupt:
             raise
@@ -3016,7 +3045,9 @@ def main() -> None:
             write_event(account, 'runner_error', {'reason': str(e), 'error_bj': _now_bj_str()})
             if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
                 _notify(True, f'[Snapback-Live] runner error | {e}')
-        _sleep_until_next_closed_bar()
+        finally:
+            if next_signal_check_epoch is not None:
+                next_signal_check_epoch += 60.0
 
 
 if __name__ == '__main__':
