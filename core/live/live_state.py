@@ -128,6 +128,71 @@ def set_cooldown(account: str, symbol: str, *, cooldown_until_ts: int | None, co
     return symbol_state
 
 
+def load_cooldown_map(account: str, *, now_ts: int | None = None) -> dict[str, int]:
+    state = load_live_state(account)
+    symbols = state.get("symbols") or {}
+    result: dict[str, int] = {}
+    now_ts_i = int(now_ts) if now_ts is not None else None
+    for symbol, payload in symbols.items():
+        if not isinstance(payload, dict):
+            continue
+        cooldown_until_ts = payload.get("cooldown_until_ts")
+        if cooldown_until_ts in (None, ""):
+            continue
+        try:
+            cooldown_until_i = int(cooldown_until_ts)
+        except (TypeError, ValueError):
+            continue
+        if now_ts_i is not None and cooldown_until_i <= now_ts_i:
+            continue
+        symbol_key = str(symbol).upper().strip()
+        if symbol_key:
+            result[symbol_key] = cooldown_until_i
+    return result
+
+
+def sync_cooldown_map(account: str, cooldown_map: dict[str, int] | None, *, now_ts: int | None = None) -> dict[str, Any]:
+    state = load_live_state(account)
+    symbols = state.setdefault("symbols", {})
+    active_map: dict[str, int] = {}
+    now_ts_i = int(now_ts) if now_ts is not None else None
+    for symbol, cooldown_until_ts in (cooldown_map or {}).items():
+        symbol_key = str(symbol).upper().strip()
+        if not symbol_key:
+            continue
+        try:
+            cooldown_until_i = int(cooldown_until_ts)
+        except (TypeError, ValueError):
+            continue
+        if now_ts_i is not None and cooldown_until_i <= now_ts_i:
+            continue
+        active_map[symbol_key] = cooldown_until_i
+
+    for symbol_key, cooldown_until_i in active_map.items():
+        payload = _default_symbol_state()
+        if isinstance(symbols.get(symbol_key), dict):
+            payload.update(symbols[symbol_key])
+        payload["cooldown_until_ts"] = cooldown_until_i
+        payload["cooldown_until_bj"] = _fmt_bj(datetime.fromtimestamp(cooldown_until_i / 1000.0, tz=timezone.utc))
+        symbols[symbol_key] = payload
+
+    for symbol_key, payload in list(symbols.items()):
+        if not isinstance(payload, dict):
+            continue
+        if symbol_key in active_map:
+            continue
+        if payload.get("cooldown_until_ts") in (None, ""):
+            continue
+        merged = _default_symbol_state()
+        merged.update(payload)
+        merged["cooldown_until_ts"] = None
+        merged["cooldown_until_bj"] = None
+        symbols[symbol_key] = merged
+
+    save_live_state(account, state)
+    return state
+
+
 def set_pending_entry_order(account: str, symbol: str, order: dict[str, Any] | None) -> dict[str, Any]:
     symbol_state = load_symbol_state(account, symbol)
     symbol_state["pending_entry_order"] = deepcopy(order) if isinstance(order, dict) else None

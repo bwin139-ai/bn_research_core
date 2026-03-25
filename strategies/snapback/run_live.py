@@ -30,6 +30,7 @@ from core.live.binance_exec import (
 )
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
 from core.live.live_state import (
+    load_cooldown_map,
     load_live_state,
     load_symbol_state,
     mark_error,
@@ -41,6 +42,7 @@ from core.live.live_state import (
     set_cooldown,
     set_open_trade,
     set_pending_entry_order,
+    sync_cooldown_map,
 )
 from core.live.market_data import build_live_inputs, list_candidate_symbols
 from core.message_bridge import send_to_bot
@@ -82,6 +84,14 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
 def _cooldown_until(current_time_ms: int, cooldown_mins: int) -> tuple[int, str | None]:
     cooldown_until_ts = int(current_time_ms) + int(cooldown_mins) * 60 * 1000
     return cooldown_until_ts, _fmt_bj_from_ms(cooldown_until_ts)
+
+
+def _hydrate_strategy_cooldowns(strategy: WashoutSnapbackStrategy, account: str, current_time_ms: int) -> None:
+    strategy.cooldown_until = load_cooldown_map(account, now_ts=current_time_ms)
+
+
+def _persist_strategy_cooldowns(strategy: WashoutSnapbackStrategy, account: str, current_time_ms: int) -> None:
+    sync_cooldown_map(account, getattr(strategy, 'cooldown_until', {}) or {}, now_ts=current_time_ms)
 
 
 def _load_json(path: str) -> dict[str, Any]:
@@ -2874,6 +2884,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     cross_section = candidate_cross_section
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
+    _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
     active_symbols = _active_symbols_from_state(account) | exchange_activity_symbols
 
     if audit_enabled:
@@ -2897,6 +2908,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     signal_eval_started_utc_ms = _now_utc_ms()
     signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
+    _persist_strategy_cooldowns(strategy, account, current_time_ms)
     signal_eval_finished_utc_ms = _now_utc_ms()
     signal_digest_preview = _signal_digest(signal) if signal else None
     stage5_rows = _build_stage5_structure_rows(
