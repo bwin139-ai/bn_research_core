@@ -210,6 +210,350 @@ def _series_value(row: Any, key: str) -> Any:
     return value
 
 
+def _epoch_to_iso(epoch: float | None) -> str | None:
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _epoch_to_bj(epoch: float | None) -> str | None:
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _normalize_scalar(value: Any) -> Any:
+    if hasattr(value, 'item'):
+        value = value.item()
+    try:
+        import pandas as _pd  # type: ignore
+        if _pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, int):
+        return int(value)
+    return value
+
+
+def _history_records_from_df(df: Any) -> list[dict[str, Any]]:
+    if df is None:
+        return []
+    try:
+        if df.empty:
+            return []
+    except Exception:
+        return []
+
+    out: list[dict[str, Any]] = []
+    hist = df.sort_index()
+    for open_time_ms, row in hist.iterrows():
+        out.append({
+            'open_time_ms': int(open_time_ms),
+            'open_time_bj': _fmt_bj_from_ms(int(open_time_ms)),
+            'open': _series_value(row, 'open'),
+            'high': _series_value(row, 'high'),
+            'low': _series_value(row, 'low'),
+            'close': _series_value(row, 'close'),
+            'quote_asset_volume': _series_value(row, 'quote_asset_volume'),
+            'chg_24h': _series_value(row, 'chg_24h'),
+            'vol_24h': _series_value(row, 'vol_24h'),
+            'high_idx': _series_value(row, 'high_idx'),
+            'low_idx': _series_value(row, 'low_idx'),
+            'close_idx': _series_value(row, 'close_idx'),
+        })
+    return out
+
+
+def _write_stage3_enriched_snapshot(account: str, audit_label: str, current_time_ms: int, current_time_bj: str, full_df: dict[str, Any], timing_fields: dict[str, Any]) -> None:
+    for symbol, df in (full_df or {}).items():
+        _write_stage_record(account, 'stage3_enriched', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'audit_label': audit_label,
+            'symbol': str(symbol).upper().strip(),
+            'history_bars': _history_records_from_df(df),
+            **timing_fields,
+        })
+
+
+def _build_stage5_structure_rows(current_time_ms: int, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
+    import pandas as pd  # type: ignore
+
+    universe = (strategy_cfg or {}).get('universe') or {}
+    structure = (strategy_cfg or {}).get('structure') or {}
+    selloff = (structure.get('selloff') or {})
+    rebound = (structure.get('rebound') or {})
+    basis = (structure.get('basis') or {})
+    s_to_c_window = (structure.get('s_to_c_window') or {})
+    exit_policy = (strategy_cfg or {}).get('exit_policy') or {}
+    take_profit = (exit_policy.get('take_profit') or {})
+    strong_mode = (take_profit.get('strong_mode') or {})
+
+    min_24h_vol = float(universe.get('24h_quote_volume_min', 0.0))
+    min_24h_chg = float(((universe.get('24h_chg_pct') or {}).get('min', -100.0)))
+    max_24h_chg = float(((universe.get('24h_chg_pct') or {}).get('max', 1000.0)))
+
+    drop_window = int(s_to_c_window.get('mins', 0))
+    min_drop_window_chg = float(((s_to_c_window.get('chg_pct') or {}).get('min', -100.0))) / 100.0
+    max_drop_window_chg = float(((s_to_c_window.get('chg_pct') or {}).get('max', 1000.0))) / 100.0
+
+    min_ab_bars = int(((selloff.get('ab_bars') or {}).get('min', 0)))
+    max_ab_bars = int(((selloff.get('ab_bars') or {}).get('max', 999999)))
+    min_drop_pct = float(((selloff.get('a_to_c_drop_pct') or {}).get('min', 0.0)))
+    max_drop_pct = float(((selloff.get('a_to_c_drop_pct') or {}).get('max', 1e9)))
+    vol_climax_window = int(((selloff.get('vol_climax') or {}).get('recent_window_mins', 1)))
+    vol_baseline_window = int(((selloff.get('vol_climax') or {}).get('baseline_window_mins', 1)))
+    min_vol_ratio = float(((selloff.get('vol_climax') or {}).get('ratio_min', 0.0)))
+
+    min_rebound_ratio = float(((rebound.get('ratio') or {}).get('min', 0.0)))
+    max_rebound_ratio = float(((rebound.get('ratio') or {}).get('max', 1e9)))
+    min_bc_bars = int(rebound.get('bc_bars_min', 0))
+    max_basis_b_pct = float(((basis.get('b_pct') or {}).get('max', 1e9)))
+
+    base_tp_pct = float(take_profit.get('base_pct', 0.0))
+    strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
+    strong_tp_min_drop_pct = float(strong_mode.get('a_to_c_drop_pct_min', 1e9))
+    strong_tp_min_rebound_ratio = float(strong_mode.get('rebound_ratio_min', 1e9))
+
+    audit_rows: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+
+    if cross_section is None or getattr(cross_section, 'empty', True):
+        return audit_rows
+
+    cs = cross_section.dropna(subset=['vol_24h', 'chg_24h']).copy()
+    for sym, row in cross_section.iterrows():
+        symbol = str(sym).upper().strip()
+        base = {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': _fmt_bj_from_ms(current_time_ms),
+            'active_symbols_contains': bool(symbol in active_symbols),
+            'logic_selected_symbol': logic_selected_symbol,
+            'logic_selected': bool(logic_selected_symbol == symbol),
+            'signal_digest': signal_digest,
+            'cross_close': _series_value(row, 'close'),
+            'cross_quote_asset_volume': _series_value(row, 'quote_asset_volume'),
+            'cross_chg_24h': _series_value(row, 'chg_24h'),
+            'cross_vol_24h': _series_value(row, 'vol_24h'),
+            'cross_high_idx': _series_value(row, 'high_idx'),
+            'cross_low_idx': _series_value(row, 'low_idx'),
+            'cross_close_idx': _series_value(row, 'close_idx'),
+            'min_24h_vol': min_24h_vol,
+            'min_24h_chg_pct': min_24h_chg,
+            'max_24h_chg_pct': max_24h_chg,
+        }
+        if symbol not in cs.index:
+            base.update({
+                'stage5_pass': False,
+                'is_candidate': False,
+                'fail_reason': 'filtered_out_before_structure',
+            })
+            audit_rows.append(base)
+            continue
+
+        row2 = cs.loc[sym]
+        if symbol in active_symbols:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'active_symbol_skip'})
+            audit_rows.append(base)
+            continue
+
+        sym_df = (full_df or {}).get(sym)
+        if sym_df is None:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'full_df_missing'})
+            audit_rows.append(base)
+            continue
+
+        idx = sym_df.index.searchsorted(current_time_ms, side='right')
+        base['history_searchsorted_idx'] = int(idx)
+        if idx < vol_baseline_window:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'history_too_short_before_baseline_window'})
+            audit_rows.append(base)
+            continue
+
+        start_idx = max(0, idx - vol_baseline_window - 5)
+        history_df = sym_df.iloc[start_idx:idx]
+        base['history_start_idx'] = int(start_idx)
+        base['history_rows'] = int(len(history_df))
+        if len(history_df) < vol_baseline_window:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'history_too_short_after_slice'})
+            audit_rows.append(base)
+            continue
+
+        current_price = row2['close']
+        recent_drop_df = history_df.tail(drop_window)
+        sc_window_df = history_df.tail(drop_window + 1)
+        if len(sc_window_df) < drop_window + 1:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'sc_window_too_short'})
+            audit_rows.append(base)
+            continue
+
+        s_ts = int(sc_window_df.index[0])
+        s_close = sc_window_df.iloc[0]['close']
+        base.update({
+            's_time': s_ts,
+            's_time_bj': _fmt_bj_from_ms(s_ts),
+            's_close': _normalize_scalar(s_close),
+            'c_time': current_time_ms,
+            'c_time_bj': _fmt_bj_from_ms(current_time_ms),
+            'c_price': _normalize_scalar(current_price),
+        })
+        if pd.isna(s_close) or s_close <= 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'invalid_s_close'})
+            audit_rows.append(base)
+            continue
+
+        drop_window_chg = (current_price - s_close) / s_close
+        base['drop_window_chg'] = _normalize_scalar(drop_window_chg)
+        if drop_window_chg < min_drop_window_chg:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'drop_window_chg_below_min'})
+            audit_rows.append(base)
+            continue
+        if drop_window_chg > max_drop_window_chg:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'drop_window_chg_above_max'})
+            audit_rows.append(base)
+            continue
+        if row2['chg_24h'] > 0 and drop_window_chg > 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'hot_market_quadrant_skip'})
+            audit_rows.append(base)
+            continue
+
+        recent_high_ts = int(recent_drop_df['high'].idxmax())
+        recent_high_price = recent_drop_df.loc[recent_high_ts, 'high']
+        ac_df = recent_drop_df.loc[recent_high_ts:]
+        base.update({
+            'a_time': recent_high_ts,
+            'a_time_bj': _fmt_bj_from_ms(recent_high_ts),
+            'a_high_price': _normalize_scalar(recent_high_price),
+            'ac_rows': int(len(ac_df)),
+        })
+        if ac_df.empty:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'ac_df_empty'})
+            audit_rows.append(base)
+            continue
+
+        drop_pct = ((recent_high_price - current_price) / recent_high_price) if recent_high_price > 0 else 0.0
+        base['drop_pct'] = _normalize_scalar(drop_pct)
+        if drop_pct < min_drop_pct:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'drop_pct_below_min'})
+            audit_rows.append(base)
+            continue
+        if drop_pct > max_drop_pct:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'drop_pct_above_max'})
+            audit_rows.append(base)
+            continue
+
+        vol_climax = history_df['quote_asset_volume'].tail(vol_climax_window).mean()
+        vol_baseline = history_df['quote_asset_volume'].tail(vol_baseline_window).mean()
+        vol_ratio = vol_climax / vol_baseline if vol_baseline > 0 else 0.0
+        base.update({
+            'vol_climax': _normalize_scalar(vol_climax),
+            'vol_baseline': _normalize_scalar(vol_baseline),
+            'vol_ratio': _normalize_scalar(vol_ratio),
+        })
+        if vol_ratio < min_vol_ratio:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'vol_ratio_below_min'})
+            audit_rows.append(base)
+            continue
+
+        b_contract_ts = int(ac_df['low'].idxmin())
+        b_contract_price = ac_df.loc[b_contract_ts, 'low']
+        b_index_price = ac_df.loc[b_contract_ts, 'low_idx']
+        base.update({
+            'b_time': b_contract_ts,
+            'b_time_bj': _fmt_bj_from_ms(b_contract_ts),
+            'b_contract_price': _normalize_scalar(b_contract_price),
+            'b_index_price': _normalize_scalar(b_index_price),
+        })
+        if pd.isna(b_index_price) or b_index_price <= 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'invalid_b_index_price'})
+            audit_rows.append(base)
+            continue
+
+        basis_b_pct = (b_contract_price - b_index_price) / b_index_price
+        base['basis_b_pct'] = _normalize_scalar(basis_b_pct)
+        if basis_b_pct > max_basis_b_pct:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'basis_b_pct_above_max'})
+            audit_rows.append(base)
+            continue
+
+        extreme_drop_range = recent_high_price - b_index_price
+        base['extreme_drop_range'] = _normalize_scalar(extreme_drop_range)
+        if extreme_drop_range <= 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'extreme_drop_range_non_positive'})
+            audit_rows.append(base)
+            continue
+        if current_price <= b_index_price:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'current_price_below_or_equal_b_index'})
+            audit_rows.append(base)
+            continue
+
+        b_pos = int(ac_df.index.get_indexer([b_contract_ts])[0])
+        base['b_pos'] = b_pos
+        if b_pos < 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'invalid_b_pos'})
+            audit_rows.append(base)
+            continue
+
+        ab_bars = b_pos
+        base['ab_bars'] = ab_bars
+        if ab_bars < min_ab_bars:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'ab_bars_below_min'})
+            audit_rows.append(base)
+            continue
+        if ab_bars > max_ab_bars:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'ab_bars_above_max'})
+            audit_rows.append(base)
+            continue
+
+        bc_bars = (len(ac_df) - 1) - b_pos
+        base['bc_bars'] = bc_bars
+        if bc_bars < min_bc_bars:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'bc_bars_below_min'})
+            audit_rows.append(base)
+            continue
+
+        rebound_ratio = (current_price - b_index_price) / extreme_drop_range
+        base['rebound_ratio'] = _normalize_scalar(rebound_ratio)
+        if rebound_ratio < min_rebound_ratio:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'rebound_ratio_below_min'})
+            audit_rows.append(base)
+            continue
+        if rebound_ratio > max_rebound_ratio:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'rebound_ratio_above_max'})
+            audit_rows.append(base)
+            continue
+
+        selected_tp_pct = base_tp_pct
+        tp_tier = 'BASE'
+        if drop_pct >= strong_tp_min_drop_pct and rebound_ratio >= strong_tp_min_rebound_ratio:
+            selected_tp_pct = strong_tp_pct
+            tp_tier = 'STRONG'
+
+        base.update({
+            'stage5_pass': True,
+            'is_candidate': True,
+            'fail_reason': '',
+            'trigger_name': 'ABC_BINDEX',
+            'selected_tp_pct': _normalize_scalar(selected_tp_pct),
+            'tp_tier': tp_tier,
+        })
+        audit_rows.append(base)
+        candidates.append(base)
+
+    candidates_sorted = sorted(candidates, key=lambda x: x['drop_pct'], reverse=True)
+    audit_selected_symbol = candidates_sorted[0]['symbol'] if candidates_sorted else None
+    candidate_rank_map = {row['symbol']: i + 1 for i, row in enumerate(candidates_sorted)}
+    for row in audit_rows:
+        row['audit_selected_symbol'] = audit_selected_symbol
+        row['audit_selected'] = bool(audit_selected_symbol == row['symbol'])
+        row['candidate_rank'] = candidate_rank_map.get(row['symbol'])
+    return audit_rows
+
+
 def _active_symbols_from_state(account: str) -> set[str]:
     state = load_live_state(account)
     out: set[str] = set()
@@ -2317,10 +2661,15 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     }
 
 
-def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
+def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_signal_check_epoch: float | None = None) -> None:
     account = str(live_cfg['account']).strip()
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    loop_started_epoch = time.time()
+    loop_started_utc_ms = int(loop_started_epoch * 1000)
+    loop_started_bj = _fmt_bj_from_ms(loop_started_utc_ms) or _now_bj_str()
+    scheduled_signal_check_utc = _epoch_to_iso(scheduled_signal_check_epoch)
+    scheduled_signal_check_bj = _epoch_to_bj(scheduled_signal_check_epoch)
     runtime_cfg = (strategy_cfg or {}).get('runtime') or {}
     if 'max_history_window_mins' not in runtime_cfg:
         raise KeyError('strategy_cfg.runtime.max_history_window_mins missing')
@@ -2333,10 +2682,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
     local_activity_symbols = _symbols_with_local_activity(account)
     extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
 
+    candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_res = build_live_inputs(account, candidate_symbols, history_window_mins, strategy_cfg, audit_label='candidate')
+    candidate_md_finished_utc_ms = _now_utc_ms()
     extra_md_res: dict[str, Any] | None = None
+    extra_md_started_utc_ms: int | None = None
+    extra_md_finished_utc_ms: int | None = None
     if extra_reconcile_symbols:
+        extra_md_started_utc_ms = _now_utc_ms()
         extra_md_res = build_live_inputs(account, extra_reconcile_symbols, history_window_mins, strategy_cfg, audit_label='reconcile')
+        extra_md_finished_utc_ms = _now_utc_ms()
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
     extra_payload = extra_md_res.get('data') if extra_md_res and extra_md_res.get('ok') else None
@@ -2355,12 +2710,35 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
 
     current_time_ms = int(payload['latest_closed_bar_ts'])
     current_time_bj = payload['latest_closed_bar_bj']
+    timing_fields = {
+        'loop_started_utc_ms': loop_started_utc_ms,
+        'loop_started_bj': loop_started_bj,
+        'scheduled_signal_check_utc': scheduled_signal_check_utc,
+        'scheduled_signal_check_bj': scheduled_signal_check_bj,
+        'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
+        'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
+        'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
+        'candidate_md_finished_bj': _fmt_bj_from_ms(candidate_md_finished_utc_ms),
+        'extra_md_started_utc_ms': extra_md_started_utc_ms,
+        'extra_md_started_bj': _fmt_bj_from_ms(extra_md_started_utc_ms) if extra_md_started_utc_ms is not None else None,
+        'extra_md_finished_utc_ms': extra_md_finished_utc_ms,
+        'extra_md_finished_bj': _fmt_bj_from_ms(extra_md_finished_utc_ms) if extra_md_finished_utc_ms is not None else None,
+        'latest_closed_bar_ts': current_time_ms,
+        'latest_closed_bar_bj': current_time_bj,
+    }
 
     candidate_cross_section = candidate_payload['cross_section'] if candidate_payload else None
     candidate_full_df = dict(candidate_payload['full_df']) if candidate_payload else {}
     extra_full_df = dict(extra_payload['full_df']) if extra_payload else {}
     merged_full_df = dict(candidate_full_df)
     merged_full_df.update(extra_full_df)
+
+    if audit_enabled:
+        if candidate_full_df:
+            _write_stage3_enriched_snapshot(account, 'candidate', current_time_ms, current_time_bj, candidate_full_df, timing_fields)
+        if extra_full_df:
+            _write_stage3_enriched_snapshot(account, 'reconcile', current_time_ms, current_time_bj, extra_full_df, timing_fields)
+
     latest_closes = {
         str(symbol).upper().strip(): float(df.loc[current_time_ms, 'close'])
         for symbol, df in merged_full_df.items()
@@ -2518,9 +2896,32 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'close_idx': _series_value(row, 'close_idx'),
                 'active_symbols_contains': bool(symbol_key in active_symbols),
                 'input_pass_to_logic': True,
+                **timing_fields,
             })
 
+    signal_eval_started_utc_ms = _now_utc_ms()
     signal = strategy.on_kline_close(current_time_ms, cross_section, active_symbols, full_df)
+    signal_eval_finished_utc_ms = _now_utc_ms()
+    signal_digest_preview = _signal_digest(signal) if signal else None
+    stage5_rows = _build_stage5_structure_rows(
+        current_time_ms,
+        cross_section,
+        active_symbols,
+        full_df,
+        strategy_cfg,
+        logic_selected_symbol=(str(signal['symbol']).upper().strip() if signal else None),
+        signal_digest=signal_digest_preview,
+    )
+    if audit_enabled:
+        for stage5_row in stage5_rows:
+            _write_stage_record(account, 'stage5_structure_audit', {
+                **stage5_row,
+                **timing_fields,
+                'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+                'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
+                'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+                'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
+            })
 
     if not signal:
         if audit_enabled:
@@ -2540,6 +2941,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'event': 'signal_none',
                 'selected_symbol': None,
                 'signal_digest': None,
+                **timing_fields,
+                'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+                'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
+                'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+                'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
             })
         for symbol in merged_full_df.keys():
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
@@ -2642,9 +3048,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             'signal_snapshot': signal,
             'symbol_count': candidate_payload['symbol_count'],
             'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
+            **timing_fields,
+            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+            'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
+            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+            'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
         })
 
+    entry_submit_started_utc_ms = _now_utc_ms()
     entry_res = place_entry_order(account, symbol, FIXED_POSITION_SIDE, quantity, retry_max=retry_max, retry_delay_secs=retry_delay_secs, client_order_id=entry_client_order_id)
+    entry_submit_finished_utc_ms = _now_utc_ms()
     if not entry_res['ok']:
         mark_error(account, symbol, error_code='entry_submit_failed', error_message=entry_res['reason'], error_bj=_now_bj_str())
         if audit_enabled:
@@ -2658,6 +3071,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
                 'entry_client_order_id': entry_client_order_id,
                 'reason': entry_res['reason'],
                 'entry_ok': False,
+                **timing_fields,
+                'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+                'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+                'entry_submit_started_utc_ms': entry_submit_started_utc_ms,
+                'entry_submit_finished_utc_ms': entry_submit_finished_utc_ms,
+                'entry_submit_started_bj': _fmt_bj_from_ms(entry_submit_started_utc_ms),
+                'entry_submit_finished_bj': _fmt_bj_from_ms(entry_submit_finished_utc_ms),
             })
         if notify_enabled and live_cfg.get('notify_on_order_error', True):
             _notify(True, f'[Snapback-Live] 入场失败 {symbol} | {entry_res["reason"]}')
@@ -2698,6 +3118,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
             'entry_client_order_id': entry_res['data'].get('client_order_id', entry_client_order_id),
             'tp_client_order_id': tp_client_order_id,
             'sl_client_order_id': sl_client_order_id,
+            **timing_fields,
+            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+            'entry_submit_started_utc_ms': entry_submit_started_utc_ms,
+            'entry_submit_finished_utc_ms': entry_submit_finished_utc_ms,
+            'entry_submit_started_bj': _fmt_bj_from_ms(entry_submit_started_utc_ms),
+            'entry_submit_finished_bj': _fmt_bj_from_ms(entry_submit_finished_utc_ms),
         })
 
     open_trade = _build_open_trade(entry_res, signal, tp_res, sl_res, entry_notional_usdt, order_root=order_root, entry_client_order_id=entry_client_order_id, tp_client_order_id=tp_client_order_id, sl_client_order_id=sl_client_order_id)
@@ -3038,7 +3465,7 @@ def main() -> None:
                 'scheduled_signal_check_utc': datetime.fromtimestamp(next_signal_check_epoch, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                 'scheduled_signal_check_bj': datetime.fromtimestamp(next_signal_check_epoch, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S'),
             })
-            _run_once(strategy_cfg, live_cfg)
+            _run_once(strategy_cfg, live_cfg, scheduled_signal_check_epoch=next_signal_check_epoch)
         except KeyboardInterrupt:
             raise
         except Exception as e:
