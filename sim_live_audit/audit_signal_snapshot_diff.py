@@ -2,18 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
+BJ_TZ = dt.timezone(dt.timedelta(hours=8))
+
+
 def _to_bj(ms: int | None) -> str | None:
     if ms is None:
         return None
-    import datetime as dt
-
-    return (dt.datetime.utcfromtimestamp(ms / 1000.0) + dt.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    return dt.datetime.fromtimestamp(ms / 1000.0, tz=dt.timezone.utc).astimezone(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @dataclass
@@ -30,7 +32,7 @@ def _load_jsonl_first_match(
     prefer_key: str | None = None,
     prefer_value: str | None = None,
 ) -> dict[str, Any] | None:
-    matches: list[dict[str, Any]] = []
+    first_match: dict[str, Any] | None = None
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -40,17 +42,15 @@ def _load_jsonl_first_match(
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if predicate(row):
-                matches.append(row)
-                if prefer_key is None:
-                    return row
-    if not matches:
-        return None
-    if prefer_key is not None and prefer_value is not None:
-        for row in matches:
-            if str(row.get(prefer_key, "")) == prefer_value:
+            if not predicate(row):
+                continue
+            if prefer_key is None:
                 return row
-    return matches[0]
+            if first_match is None:
+                first_match = row
+            if prefer_value is not None and str(row.get(prefer_key, "")) == prefer_value:
+                return row
+    return first_match
 
 
 def _normalize_symbol(s: Any) -> str:
@@ -86,14 +86,12 @@ def _load_live_stage3(path: Path, symbol: str, c_time_ms: int) -> dict[str, Any]
     def pred(r: dict[str, Any]) -> bool:
         if _normalize_symbol(r.get("symbol")) != symbol:
             return False
-        # Newer records should carry c_bar_ts directly.
         c_bar_ts = r.get("c_bar_ts")
         if c_bar_ts is not None:
             try:
                 return int(c_bar_ts) == c_time_ms
             except Exception:
                 return False
-        # Fallback: bar_ts is CB, so C = bar_ts - 60000.
         bar_ts = r.get("bar_ts")
         try:
             return int(bar_ts) - 60000 == c_time_ms
@@ -127,7 +125,7 @@ def _safe_num(x: Any) -> float | int | None:
     return v
 
 
-def _compare_values(a: Any, b: Any, tol: float = 1e-12) -> tuple[bool, Any, Any]:
+def _compare_values(a: Any, b: Any, tol: float = 1e-6) -> tuple[bool, Any, Any]:
     na = _safe_num(a)
     nb = _safe_num(b)
     if na is not None and nb is not None:
@@ -137,9 +135,24 @@ def _compare_values(a: Any, b: Any, tol: float = 1e-12) -> tuple[bool, Any, Any]
     return a == b, a, b
 
 
-def _build_comparison(sim_signal: dict[str, Any] | None, sim_trade: dict[str, Any] | None, live_stage5: dict[str, Any] | None) -> dict[str, Any]:
+def _get_stage3_latest_bar(stage3: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not stage3:
+        return None
+    hb = stage3.get("history_bars") or []
+    if not hb:
+        return None
+    return hb[-1]
+
+
+def _build_comparison(
+    sim_signal: dict[str, Any] | None,
+    sim_trade: dict[str, Any] | None,
+    live_stage3: dict[str, Any] | None,
+    live_stage5: dict[str, Any] | None,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "top_level": {},
+        "input_metrics": {},
         "structure_metrics": {},
         "signal_vs_entry": {},
     }
@@ -147,23 +160,30 @@ def _build_comparison(sim_signal: dict[str, Any] | None, sim_trade: dict[str, An
         return out
 
     sim_ctx = sim_signal.get("context") or {}
-    live = live_stage5 or {}
+    live5 = live_stage5 or {}
+    live3_last = _get_stage3_latest_bar(live_stage3) or {}
 
     top_pairs = {
-        "symbol": (sim_signal.get("symbol"), live.get("symbol")),
+        "symbol": (sim_signal.get("symbol"), live5.get("symbol") or (live_stage3 or {}).get("symbol")),
         "sim_signal_time": (sim_signal.get("signal_time"), None),
-        "live_signal_time": (None, live.get("signal_time_ts")),
-        "c_time": (sim_ctx.get("c_time"), live.get("c_time")),
-        "tp_tier": (sim_ctx.get("tp_tier"), live.get("tp_tier")),
-        "selected_tp_pct": (sim_ctx.get("selected_tp_pct"), live.get("selected_tp_pct")),
+        "live_signal_time": (None, live5.get("signal_time_ts") or (live_stage3 or {}).get("signal_time_ts")),
+        "c_time": (sim_ctx.get("c_time"), live5.get("c_time") or (live_stage3 or {}).get("c_bar_ts")),
+        "tp_tier": (sim_ctx.get("tp_tier"), live5.get("tp_tier")),
+        "selected_tp_pct": (sim_ctx.get("selected_tp_pct"), live5.get("selected_tp_pct")),
     }
     for k, (a, b) in top_pairs.items():
         same, va, vb = _compare_values(a, b)
         out["top_level"][k] = {"same": same, "sim": va, "live": vb}
 
+    input_metric_sources = {
+        "chg_24h": (sim_ctx.get("chg_24h"), live3_last.get("chg_24h")),
+        "vol_24h": (sim_ctx.get("vol_24h"), live3_last.get("vol_24h")),
+    }
+    for key, (a, b) in input_metric_sources.items():
+        same, va, vb = _compare_values(a, b)
+        out["input_metrics"][key] = {"same": same, "sim": va, "live": vb}
+
     metric_keys = [
-        "chg_24h",
-        "vol_24h",
         "drop_pct",
         "drop_window_chg",
         "vol_ratio",
@@ -182,7 +202,7 @@ def _build_comparison(sim_signal: dict[str, Any] | None, sim_trade: dict[str, An
         "rebound_ratio",
     ]
     for key in metric_keys:
-        same, va, vb = _compare_values(sim_ctx.get(key), live.get(key))
+        same, va, vb = _compare_values(sim_ctx.get(key), live5.get(key))
         out["structure_metrics"][key] = {"same": same, "sim": va, "live": vb}
 
     if sim_trade:
@@ -232,6 +252,16 @@ def _build_summary(symbol: str, c_time_ms: int, match: MatchResult, comparison: 
             lines.append(f"first_bar_ms: {hb[0].get('open_time_ms')} | bj: {hb[0].get('open_time_bj')}")
             lines.append(f"last_bar_ms : {hb[-1].get('open_time_ms')} | bj: {hb[-1].get('open_time_bj')}")
         lines.append("")
+
+    lines.append("[input metric comparison]")
+    first_input_diff = None
+    for key, payload in comparison.get("input_metrics", {}).items():
+        lines.append(f"{key}: same={payload['same']} | sim={payload['sim']} | live={payload['live']}")
+        if first_input_diff is None and not payload["same"]:
+            first_input_diff = key
+    lines.append("")
+    lines.append(f"first_input_diff: {first_input_diff or 'NONE'}")
+    lines.append("")
 
     lines.append("[structure metric comparison]")
     first_diff = None
@@ -284,7 +314,7 @@ def main() -> None:
         live_stage3=live_stage3,
         live_stage5=live_stage5,
     )
-    comparison = _build_comparison(sim_signal, sim_trade, live_stage5)
+    comparison = _build_comparison(sim_signal, sim_trade, live_stage3, live_stage5)
 
     slug = f"{symbol}.{c_time_ms}"
     out_dir = Path(args.out_dir)

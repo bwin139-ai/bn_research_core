@@ -39,26 +39,12 @@ FILES = [
     # "core/live/custom_id.py",
     # "=================================",
     # "strategies/run_backtest.py",
-     "strategies/snapback/run_live.py",
+    # "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     # "=================================",
-    #"strategies/top1_hunter/config.json",
-    #"strategies/top1_hunter/logic.py",
-    # "=================================",
-    # "alpha_config.json",
-    # "alpha_main.py",
-    # "alpha_sim.py",
-    # "alpha_strategy_reversal/filters.py",
-    # "alpha_strategy_reversal/scan.py",
-    # "viz/alpha_viz_v1.py",
-    # "viz/viz_core.py",
-    # "gold_arb.py"
-    # "工具/signal_audit_lockonce_v4.py",
-    # "工具/trades_side_summary.py",
-    # "sim_binance_client.py",
-    # "top1_hunter/top1_hunter_sim.py",
+    "sim_live_audit/audit_signal_snapshot_diff.py",
 ]
 
 
