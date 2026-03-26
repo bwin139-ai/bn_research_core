@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from core.runtime_state import load_runtime_json, save_runtime_json
+from core.runtime_state import load_runtime_json, save_runtime_json, _normalize_for_json
 
 _BJ = ZoneInfo("Asia/Shanghai")
 
@@ -16,6 +16,10 @@ def _now_utc() -> datetime:
 
 def _fmt_bj(dt: datetime) -> str:
     return dt.astimezone(_BJ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_copy(value: Any) -> Any:
+    return deepcopy(_normalize_for_json(value))
 
 
 def _default_symbol_state() -> dict[str, Any]:
@@ -78,7 +82,7 @@ def load_live_state(account: str) -> dict[str, Any]:
 
 
 def save_live_state(account: str, state: dict[str, Any]) -> None:
-    save_runtime_json(_filename(account), state, indent=2)
+    save_runtime_json(_filename(account), _normalize_for_json(state), indent=2)
 
 
 def load_symbol_state(account: str, symbol: str) -> dict[str, Any]:
@@ -98,7 +102,7 @@ def save_symbol_state(account: str, symbol: str, symbol_state: dict[str, Any]) -
     symbols = state.setdefault("symbols", {})
     symbol_key = str(symbol).upper().strip()
     base = _default_symbol_state()
-    base.update(symbol_state or {})
+    base.update(_safe_copy(symbol_state or {}))
     symbols[symbol_key] = base
     save_live_state(account, state)
 
@@ -195,14 +199,14 @@ def sync_cooldown_map(account: str, cooldown_map: dict[str, int] | None, *, now_
 
 def set_pending_entry_order(account: str, symbol: str, order: dict[str, Any] | None) -> dict[str, Any]:
     symbol_state = load_symbol_state(account, symbol)
-    symbol_state["pending_entry_order"] = deepcopy(order) if isinstance(order, dict) else None
+    symbol_state["pending_entry_order"] = _safe_copy(order) if isinstance(order, dict) else None
     save_symbol_state(account, symbol, symbol_state)
     return symbol_state
 
 
 def set_open_trade(account: str, symbol: str, trade: dict[str, Any] | None) -> dict[str, Any]:
     symbol_state = load_symbol_state(account, symbol)
-    symbol_state["open_trade"] = deepcopy(trade) if isinstance(trade, dict) else None
+    symbol_state["open_trade"] = _safe_copy(trade) if isinstance(trade, dict) else None
     save_symbol_state(account, symbol, symbol_state)
     return symbol_state
 
@@ -228,7 +232,7 @@ def mark_signal(
     symbol_state["last_signal_time_ts"] = signal_time_ts
     symbol_state["last_signal_time_bj"] = signal_time_bj
     symbol_state["last_signal_digest"] = signal_digest
-    symbol_state["last_signal_snapshot"] = deepcopy(signal_snapshot) if isinstance(signal_snapshot, dict) else signal_snapshot
+    symbol_state["last_signal_snapshot"] = _safe_copy(signal_snapshot) if isinstance(signal_snapshot, dict) else _normalize_for_json(signal_snapshot)
     save_symbol_state(account, symbol, symbol_state)
     return symbol_state
 
@@ -254,4 +258,3 @@ def mark_error(account: str, symbol: str, *, error_code: str | None, error_messa
     symbol_state["last_error_bj"] = error_bj
     save_symbol_state(account, symbol, symbol_state)
     return symbol_state
-
