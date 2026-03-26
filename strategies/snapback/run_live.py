@@ -117,8 +117,22 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None = None, separators: tuple[str, str] | None = None) -> str:
+    kwargs: dict[str, Any] = {
+        'ensure_ascii': False,
+        'default': _json_default,
+    }
+    if sort_keys:
+        kwargs['sort_keys'] = True
+    if indent is not None:
+        kwargs['indent'] = indent
+    if separators is not None:
+        kwargs['separators'] = separators
+    return json.dumps(data, **kwargs)
+
+
 def _json_sha256(data: Any) -> str:
-    return _sha256_text(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
+    return _sha256_text(_json_safe_dumps(data, sort_keys=True, separators=(',', ':')))
 
 
 def _read_text(path: str) -> str:
@@ -158,7 +172,7 @@ def _write_config_snapshot(account: str, config_path: str, live_config_path: str
     }
 
     snapshot_path = snapshot_dir / f'snapback_{account_key}_{ts_utc}.config_snapshot.json'
-    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    snapshot_path.write_text(_json_safe_dumps(snapshot, indent=2) + '\n', encoding='utf-8')
 
     return {
         'snapshot_path': str(snapshot_path),
@@ -185,6 +199,14 @@ def _stage_audit_path(account: str, stage: str) -> Path:
 def _json_default(v: Any) -> Any:
     if hasattr(v, 'item'):
         return v.item()
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, Path):
+        return str(v)
+    if isinstance(v, set):
+        return sorted(v)
+    if isinstance(v, tuple):
+        return list(v)
     raise TypeError(f'Object of type {type(v).__name__} is not JSON serializable')
 
 
@@ -760,7 +782,7 @@ def _signal_digest(signal: dict[str, Any]) -> str:
         'tp_price': _normalize_scalar(signal.get('tp_price')),
         'sl_price': _normalize_scalar(signal.get('sl_price')),
     }
-    return json.dumps(base, ensure_ascii=False, sort_keys=True, default=_json_default)
+    return _json_safe_dumps(base, sort_keys=True)
 
 
 def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:

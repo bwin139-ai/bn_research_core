@@ -24,8 +24,8 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/au
   --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest1.jsonl \
   --live-stage3 state/live_audit/stage_audit/snapback_mybwin139.stage3_enriched.jsonl \
   --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
-  --symbol JCTUSDT \
-  --c-time-ms 1774486920000 \
+  --symbol MUSDT \
+  --c-time-bj "2026-03-26 09:15:00" \
   --out-dir output/sim_live_audit
 
 # ============== 项目根目录 ===============

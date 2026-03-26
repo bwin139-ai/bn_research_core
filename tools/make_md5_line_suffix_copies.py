@@ -30,7 +30,6 @@ FILES = [
     # "core/analysis/visualizer.py",
     # "core/engine/broker.py",
     # "core/engine/data_feeder.py",
-    # "=================================",
     # "core/live/binance_client.py",
     # "core/live/binance_exec.py",
     # "core/live/live_state.py",
@@ -39,12 +38,12 @@ FILES = [
     # "core/live/custom_id.py",
     # "=================================",
     # "strategies/run_backtest.py",
-    # "strategies/snapback/run_live.py",
+     "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     # "=================================",
-    "sim_live_audit/audit_signal_snapshot_diff.py",
+    #"sim_live_audit/audit_signal_snapshot_diff.py",
     #"sim_live_audit/audit_signal_window_diff.py",
 ]
 
