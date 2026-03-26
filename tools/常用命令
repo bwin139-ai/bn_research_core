@@ -100,12 +100,12 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 # ========= 前端冒烟测试 Top1 / Snapback =========
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-03-24T12:00:00+00:00 \
-  --end   2026-03-25T02:00:00+00:00 \
+  --start 2026-03-25T17:00:00+00:00 \
+  --end   2026-03-26T03:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
-  --out-dir "output/state" \
-  --run-id "Snapback_V5.0_SmokeTest3"
+  --out-dir "output/SmokeTest" \
+  --run-id "Snapback_V6.1_SmokeTest1"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
@@ -136,7 +136,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 3 \
+  --days 1 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
@@ -154,7 +154,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_1m_data_quality_v2.py \
   --data-dir data/klines_1m \
   --out-dir output/state/1m_data_quality_audit \
-  --tail-target-bjt "2026-03-25 11:00"
+  --tail-target-bjt "2026-03-26 11:00"
 输出字段说明
   symbols_with_contract_gaps    -- 存在合约主数据断行的品种数量
   symbols_with_duplicate_ts     -- 存在重复时间戳的品种数量
