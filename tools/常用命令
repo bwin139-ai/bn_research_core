@@ -17,8 +17,8 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/au
   --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest1.jsonl \
   --live-stage3 state/live_audit/stage_audit/snapback_mybwin139.stage3_enriched.jsonl \
   --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
-  --symbol DUSKUSDT \
-  --c-time-ms 1774453560000 \
+  --symbol JCTUSDT \
+  --c-time-ms 1774486920000 \
   --out-dir output/sim_live_audit
 
 # ============== 项目根目录 ===============
@@ -81,11 +81,16 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
 
-RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
 DEST=~/ai_projects/bn_research_core/state4
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.Snapback_V5.0_SmokeTest3.jsonl" \
+  "$DEST"
+
+DEST=~/ai_projects/bn_research_core/output/sim_live_audit
+mkdir -p "$DEST"
+scp \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/JCTUSDT.1774486920000.summary.txt" \
   "$DEST"
 
 # ********** 拉复盘k线图表 *********
