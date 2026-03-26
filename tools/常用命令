@@ -12,6 +12,13 @@ ps aux | grep python
  tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
 # ============== sim / live 一致性审计 ===============
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_window_diff.py \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest1.jsonl \
+  --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
+  --start-c-time-bj "2026-03-26 07:46:00" \
+  --end-c-time-bj "2026-03-26 10:00:00" \
+  --out-dir output/sim_live_audit
+
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_snapshot_diff.py \
   --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest1.jsonl \
   --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest1.jsonl \
@@ -90,7 +97,7 @@ scp \
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/JCTUSDT.1774486920000.summary.txt" \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1774482360000_1774490400000.*" \
   "$DEST"
 
 # ********** 拉复盘k线图表 *********

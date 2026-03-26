@@ -44,8 +44,8 @@ FILES = [
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     # "=================================",
-    #"sim_live_audit/audit_signal_snapshot_diff.py",
-    "sim_live_audit/audit_signal_window_diff.py",
+    "sim_live_audit/audit_signal_snapshot_diff.py",
+    #"sim_live_audit/audit_signal_window_diff.py",
 ]
 
 

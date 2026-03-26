@@ -12,6 +12,11 @@ from typing import Any
 BJ_TZ = dt.timezone(dt.timedelta(hours=8))
 
 
+def _bj_to_ms(s: str) -> int:
+    dt_bj = dt.datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ_TZ)
+    return int(dt_bj.timestamp() * 1000)
+
+
 def _to_bj(ms: int | None) -> str | None:
     if ms is None:
         return None
@@ -293,7 +298,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--live-stage3", required=True, help="Path to live stage3_enriched jsonl")
     p.add_argument("--live-stage5", required=True, help="Path to live stage5_structure_audit jsonl")
     p.add_argument("--symbol", required=True, help="Target symbol, e.g. DUSKUSDT")
-    p.add_argument("--c-time-ms", required=True, type=int, help="C bar open_time_ms")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--c-time-ms", type=int, help="C bar open_time_ms")
+    group.add_argument("--c-time-bj", help='C bar bj time, e.g. "2026-03-26 07:46:00"')
     p.add_argument("--out-dir", default="output/sim_live_audit", help="Output directory")
     return p.parse_args()
 
@@ -301,7 +308,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     symbol = _normalize_symbol(args.symbol)
-    c_time_ms = int(args.c_time_ms)
+    c_time_ms = int(args.c_time_ms) if args.c_time_ms is not None else _bj_to_ms(args.c_time_bj)
 
     sim_signal = _load_sim_signal(Path(args.sim_signals), symbol, c_time_ms)
     sim_trade = _load_sim_trade(Path(args.sim_trades), symbol, c_time_ms) if args.sim_trades else None
