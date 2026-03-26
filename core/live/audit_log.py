@@ -66,11 +66,38 @@ def _build_record(account: str, event: str, payload: dict[str, Any] | None = Non
     return record
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, set):
+        return sorted(_json_default(v) for v in value)
+    module = type(value).__module__
+    if module.startswith("numpy"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if module.startswith("pandas"):
+        try:
+            if hasattr(value, "to_pydatetime"):
+                return value.to_pydatetime().isoformat()
+        except Exception:
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return str(value)
+
+
 def _append_json_record(path: Path, record: dict[str, Any]) -> Path:
     lock = FileLock(str(path) + ".lock")
     with lock:
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
             f.flush()
             os.fsync(f.fileno())
     return path
