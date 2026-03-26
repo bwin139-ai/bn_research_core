@@ -753,14 +753,14 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
 
 def _signal_digest(signal: dict[str, Any]) -> str:
     base = {
-        'symbol': signal.get('symbol'),
-        'signal_time': signal.get('signal_time'),
-        'action': signal.get('action'),
-        'current_price': signal.get('current_price'),
-        'tp_price': signal.get('tp_price'),
-        'sl_price': signal.get('sl_price'),
+        'symbol': _normalize_scalar(signal.get('symbol')),
+        'signal_time': _normalize_scalar(signal.get('signal_time')),
+        'action': _normalize_scalar(signal.get('action')),
+        'current_price': _normalize_scalar(signal.get('current_price')),
+        'tp_price': _normalize_scalar(signal.get('tp_price')),
+        'sl_price': _normalize_scalar(signal.get('sl_price')),
     }
-    return json.dumps(base, ensure_ascii=False, sort_keys=True)
+    return json.dumps(base, ensure_ascii=False, sort_keys=True, default=_json_default)
 
 
 def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
