@@ -31,23 +31,23 @@ from core.live.binance_exec import (
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
 from core.live.live_state import (
     load_cooldown_map,
-    load_live_state,
     load_symbol_state,
-    mark_error,
     mark_last_processed_bar,
     mark_loop_heartbeat,
     mark_order_reconcile,
     mark_position_reconcile,
-    mark_signal,
-    set_cooldown,
-    set_open_trade,
-    set_pending_entry_order,
     sync_cooldown_map,
 )
 from core.live.market_data import build_live_inputs, list_candidate_symbols
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
-from strategies.snapback.trade_consumer import _precheck_exchange_blockers, _signal_digest, consume_signal, maintain_consumer_once
+from strategies.snapback.trade_consumer import (
+    collect_consumer_local_activity_symbols,
+    consume_signal,
+    consumer_signal_digest,
+    maintain_consumer_once,
+    precheck_consumer_exchange_blockers,
+)
 
 BJ = timezone(timedelta(hours=8))
 FIXED_POSITION_SIDE = 'LONG'
@@ -577,50 +577,6 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     return audit_rows
 
 
-def _active_symbols_from_state(account: str) -> set[str]:
-    state = load_live_state(account)
-    out: set[str] = set()
-    for symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('pending_entry_order') or payload.get('open_trade'):
-            out.add(str(symbol).upper().strip())
-    return out
-
-
-def _symbols_with_local_activity(account: str) -> set[str]:
-    state = load_live_state(account)
-    out: set[str] = set()
-    for symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('pending_entry_order') or payload.get('open_trade'):
-            out.add(str(symbol).upper().strip())
-    return out
-
-
-def _collect_active_state_errors(account: str) -> list[dict[str, Any]]:
-    state = load_live_state(account)
-    out: list[dict[str, Any]] = []
-    for raw_symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if not (payload.get('pending_entry_order') or payload.get('open_trade')):
-            continue
-        error_code = payload.get('last_error_code')
-        if not error_code:
-            continue
-        out.append({
-            'symbol': str(raw_symbol).upper().strip(),
-            'error_code': error_code,
-            'error_message': payload.get('last_error_message'),
-            'error_bj': payload.get('last_error_bj'),
-            'has_pending_entry_order': bool(payload.get('pending_entry_order')),
-            'has_open_trade': bool(payload.get('open_trade')),
-        })
-    return out
-
-
 def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     symbols: set[str] = set()
     positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
@@ -659,7 +615,7 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
     if not audit_enabled:
         return findings
 
-    local_active_symbols = set(snapshot.get('local_active_symbols') or []) if snapshot else _symbols_with_local_activity(account)
+    local_active_symbols = set(snapshot.get('local_active_symbols') or []) if snapshot else collect_consumer_local_activity_symbols(account)
     all_positions_res = (snapshot or {}).get('positions') if snapshot else None
     if not all_positions_res:
         all_positions_res = get_positions(account)
@@ -681,7 +637,7 @@ def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_ti
         if symbol in local_active_symbols:
             continue
 
-        exch = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+        exch = precheck_consumer_exchange_blockers(account, symbol, snapshot=snapshot)
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
 
@@ -780,7 +736,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
 
     startup_snapshot = _collect_exchange_activity_snapshot(account)
-    local_active_symbols = _symbols_with_local_activity(account)
+    local_active_symbols = collect_consumer_local_activity_symbols(account)
     startup_snapshot['local_active_symbols'] = local_active_symbols
     startup_snapshot['startup_symbols'] = sorted(
         local_active_symbols
@@ -811,7 +767,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
                 'orders': startup_snapshot.get('orders'),
             },
         })
-    startup_snapshot['local_active_symbols'] = _symbols_with_local_activity(account)
+    startup_snapshot['local_active_symbols'] = collect_consumer_local_activity_symbols(account)
     orphan_findings = _audit_orphan_exchange_activity(
         account,
         startup_snapshot['startup_symbols'],
@@ -821,7 +777,7 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
         audit_enabled=audit_enabled,
         snapshot=startup_snapshot,
     )
-    active_state_errors = _collect_active_state_errors(account)
+    active_state_errors = list(maintain_res.get('active_state_errors') or [])
     blocking = bool(
         pending_reconcile_error
         or open_trade_reconcile_error
@@ -1039,7 +995,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
         return
 
-    active_state_errors = _collect_active_state_errors(account)
+    active_state_errors = list(maintain_res.get('active_state_errors') or [])
     if active_state_errors:
         if audit_enabled:
             write_event(account, 'signal_scan_skipped_active_state_error', {
@@ -1057,7 +1013,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
-    active_symbols = _active_symbols_from_state(account) | exchange_activity_symbols
+    active_symbols = collect_consumer_local_activity_symbols(account) | exchange_activity_symbols
 
     if audit_enabled:
         for stage_symbol, row in cross_section.iterrows():
@@ -1082,7 +1038,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
     _persist_strategy_cooldowns(strategy, account, current_time_ms)
     signal_eval_finished_utc_ms = _now_utc_ms()
-    signal_digest_preview = _signal_digest(signal) if signal else None
+    signal_digest_preview = consumer_signal_digest(signal) if signal else None
     stage5_rows = _build_stage5_structure_rows(
         c_bar_ts,
         current_time_ms,

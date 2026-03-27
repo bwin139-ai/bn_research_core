@@ -645,6 +645,29 @@ def _clear_symbol_error(account: str, symbol: str) -> None:
     mark_error(account, symbol, error_code=None, error_message=None, error_bj=None)
 
 
+def consumer_signal_digest(signal: dict[str, Any]) -> str:
+    return _signal_digest(signal)
+
+
+def precheck_consumer_exchange_blockers(account: str, symbol: str, *, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+
+
+def collect_consumer_local_activity_symbols(account: str) -> set[str]:
+    state = load_live_state(account)
+    out: set[str] = set()
+    for symbol, payload in (state.get('symbols') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        if payload.get('pending_entry_order') or payload.get('open_trade'):
+            out.add(str(symbol).upper().strip())
+    return out
+
+
+def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
+    return list(_collect_consumer_state_summary(account)['active_state_errors'])
+
+
 def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
     state = load_live_state(account)
     pending_symbols: list[str] = []
