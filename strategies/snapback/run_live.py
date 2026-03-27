@@ -39,15 +39,13 @@ from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
     bootstrap_consumer_gate,
-    build_consumer_active_symbols,
     build_consumer_reconcile_plan,
     consume_signal,
     consumer_signal_digest,
-    evaluate_consumer_signal_scan_gate,
     finalize_consumer_no_candidate_data,
     finalize_consumer_scan_skip,
     finalize_consumer_signal_none,
-    maintain_consumer_once,
+    prepare_consumer_loop_gate,
 )
 
 BJ = timezone(timedelta(hours=8))
@@ -701,18 +699,9 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         if c_bar_ts in df.index
     }
 
-    maintain_res = maintain_consumer_once(
+    loop_gate = prepare_consumer_loop_gate(
         account,
         strategy_cfg,
-        live_cfg,
-        current_time_ms=current_time_ms,
-        current_time_bj=current_time_bj,
-        latest_closes=latest_closes,
-        source='loop',
-        exchange_snapshot=exchange_activity_snapshot,
-    )
-    scan_gate = evaluate_consumer_signal_scan_gate(
-        account,
         live_cfg,
         current_time_ms=current_time_ms,
         current_time_bj=current_time_bj,
@@ -720,10 +709,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         extra_reconcile_symbols=extra_reconcile_symbols,
         latest_closes=latest_closes,
         exchange_activity_snapshot=exchange_activity_snapshot,
-        maintain_res=maintain_res,
         source='loop',
     )
-    if not scan_gate.get('ok_to_scan'):
+    scan_gate = loop_gate['scan_gate']
+    if not loop_gate.get('ok_to_scan'):
         finalize_consumer_scan_skip(
             account,
             current_time_ms=current_time_ms,
@@ -732,7 +721,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         )
         return
 
-    exchange_activity_snapshot = dict(scan_gate.get('exchange_snapshot') or exchange_activity_snapshot)
+    exchange_activity_snapshot = dict(loop_gate.get('exchange_snapshot') or exchange_activity_snapshot)
     if not candidate_payload:
         finalize_consumer_no_candidate_data(
             account,
@@ -750,7 +739,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
-    active_symbols = build_consumer_active_symbols(scan_gate)
+    active_symbols = {
+        str(symbol).upper().strip()
+        for symbol in (loop_gate.get('active_symbols') or [])
+        if str(symbol).strip()
+    }
 
     if audit_enabled:
         for stage_symbol, row in cross_section.iterrows():

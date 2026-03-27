@@ -740,6 +740,53 @@ def build_consumer_active_symbols(scan_gate: dict[str, Any]) -> set[str]:
     }
 
 
+def prepare_consumer_loop_gate(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    live_cfg: dict[str, Any],
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    candidate_symbols: list[str],
+    extra_reconcile_symbols: list[str],
+    latest_closes: dict[str, float],
+    exchange_activity_snapshot: dict[str, Any],
+    source: str = 'loop',
+) -> dict[str, Any]:
+    maintain_res = maintain_consumer_once(
+        account,
+        strategy_cfg,
+        live_cfg,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        latest_closes=latest_closes,
+        source=source,
+        exchange_snapshot=exchange_activity_snapshot,
+    )
+    scan_gate = evaluate_consumer_signal_scan_gate(
+        account,
+        live_cfg,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        candidate_symbols=candidate_symbols,
+        extra_reconcile_symbols=extra_reconcile_symbols,
+        latest_closes=latest_closes,
+        exchange_activity_snapshot=exchange_activity_snapshot,
+        maintain_res=maintain_res,
+        source=source,
+    )
+    active_symbols = sorted(build_consumer_active_symbols(scan_gate)) if scan_gate.get('ok_to_scan') else []
+    return {
+        'ok_to_scan': bool(scan_gate.get('ok_to_scan')),
+        'maintain_res': maintain_res,
+        'scan_gate': scan_gate,
+        'exchange_snapshot': dict(scan_gate.get('exchange_snapshot') or exchange_activity_snapshot or {}),
+        'active_symbols': active_symbols,
+        'local_active_symbols': list(scan_gate.get('local_active_symbols') or []),
+        'exchange_activity_symbols': list(scan_gate.get('exchange_activity_symbols') or []),
+    }
+
+
 def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
     return list(_collect_consumer_state_summary(account)['active_state_errors'])
 
