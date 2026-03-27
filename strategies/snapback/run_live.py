@@ -40,8 +40,8 @@ from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
     bootstrap_consumer_gate,
-    collect_consumer_exchange_activity_snapshot,
-    collect_consumer_local_activity_symbols,
+    build_consumer_active_symbols,
+    build_consumer_reconcile_plan,
     consume_signal,
     consumer_signal_digest,
     evaluate_consumer_signal_scan_gate,
@@ -624,10 +624,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if history_window_mins <= 0:
         raise ValueError('strategy_cfg.runtime.max_history_window_mins must be > 0')
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
-    exchange_activity_snapshot = collect_consumer_exchange_activity_snapshot(account)
-    exchange_activity_symbols = set(exchange_activity_snapshot['symbols'])
-    local_activity_symbols = collect_consumer_local_activity_symbols(account)
-    extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
+    reconcile_plan = build_consumer_reconcile_plan(account, candidate_symbols)
+    exchange_activity_snapshot = dict(reconcile_plan['exchange_snapshot'])
+    exchange_activity_symbols = set(reconcile_plan['exchange_activity_symbols'])
+    local_activity_symbols = set(reconcile_plan['local_active_symbols'])
+    extra_reconcile_symbols = list(reconcile_plan['extra_reconcile_symbols'])
 
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_res = build_live_inputs(account, candidate_symbols, history_window_mins, strategy_cfg, audit_label='candidate')
@@ -743,7 +744,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
-    active_symbols = set(scan_gate.get('local_active_symbols') or []) | set(scan_gate.get('exchange_activity_symbols') or [])
+    active_symbols = build_consumer_active_symbols(scan_gate)
 
     if audit_enabled:
         for stage_symbol, row in cross_section.iterrows():

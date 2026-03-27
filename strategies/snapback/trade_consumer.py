@@ -697,6 +697,49 @@ def collect_consumer_local_activity_symbols(account: str) -> set[str]:
     return out
 
 
+def build_consumer_reconcile_plan(
+    account: str,
+    candidate_symbols: list[str],
+    *,
+    exchange_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    snapshot = dict(exchange_snapshot) if exchange_snapshot is not None else collect_consumer_exchange_activity_snapshot(account)
+    exchange_activity_symbols = {
+        str(symbol).upper().strip()
+        for symbol in (snapshot.get('symbols') or set())
+        if str(symbol).strip()
+    }
+    local_active_symbols = {
+        str(symbol).upper().strip()
+        for symbol in collect_consumer_local_activity_symbols(account)
+        if str(symbol).strip()
+    }
+    candidate_symbol_set = {
+        str(symbol).upper().strip()
+        for symbol in (candidate_symbols or [])
+        if str(symbol).strip()
+    }
+    snapshot['symbols'] = exchange_activity_symbols
+    snapshot['local_active_symbols'] = sorted(local_active_symbols)
+    return {
+        'exchange_snapshot': snapshot,
+        'exchange_activity_symbols': sorted(exchange_activity_symbols),
+        'local_active_symbols': sorted(local_active_symbols),
+        'extra_reconcile_symbols': sorted((exchange_activity_symbols | local_active_symbols) - candidate_symbol_set),
+    }
+
+
+def build_consumer_active_symbols(scan_gate: dict[str, Any]) -> set[str]:
+    return {
+        str(symbol).upper().strip()
+        for symbol in (
+            list(scan_gate.get('local_active_symbols') or [])
+            + list(scan_gate.get('exchange_activity_symbols') or [])
+        )
+        if str(symbol).strip()
+    }
+
+
 def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
     return list(_collect_consumer_state_summary(account)['active_state_errors'])
 
