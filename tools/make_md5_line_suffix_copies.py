@@ -39,7 +39,7 @@ FILES = [
     # "core/live/custom_id.py",
     # "=================================",
     # "strategies/run_backtest.py",
-    #3 "strategies/snapback/run_live.py",
+     "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
@@ -47,7 +47,7 @@ FILES = [
     #"sim_live_audit/audit_signal_snapshot_diff.py",
     #"sim_live_audit/audit_signal_window_diff.py",
     # "=================================",
-    "PROJECT_BASELINE_v1.md",
+    #"PROJECT_BASELINE_v1.md",
 ]
 
 

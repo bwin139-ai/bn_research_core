@@ -665,3 +665,19 @@ PERF_ONLY 第一刀完成
 除非是 UI 证据、git 历史图、异常截图，否则优先用文字和命令输出。
 
 
+live/sim 对齐测试
+2026-03-26 01:35:36,736 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner started | account=mybwin139"
+2026-03-26 07:47:35,023 | INFO     | [2026-03-26 07:47 BJ] 🦅 洗盘反抽雷达锁定: DUSKUSDT | 当前价: 0.1166 | 15m跌幅: 3.56% | 爆量倍数: 6.57 | ABC反弹比例: 10.42% | TP档位: BASE(1.00%)
+2026-03-26 07:47:35,261 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+2026-03-26 09:03:34,880 | INFO     | [2026-03-26 09:03 BJ] 🦅 洗盘反抽雷达锁定: JCTUSDT | 当前价: 0.0026 | 15m跌幅: 3.33% | 爆量倍数: 10.93 | ABC反弹比例: 20.11% | TP档位: BASE(1.00%)
+2026-03-26 09:03:35,118 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+2026-03-26 09:12:34,930 | INFO     | [2026-03-26 09:12 BJ] 🦅 洗盘反抽雷达锁定: LIGHTUSDT | 当前价: 0.1743 | 15m跌幅: 3.06% | 爆量倍数: 7.80 | ABC反弹比例: 11.87% | TP档位: BASE(1.00%)
+2026-03-26 09:12:35,160 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+2026-03-26 09:14:36,195 | INFO     | [2026-03-26 09:14 BJ] 🦅 洗盘反抽雷达锁定: SIGNUSDT | 当前价: 0.0372 | 15m跌幅: 6.88% | 爆量倍数: 4.47 | ABC反弹比例: 11.98% | TP档位: BASE(1.00%)
+2026-03-26 09:14:36,441 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+2026-03-26 09:15:37,636 | INFO     | [2026-03-26 09:15 BJ] 🦅 洗盘反抽雷达锁定: MUSDT | 当前价: 2.3708 | 15m跌幅: 4.81% | 爆量倍数: 4.19 | ABC反弹比例: 25.19% | TP档位: BASE(1.00%)
+2026-03-26 09:15:37,879 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+2026-03-26 09:57:35,215 | INFO     | [2026-03-26 09:57 BJ] 🦅 洗盘反抽雷达锁定: MONUSDT | 当前价: 0.0264 | 15m跌幅: 3.01% | 爆量倍数: 4.82 | ABC反弹比例: 16.05% | TP档位: BASE(1.00%)
+2026-03-26 09:57:35,442 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
+
+
