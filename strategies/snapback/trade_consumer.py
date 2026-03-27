@@ -1309,6 +1309,61 @@ def finalize_consumer_signal_none(
     return result
 
 
+def finalize_consumer_loop_state(
+    account: str,
+    *,
+    mode: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    audit_enabled: bool,
+    scan_gate: dict[str, Any] | None = None,
+    candidate_payload: dict[str, Any] | None = None,
+    candidate_reason: str | None = None,
+    candidate_errors: Any = None,
+    extra_reconcile_symbols_count: int = 0,
+    timing_fields: dict[str, Any] | None = None,
+    signal_eval_started_utc_ms: int | None = None,
+    signal_eval_finished_utc_ms: int | None = None,
+) -> dict[str, Any]:
+    if mode == 'scan_blocked':
+        result = finalize_consumer_scan_skip(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+        )
+        if scan_gate is not None:
+            result['skip_reason'] = str(scan_gate.get('skip_reason') or 'scan_gate_blocked')
+        return result
+    if mode == 'no_candidate_data':
+        return finalize_consumer_no_candidate_data(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+            candidate_reason=candidate_reason,
+            candidate_errors=candidate_errors,
+            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+            audit_enabled=audit_enabled,
+        )
+    if mode == 'signal_none':
+        if candidate_payload is None:
+            raise ValueError('candidate_payload is required when mode=signal_none')
+        return finalize_consumer_signal_none(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+            candidate_payload=candidate_payload,
+            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+            timing_fields=timing_fields or {},
+            signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+            signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+            audit_enabled=audit_enabled,
+        )
+    raise ValueError(f'unsupported finalize mode: {mode}')
+
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False

@@ -42,9 +42,7 @@ from strategies.snapback.trade_consumer import (
     build_consumer_reconcile_plan,
     consume_signal,
     consumer_signal_digest,
-    finalize_consumer_no_candidate_data,
-    finalize_consumer_scan_skip,
-    finalize_consumer_signal_none,
+    finalize_consumer_loop_state,
     prepare_consumer_loop_gate,
 )
 
@@ -713,25 +711,29 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     )
     scan_gate = loop_gate['scan_gate']
     if not loop_gate.get('ok_to_scan'):
-        finalize_consumer_scan_skip(
+        finalize_consumer_loop_state(
             account,
+            mode='scan_blocked',
             current_time_ms=current_time_ms,
             current_time_bj=current_time_bj,
             symbols=list(merged_full_df.keys()),
+            audit_enabled=audit_enabled,
+            scan_gate=scan_gate,
         )
         return
 
     exchange_activity_snapshot = dict(loop_gate.get('exchange_snapshot') or exchange_activity_snapshot)
     if not candidate_payload:
-        finalize_consumer_no_candidate_data(
+        finalize_consumer_loop_state(
             account,
+            mode='no_candidate_data',
             current_time_ms=current_time_ms,
             current_time_bj=current_time_bj,
             symbols=list(merged_full_df.keys()),
+            audit_enabled=audit_enabled,
             candidate_reason=candidate_md_res.get('reason'),
             candidate_errors=candidate_md_res.get('errors'),
             extra_reconcile_symbols_count=len(extra_reconcile_symbols),
-            audit_enabled=audit_enabled,
         )
         return
 
@@ -792,17 +794,18 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             })
 
     if not signal:
-        finalize_consumer_signal_none(
+        finalize_consumer_loop_state(
             account,
+            mode='signal_none',
             current_time_ms=current_time_ms,
             current_time_bj=current_time_bj,
             symbols=list(merged_full_df.keys()),
+            audit_enabled=audit_enabled,
             candidate_payload=candidate_payload,
             extra_reconcile_symbols_count=len(extra_reconcile_symbols),
             timing_fields=timing_fields,
             signal_eval_started_utc_ms=signal_eval_started_utc_ms,
             signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
-            audit_enabled=audit_enabled,
         )
         return
 
