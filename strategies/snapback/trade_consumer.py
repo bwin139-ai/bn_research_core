@@ -733,6 +733,106 @@ def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
     }
 
 
+
+def audit_consumer_orphan_exchange_activity(
+    account: str,
+    symbols: list[str],
+    current_time_ms: int,
+    current_time_bj: str,
+    *,
+    source: str,
+    audit_enabled: bool,
+    snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    if not audit_enabled:
+        return findings
+
+    local_active_symbols = set(snapshot.get('local_active_symbols') or []) if snapshot else collect_consumer_local_activity_symbols(account)
+    all_positions_res = (snapshot or {}).get('positions') if snapshot else None
+    if not all_positions_res:
+        all_positions_res = get_positions(account)
+
+    positions_by_symbol: dict[str, list[dict[str, Any]]] = dict((snapshot or {}).get('positions_by_symbol') or {})
+    if not positions_by_symbol and all_positions_res.get('ok'):
+        for row in all_positions_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if not symbol:
+                continue
+            positions_by_symbol.setdefault(symbol, []).append(row)
+
+    seen: set[str] = set()
+    for raw_symbol in symbols:
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        if symbol in local_active_symbols:
+            continue
+
+        exch = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+        mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
+        mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
+
+        pos_res = exch.get('position') or {}
+        ord_res = exch.get('orders') or {}
+        symbol_positions = positions_by_symbol.get(symbol) or []
+        has_long_position = bool(pos_res.get('ok') and pos_res.get('data'))
+        has_any_position = bool(symbol_positions)
+        has_orders = bool(ord_res.get('ok') and ord_res.get('data'))
+        if not has_any_position and not has_orders:
+            continue
+
+        findings.append({
+            'symbol': symbol,
+            'has_any_position': has_any_position,
+            'has_long_position': has_long_position,
+            'has_orders': has_orders,
+        })
+
+        exchange_snapshot = {
+            'position': pos_res,
+            'orders': ord_res,
+            'positions_all_sides': {
+                'ok': all_positions_res.get('ok', False),
+                'reason': all_positions_res.get('reason'),
+                'data': symbol_positions,
+            },
+        }
+        write_event(account, 'orphan_exchange_activity', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'exchange_snapshot': exchange_snapshot,
+        })
+        if has_any_position:
+            write_event(account, 'orphan_exchange_position', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
+            })
+        if has_any_position and not has_long_position:
+            write_event(account, 'orphan_exchange_nonlong_position', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
+            })
+        if has_orders:
+            write_event(account, 'orphan_exchange_open_orders', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': source,
+                'exchange_snapshot': ord_res,
+            })
+    return findings
+
+
 def bootstrap_consumer(
     account: str,
     strategy_cfg: dict[str, Any],
