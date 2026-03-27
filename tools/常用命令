@@ -1,4 +1,5 @@
 ps aux | grep python
+ps aux | grep '[s]trategies/snapback/run_live.py'
 ```bash
 
 ```

@@ -25,7 +25,7 @@ FILES = [
     # "core/analysis/sim_equity_curves.py",
     # "=================================",
     # "core/config_loader.py",
-     "core/runtime_state.py",
+    # "core/runtime_state.py",
     # "core/analysis/analyzer.py",
     # "core/analysis/top1_equity_curve.py",
     # "core/analysis/visualizer.py",
@@ -33,7 +33,7 @@ FILES = [
     # "core/engine/data_feeder.py",
     # "core/live/binance_client.py",
     # "core/live/binance_exec.py",
-     "core/live/live_state.py",
+    # "core/live/live_state.py",
     # "core/live/audit_log.py",
     # "core/live/market_data.py",
     # "core/live/custom_id.py",
@@ -46,6 +46,8 @@ FILES = [
     # "=================================",
     #"sim_live_audit/audit_signal_snapshot_diff.py",
     #"sim_live_audit/audit_signal_window_diff.py",
+    # "=================================",
+    "PROJECT_BASELINE_v1.md",
 ]
 
 
