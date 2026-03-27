@@ -16,21 +16,9 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.config_loader import StrategyConfig
-from core.live.audit_log import append_stage_record, get_live_audit_dir, get_stage_audit_dir, write_event, write_runner_heartbeat, write_runner_started
-from core.live.binance_exec import (
-    cancel_order,
-    get_open_orders,
-    get_order,
-    get_position,
-    place_entry_order,
-    place_sl_order,
-    place_time_stop_order,
-    place_tp_order,
-)
-from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
+from core.live.audit_log import append_stage_record, get_live_audit_dir, write_event, write_runner_heartbeat, write_runner_started
 from core.live.live_state import (
     load_cooldown_map,
-    load_symbol_state,
     mark_loop_heartbeat,
     sync_cooldown_map,
 )
@@ -47,14 +35,6 @@ from strategies.snapback.trade_consumer import (
 )
 
 BJ = timezone(timedelta(hours=8))
-FIXED_POSITION_SIDE = 'LONG'
-STRAT_CODE = 'SNP'
-LEG_ENTRY = 'EN'
-LEG_TP = 'TP'
-LEG_SL = 'SL'
-LEG_TIME_STOP = 'TS'
-TERMINAL_ORDER_STATUSES = {'FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'}
-FILLED_ORDER_STATUSES = {'FILLED'}
 
 
 def setup_logging() -> None:
@@ -78,10 +58,6 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
 
-
-def _cooldown_until(current_time_ms: int, cooldown_mins: int) -> tuple[int, str | None]:
-    cooldown_until_ts = int(current_time_ms) + int(cooldown_mins) * 60 * 1000
-    return cooldown_until_ts, _fmt_bj_from_ms(cooldown_until_ts)
 
 
 def _hydrate_strategy_cooldowns(strategy: WashoutSnapbackStrategy, account: str, current_time_ms: int) -> None:
@@ -186,12 +162,6 @@ def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
     if enabled:
         send_to_bot(message, label=label)
 
-
-def _stage_audit_path(account: str, stage: str) -> Path:
-    account_key = str(account).strip()
-    if not account_key:
-        raise ValueError('account must not be empty')
-    return get_stage_audit_dir() / f'snapback_{account_key}.{stage}.jsonl'
 
 
 def _json_default(v: Any) -> Any:
