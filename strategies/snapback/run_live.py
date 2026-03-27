@@ -31,7 +31,6 @@ from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_roo
 from core.live.live_state import (
     load_cooldown_map,
     load_symbol_state,
-    mark_last_processed_bar,
     mark_loop_heartbeat,
     sync_cooldown_map,
 )
@@ -45,6 +44,9 @@ from strategies.snapback.trade_consumer import (
     consume_signal,
     consumer_signal_digest,
     evaluate_consumer_signal_scan_gate,
+    finalize_consumer_no_candidate_data,
+    finalize_consumer_scan_skip,
+    finalize_consumer_signal_none,
     maintain_consumer_once,
 )
 
@@ -722,22 +724,26 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         source='loop',
     )
     if not scan_gate.get('ok_to_scan'):
-        for symbol in merged_full_df.keys():
-            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        finalize_consumer_scan_skip(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=list(merged_full_df.keys()),
+        )
         return
 
     exchange_activity_snapshot = dict(scan_gate.get('exchange_snapshot') or exchange_activity_snapshot)
     if not candidate_payload:
-        if audit_enabled:
-            write_event(account, 'signal_scan_skipped_no_candidate_data', {
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'candidate_reason': candidate_md_res.get('reason'),
-                'candidate_errors': candidate_md_res.get('errors'),
-                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
-            })
-        for symbol in merged_full_df.keys():
-            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        finalize_consumer_no_candidate_data(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=list(merged_full_df.keys()),
+            candidate_reason=candidate_md_res.get('reason'),
+            candidate_errors=candidate_md_res.get('errors'),
+            extra_reconcile_symbols_count=len(extra_reconcile_symbols),
+            audit_enabled=audit_enabled,
+        )
         return
 
     cross_section = candidate_cross_section
@@ -793,31 +799,18 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             })
 
     if not signal:
-        if audit_enabled:
-            payload = {
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
-                'freshest_bar_bj': candidate_payload.get('freshest_bar_bj'),
-                'stale_cutoff_bj': candidate_payload.get('stale_cutoff_bj'),
-                'symbol_count': candidate_payload['symbol_count'],
-                'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
-                'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
-            }
-            write_event(account, 'signal_none', payload)
-            _write_stage_record(account, 'stage6_signal', {
-                **payload,
-                'event': 'signal_none',
-                'selected_symbol': None,
-                'signal_digest': None,
-                **timing_fields,
-                'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
-                'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
-                'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
-                'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
-            })
-        for symbol in merged_full_df.keys():
-            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        finalize_consumer_signal_none(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=list(merged_full_df.keys()),
+            candidate_payload=candidate_payload,
+            extra_reconcile_symbols_count=len(extra_reconcile_symbols),
+            timing_fields=timing_fields,
+            signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+            signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+            audit_enabled=audit_enabled,
+        )
         return
 
     consume_signal(

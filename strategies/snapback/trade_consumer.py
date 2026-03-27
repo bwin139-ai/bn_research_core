@@ -1162,6 +1162,107 @@ def evaluate_consumer_signal_scan_gate(
     }
 
 
+def finalize_consumer_scan_skip(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    processed_symbols = sorted({
+        str(symbol).upper().strip()
+        for symbol in (symbols or [])
+        if str(symbol).strip()
+    })
+    for symbol in processed_symbols:
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+    return {
+        'processed_symbols': processed_symbols,
+        'processed_count': len(processed_symbols),
+    }
+
+
+def finalize_consumer_no_candidate_data(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    candidate_reason: str | None,
+    candidate_errors: Any,
+    extra_reconcile_symbols_count: int,
+    audit_enabled: bool,
+) -> dict[str, Any]:
+    if audit_enabled:
+        write_event(account, 'signal_scan_skipped_no_candidate_data', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'candidate_reason': candidate_reason,
+            'candidate_errors': candidate_errors,
+            'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
+        })
+    result = finalize_consumer_scan_skip(
+        account,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+    )
+    result.update({
+        'skip_reason': 'no_candidate_data',
+        'candidate_reason': candidate_reason,
+    })
+    return result
+
+
+def finalize_consumer_signal_none(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    candidate_payload: dict[str, Any],
+    extra_reconcile_symbols_count: int,
+    timing_fields: dict[str, Any],
+    signal_eval_started_utc_ms: int | None,
+    signal_eval_finished_utc_ms: int | None,
+    audit_enabled: bool,
+) -> dict[str, Any]:
+    payload = {
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
+        'freshest_bar_bj': candidate_payload.get('freshest_bar_bj'),
+        'stale_cutoff_bj': candidate_payload.get('stale_cutoff_bj'),
+        'symbol_count': candidate_payload['symbol_count'],
+        'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
+        'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
+    }
+    if audit_enabled:
+        write_event(account, 'signal_none', payload)
+        _write_stage_record(account, 'stage6_signal', {
+            **payload,
+            'event': 'signal_none',
+            'selected_symbol': None,
+            'signal_digest': None,
+            **timing_fields,
+            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+            'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
+            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+            'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
+        })
+    result = finalize_consumer_scan_skip(
+        account,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+    )
+    result.update({
+        'skip_reason': 'signal_none',
+    })
+    return result
+
+
+
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
     state = load_live_state(account)
