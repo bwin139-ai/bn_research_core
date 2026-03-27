@@ -892,6 +892,233 @@ def bootstrap_consumer(
     }
 
 
+def bootstrap_consumer_gate(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    live_cfg: dict[str, Any],
+    *,
+    candidate_symbols: list[str],
+    source: str = 'startup',
+) -> dict[str, Any]:
+    audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    bootstrap_res = bootstrap_consumer(
+        account,
+        strategy_cfg,
+        live_cfg,
+        source=source,
+    )
+    current_time_ms = int(bootstrap_res['bar_ts'])
+    current_time_bj = str(bootstrap_res['bar_bj'])
+    startup_snapshot = dict(bootstrap_res.get('exchange_snapshot') or {})
+    startup_symbols = sorted(
+        set(bootstrap_res.get('local_active_symbols') or [])
+        | {str(symbol).upper().strip() for symbol in (candidate_symbols or []) if str(symbol).strip()}
+        | set(startup_snapshot.get('symbols') or set())
+    )
+    startup_snapshot['startup_symbols'] = startup_symbols
+
+    if audit_enabled and not bootstrap_res.get('exchange_activity_snapshot_ok'):
+        write_event(account, 'exchange_activity_snapshot_error', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'exchange_snapshot': {
+                'positions': startup_snapshot.get('positions'),
+                'orders': startup_snapshot.get('orders'),
+            },
+        })
+
+    orphan_findings = audit_consumer_orphan_exchange_activity(
+        account,
+        startup_symbols,
+        current_time_ms,
+        current_time_bj,
+        source=source,
+        audit_enabled=audit_enabled,
+        snapshot=startup_snapshot,
+    )
+    active_state_errors = list(bootstrap_res.get('active_state_errors') or [])
+    blocking = bool(bootstrap_res.get('blocking') or orphan_findings)
+    return {
+        'blocking': blocking,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'pending_reconcile_error': bool(bootstrap_res.get('pending_reconcile_error')),
+        'open_trade_reconcile_error': bool(bootstrap_res.get('open_trade_reconcile_error')),
+        'exchange_activity_snapshot_ok': bool(bootstrap_res.get('exchange_activity_snapshot_ok')),
+        'orphan_findings': orphan_findings,
+        'active_state_errors': active_state_errors,
+        'exchange_snapshot': startup_snapshot,
+        'local_active_symbols': list(bootstrap_res.get('local_active_symbols') or []),
+        'exchange_symbols': list(bootstrap_res.get('exchange_symbols') or []),
+    }
+
+
+def evaluate_consumer_signal_scan_gate(
+    account: str,
+    live_cfg: dict[str, Any],
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    candidate_symbols: list[str],
+    extra_reconcile_symbols: list[str],
+    latest_closes: dict[str, float],
+    exchange_activity_snapshot: dict[str, Any],
+    maintain_res: dict[str, Any],
+    source: str = 'loop',
+) -> dict[str, Any]:
+    audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    snapshot = dict(exchange_activity_snapshot or {})
+    if audit_enabled and not snapshot.get('ok'):
+        write_event(account, 'exchange_activity_snapshot_error', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'exchange_snapshot': {
+                'positions': snapshot.get('positions'),
+                'orders': snapshot.get('orders'),
+            },
+        })
+
+    snapshot['local_active_symbols'] = sorted(
+        set(snapshot.get('local_active_symbols') or [])
+        | set(collect_consumer_local_activity_symbols(account))
+    )
+    local_active_symbols = sorted(set(snapshot.get('local_active_symbols') or []))
+    exchange_activity_symbols = sorted(set(snapshot.get('symbols') or set()))
+    orphan_findings = audit_consumer_orphan_exchange_activity(
+        account,
+        sorted(set(candidate_symbols or []) | set(exchange_activity_symbols)),
+        current_time_ms,
+        current_time_bj,
+        source=source,
+        audit_enabled=audit_enabled,
+        snapshot=snapshot,
+    )
+
+    pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
+    open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
+    active_state_errors = list(maintain_res.get('active_state_errors') or [])
+    required_reconcile_symbols = sorted(set(local_active_symbols) | set(exchange_activity_symbols))
+    latest_close_symbols = {str(symbol).upper().strip() for symbol in (latest_closes or {}).keys()}
+    missing_reconcile_symbols = [symbol for symbol in required_reconcile_symbols if symbol not in latest_close_symbols]
+
+    if orphan_findings:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_orphan_exchange_activity', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'orphan_exchange_activity': orphan_findings,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+            })
+        return {
+            'ok_to_scan': False,
+            'skip_reason': 'orphan_exchange_activity',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+        }
+
+    if pending_reconcile_error or open_trade_reconcile_error:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_reconcile_query_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'pending_reconcile_error': pending_reconcile_error,
+                'open_trade_reconcile_error': open_trade_reconcile_error,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+            })
+        return {
+            'ok_to_scan': False,
+            'skip_reason': 'reconcile_query_error',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+        }
+
+    if missing_reconcile_symbols:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_missing_reconcile_data', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'missing_reconcile_symbols': missing_reconcile_symbols,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+            })
+        return {
+            'ok_to_scan': False,
+            'skip_reason': 'missing_reconcile_data',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+        }
+
+    if not snapshot.get('ok'):
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_exchange_activity_query_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+                'exchange_snapshot': {
+                    'positions': snapshot.get('positions'),
+                    'orders': snapshot.get('orders'),
+                },
+            })
+        return {
+            'ok_to_scan': False,
+            'skip_reason': 'exchange_activity_query_error',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+        }
+
+    if active_state_errors:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_active_state_error', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'active_state_errors': active_state_errors,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+            })
+        return {
+            'ok_to_scan': False,
+            'skip_reason': 'active_state_error',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+        }
+
+    return {
+        'ok_to_scan': True,
+        'skip_reason': '',
+        'orphan_findings': orphan_findings,
+        'missing_reconcile_symbols': missing_reconcile_symbols,
+        'active_state_errors': active_state_errors,
+        'exchange_snapshot': snapshot,
+        'local_active_symbols': local_active_symbols,
+        'exchange_activity_symbols': exchange_activity_symbols,
+    }
+
+
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
     state = load_live_state(account)
