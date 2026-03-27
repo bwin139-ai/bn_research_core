@@ -60,17 +60,97 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
 
 
-def _load_signal_envelope(path: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    data = _load_json(path)
-    signal = data.get('signal') if isinstance(data.get('signal'), dict) else data
-    context = data.get('context') if isinstance(data.get('context'), dict) else {}
-    if not isinstance(signal, dict):
-        raise TypeError('signal 文件格式错误: signal 必须是 dict')
-    required = ['symbol', 'signal_time', 'signal_time_bj', 'current_price', 'tp_price', 'sl_price']
-    for key in required:
-        if key not in signal:
-            raise KeyError(f'signal 缺少必要字段: {key}')
-    return signal, context
+def _require_dict(data: Any, *, label: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise TypeError(f'{label} 必须是 dict')
+    return data
+
+
+def _require_keys(data: dict[str, Any], keys: list[str], *, label: str) -> None:
+    for key in keys:
+        if key not in data:
+            raise KeyError(f'{label} 缺少必要字段: {key}')
+
+
+def _require_nonempty_str(value: Any, *, label: str) -> str:
+    out = str(value or '').strip()
+    if not out:
+        raise ValueError(f'{label} 不能为空')
+    return out
+
+
+def _require_int_like(value: Any, *, label: str, allow_none: bool = False) -> int | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise ValueError(f'{label} 不能为空')
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f'{label} 必须是 int') from exc
+
+
+def _require_positive_float(value: Any, *, label: str) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f'{label} 必须是 float') from exc
+    if out <= 0:
+        raise ValueError(f'{label} 必须 > 0')
+    return out
+
+
+def _normalize_signal_envelope(path: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    data = _require_dict(_load_json(path), label='signal 文件顶层')
+    _require_keys(data, ['signal', 'context'], label='signal 文件顶层')
+    signal = _require_dict(data.get('signal'), label='signal')
+    context = _require_dict(data.get('context'), label='context')
+
+    _require_keys(signal, ['symbol', 'action', 'signal_time', 'signal_time_bj', 'current_price', 'tp_price', 'sl_price'], label='signal')
+    _require_keys(context, ['current_time_ms', 'current_time_bj', 'c_bar_ts', 'c_bar_bj', 'source'], label='context')
+
+    normalized_signal = dict(signal)
+    normalized_signal['symbol'] = _require_nonempty_str(signal.get('symbol'), label='signal.symbol').upper()
+    normalized_signal['action'] = _require_nonempty_str(signal.get('action'), label='signal.action')
+    normalized_signal['signal_time'] = _require_int_like(signal.get('signal_time'), label='signal.signal_time')
+    normalized_signal['signal_time_bj'] = _require_nonempty_str(signal.get('signal_time_bj'), label='signal.signal_time_bj')
+    normalized_signal['current_price'] = _require_positive_float(signal.get('current_price'), label='signal.current_price')
+    normalized_signal['tp_price'] = _require_positive_float(signal.get('tp_price'), label='signal.tp_price')
+    normalized_signal['sl_price'] = _require_positive_float(signal.get('sl_price'), label='signal.sl_price')
+
+    normalized_context = dict(context)
+    normalized_context['current_time_ms'] = _require_int_like(context.get('current_time_ms'), label='context.current_time_ms')
+    normalized_context['current_time_bj'] = _require_nonempty_str(context.get('current_time_bj'), label='context.current_time_bj')
+    normalized_context['c_bar_ts'] = _require_int_like(context.get('c_bar_ts'), label='context.c_bar_ts', allow_none=True)
+    normalized_context['c_bar_bj'] = None if context.get('c_bar_bj') is None else _require_nonempty_str(context.get('c_bar_bj'), label='context.c_bar_bj')
+    normalized_context['source'] = _require_nonempty_str(context.get('source'), label='context.source')
+    return normalized_signal, normalized_context
+
+
+def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'ok': bool(result.get('ok')),
+        'blocking': bool(result.get('blocking', False)),
+        'symbol': result.get('symbol'),
+        'outcome': result.get('outcome'),
+        'reason': result.get('reason'),
+        'order_root': result.get('order_root'),
+        'entry_position_confirmed': result.get('entry_position_confirmed'),
+        'entry_still_pending': result.get('entry_still_pending'),
+        'entry_bracket_gap_critical': result.get('entry_bracket_gap_critical'),
+        'pending_reconcile_error': result.get('pending_reconcile_error'),
+        'open_trade_reconcile_error': result.get('open_trade_reconcile_error'),
+        'pending_symbols': result.get('pending_symbols'),
+        'open_symbols': result.get('open_symbols'),
+        'active_state_errors': result.get('active_state_errors'),
+    }
+
+
+def _print_result(tag: str, result: dict[str, Any]) -> None:
+    print(f'===== {tag} summary =====')
+    print(json.dumps(_summarize_result(result), ensure_ascii=False, indent=2, default=str))
+    print(f'===== {tag} full =====')
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
 def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
@@ -151,10 +231,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Snapback consumer runner')
     parser.add_argument('--config', default='strategies/snapback/config.json')
     parser.add_argument('--live-config', default='strategies/snapback/live_config.json')
-    parser.add_argument('--signal-file', required=True)
-    parser.add_argument('--maintain-loop', action='store_true')
+    parser.add_argument('--mode', choices=['feed', 'feed_and_maintain', 'maintain_only'], default='feed', help='feed=只投喂一次; feed_and_maintain=投喂后继续维护; maintain_only=不投喂，只跑维护')
+    parser.add_argument('--signal-file')
     parser.add_argument('--maintain-interval-secs', type=int, default=60)
-    parser.add_argument('--maintain-iterations', type=int, default=0, help='0 means infinite when --maintain-loop is set')
+    parser.add_argument('--maintain-iterations', type=int, default=0, help='0 means infinite when mode requires maintain loop')
     args = parser.parse_args()
 
     setup_logging()
@@ -167,30 +247,32 @@ def main() -> None:
     if not account:
         raise SystemExit('live_config account 不能为空')
 
-    signal, context = _load_signal_envelope(args.signal_file)
-    current_time_ms = int(context.get('current_time_ms') or signal.get('signal_time') or _now_utc_ms())
-    current_time_bj = str(context.get('current_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
-    c_bar_ts = context.get('c_bar_ts')
-    c_bar_bj = context.get('c_bar_bj')
+    requires_signal = args.mode in {'feed', 'feed_and_maintain'}
+    if requires_signal and not args.signal_file:
+        raise SystemExit('当前 mode 需要 --signal-file')
+    if (not requires_signal) and args.signal_file:
+        raise SystemExit('maintain_only 模式禁止传入 --signal-file')
 
-    exchange_snapshot = _collect_exchange_activity_snapshot(account)
     mark_loop_heartbeat(account, runner_pid=os.getpid())
-    result = consume_signal(
-        account,
-        strategy_cfg,
-        live_cfg,
-        signal=signal,
-        current_time_ms=current_time_ms,
-        current_time_bj=current_time_bj,
-        c_bar_ts=c_bar_ts,
-        c_bar_bj=c_bar_bj,
-        source='manual_feed',
-        exchange_snapshot=exchange_snapshot,
-    )
-    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
-    if not args.maintain_loop:
-        return
+    if requires_signal:
+        signal, context = _normalize_signal_envelope(args.signal_file)
+        exchange_snapshot = _collect_exchange_activity_snapshot(account)
+        consume_res = consume_signal(
+            account,
+            strategy_cfg,
+            live_cfg,
+            signal=signal,
+            current_time_ms=int(context['current_time_ms']),
+            current_time_bj=str(context['current_time_bj']),
+            c_bar_ts=context.get('c_bar_ts'),
+            c_bar_bj=context.get('c_bar_bj'),
+            source=str(context['source']),
+            exchange_snapshot=exchange_snapshot,
+        )
+        _print_result('consume', consume_res)
+        if args.mode == 'feed':
+            return
 
     iterations = 0
     while True:
@@ -207,7 +289,7 @@ def main() -> None:
             source='manual_maintain',
             exchange_snapshot=exchange_snapshot,
         )
-        print(json.dumps(maintain_res, ensure_ascii=False, indent=2, default=str))
+        _print_result('maintain', maintain_res)
         iterations += 1
         time.sleep(max(1, int(args.maintain_interval_secs)))
 

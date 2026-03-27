@@ -645,6 +645,38 @@ def _clear_symbol_error(account: str, symbol: str) -> None:
     mark_error(account, symbol, error_code=None, error_message=None, error_bj=None)
 
 
+def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
+    state = load_live_state(account)
+    pending_symbols: list[str] = []
+    open_symbols: list[str] = []
+    active_state_errors: list[dict[str, Any]] = []
+    for raw_symbol, payload in (state.get('symbols') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            continue
+        if payload.get('pending_entry_order'):
+            pending_symbols.append(symbol)
+        if payload.get('open_trade'):
+            open_symbols.append(symbol)
+        error_code = payload.get('last_error_code')
+        error_message = payload.get('last_error_message')
+        error_bj = payload.get('last_error_bj')
+        if error_code or error_message:
+            active_state_errors.append({
+                'symbol': symbol,
+                'last_error_code': error_code,
+                'last_error_message': error_message,
+                'last_error_bj': error_bj,
+            })
+    return {
+        'pending_symbols': sorted(set(pending_symbols)),
+        'open_symbols': sorted(set(open_symbols)),
+        'active_state_errors': sorted(active_state_errors, key=lambda x: (str(x.get('symbol') or ''), str(x.get('last_error_code') or ''))),
+    }
+
+
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
@@ -2681,19 +2713,17 @@ def maintain_consumer_once(
         source=source,
         snapshot=exchange_snapshot,
     )
-    state = load_live_state(account)
-    touched_symbols = []
-    for raw_symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('pending_entry_order') or payload.get('open_trade'):
-            touched_symbols.append(str(raw_symbol).upper().strip())
+    state_summary = _collect_consumer_state_summary(account)
+    touched_symbols = sorted(set(state_summary['pending_symbols']) | set(state_summary['open_symbols']))
     return {
         'ok': not (pending_reconcile_error or open_trade_reconcile_error),
         'blocking': bool(pending_reconcile_error or open_trade_reconcile_error),
         'pending_reconcile_error': pending_reconcile_error,
         'open_trade_reconcile_error': open_trade_reconcile_error,
-        'touched_symbols': sorted(set(touched_symbols)),
+        'touched_symbols': touched_symbols,
+        'pending_symbols': state_summary['pending_symbols'],
+        'open_symbols': state_summary['open_symbols'],
+        'active_state_errors': state_summary['active_state_errors'],
         'latest_closes_symbols': sorted(set((latest_closes or {}).keys())),
     }
 
