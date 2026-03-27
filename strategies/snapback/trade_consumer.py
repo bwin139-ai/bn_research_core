@@ -653,6 +653,39 @@ def precheck_consumer_exchange_blockers(account: str, symbol: str, *, snapshot: 
     return _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
 
 
+def collect_consumer_exchange_activity_snapshot(account: str) -> dict[str, Any]:
+    symbols: set[str] = set()
+    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    open_orders_by_symbol: dict[str, list[dict[str, Any]]] = {}
+
+    pos_res = get_positions(account)
+    if pos_res.get('ok'):
+        for row in pos_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if not symbol:
+                continue
+            symbols.add(symbol)
+            positions_by_symbol.setdefault(symbol, []).append(row)
+
+    ord_res = get_open_orders(account)
+    if ord_res.get('ok'):
+        for row in ord_res.get('data') or []:
+            symbol = str(row.get('symbol') or '').upper().strip()
+            if not symbol:
+                continue
+            symbols.add(symbol)
+            open_orders_by_symbol.setdefault(symbol, []).append(row)
+
+    return {
+        'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
+        'symbols': symbols,
+        'positions': pos_res,
+        'orders': ord_res,
+        'positions_by_symbol': positions_by_symbol,
+        'open_orders_by_symbol': open_orders_by_symbol,
+    }
+
+
 def collect_consumer_local_activity_symbols(account: str) -> set[str]:
     state = load_live_state(account)
     out: set[str] = set()
@@ -699,6 +732,64 @@ def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
         'active_state_errors': sorted(active_state_errors, key=lambda x: (str(x.get('symbol') or ''), str(x.get('last_error_code') or ''))),
     }
 
+
+def bootstrap_consumer(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    live_cfg: dict[str, Any],
+    *,
+    source: str = 'startup',
+    current_time_ms: int | None = None,
+    current_time_bj: str | None = None,
+    exchange_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if current_time_ms is None:
+        current_time_ms = int(time.time() * 1000)
+    if current_time_bj is None:
+        current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
+
+    snapshot = dict(exchange_snapshot) if exchange_snapshot is not None else collect_consumer_exchange_activity_snapshot(account)
+    raw_symbols = snapshot.get('symbols') or set()
+    symbols = {str(symbol).upper().strip() for symbol in raw_symbols if str(symbol).strip()}
+    snapshot['symbols'] = symbols
+    local_active_symbols = sorted(collect_consumer_local_activity_symbols(account))
+    snapshot['local_active_symbols'] = local_active_symbols
+
+    maintain_res = maintain_consumer_once(
+        account,
+        strategy_cfg,
+        live_cfg,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        latest_closes={},
+        source=source,
+        exchange_snapshot=snapshot,
+    )
+    pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
+    open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
+    active_state_errors = list(maintain_res.get('active_state_errors') or [])
+    blocking = bool(
+        pending_reconcile_error
+        or open_trade_reconcile_error
+        or (not snapshot.get('ok'))
+        or active_state_errors
+    )
+    return {
+        'ok': not blocking,
+        'blocking': blocking,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'pending_reconcile_error': pending_reconcile_error,
+        'open_trade_reconcile_error': open_trade_reconcile_error,
+        'exchange_activity_snapshot_ok': bool(snapshot.get('ok')),
+        'exchange_snapshot': snapshot,
+        'exchange_symbols': sorted(symbols),
+        'local_active_symbols': local_active_symbols,
+        'touched_symbols': list(maintain_res.get('touched_symbols') or []),
+        'pending_symbols': list(maintain_res.get('pending_symbols') or []),
+        'open_symbols': list(maintain_res.get('open_symbols') or []),
+        'active_state_errors': active_state_errors,
+    }
 
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:

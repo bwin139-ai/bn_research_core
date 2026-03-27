@@ -15,10 +15,15 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.config_loader import StrategyConfig
-from core.live.binance_exec import get_open_orders, get_positions
-from core.live.live_state import load_live_state, mark_loop_heartbeat
+from core.live.live_state import mark_loop_heartbeat
 from core.live.market_data import build_live_inputs
-from strategies.snapback.trade_consumer import consume_signal, maintain_consumer_once
+from strategies.snapback.trade_consumer import (
+    bootstrap_consumer,
+    collect_consumer_exchange_activity_snapshot,
+    collect_consumer_local_activity_symbols,
+    consume_signal,
+    maintain_consumer_once,
+)
 
 BJ = timezone(timedelta(hours=8))
 
@@ -143,6 +148,8 @@ def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:
         'pending_symbols': result.get('pending_symbols'),
         'open_symbols': result.get('open_symbols'),
         'active_state_errors': result.get('active_state_errors'),
+        'exchange_activity_snapshot_ok': result.get('exchange_activity_snapshot_ok'),
+        'local_active_symbols': result.get('local_active_symbols'),
     }
 
 
@@ -153,50 +160,6 @@ def _print_result(tag: str, result: dict[str, Any]) -> None:
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
-def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
-    symbols: set[str] = set()
-    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    open_orders_by_symbol: dict[str, list[dict[str, Any]]] = {}
-
-    pos_res = get_positions(account)
-    if pos_res.get('ok'):
-        for row in pos_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            positions_by_symbol.setdefault(symbol, []).append(row)
-
-    ord_res = get_open_orders(account)
-    if ord_res.get('ok'):
-        for row in ord_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            open_orders_by_symbol.setdefault(symbol, []).append(row)
-
-    return {
-        'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
-        'symbols': symbols,
-        'positions': pos_res,
-        'orders': ord_res,
-        'positions_by_symbol': positions_by_symbol,
-        'open_orders_by_symbol': open_orders_by_symbol,
-    }
-
-
-def _active_symbols_from_state(account: str) -> set[str]:
-    state = load_live_state(account)
-    out: set[str] = set()
-    for symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('pending_entry_order') or payload.get('open_trade'):
-            out.add(str(symbol).upper().strip())
-    return out
-
-
 def _build_consumer_latest_closes(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> tuple[dict[str, float], int, str, dict[str, Any] | None, dict[str, Any]]:
     runtime_cfg = (strategy_cfg or {}).get('runtime') or {}
     if 'max_history_window_mins' not in runtime_cfg:
@@ -205,8 +168,8 @@ def _build_consumer_latest_closes(account: str, strategy_cfg: dict[str, Any], li
     if history_window_mins <= 0:
         raise ValueError('strategy_cfg.runtime.max_history_window_mins must be > 0')
 
-    exchange_snapshot = _collect_exchange_activity_snapshot(account)
-    symbols = sorted(_active_symbols_from_state(account) | set(exchange_snapshot.get('symbols') or set()))
+    exchange_snapshot = collect_consumer_exchange_activity_snapshot(account)
+    symbols = sorted(collect_consumer_local_activity_symbols(account) | set(exchange_snapshot.get('symbols') or set()))
     if not symbols:
         now_ms = _now_utc_ms()
         return {}, now_ms, _fmt_bj_from_ms(now_ms) or '', None, exchange_snapshot
@@ -255,9 +218,19 @@ def main() -> None:
 
     mark_loop_heartbeat(account, runner_pid=os.getpid())
 
+    bootstrap_res = bootstrap_consumer(
+        account,
+        strategy_cfg,
+        live_cfg,
+        source='manual_startup',
+    )
+    _print_result('bootstrap', bootstrap_res)
+    if bootstrap_res.get('blocking'):
+        raise SystemExit('bootstrap blocked: reconcile/state/exchange snapshot error detected')
+
     if requires_signal:
         signal, context = _normalize_signal_envelope(args.signal_file)
-        exchange_snapshot = _collect_exchange_activity_snapshot(account)
+        exchange_snapshot = dict(bootstrap_res.get('exchange_snapshot') or {})
         consume_res = consume_signal(
             account,
             strategy_cfg,

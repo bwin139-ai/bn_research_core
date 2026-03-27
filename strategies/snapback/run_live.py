@@ -42,6 +42,8 @@ from core.live.market_data import build_live_inputs, list_candidate_symbols
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
+    bootstrap_consumer,
+    collect_consumer_exchange_activity_snapshot,
     collect_consumer_local_activity_symbols,
     consume_signal,
     consumer_signal_digest,
@@ -577,39 +579,6 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     return audit_rows
 
 
-def _collect_exchange_activity_snapshot(account: str) -> dict[str, Any]:
-    symbols: set[str] = set()
-    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    open_orders_by_symbol: dict[str, list[dict[str, Any]]] = {}
-
-    pos_res = get_positions(account)
-    if pos_res.get('ok'):
-        for row in pos_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            positions_by_symbol.setdefault(symbol, []).append(row)
-
-    ord_res = get_open_orders(account)
-    if ord_res.get('ok'):
-        for row in ord_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            open_orders_by_symbol.setdefault(symbol, []).append(row)
-
-    return {
-        'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
-        'symbols': symbols,
-        'positions': pos_res,
-        'orders': ord_res,
-        'positions_by_symbol': positions_by_symbol,
-        'open_orders_by_symbol': open_orders_by_symbol,
-    }
-
-
 def _audit_orphan_exchange_activity(account: str, symbols: list[str], current_time_ms: int, current_time_bj: str, *, source: str, audit_enabled: bool, snapshot: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if not audit_enabled:
@@ -731,33 +700,25 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
 
 
 def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> dict[str, Any]:
-    current_time_ms = _now_utc_ms()
-    current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
 
-    startup_snapshot = _collect_exchange_activity_snapshot(account)
-    local_active_symbols = collect_consumer_local_activity_symbols(account)
-    startup_snapshot['local_active_symbols'] = local_active_symbols
-    startup_snapshot['startup_symbols'] = sorted(
-        local_active_symbols
-        | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
-        | set(startup_snapshot['symbols'])
-    )
-
-    maintain_res = maintain_consumer_once(
+    bootstrap_res = bootstrap_consumer(
         account,
         strategy_cfg,
         live_cfg,
-        current_time_ms=current_time_ms,
-        current_time_bj=current_time_bj,
-        latest_closes={},
         source='startup',
-        exchange_snapshot=startup_snapshot,
     )
-    pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
-    open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
+    current_time_ms = int(bootstrap_res['bar_ts'])
+    current_time_bj = str(bootstrap_res['bar_bj'])
+    startup_snapshot = dict(bootstrap_res.get('exchange_snapshot') or {})
+    startup_symbols = sorted(
+        set(bootstrap_res.get('local_active_symbols') or [])
+        | set(list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or []))
+        | set(startup_snapshot.get('symbols') or set())
+    )
+    startup_snapshot['startup_symbols'] = startup_symbols
 
-    if audit_enabled and not startup_snapshot.get('ok'):
+    if audit_enabled and not bootstrap_res.get('exchange_activity_snapshot_ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
             'bar_ts': current_time_ms,
             'bar_bj': current_time_bj,
@@ -767,35 +728,27 @@ def _bootstrap_reconcile(account: str, strategy_cfg: dict[str, Any], live_cfg: d
                 'orders': startup_snapshot.get('orders'),
             },
         })
-    startup_snapshot['local_active_symbols'] = collect_consumer_local_activity_symbols(account)
     orphan_findings = _audit_orphan_exchange_activity(
         account,
-        startup_snapshot['startup_symbols'],
+        startup_symbols,
         current_time_ms,
         current_time_bj,
         source='startup',
         audit_enabled=audit_enabled,
         snapshot=startup_snapshot,
     )
-    active_state_errors = list(maintain_res.get('active_state_errors') or [])
-    blocking = bool(
-        pending_reconcile_error
-        or open_trade_reconcile_error
-        or (not startup_snapshot.get('ok'))
-        or orphan_findings
-        or active_state_errors
-    )
+    active_state_errors = list(bootstrap_res.get('active_state_errors') or [])
+    blocking = bool(bootstrap_res.get('blocking') or orphan_findings)
     return {
         'blocking': blocking,
         'bar_ts': current_time_ms,
         'bar_bj': current_time_bj,
-        'pending_reconcile_error': pending_reconcile_error,
-        'open_trade_reconcile_error': open_trade_reconcile_error,
-        'exchange_activity_snapshot_ok': bool(startup_snapshot.get('ok')),
+        'pending_reconcile_error': bool(bootstrap_res.get('pending_reconcile_error')),
+        'open_trade_reconcile_error': bool(bootstrap_res.get('open_trade_reconcile_error')),
+        'exchange_activity_snapshot_ok': bool(bootstrap_res.get('exchange_activity_snapshot_ok')),
         'orphan_findings': orphan_findings,
         'active_state_errors': active_state_errors,
     }
-
 
 def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_signal_check_epoch: float | None = None) -> None:
     account = str(live_cfg['account']).strip()
@@ -813,9 +766,9 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if history_window_mins <= 0:
         raise ValueError('strategy_cfg.runtime.max_history_window_mins must be > 0')
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
-    exchange_activity_snapshot = _collect_exchange_activity_snapshot(account)
+    exchange_activity_snapshot = collect_consumer_exchange_activity_snapshot(account)
     exchange_activity_symbols = set(exchange_activity_snapshot['symbols'])
-    local_activity_symbols = _symbols_with_local_activity(account)
+    local_activity_symbols = collect_consumer_local_activity_symbols(account)
     extra_reconcile_symbols = sorted((exchange_activity_symbols | local_activity_symbols) - set(candidate_symbols))
 
     candidate_md_started_utc_ms = _now_utc_ms()
@@ -910,7 +863,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             },
         })
 
-    exchange_activity_snapshot['local_active_symbols'] = _symbols_with_local_activity(account)
+    exchange_activity_snapshot['local_active_symbols'] = sorted(collect_consumer_local_activity_symbols(account))
     local_activity_symbols = set(exchange_activity_snapshot.get('local_active_symbols') or [])
     orphan_findings = _audit_orphan_exchange_activity(
         account,
