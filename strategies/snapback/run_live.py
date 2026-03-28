@@ -711,6 +711,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
+    pre_signal_cooldown_map = dict(getattr(strategy, 'cooldown_until', {}) or {})
     active_symbols = {
         str(symbol).upper().strip()
         for symbol in (loop_gate.get('active_symbols') or [])
@@ -738,6 +739,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     signal_eval_started_utc_ms = _now_utc_ms()
     signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
+    # 只持久化进入本轮前已经存在于 state 的 cooldown。
+    # strategy.on_kline_close() 在“刚选出 signal”时会先写内部 cooldown，
+    # 若这里立即 sync 回 state，trade_consumer.consume_signal() 会在同一轮
+    # 因 cooldown_active 直接跳过这条刚产生的 signal。
+    strategy.cooldown_until = pre_signal_cooldown_map
     _persist_strategy_cooldowns(strategy, account, current_time_ms)
     signal_eval_finished_utc_ms = _now_utc_ms()
     signal_digest_preview = consumer_signal_digest(signal) if signal else None
