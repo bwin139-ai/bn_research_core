@@ -94,6 +94,320 @@ def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None =
     return json.dumps(data, **kwargs)
 
 
+LIVE_PROJECTION_DIR = 'output/live_projection'
+
+
+def _projection_run_id(live_cfg: dict[str, Any]) -> str:
+    return str(live_cfg.get('_projection_run_id') or 'UNSET').strip() or 'UNSET'
+
+
+def _projection_dir(live_cfg: dict[str, Any]) -> Path:
+    raw = str(live_cfg.get('_projection_output_dir') or LIVE_PROJECTION_DIR).strip() or LIVE_PROJECTION_DIR
+    return Path(raw)
+
+
+def _projection_path(live_cfg: dict[str, Any], kind: str) -> Path:
+    run_id = _projection_run_id(live_cfg)
+    return _projection_dir(live_cfg) / f'{kind}.{run_id}.jsonl'
+
+
+def _json_roundtrip(data: Any) -> Any:
+    return json.loads(_json_safe_dumps(data))
+
+
+def _append_projection_row(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a', encoding='utf-8') as f:
+        f.write(_json_safe_dumps(row) + '\n')
+
+
+def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None = None) -> dict[str, Any]:
+    signal_time = int(signal.get('signal_time') or fallback_time_ms or 0)
+    signal_time_bj = signal.get('signal_time_bj') or _fmt_bj_from_ms(signal_time)
+    return {
+        'signal_time': signal_time,
+        'signal_time_bj': signal_time_bj,
+        'symbol': str(signal.get('symbol') or '').upper().strip(),
+        'action': signal.get('action'),
+        'current_price': _normalize_scalar(signal.get('current_price')),
+        'tp_price': _normalize_scalar(signal.get('tp_price')),
+        'sl_price': _normalize_scalar(signal.get('sl_price')),
+        'params': _json_roundtrip(signal.get('params') or {}),
+        'context': _json_roundtrip(signal.get('context') or {}),
+    }
+
+
+def append_live_signal_projection(
+    account: str,
+    live_cfg: dict[str, Any],
+    *,
+    signal: dict[str, Any],
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int | None,
+    c_bar_bj: str | None,
+    source: str,
+    timing_fields: dict[str, Any] | None = None,
+    signal_eval_started_utc_ms: int | None = None,
+    signal_eval_finished_utc_ms: int | None = None,
+) -> dict[str, Any]:
+    try:
+        row = {
+            **_signal_core_fields(signal, fallback_time_ms=current_time_ms),
+            'run_mode': 'live',
+            'projection_type': 'live_signal',
+            'account': account,
+            'run_id': _projection_run_id(live_cfg),
+            'source': source,
+            'logic_selected': True,
+            'signal_digest': _signal_digest(signal),
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'c_bar_ts': c_bar_ts,
+            'c_bar_bj': c_bar_bj,
+            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+            'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
+            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+            'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
+        }
+        if timing_fields:
+            row['timing'] = _json_roundtrip(timing_fields)
+        path = _projection_path(live_cfg, 'live_signals')
+        _append_projection_row(path, row)
+        return {'ok': True, 'path': str(path), 'row': row}
+    except Exception as e:
+        return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_signals'))}
+
+
+def _extract_order_event_ts_ms(order_row: dict[str, Any] | None, *, fallback_ms: int | None = None) -> int | None:
+    row = order_row or {}
+    raw = row.get('raw') if isinstance(row.get('raw'), dict) else {}
+    for key in ('updateTime', 'time', 'transactTime', 'workingTime', 'createTime', 'executedTime'):
+        value = raw.get(key)
+        try:
+            ts_ms = int(value)
+        except Exception:
+            ts_ms = None
+        if ts_ms and ts_ms > 0:
+            return ts_ms
+    return fallback_ms
+
+
+def _resolve_exit_order_payload(
+    exit_reason: str,
+    order_checks: dict[str, Any],
+    tp_cancel: dict[str, Any] | None,
+    sl_cancel: dict[str, Any] | None,
+    ts_cancel: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if exit_reason == 'TAKE_PROFIT':
+        return (order_checks.get('tp') or {}).get('data') or (tp_cancel or {}).get('data')
+    if exit_reason == 'STOP_LOSS':
+        return (order_checks.get('sl') or {}).get('data') or (sl_cancel or {}).get('data')
+    if exit_reason == 'TIME_STOP':
+        return (order_checks.get('time_stop') or {}).get('data') or (ts_cancel or {}).get('data')
+    return None
+
+
+def _resolve_live_exit_price(
+    exit_reason: str,
+    exit_order: dict[str, Any] | None,
+    *,
+    fallback_tp_price: float,
+    fallback_sl_price: float,
+    fallback_entry_price: float,
+) -> tuple[float | None, str]:
+    fallback_price = fallback_entry_price
+    fallback_source = 'fallback_entry_price'
+    if exit_reason == 'TAKE_PROFIT' and fallback_tp_price > 0:
+        fallback_price = fallback_tp_price
+        fallback_source = 'fallback_tp_price'
+    elif exit_reason == 'STOP_LOSS' and fallback_sl_price > 0:
+        fallback_price = fallback_sl_price
+        fallback_source = 'fallback_sl_price'
+    res = resolve_order_fill_price(exit_order or {}, fallback_price=fallback_price if fallback_price > 0 else None)
+    payload = (res.get('data') or {}) if res.get('ok') else {}
+    price = payload.get('fill_price')
+    source = payload.get('price_source') or fallback_source
+    try:
+        px = float(price)
+    except Exception:
+        px = None
+    return px, str(source)
+
+
+def _build_live_trade_projection_row(
+    account: str,
+    live_cfg: dict[str, Any],
+    *,
+    signal_snapshot: dict[str, Any],
+    order_root: str | None,
+    entry_time_ms: int | None,
+    entry_price: float,
+    entry_price_source: str | None,
+    resolved_tp_price: float,
+    resolved_sl_price: float,
+    tp_client_order_id: str | None,
+    sl_client_order_id: str | None,
+    time_stop_client_order_id: str | None,
+    entry_client_order_id: str | None,
+    exit_reason: str,
+    order_checks: dict[str, Any],
+    tp_cancel: dict[str, Any] | None,
+    sl_cancel: dict[str, Any] | None,
+    ts_cancel: dict[str, Any] | None,
+    current_time_ms: int,
+    current_time_bj: str,
+    source: str,
+) -> dict[str, Any]:
+    signal_core = _signal_core_fields(signal_snapshot, fallback_time_ms=entry_time_ms or current_time_ms)
+    exit_order = _resolve_exit_order_payload(exit_reason, order_checks, tp_cancel, sl_cancel, ts_cancel)
+    exit_time_ms = _extract_order_event_ts_ms(exit_order, fallback_ms=current_time_ms) or current_time_ms
+    exit_price, exit_price_source = _resolve_live_exit_price(
+        exit_reason,
+        exit_order,
+        fallback_tp_price=float(resolved_tp_price or 0.0),
+        fallback_sl_price=float(resolved_sl_price or 0.0),
+        fallback_entry_price=float(entry_price or 0.0),
+    )
+    pnl_pct = None
+    if entry_price and exit_price:
+        pnl_pct = (float(exit_price) / float(entry_price)) - 1.0
+    row = {
+        'symbol': signal_core['symbol'],
+        'signal_time': signal_core['signal_time'],
+        'signal_price': signal_core['current_price'],
+        'entry_time': int(entry_time_ms or signal_core['signal_time']),
+        'exit_time': int(exit_time_ms),
+        'entry_price': float(entry_price or 0.0),
+        'exit_price': float(exit_price or 0.0) if exit_price is not None else None,
+        'pnl_pct': _normalize_scalar(pnl_pct),
+        'reason': exit_reason,
+        'exit_bar_tp_sl_both_hit': None,
+        'context': signal_core['context'],
+        'signal_time_bj': signal_core['signal_time_bj'],
+        'entry_time_bj': _fmt_bj_from_ms(int(entry_time_ms or signal_core['signal_time'])),
+        'exit_time_bj': _fmt_bj_from_ms(int(exit_time_ms)),
+        'run_mode': 'live',
+        'projection_type': 'live_trade',
+        'account': account,
+        'run_id': _projection_run_id(live_cfg),
+        'source': source,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'order_root': order_root,
+        'signal_digest': _signal_digest(signal_snapshot),
+        'entry_price_source': entry_price_source,
+        'exit_price_source': exit_price_source,
+        'resolved_tp_price': _normalize_scalar(resolved_tp_price),
+        'resolved_sl_price': _normalize_scalar(resolved_sl_price),
+        'entry_client_order_id': entry_client_order_id,
+        'tp_order_client_id': tp_client_order_id,
+        'sl_order_client_id': sl_client_order_id,
+        'time_stop_client_order_id': time_stop_client_order_id,
+        'exit_order_client_id': (exit_order or {}).get('client_order_id'),
+        'exit_order_exchange_id': (exit_order or {}).get('order_id'),
+        'exit_order_status': (exit_order or {}).get('status'),
+    }
+    return row
+
+
+def append_live_trade_projection_from_open_trade(
+    account: str,
+    live_cfg: dict[str, Any],
+    *,
+    open_trade: dict[str, Any],
+    exit_reason: str,
+    order_checks: dict[str, Any],
+    tp_cancel: dict[str, Any] | None,
+    sl_cancel: dict[str, Any] | None,
+    ts_cancel: dict[str, Any] | None,
+    current_time_ms: int,
+    current_time_bj: str,
+    source: str,
+) -> dict[str, Any]:
+    try:
+        signal_snapshot = open_trade.get('signal_snapshot') if isinstance(open_trade.get('signal_snapshot'), dict) else {}
+        row = _build_live_trade_projection_row(
+            account,
+            live_cfg,
+            signal_snapshot=signal_snapshot,
+            order_root=open_trade.get('order_root'),
+            entry_time_ms=open_trade.get('entry_submit_finished_utc_ms') or open_trade.get('entry_ts'),
+            entry_price=float(open_trade.get('entry_price') or 0.0),
+            entry_price_source=open_trade.get('entry_price_source'),
+            resolved_tp_price=float(open_trade.get('tp_price') or 0.0),
+            resolved_sl_price=float(open_trade.get('sl_trigger_price') or 0.0),
+            tp_client_order_id=open_trade.get('tp_order_client_id'),
+            sl_client_order_id=open_trade.get('sl_order_client_id'),
+            time_stop_client_order_id=open_trade.get('time_stop_client_order_id'),
+            entry_client_order_id=open_trade.get('entry_client_order_id'),
+            exit_reason=exit_reason,
+            order_checks=order_checks,
+            tp_cancel=tp_cancel,
+            sl_cancel=sl_cancel,
+            ts_cancel=ts_cancel,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            source=source,
+        )
+        path = _projection_path(live_cfg, 'live_trades')
+        _append_projection_row(path, row)
+        return {'ok': True, 'path': str(path), 'row': row}
+    except Exception as e:
+        return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_trades'))}
+
+
+def append_live_trade_projection_from_pending_terminal(
+    account: str,
+    live_cfg: dict[str, Any],
+    *,
+    pending: dict[str, Any],
+    entry_order_res: dict[str, Any],
+    exit_reason: str,
+    order_checks: dict[str, Any],
+    tp_cancel: dict[str, Any] | None,
+    sl_cancel: dict[str, Any] | None,
+    ts_cancel: dict[str, Any] | None,
+    current_time_ms: int,
+    current_time_bj: str,
+    source: str,
+) -> dict[str, Any]:
+    try:
+        signal_snapshot = pending.get('signal_snapshot') if isinstance(pending.get('signal_snapshot'), dict) else {}
+        entry_row = (entry_order_res.get('data') or {}) if entry_order_res.get('ok') else {}
+        entry_fill_res = resolve_order_fill_price(entry_row or {}, fallback_price=float(pending.get('current_price') or 0.0) or None)
+        entry_fill_payload = (entry_fill_res.get('data') or {}) if entry_fill_res.get('ok') else {}
+        row = _build_live_trade_projection_row(
+            account,
+            live_cfg,
+            signal_snapshot=signal_snapshot,
+            order_root=pending.get('order_root'),
+            entry_time_ms=pending.get('signal_time'),
+            entry_price=float(entry_fill_payload.get('fill_price') or pending.get('current_price') or 0.0),
+            entry_price_source=str(entry_fill_payload.get('price_source') or pending.get('entry_fill_price_source') or 'pending_current_price'),
+            resolved_tp_price=float(pending.get('tp_price') or signal_snapshot.get('tp_price') or 0.0),
+            resolved_sl_price=float(pending.get('sl_price') or signal_snapshot.get('sl_price') or 0.0),
+            tp_client_order_id=pending.get('tp_client_order_id'),
+            sl_client_order_id=pending.get('sl_client_order_id'),
+            time_stop_client_order_id=pending.get('time_stop_client_order_id'),
+            entry_client_order_id=pending.get('client_order_id'),
+            exit_reason=exit_reason,
+            order_checks=order_checks,
+            tp_cancel=tp_cancel,
+            sl_cancel=sl_cancel,
+            ts_cancel=ts_cancel,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            source=source,
+        )
+        path = _projection_path(live_cfg, 'live_trades')
+        _append_projection_row(path, row)
+        return {'ok': True, 'path': str(path), 'row': row}
+    except Exception as e:
+        return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_trades'))}
+
+
 def _normalize_scalar(value: Any) -> Any:
     if hasattr(value, 'item'):
         value = value.item()
@@ -403,7 +717,25 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
 
 
 
-def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res: dict[str, Any], sl_res: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str, tp_price: float, sl_trigger_price: float) -> dict[str, Any]:
+def _build_open_trade(
+    entry_res: dict[str, Any],
+    signal: dict[str, Any],
+    tp_res: dict[str, Any],
+    sl_res: dict[str, Any],
+    entry_notional_usdt: float,
+    *,
+    order_root: str,
+    entry_client_order_id: str,
+    tp_client_order_id: str,
+    sl_client_order_id: str,
+    tp_price: float,
+    sl_trigger_price: float,
+    entry_price_source: str | None = None,
+    entry_submit_started_utc_ms: int | None = None,
+    entry_submit_finished_utc_ms: int | None = None,
+    resolved_tp_price_source: str | None = None,
+    selected_tp_pct: float | None = None,
+) -> dict[str, Any]:
     entry = entry_res['data']
     tp = tp_res['data'] if tp_res.get('ok') else {}
     sl = sl_res['data'] if sl_res.get('ok') else {}
@@ -416,10 +748,17 @@ def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res:
         'entry_ts': int(signal['signal_time']),
         'entry_bj': signal['signal_time_bj'],
         'entry_price': float(entry.get('avg_price') or signal.get('current_price') or 0.0),
+        'entry_price_source': entry_price_source,
+        'entry_submit_started_utc_ms': entry_submit_started_utc_ms,
+        'entry_submit_finished_utc_ms': entry_submit_finished_utc_ms,
+        'entry_submit_started_bj': _fmt_bj_from_ms(entry_submit_started_utc_ms),
+        'entry_submit_finished_bj': _fmt_bj_from_ms(entry_submit_finished_utc_ms),
         'entry_qty': float(entry.get('executed_qty') or entry.get('qty') or 0.0),
         'entry_notional_usdt': float(entry_notional_usdt),
         'signal_digest': _signal_digest(signal),
         'signal_snapshot': signal,
+        'selected_tp_pct': selected_tp_pct,
+        'resolved_tp_price_source': resolved_tp_price_source,
         'tp_order_client_id': tp.get('client_order_id', tp_client_order_id),
         'tp_order_exchange_id': tp.get('exchange_order_id'),
         'sl_order_client_id': sl.get('client_order_id', sl_client_order_id),
@@ -435,7 +774,21 @@ def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res:
     }
 
 
-def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str, tp_price: float, sl_price: float) -> dict[str, Any]:
+def _build_pending_entry(
+    entry_res: dict[str, Any],
+    signal: dict[str, Any],
+    entry_notional_usdt: float,
+    *,
+    order_root: str,
+    entry_client_order_id: str,
+    tp_client_order_id: str,
+    sl_client_order_id: str,
+    tp_price: float,
+    sl_price: float,
+    entry_fill_price_source: str | None = None,
+    resolved_tp_price_source: str | None = None,
+    selected_tp_pct: float | None = None,
+) -> dict[str, Any]:
     entry = entry_res['data']
     return {
         'symbol': signal['symbol'],
@@ -448,10 +801,14 @@ def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entr
         'entry_notional_usdt': float(entry_notional_usdt),
         'signal_digest': _signal_digest(signal),
         'signal_snapshot': signal,
+        'entry_fill_price_source': entry_fill_price_source,
+        'resolved_tp_price_source': resolved_tp_price_source,
+        'selected_tp_pct': selected_tp_pct,
         'tp_price': float(tp_price or 0.0),
         'sl_price': float(sl_price or 0.0),
         'tp_client_order_id': tp_client_order_id,
         'sl_client_order_id': sl_client_order_id,
+        'time_stop_client_order_id': None,
         'created_bj': _now_bj_str(),
     }
 
@@ -1754,6 +2111,30 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                     set_pending_entry_order(account, symbol, None)
                     _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
+                    trade_projection_res = append_live_trade_projection_from_pending_terminal(
+                        account,
+                        live_cfg,
+                        pending=pending,
+                        entry_order_res=entry_res,
+                        exit_reason=exit_reason,
+                        order_checks=order_checks,
+                        tp_cancel=tp_cancel,
+                        sl_cancel=sl_cancel,
+                        ts_cancel=ts_cancel,
+                        current_time_ms=current_time_ms,
+                        current_time_bj=current_time_bj,
+                        source=f'{source}_pending_terminal',
+                    )
+                    if audit_enabled and not trade_projection_res.get('ok'):
+                        write_event(account, 'live_trade_projection_write_failed', {
+                            'symbol': symbol,
+                            'bar_ts': current_time_ms,
+                            'bar_bj': current_time_bj,
+                            'source': f'{source}_pending_terminal',
+                            'order_root': pending.get('order_root'),
+                            'reason': trade_projection_res.get('reason'),
+                            'projection_path': trade_projection_res.get('path'),
+                        })
                     if audit_enabled:
                         write_event(account, 'entry_filled_but_position_missing', {
                             'symbol': symbol,
@@ -2242,10 +2623,33 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     })
                 continue
 
+            trade_projection_res = append_live_trade_projection_from_open_trade(
+                account,
+                live_cfg,
+                open_trade=open_trade,
+                exit_reason=exit_reason,
+                order_checks=order_checks,
+                tp_cancel=tp_cancel,
+                sl_cancel=sl_cancel,
+                ts_cancel=ts_cancel,
+                current_time_ms=current_time_ms,
+                current_time_bj=current_time_bj,
+                source=source,
+            )
             set_open_trade(account, symbol, None)
             set_pending_entry_order(account, symbol, None)
             _clear_symbol_error(account, symbol)
             _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
+            if audit_enabled and not trade_projection_res.get('ok'):
+                write_event(account, 'live_trade_projection_write_failed', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'reason': trade_projection_res.get('reason'),
+                    'projection_path': trade_projection_res.get('path'),
+                })
             if audit_enabled:
                 write_event(account, 'position_closed_detected', {
                     'symbol': symbol,
@@ -3063,6 +3467,9 @@ def _submit_entry_and_exit_orders(
         sl_client_order_id=prep['sl_client_order_id'],
         tp_price=resolved_tp_price,
         sl_price=resolved_sl_price,
+        entry_fill_price_source=entry_fill_price_source,
+        resolved_tp_price_source=resolved_tp_price_source,
+        selected_tp_pct=selected_tp_pct,
     )
     set_pending_entry_order(account, symbol, pending_entry)
 
@@ -3181,6 +3588,11 @@ def _submit_entry_and_exit_orders(
         sl_client_order_id=prep['sl_client_order_id'],
         tp_price=resolved_tp_price,
         sl_trigger_price=resolved_sl_price,
+        entry_price_source=entry_fill_price_source,
+        entry_submit_started_utc_ms=entry_submit_started_utc_ms,
+        entry_submit_finished_utc_ms=entry_submit_finished_utc_ms,
+        resolved_tp_price_source=resolved_tp_price_source,
+        selected_tp_pct=selected_tp_pct,
     )
 
     return {

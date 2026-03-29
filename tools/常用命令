@@ -5,7 +5,7 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
  cd ~/ai_projects/bn_research_core
  cd /root/bn_research_core
 
-# ========= 阿里云运行 拉取最新代码 =========
+# ========= git pull 阿里云拉最新代码 =========
  git fetch --all && git switch main && git pull --ff-only origin main
 
 ```bash
@@ -19,28 +19,27 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
  ls -lht state/live_audit
  tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
-# *************** live 信号现场审计 ***************
-python3 audit_tools/live_audit/audit_live_scene_v1.py \
-  --audit-file state/live_audit/snapback_mybwin139.jsonl \
-  --symbols QUSDT \
-  --day 2026-03-29 \
-  --json-out output/state/audit_qusdt_scene.json
-# *************** live 提炼日志 ***************
+# *****审审审审审审***** live 提炼日志 *****审审审审审审*****
 python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
   --input output/live/snapback_live.console.log \
   --output output/live/snapback_live.cut_with_marker.log \
   --start-bj "2026-03-26 00:00:00" \
   --end-bj "2026-03-29 18:00:00" \
   --keep-keyboardinterrupt-marker
+# *****审审审审审审***** live 现场审计 *****审审审审审审*****
+python3 audit_tools/live_audit/audit_live_scene_v1.py \
+  --audit-file state/live_audit/snapback_mybwin139.jsonl \
+  --symbols QUSDT \
+  --day 2026-03-29 \
+  --json-out output/state/audit_qusdt_scene.json
 
-# ============== sim / live 一致性审计 ===============
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_window_diff.py \
-  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest1.jsonl \
+# *****审审审审审审***** sim / live 一致性审计 *****审审审审审审*****
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_window_diff.py \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest3.jsonl \
   --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
-  --start-c-time-bj "2026-03-26 07:46:00" \
-  --end-c-time-bj "2026-03-26 10:00:00" \
+  --start-c-time-bj "2026-03-26 01:00:00" \
+  --end-c-time-bj "2026-03-29 17:00:00" \
   --out-dir output/sim_live_audit
-
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_snapshot_diff.py \
   --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest1.jsonl \
   --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest1.jsonl \
@@ -98,7 +97,7 @@ mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.log" \
   "$DEST"
-# *************** 拉 全量 sim 数据 ***************
+# *****download***** 拉 全量 sim 数据 *****download***** 
 RUNID="SNAP_V6.1_30D_P6_0325T2335_ALL"
 DEST=~/ai_projects/bn_research_core/state1
 mkdir -p "$DEST"
@@ -110,20 +109,20 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
-# *************** 拉 冒烟 sim 数据 ***************
+# *****download*****  拉 冒烟 sim 数据 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest3.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest3.jsonl" \
   "$DEST"
-# *************** 拉 sim/live一致性审计数据 ***************
+# *****download*****  拉 sim/live一致性审计数据 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/MUSDT.1774487*.txt" \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1774458000000_1774774800000.*" \
   "$DEST"
-# ********** 拉复盘k线图表 *********
+# *****download*****  拉复盘k线图表 *****download***** 
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
 DEST=~/ai_projects/bn_research_core/state4
 mkdir -p "$DEST"

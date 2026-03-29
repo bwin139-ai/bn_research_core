@@ -26,6 +26,7 @@ from core.live.market_data import build_live_inputs, list_candidate_symbols
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
+    append_live_signal_projection,
     bootstrap_consumer_gate,
     build_consumer_reconcile_plan,
     consume_signal,
@@ -156,6 +157,12 @@ def _write_config_snapshot(account: str, config_path: str, live_config_path: str
         'strategy_config_file_sha256': snapshot['strategy_config_file_sha256'],
         'live_config_file_sha256': snapshot['live_config_file_sha256'],
     }
+
+
+def _build_live_projection_run_id(account: str) -> str:
+    ts_utc = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    account_key = str(account).upper().strip()
+    return f'SNAPBACKLIVE_{account_key}_{ts_utc}'
 
 
 def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
@@ -785,6 +792,28 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         )
         return
 
+    live_signal_projection_res = append_live_signal_projection(
+        account,
+        live_cfg,
+        signal=signal,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        c_bar_ts=c_bar_ts,
+        c_bar_bj=c_bar_bj,
+        source='loop',
+        timing_fields=timing_fields,
+        signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+        signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+    )
+    if audit_enabled and not live_signal_projection_res.get('ok'):
+        write_event(account, 'live_signal_projection_write_failed', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'symbol': str(signal.get('symbol') or '').upper().strip(),
+            'reason': live_signal_projection_res.get('reason'),
+            'projection_path': live_signal_projection_res.get('path'),
+        })
+
     consume_signal(
         account,
         strategy_cfg,
@@ -818,6 +847,9 @@ def main() -> None:
     if not account:
         raise SystemExit('live_config account 不能为空')
 
+    live_cfg['_projection_run_id'] = _build_live_projection_run_id(account)
+    live_cfg['_projection_output_dir'] = 'output/live_projection'
+
     snapshot_meta = _write_config_snapshot(account, args.config, args.live_config, strategy_cfg, live_cfg)
 
     mark_loop_heartbeat(account, runner_pid=os.getpid())
@@ -829,6 +861,8 @@ def main() -> None:
         'live_config_sha256': snapshot_meta['live_config_sha256'],
         'strategy_config_file_sha256': snapshot_meta['strategy_config_file_sha256'],
         'live_config_file_sha256': snapshot_meta['live_config_file_sha256'],
+        'projection_run_id': live_cfg.get('_projection_run_id'),
+        'projection_output_dir': live_cfg.get('_projection_output_dir'),
         'started_bj': _now_bj_str(),
     })
     bootstrap_res = bootstrap_consumer_gate(
