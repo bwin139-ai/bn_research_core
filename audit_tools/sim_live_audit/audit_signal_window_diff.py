@@ -5,6 +5,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +30,12 @@ STRUCTURE_METRICS = [
     "basis_b_pct",
     "rebound_ratio",
 ]
+
+TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d{3}\b")
+RUNNER_STARTED_TOKEN = "[Snapback-Live] runner started"
+RUNNER_ERROR_TOKEN = "[Snapback-Live] runner error"
+STARTUP_BLOCKED_TOKEN = "startup blocked: reconcile/orphan/state error detected"
+FILTERED_KEYBOARD_INTERRUPT = "[FILTERED] KeyboardInterrupt traceback removed"
 
 
 def _to_bj(ms: int | None) -> str | None:
@@ -125,7 +132,102 @@ def _live_stage5_key(row: dict[str, Any]) -> tuple[str, int] | None:
     return sym, c_time
 
 
+def _parse_log_ts_ms(line: str) -> int | None:
+    m = TS_RE.match(line)
+    if not m:
+        return None
+    dt_obj = dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ_TZ)
+    return int(dt_obj.timestamp() * 1000)
+
+
+def _merge_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not windows:
+        return []
+    merged: list[tuple[int, int]] = []
+    for start_ms, end_ms in sorted(windows):
+        if not merged:
+            merged.append((start_ms, end_ms))
+            continue
+        prev_start, prev_end = merged[-1]
+        if start_ms <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end_ms))
+        else:
+            merged.append((start_ms, end_ms))
+    return merged
+
+
+def _build_live_uptime_windows(path: Path | None) -> list[tuple[int, int]]:
+    if path is None:
+        return []
+    windows: list[tuple[int, int]] = []
+    active_start_ms: int | None = None
+    last_ts_ms: int | None = None
+
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        ts_ms = _parse_log_ts_ms(line)
+        if ts_ms is not None:
+            last_ts_ms = ts_ms
+
+        if RUNNER_STARTED_TOKEN in line:
+            if active_start_ms is not None and last_ts_ms is not None and last_ts_ms >= active_start_ms:
+                windows.append((active_start_ms, last_ts_ms))
+            active_start_ms = ts_ms
+            continue
+
+        if RUNNER_ERROR_TOKEN in line or STARTUP_BLOCKED_TOKEN in line:
+            if active_start_ms is not None:
+                end_ms = ts_ms if ts_ms is not None else last_ts_ms
+                if end_ms is not None and end_ms >= active_start_ms:
+                    windows.append((active_start_ms, end_ms))
+                active_start_ms = None
+            continue
+
+        if FILTERED_KEYBOARD_INTERRUPT in line:
+            if active_start_ms is not None and last_ts_ms is not None and last_ts_ms >= active_start_ms:
+                windows.append((active_start_ms, last_ts_ms))
+            active_start_ms = None
+            continue
+
+    if active_start_ms is not None and last_ts_ms is not None and last_ts_ms >= active_start_ms:
+        windows.append((active_start_ms, last_ts_ms))
+    return _merge_windows(windows)
+
+
+def _signal_time_in_windows(signal_time_ms: int | None, windows: list[tuple[int, int]]) -> bool:
+    if signal_time_ms is None:
+        return False
+    if not windows:
+        return True
+    for start_ms, end_ms in windows:
+        if start_ms <= signal_time_ms <= end_ms:
+            return True
+    return False
+
+
+def _sim_signal_time_ms(row: dict[str, Any]) -> int | None:
+    signal_time = _safe_int(row.get("signal_time"))
+    if signal_time is not None:
+        return signal_time
+    key = _sim_key(row)
+    if key is None:
+        return None
+    return key[1] + 60000
+
+
+def _live_stage5_signal_time_ms(row: dict[str, Any]) -> int | None:
+    signal_time = _safe_int(row.get("signal_time_ts"))
+    if signal_time is not None:
+        return signal_time
+    key = _live_stage5_key(row)
+    if key is None:
+        return None
+    return key[1] + 60000
+
+
 def _is_live_signal_row(row: dict[str, Any]) -> bool:
+    if "logic_selected" in row:
+        return bool(row.get("logic_selected"))
     if bool(row.get("audit_selected")):
         return True
     if bool(row.get("selected")):
@@ -160,8 +262,9 @@ def _build_stage3_index(path: Path | None, start_ms: int | None, end_ms: int | N
     return out
 
 
-def _build_sim_signal_index(path: Path, start_ms: int | None, end_ms: int | None, symbols: set[str] | None) -> dict[tuple[str, int], dict[str, Any]]:
+def _build_sim_signal_index(path: Path, start_ms: int | None, end_ms: int | None, symbols: set[str] | None, uptime_windows: list[tuple[int, int]] | None = None) -> dict[tuple[str, int], dict[str, Any]]:
     out: dict[tuple[str, int], dict[str, Any]] = {}
+    active_windows = list(uptime_windows or [])
     for row in _iter_jsonl(path):
         key = _sim_key(row)
         if key is None:
@@ -170,6 +273,8 @@ def _build_sim_signal_index(path: Path, start_ms: int | None, end_ms: int | None
         if symbols and sym not in symbols:
             continue
         if not _in_window(c_time, start_ms, end_ms):
+            continue
+        if active_windows and not _signal_time_in_windows(_sim_signal_time_ms(row), active_windows):
             continue
         out[key] = row
     return out
@@ -192,8 +297,9 @@ def _build_sim_trade_index(path: Path | None, start_ms: int | None, end_ms: int 
     return out
 
 
-def _build_live_stage5_signal_index(path: Path, start_ms: int | None, end_ms: int | None, symbols: set[str] | None) -> dict[tuple[str, int], dict[str, Any]]:
+def _build_live_stage5_signal_index(path: Path, start_ms: int | None, end_ms: int | None, symbols: set[str] | None, uptime_windows: list[tuple[int, int]] | None = None) -> dict[tuple[str, int], dict[str, Any]]:
     out: dict[tuple[str, int], dict[str, Any]] = {}
+    active_windows = list(uptime_windows or [])
     for row in _iter_jsonl(path):
         if not _is_live_signal_row(row):
             continue
@@ -205,8 +311,19 @@ def _build_live_stage5_signal_index(path: Path, start_ms: int | None, end_ms: in
             continue
         if not _in_window(c_time, start_ms, end_ms):
             continue
+        if active_windows and not _signal_time_in_windows(_live_stage5_signal_time_ms(row), active_windows):
+            continue
         out[key] = row
     return out
+
+
+def _get_stage3_latest_bar(stage3: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not stage3:
+        return None
+    hb = stage3.get("history_bars") or []
+    if not hb:
+        return None
+    return hb[-1]
 
 
 def _history_count(stage3: dict[str, Any] | None) -> int | None:
@@ -226,9 +343,10 @@ def _first_diff(metric_dict: dict[str, dict[str, Any]]) -> str | None:
     return None
 
 
-def _compare_match(key: tuple[str, int], sim_signal: dict[str, Any], live_stage5: dict[str, Any], sim_trade: dict[str, Any] | None, live_stage3: dict[str, Any] | None) -> dict[str, Any]:
+def _compare_match(key: tuple[str, int], sim_signal: dict[str, Any], live_stage5: dict[str, Any], sim_trade: dict[str, Any] | None, live_stage3: dict[str, Any] | None, *, input_metrics_enabled: bool) -> dict[str, Any]:
     symbol, c_time = key
     sim_ctx = sim_signal.get("context") or {}
+    live3_last = _get_stage3_latest_bar(live_stage3) or {}
     row: dict[str, Any] = {
         "symbol": symbol,
         "c_time_ms": c_time,
@@ -240,14 +358,31 @@ def _compare_match(key: tuple[str, int], sim_signal: dict[str, Any], live_stage5
         "sim_trade_present": sim_trade is not None,
         "live_stage3_present": live_stage3 is not None,
         "live_history_count": _history_count(live_stage3),
+        "logic_selected": bool(live_stage5.get("logic_selected")),
+        "audit_selected": bool(live_stage5.get("audit_selected")),
+        "audit_selected_symbol": live_stage5.get("audit_selected_symbol"),
+        "candidate_rank": live_stage5.get("candidate_rank"),
+        "is_candidate": live_stage5.get("is_candidate"),
+        "stage5_pass": live_stage5.get("stage5_pass"),
+        "fail_reason": live_stage5.get("fail_reason"),
     }
     input_comp: dict[str, dict[str, Any]] = {}
-    for k in INPUT_METRICS:
-        same, va, vb = _compare_values(sim_ctx.get(k), live_stage5.get(k))
-        input_comp[k] = {"same": same, "sim": va, "live": vb}
-        row[f"input_{k}_same"] = same
-        row[f"input_{k}_sim"] = va
-        row[f"input_{k}_live"] = vb
+    if input_metrics_enabled:
+        for k in INPUT_METRICS:
+            same, va, vb = _compare_values(sim_ctx.get(k), live3_last.get(k))
+            input_comp[k] = {"same": same, "sim": va, "live": vb}
+            row[f"input_{k}_same"] = same
+            row[f"input_{k}_sim"] = va
+            row[f"input_{k}_live"] = vb
+        row["input_metrics_status"] = "OK" if live_stage3 is not None else "MISSING_STAGE3_ROW"
+        row["first_input_diff"] = _first_diff(input_comp) if live_stage3 is not None else "MISSING_STAGE3_ROW"
+    else:
+        for k in INPUT_METRICS:
+            row[f"input_{k}_same"] = None
+            row[f"input_{k}_sim"] = _safe_num(sim_ctx.get(k))
+            row[f"input_{k}_live"] = None
+        row["input_metrics_status"] = "SKIPPED_NO_STAGE3"
+        row["first_input_diff"] = "SKIPPED_NO_STAGE3"
 
     structure_comp: dict[str, dict[str, Any]] = {}
     for k in STRUCTURE_METRICS:
@@ -257,7 +392,6 @@ def _compare_match(key: tuple[str, int], sim_signal: dict[str, Any], live_stage5
         row[f"struct_{k}_sim"] = va
         row[f"struct_{k}_live"] = vb
 
-    row["first_input_diff"] = _first_diff(input_comp)
     row["first_structure_diff"] = _first_diff(structure_comp)
 
     if sim_trade is not None:
@@ -272,12 +406,6 @@ def _compare_match(key: tuple[str, int], sim_signal: dict[str, Any], live_stage5
         row["entry_time_minus_signal_time_ms"] = None
         row["trade_reason"] = None
         row["trade_pnl_pct"] = None
-
-    row["audit_selected_symbol"] = live_stage5.get("audit_selected_symbol")
-    row["candidate_rank"] = live_stage5.get("candidate_rank")
-    row["is_candidate"] = live_stage5.get("is_candidate")
-    row["stage5_pass"] = live_stage5.get("stage5_pass")
-    row["fail_reason"] = live_stage5.get("fail_reason")
     return row
 
 
@@ -308,6 +436,7 @@ def main() -> None:
     ap.add_argument("--sim-trades", default="")
     ap.add_argument("--live-stage5", required=True)
     ap.add_argument("--live-stage3", default="")
+    ap.add_argument("--live-log", default="", help="Cleaned live console log used to build uptime windows")
     ap.add_argument("--start-c-time-ms", type=int, default=None)
     ap.add_argument("--end-c-time-ms", type=int, default=None)
     ap.add_argument("--start-c-time-bj", default="", help="Beijing start c_time, e.g. '2026-03-26 07:46:00'")
@@ -334,13 +463,17 @@ def main() -> None:
     sim_trades_path = Path(args.sim_trades) if args.sim_trades else None
     live_stage5_path = Path(args.live_stage5)
     live_stage3_path = Path(args.live_stage3) if args.live_stage3 else None
+    live_log_path = Path(args.live_log) if args.live_log else None
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sim_signals = _build_sim_signal_index(sim_signals_path, start_c_time_ms, end_c_time_ms, symbols)
+    uptime_windows = _build_live_uptime_windows(live_log_path)
+    input_metrics_enabled = live_stage3_path is not None
+
+    sim_signals = _build_sim_signal_index(sim_signals_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
     sim_trades = _build_sim_trade_index(sim_trades_path, start_c_time_ms, end_c_time_ms, symbols)
-    live_signals = _build_live_stage5_signal_index(live_stage5_path, start_c_time_ms, end_c_time_ms, symbols)
+    live_signals = _build_live_stage5_signal_index(live_stage5_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
     live_stage3 = _build_stage3_index(live_stage3_path, start_c_time_ms, end_c_time_ms, symbols)
 
     sim_keys = set(sim_signals.keys())
@@ -350,7 +483,14 @@ def main() -> None:
     live_only_keys = sorted(live_keys - sim_keys)
 
     matched_rows = [
-        _compare_match(k, sim_signals[k], live_signals[k], sim_trades.get(k), live_stage3.get(k))
+        _compare_match(
+            k,
+            sim_signals[k],
+            live_signals[k],
+            sim_trades.get(k),
+            live_stage3.get(k),
+            input_metrics_enabled=input_metrics_enabled,
+        )
         for k in matched_keys
     ]
     sim_only_rows = []
@@ -378,6 +518,8 @@ def main() -> None:
             "signal_time_bj": _to_bj(_safe_int(r.get("signal_time_ts"))),
             "tp_tier": r.get("tp_tier"),
             "selected_tp_pct": _safe_num(r.get("selected_tp_pct")),
+            "logic_selected": bool(r.get("logic_selected")),
+            "audit_selected": bool(r.get("audit_selected")),
             "candidate_rank": r.get("candidate_rank"),
             "fail_reason": r.get("fail_reason"),
         })
@@ -385,9 +527,10 @@ def main() -> None:
     first_input_counts: dict[str, int] = {}
     first_structure_counts: dict[str, int] = {}
     for row in matched_rows:
-        fi = row.get("first_input_diff") or "NONE"
+        if input_metrics_enabled:
+            fi = row.get("first_input_diff") or "NONE"
+            first_input_counts[fi] = first_input_counts.get(fi, 0) + 1
         fs = row.get("first_structure_diff") or "NONE"
-        first_input_counts[fi] = first_input_counts.get(fi, 0) + 1
         first_structure_counts[fs] = first_structure_counts.get(fs, 0) + 1
 
     summary = {
@@ -396,12 +539,16 @@ def main() -> None:
         "end_c_time_ms": end_c_time_ms,
         "end_c_time_bj": _to_bj(end_c_time_ms),
         "symbols_filter": sorted(symbols) if symbols else [],
+        "live_log_path": str(live_log_path) if live_log_path else "",
+        "uptime_window_count": len(uptime_windows),
+        "uptime_windows": [{"start_ms": s, "start_bj": _to_bj(s), "end_ms": e, "end_bj": _to_bj(e)} for s, e in uptime_windows],
+        "input_metrics_enabled": input_metrics_enabled,
         "sim_signal_count": len(sim_keys),
         "live_signal_count": len(live_keys),
         "matched_count": len(matched_keys),
         "sim_only_count": len(sim_only_keys),
         "live_only_count": len(live_only_keys),
-        "first_input_diff_counts": dict(sorted(first_input_counts.items())),
+        "first_input_diff_counts": dict(sorted(first_input_counts.items())) if input_metrics_enabled else {},
         "first_structure_diff_counts": dict(sorted(first_structure_counts.items())),
     }
 
@@ -428,9 +575,16 @@ def main() -> None:
     lines.append(f"sim_only_count: {len(sim_only_keys)}")
     lines.append(f"live_only_count: {len(live_only_keys)}")
     lines.append("")
+    lines.append("[uptime]")
+    lines.append(f"live_log_path: {str(live_log_path) if live_log_path else ''}")
+    lines.append(f"uptime_window_count: {len(uptime_windows)}")
+    lines.append("")
     lines.append("[first input diff counts]")
-    for k, v in sorted(first_input_counts.items()):
-        lines.append(f"{k}: {v}")
+    if input_metrics_enabled:
+        for k, v in sorted(first_input_counts.items()):
+            lines.append(f"{k}: {v}")
+    else:
+        lines.append("SKIPPED_NO_STAGE3")
     lines.append("")
     lines.append("[first structure diff counts]")
     for k, v in sorted(first_structure_counts.items()):
@@ -448,7 +602,12 @@ def main() -> None:
     print(f"live_signal_count: {len(live_keys)}")
     print(f"matched_count: {len(matched_keys)}")
     print(f"sim_only_count: {len(sim_only_keys)}")
-    print(f"live_only_count: {len(live_only_keys)}")
+    print(f"live_only_count: {len(live_keys) - len(matched_keys)}")
+    print("")
+    print("[uptime]")
+    print(f"live_log_path: {str(live_log_path) if live_log_path else ''}")
+    print(f"uptime_window_count: {len(uptime_windows)}")
+    print(f"input_metrics_enabled: {input_metrics_enabled}")
     print("")
     print(f"wrote: {out_dir / (stem + '.summary.json')}")
     print(f"wrote: {out_dir / (stem + '.matched.csv')}")

@@ -115,7 +115,7 @@ def _load_live_stage5(path: Path, symbol: str, c_time_ms: int) -> dict[str, Any]
         except Exception:
             return False
 
-    return _load_jsonl_first_match(path, pred)
+    return _load_jsonl_first_match(path, pred, prefer_key="logic_selected", prefer_value="True")
 
 
 def _safe_num(x: Any) -> float | int | None:
@@ -160,6 +160,7 @@ def _build_comparison(
         "input_metrics": {},
         "structure_metrics": {},
         "signal_vs_entry": {},
+        "live_selection": {},
     }
     if not sim_signal:
         return out
@@ -180,13 +181,18 @@ def _build_comparison(
         same, va, vb = _compare_values(a, b)
         out["top_level"][k] = {"same": same, "sim": va, "live": vb}
 
-    input_metric_sources = {
-        "chg_24h": (sim_ctx.get("chg_24h"), live3_last.get("chg_24h")),
-        "vol_24h": (sim_ctx.get("vol_24h"), live3_last.get("vol_24h")),
-    }
-    for key, (a, b) in input_metric_sources.items():
-        same, va, vb = _compare_values(a, b)
-        out["input_metrics"][key] = {"same": same, "sim": va, "live": vb}
+    if live_stage3 is None:
+        out["input_metrics"]["status"] = {"same": None, "sim": "STAGE3_REQUIRED", "live": "MISSING_STAGE3_ROW"}
+        for key in ("chg_24h", "vol_24h"):
+            out["input_metrics"][key] = {"same": None, "sim": _safe_num(sim_ctx.get(key)), "live": None}
+    else:
+        input_metric_sources = {
+            "chg_24h": (sim_ctx.get("chg_24h"), live3_last.get("chg_24h")),
+            "vol_24h": (sim_ctx.get("vol_24h"), live3_last.get("vol_24h")),
+        }
+        for key, (a, b) in input_metric_sources.items():
+            same, va, vb = _compare_values(a, b)
+            out["input_metrics"][key] = {"same": same, "sim": va, "live": vb}
 
     metric_keys = [
         "drop_pct",
@@ -209,6 +215,16 @@ def _build_comparison(
     for key in metric_keys:
         same, va, vb = _compare_values(sim_ctx.get(key), live5.get(key))
         out["structure_metrics"][key] = {"same": same, "sim": va, "live": vb}
+
+    out["live_selection"] = {
+        "logic_selected": bool(live5.get("logic_selected")),
+        "audit_selected": bool(live5.get("audit_selected")),
+        "audit_selected_symbol": live5.get("audit_selected_symbol"),
+        "candidate_rank": live5.get("candidate_rank"),
+        "is_candidate": live5.get("is_candidate"),
+        "stage5_pass": live5.get("stage5_pass"),
+        "fail_reason": live5.get("fail_reason"),
+    }
 
     if sim_trade:
         signal_time = sim_signal.get("signal_time")
@@ -249,6 +265,18 @@ def _build_summary(symbol: str, c_time_ms: int, match: MatchResult, comparison: 
     lines.append(f"live_stage5: {'YES' if match.live_stage5 else 'NO'}")
     lines.append("")
 
+    live_selection = comparison.get("live_selection") or {}
+    if match.live_stage5:
+        lines.append("[live selection flags]")
+        lines.append(f"logic_selected: {live_selection.get('logic_selected')}")
+        lines.append(f"audit_selected: {live_selection.get('audit_selected')}")
+        lines.append(f"audit_selected_symbol: {live_selection.get('audit_selected_symbol')}")
+        lines.append(f"candidate_rank: {live_selection.get('candidate_rank')}")
+        lines.append(f"is_candidate: {live_selection.get('is_candidate')}")
+        lines.append(f"stage5_pass: {live_selection.get('stage5_pass')}")
+        lines.append(f"fail_reason: {live_selection.get('fail_reason')}")
+        lines.append("")
+
     if match.live_stage3:
         hb = match.live_stage3.get("history_bars") or []
         lines.append("[live stage3 history_bars]")
@@ -260,9 +288,15 @@ def _build_summary(symbol: str, c_time_ms: int, match: MatchResult, comparison: 
 
     lines.append("[input metric comparison]")
     first_input_diff = None
-    for key, payload in comparison.get("input_metrics", {}).items():
+    input_metrics = comparison.get("input_metrics", {})
+    status_payload = input_metrics.get("status")
+    if status_payload:
+        lines.append(f"status: same={status_payload['same']} | sim={status_payload['sim']} | live={status_payload['live']}")
+    for key, payload in input_metrics.items():
+        if key == "status":
+            continue
         lines.append(f"{key}: same={payload['same']} | sim={payload['sim']} | live={payload['live']}")
-        if first_input_diff is None and not payload["same"]:
+        if first_input_diff is None and payload["same"] is False:
             first_input_diff = key
     lines.append("")
     lines.append(f"first_input_diff: {first_input_diff or 'NONE'}")
