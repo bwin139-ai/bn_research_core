@@ -1,6 +1,6 @@
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
-给我 patch方案、 patch脚本附件、patch运行命令行、以及一行 git add 和 git commit命令，对齐指纹和副本：
+输出patch方案、 patch脚本附件、patch运行命令行、以及一行 git add 和 git commit命令，对齐指纹和副本：
 ```bash
 
 ```
