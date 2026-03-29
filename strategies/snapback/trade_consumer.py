@@ -839,14 +839,16 @@ def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
         symbol = str(raw_symbol).upper().strip()
         if not symbol:
             continue
-        if payload.get('pending_entry_order'):
+        has_pending_entry = bool(payload.get('pending_entry_order'))
+        has_open_trade = bool(payload.get('open_trade'))
+        if has_pending_entry:
             pending_symbols.append(symbol)
-        if payload.get('open_trade'):
+        if has_open_trade:
             open_symbols.append(symbol)
         error_code = payload.get('last_error_code')
         error_message = payload.get('last_error_message')
         error_bj = payload.get('last_error_bj')
-        if error_code or error_message:
+        if (error_code or error_message) and (has_pending_entry or has_open_trade):
             active_state_errors.append({
                 'symbol': symbol,
                 'last_error_code': error_code,
