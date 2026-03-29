@@ -23,7 +23,7 @@ FILES = [
     # "audit_tools/audit_1m_data_quality_v2.py",
     # "core/analysis/postprocess_backtests.py",
     # "core/analysis/sim_equity_curves.py",
-    # "=================================",
+    # "=============== core ==================",
     # "core/config_loader.py",
     # "core/runtime_state.py",
     # "core/analysis/analyzer.py",
@@ -37,7 +37,7 @@ FILES = [
     # "core/live/audit_log.py",
     # "core/live/market_data.py",
     # "core/live/custom_id.py",
-    # "=================================",
+    # "=============== 策略 ==================",
     # "strategies/run_backtest.py",
     # "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
@@ -48,7 +48,8 @@ FILES = [
     # "=================================",
     #"sim_live_audit/audit_signal_snapshot_diff.py",
     #"sim_live_audit/audit_signal_window_diff.py",
-    # "=================================",
+    # "================ live 审计工具 =================",
+    #"audit_tools/live_audit/audit_live_scene_v1.py",
     #"PROJECT_BASELINE_v1.md",
 ]
 

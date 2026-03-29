@@ -160,6 +160,35 @@ def _resolve_tp_price_from_fill(signal: dict[str, Any], entry_fill_price: float)
     return 0.0, 'unavailable', selected_tp_pct
 
 
+def _resolve_live_entry_fill_price(
+    account: str,
+    symbol: str,
+    entry_data: dict[str, Any],
+    *,
+    fallback_price: float,
+) -> tuple[float, str]:
+    fill_price_res = resolve_order_fill_price(entry_data, fallback_price=None)
+    fill_payload = (fill_price_res.get('data') or {}) if fill_price_res.get('ok') else {}
+    entry_fill_price = float(fill_payload.get('fill_price') or 0.0)
+    entry_fill_price_source = str(fill_payload.get('price_source') or '')
+
+    if entry_fill_price <= 0:
+        position_res = get_position(account, symbol, FIXED_POSITION_SIDE)
+        if position_res.get('ok') and position_res.get('data'):
+            try:
+                position_entry_price = float((position_res.get('data') or {}).get('entry_price') or 0.0)
+            except (TypeError, ValueError):
+                position_entry_price = 0.0
+            if position_entry_price > 0:
+                return position_entry_price, 'position_entry_price'
+
+    fallback = float(fallback_price or 0.0)
+    if entry_fill_price <= 0 and fallback > 0:
+        return fallback, 'fallback_price'
+
+    return entry_fill_price, (entry_fill_price_source or 'fallback_price')
+
+
 def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     symbol_key = str(symbol).upper().strip()
 
@@ -3007,9 +3036,12 @@ def _submit_entry_and_exit_orders(
     if qty_for_exit <= 0:
         qty_for_exit = prep['quantity']
 
-    fill_price_res = resolve_order_fill_price(entry_data, fallback_price=prep['current_price'])
-    entry_fill_price = float((fill_price_res.get('data') or {}).get('fill_price') or prep['current_price'] or 0.0)
-    entry_fill_price_source = str((fill_price_res.get('data') or {}).get('price_source') or 'fallback_price')
+    entry_fill_price, entry_fill_price_source = _resolve_live_entry_fill_price(
+        account,
+        symbol,
+        entry_data,
+        fallback_price=prep['current_price'],
+    )
     resolved_tp_price, resolved_tp_price_source, selected_tp_pct = _resolve_tp_price_from_fill(signal, entry_fill_price)
     resolved_sl_price = float(signal.get('sl_price') or 0.0)
 

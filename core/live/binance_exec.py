@@ -465,6 +465,16 @@ def resolve_order_fill_price(order_row: dict[str, Any] | None, *, fallback_price
     return _err("entry fill price unavailable")
 
 
+def _entry_fill_fields_complete(order_row: dict[str, Any] | None) -> bool:
+    row = order_row or {}
+    avg_price = float(row.get("avg_price", 0.0) or 0.0)
+    if avg_price > 0:
+        return True
+    executed_qty = float(row.get("executed_qty", 0.0) or 0.0)
+    cum_quote = float(row.get("cum_quote", 0.0) or 0.0)
+    return executed_qty > 0 and cum_quote > 0
+
+
 def _normalize_quantity(account: str, symbol: str, quantity: float) -> dict[str, Any]:
     filters_res = get_symbol_filters(account, symbol)
     if not filters_res["ok"]:
@@ -516,6 +526,32 @@ def place_entry_order(
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
+    client_order_id_value = raw.get("clientOrderId", cid)
+    exchange_order_id_value = raw.get("orderId")
+    normalized_entry = _normalize_order_row(raw)
+
+    fill_query_res: dict[str, Any] = {
+        "ok": True,
+        "reason": "",
+        "data": None,
+        "skipped": True,
+    }
+    if not _entry_fill_fields_complete(normalized_entry):
+        fill_query_res = get_order(
+            account,
+            su,
+            exchange_order_id=exchange_order_id_value,
+            client_order_id=client_order_id_value,
+            retry_max=max(int(retry_max), 1),
+            retry_delay_secs=retry_delay_secs,
+        )
+        if fill_query_res.get("ok") and fill_query_res.get("data"):
+            queried_entry = fill_query_res["data"]
+            normalized_entry["avg_price"] = float(queried_entry.get("avg_price", 0.0) or 0.0)
+            normalized_entry["executed_qty"] = float(queried_entry.get("executed_qty", 0.0) or 0.0)
+            normalized_entry["cum_quote"] = float(queried_entry.get("cum_quote", 0.0) or 0.0)
+            normalized_entry["status"] = queried_entry.get("status") or normalized_entry.get("status")
+
     return _ok(
         {
             "symbol": su,
@@ -524,14 +560,19 @@ def place_entry_order(
             "side": side,
             "position_side": pos,
             "qty": qty_res["data"]["qty"],
-            "client_order_id": raw.get("clientOrderId", cid),
-            "exchange_order_id": raw.get("orderId"),
-            "status": raw.get("status"),
-            "avg_price": float(raw.get("avgPrice", 0.0) or 0.0),
-            "executed_qty": float(raw.get("executedQty", 0.0) or 0.0),
-            "cum_quote": float(raw.get("cumQuote", 0.0) or 0.0),
+            "client_order_id": client_order_id_value,
+            "exchange_order_id": exchange_order_id_value,
+            "status": normalized_entry.get("status"),
+            "avg_price": float(normalized_entry.get("avg_price", 0.0) or 0.0),
+            "executed_qty": float(normalized_entry.get("executed_qty", 0.0) or 0.0),
+            "cum_quote": float(normalized_entry.get("cum_quote", 0.0) or 0.0),
+            "fill_query_ok": bool(fill_query_res.get("ok", False)),
+            "fill_query_reason": fill_query_res.get("reason"),
+            "fill_query_attempts": fill_query_res.get("attempts"),
+            "fill_query_skipped": bool(fill_query_res.get("skipped", False)),
             "payload": payload,
             "raw": raw,
+            "fill_query_snapshot": fill_query_res if not fill_query_res.get("skipped") else None,
         },
         attempts=res.get("attempts"),
     )
