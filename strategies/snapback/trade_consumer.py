@@ -3002,6 +3002,17 @@ def _submit_entry_and_exit_orders(
             'reason': entry_res['reason'],
         }
 
+    entry_data = entry_res['data']
+    qty_for_exit = float(entry_data.get('executed_qty') or entry_data.get('qty') or 0.0)
+    if qty_for_exit <= 0:
+        qty_for_exit = prep['quantity']
+
+    fill_price_res = resolve_order_fill_price(entry_data, fallback_price=prep['current_price'])
+    entry_fill_price = float((fill_price_res.get('data') or {}).get('fill_price') or prep['current_price'] or 0.0)
+    entry_fill_price_source = str((fill_price_res.get('data') or {}).get('price_source') or 'fallback_price')
+    resolved_tp_price, resolved_tp_price_source, selected_tp_pct = _resolve_tp_price_from_fill(signal, entry_fill_price)
+    resolved_sl_price = float(signal.get('sl_price') or 0.0)
+
     pending_entry = _build_pending_entry(
         entry_res,
         signal,
@@ -3014,16 +3025,6 @@ def _submit_entry_and_exit_orders(
         sl_price=resolved_sl_price,
     )
     set_pending_entry_order(account, symbol, pending_entry)
-    entry_data = entry_res['data']
-    qty_for_exit = float(entry_data.get('executed_qty') or entry_data.get('qty') or 0.0)
-    if qty_for_exit <= 0:
-        qty_for_exit = prep['quantity']
-
-    fill_price_res = resolve_order_fill_price(entry_data, fallback_price=prep['current_price'])
-    entry_fill_price = float((fill_price_res.get('data') or {}).get('fill_price') or prep['current_price'] or 0.0)
-    entry_fill_price_source = str((fill_price_res.get('data') or {}).get('price_source') or 'fallback_price')
-    resolved_tp_price, resolved_tp_price_source, selected_tp_pct = _resolve_tp_price_from_fill(signal, entry_fill_price)
-    resolved_sl_price = float(signal.get('sl_price') or 0.0)
 
     if bool(live_cfg.get('audit_enabled', True)):
         write_event(account, 'entry_fill_observed', {
