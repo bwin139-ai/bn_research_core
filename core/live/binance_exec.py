@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 import time
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
+from urllib.parse import urlencode
 
-from core.live.binance_client import get_client
+import requests
+
+from core.live.binance_client import get_client, load_account_secrets
 
 MARGIN_TYPE = "CROSSED"
 POSITION_MODE = "HEDGE"
@@ -41,6 +46,141 @@ def _call_with_retry(fn, *, retry_max: int = 0, retry_delay_secs: float = 1.0):
                 break
             time.sleep(max(0.0, float(retry_delay_secs)))
     return _err(str(last_err or "unknown error"), attempts=attempts)
+
+
+def _algo_base_url() -> str:
+    return "https://fapi.binance.com"
+
+
+def _raise_api_error(data: Any) -> None:
+    if isinstance(data, dict):
+        code = data.get("code")
+        msg = data.get("msg") or data
+        if code is not None and str(code).startswith("-"):
+            raise RuntimeError(f"APIError(code={{code}}): {{msg}}")
+
+
+def _signed_futures_algo_request(account: str, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    secrets = load_account_secrets(account)
+    params = {{
+        str(k): v
+        for k, v in dict(payload or {{}}).items()
+        if v is not None and v != ""
+    }}
+    params["timestamp"] = int(time.time() * 1000)
+    query = urlencode(params, doseq=True)
+    signature = hmac.new(
+        str(secrets["api_secret"]).encode("utf-8"),
+        query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    params["signature"] = signature
+    headers = {{
+        "X-MBX-APIKEY": str(secrets["api_key"]),
+    }}
+    request_kwargs: dict[str, Any] = {{
+        "headers": headers,
+        "timeout": 10.0,
+    }}
+    method_upper = str(method or "GET").upper()
+    if method_upper in {{"GET", "DELETE"}}:
+        request_kwargs["params"] = params
+    else:
+        request_kwargs["data"] = params
+    resp = requests.request(method_upper, f"{{_algo_base_url()}}{{path}}", **request_kwargs)
+    try:
+        data = resp.json()
+    except Exception:
+        resp.raise_for_status()
+        raise RuntimeError(f"algo api non-json response status={{resp.status_code}}")
+    if resp.status_code >= 400:
+        _raise_api_error(data)
+        raise RuntimeError(f"algo api http status={{resp.status_code}}: {{data}}")
+    _raise_api_error(data)
+    return data
+
+
+def _normalize_algo_order_row(raw: dict[str, Any]) -> dict[str, Any]:
+    algo_status = str(raw.get("algoStatus") or raw.get("status") or "").upper()
+    trigger_price = raw.get("triggerPrice", raw.get("stopPrice", 0.0))
+    price = raw.get("price", 0.0)
+    quantity = raw.get("quantity", 0.0)
+    actual_price = raw.get("actualPrice", 0.0)
+    return {{
+        "symbol": raw.get("symbol"),
+        "order_id": raw.get("algoId"),
+        "client_order_id": raw.get("clientAlgoId"),
+        "side": raw.get("side"),
+        "position_side": raw.get("positionSide"),
+        "type": raw.get("orderType") or raw.get("type"),
+        "status": algo_status,
+        "price": float(price or 0.0),
+        "avg_price": float(actual_price or 0.0),
+        "orig_qty": float(quantity or 0.0),
+        "executed_qty": 0.0,
+        "cum_quote": 0.0,
+        "stop_price": float(trigger_price or 0.0),
+        "reduce_only": bool(raw.get("reduceOnly", False)),
+        "close_position": bool(raw.get("closePosition", False)),
+        "algo_id": raw.get("algoId"),
+        "client_algo_id": raw.get("clientAlgoId"),
+        "algo_status": algo_status,
+        "actual_order_id": raw.get("actualOrderId"),
+        "actual_price": float(actual_price or 0.0),
+        "is_algo_order": True,
+        "raw": raw,
+    }}
+
+
+def _is_order_not_found_reason(reason: str | None) -> bool:
+    text = str(reason or "")
+    needles = [
+        "code=-2013",
+        "Order does not exist",
+        "Unknown order sent",
+        "algo order does not exist",
+        "order not exist",
+    ]
+    return any(needle in text for needle in needles)
+
+
+def _get_open_algo_orders(account: str, symbol: str | None = None) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {{}}
+    su = (symbol or "").upper().strip()
+    if su:
+        payload["symbol"] = su
+    data = _signed_futures_algo_request(account, "GET", "/fapi/v1/openAlgoOrders", payload)
+    if not isinstance(data, list):
+        raise RuntimeError(f"unexpected openAlgoOrders payload: {{data}}")
+    return data
+
+
+def _query_algo_order(account: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {{}}
+    if exchange_order_id is not None:
+        payload["algoId"] = int(exchange_order_id)
+    if client_order_id:
+        payload["clientAlgoId"] = client_order_id
+    if not payload:
+        raise ValueError("查询 algo 订单必须提供 algoId 或 clientAlgoId")
+    data = _signed_futures_algo_request(account, "GET", "/fapi/v1/algoOrder", payload)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"unexpected algoOrder payload: {{data}}")
+    return data
+
+
+def _cancel_algo_order(account: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {{}}
+    if exchange_order_id is not None:
+        payload["algoId"] = int(exchange_order_id)
+    if client_order_id:
+        payload["clientAlgoId"] = client_order_id
+    if not payload:
+        raise ValueError("撤销 algo 订单必须提供 algoId 或 clientAlgoId")
+    data = _signed_futures_algo_request(account, "DELETE", "/fapi/v1/algoOrder", payload)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"unexpected cancel algo payload: {{data}}")
+    return data
 
 
 def _decimal_places_from_step(value: str | float | None) -> int:
@@ -175,10 +315,14 @@ def get_last_price(account: str, symbol: str) -> dict[str, Any]:
 def get_open_orders(account: str, symbol: str | None = None) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
-    res = _call_with_retry(lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
-    if not res["ok"]:
-        return res
-    rows = [_normalize_order_row(o) for o in res["data"]]
+    base_res = _call_with_retry(lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
+    if not base_res["ok"]:
+        return base_res
+    algo_res = _call_with_retry(lambda: _get_open_algo_orders(account, su if su else None))
+    if not algo_res["ok"]:
+        return algo_res
+    rows = [_normalize_order_row(o) for o in base_res["data"]]
+    rows.extend(_normalize_algo_order_row(o) for o in algo_res["data"])
     return _ok(rows)
 
 
@@ -205,9 +349,22 @@ def get_order(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
-    if not res["ok"]:
+    if res["ok"]:
+        return _ok(_normalize_order_row(res["data"]), attempts=res.get("attempts"))
+    if not _is_order_not_found_reason(res["reason"]):
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
-    return _ok(_normalize_order_row(res["data"]), attempts=res.get("attempts"))
+    algo_res = _call_with_retry(
+        lambda: _query_algo_order(
+            account,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+        ),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not algo_res["ok"]:
+        return _err(algo_res["reason"], payload=payload, attempts=algo_res.get("attempts"))
+    return _ok(_normalize_algo_order_row(algo_res["data"]), attempts=algo_res.get("attempts"))
 
 
 def get_positions(account: str, symbol: str | None = None) -> dict[str, Any]:
@@ -450,7 +607,6 @@ def place_sl_order(
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
 ) -> dict[str, Any]:
-    client = get_client(account)
     su = (symbol or "").upper().strip()
     pos = _normalize_position_side(position_side)
     filters_res = get_symbol_filters(account, su)
@@ -458,20 +614,21 @@ def place_sl_order(
         return filters_res
     px = _normalize_price(stop_price, filters_res["data"]["tick_size"])
     if px <= 0:
-        return _err(f"stop_price 非法: {stop_price}")
+        return _err(f"stop_price 非法: {{stop_price}}")
     cid = client_order_id or _gen_client_order_id("SL", su)
     payload = {
+        "algoType": "CONDITIONAL",
         "symbol": su,
         "side": _exit_side_for_position(pos),
         "positionSide": pos,
         "type": STOP_LOSS_ORDER_TYPE,
-        "stopPrice": px,
+        "triggerPrice": px,
         "closePosition": "true",
         "workingType": "CONTRACT_PRICE",
-        "newClientOrderId": cid,
+        "clientAlgoId": cid,
     }
     res = _call_with_retry(
-        lambda: client.futures_create_order(**payload),
+        lambda: _signed_futures_algo_request(account, "POST", "/fapi/v1/algoOrder", payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
@@ -486,11 +643,12 @@ def place_sl_order(
             "side": payload["side"],
             "position_side": pos,
             "stop_price": px,
-            "client_order_id": raw.get("clientOrderId", cid),
-            "exchange_order_id": raw.get("orderId"),
-            "status": raw.get("status"),
+            "client_order_id": raw.get("clientAlgoId", cid),
+            "exchange_order_id": raw.get("algoId"),
+            "status": raw.get("algoStatus"),
             "payload": payload,
             "raw": raw,
+            "is_algo_order": True,
         },
         attempts=res.get("attempts"),
     )
@@ -572,19 +730,44 @@ def cancel_order(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
-    if not res["ok"]:
+    if res["ok"]:
+        raw = res["data"]
+        return _ok(
+            {
+                "symbol": su,
+                "exchange_order_id": raw.get("orderId"),
+                "client_order_id": raw.get("clientOrderId"),
+                "status": raw.get("status"),
+                "payload": payload,
+                "raw": raw,
+            },
+            attempts=res.get("attempts"),
+        )
+    if not _is_order_not_found_reason(res["reason"]):
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
-    raw = res["data"]
+    algo_res = _call_with_retry(
+        lambda: _cancel_algo_order(
+            account,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+        ),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not algo_res["ok"]:
+        return _err(algo_res["reason"], payload=payload, attempts=algo_res.get("attempts"))
+    raw = algo_res["data"]
     return _ok(
         {
             "symbol": su,
-            "exchange_order_id": raw.get("orderId"),
-            "client_order_id": raw.get("clientOrderId"),
-            "status": raw.get("status"),
+            "exchange_order_id": raw.get("algoId"),
+            "client_order_id": raw.get("clientAlgoId"),
+            "status": raw.get("msg") or raw.get("code"),
             "payload": payload,
             "raw": raw,
+            "is_algo_order": True,
         },
-        attempts=res.get("attempts"),
+        attempts=algo_res.get("attempts"),
     )
 
 
