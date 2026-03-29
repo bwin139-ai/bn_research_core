@@ -289,6 +289,25 @@ def ensure_leverage(account: str, symbol: str, leverage: int) -> dict[str, Any]:
     return _ok({"symbol": su, "leverage": int(res["data"].get("leverage", lev)), "raw": res["data"]})
 
 
+def resolve_order_fill_price(order_row: dict[str, Any] | None, *, fallback_price: float | None = None) -> dict[str, Any]:
+    row = order_row or {}
+    avg_price = float(row.get("avg_price", 0.0) or 0.0)
+    if avg_price > 0:
+        return _ok({"fill_price": avg_price, "price_source": "avg_price"})
+
+    executed_qty = float(row.get("executed_qty", 0.0) or 0.0)
+    cum_quote = float(row.get("cum_quote", 0.0) or 0.0)
+    if executed_qty > 0 and cum_quote > 0:
+        return _ok({"fill_price": (cum_quote / executed_qty), "price_source": "cum_quote_div_executed_qty"})
+
+    if fallback_price is not None:
+        fallback = float(fallback_price or 0.0)
+        if fallback > 0:
+            return _ok({"fill_price": fallback, "price_source": "fallback_price"})
+
+    return _err("entry fill price unavailable")
+
+
 def _normalize_quantity(account: str, symbol: str, quantity: float) -> dict[str, Any]:
     filters_res = get_symbol_filters(account, symbol)
     if not filters_res["ok"]:
@@ -353,6 +372,7 @@ def place_entry_order(
             "status": raw.get("status"),
             "avg_price": float(raw.get("avgPrice", 0.0) or 0.0),
             "executed_qty": float(raw.get("executedQty", 0.0) or 0.0),
+            "cum_quote": float(raw.get("cumQuote", 0.0) or 0.0),
             "payload": payload,
             "raw": raw,
         },

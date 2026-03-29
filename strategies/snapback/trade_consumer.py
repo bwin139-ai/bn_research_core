@@ -9,6 +9,7 @@ from typing import Any
 from core.live.audit_log import append_stage_record, write_event
 from core.live.binance_exec import (
     cancel_order,
+    ensure_leverage,
     get_open_orders,
     get_order,
     get_position,
@@ -17,6 +18,7 @@ from core.live.binance_exec import (
     place_sl_order,
     place_time_stop_order,
     place_tp_order,
+    resolve_order_fill_price,
 )
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
 from core.live.live_state import (
@@ -121,6 +123,41 @@ def _signal_digest(signal: dict[str, Any]) -> str:
         'sl_price': _normalize_scalar(signal.get('sl_price')),
     }
     return _json_safe_dumps(base, sort_keys=True)
+
+
+def _resolve_selected_tp_pct(signal: dict[str, Any]) -> float | None:
+    params = signal.get('params') if isinstance(signal.get('params'), dict) else {}
+    context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
+    candidates = [
+        params.get('selected_take_profit_pct'),
+        params.get('selected_tp_pct'),
+        context.get('selected_tp_pct'),
+    ]
+    for raw in candidates:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    try:
+        current_price = float(signal.get('current_price') or 0.0)
+        signal_tp_price = float(signal.get('tp_price') or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if current_price > 0 and signal_tp_price > current_price:
+        return (signal_tp_price / current_price) - 1.0
+    return None
+
+
+def _resolve_tp_price_from_fill(signal: dict[str, Any], entry_fill_price: float) -> tuple[float, str, float | None]:
+    selected_tp_pct = _resolve_selected_tp_pct(signal)
+    if entry_fill_price > 0 and selected_tp_pct is not None and selected_tp_pct > 0:
+        return float(entry_fill_price) * (1.0 + float(selected_tp_pct)), 'entry_fill_pct', float(selected_tp_pct)
+    fallback_tp_price = float(signal.get('tp_price') or 0.0)
+    if fallback_tp_price > 0:
+        return fallback_tp_price, 'signal_tp_price', selected_tp_pct
+    return 0.0, 'unavailable', selected_tp_pct
 
 
 def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -329,7 +366,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
 
 
 
-def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res: dict[str, Any], sl_res: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str) -> dict[str, Any]:
+def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res: dict[str, Any], sl_res: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str, tp_price: float, sl_trigger_price: float) -> dict[str, Any]:
     entry = entry_res['data']
     tp = tp_res['data'] if tp_res.get('ok') else {}
     sl = sl_res['data'] if sl_res.get('ok') else {}
@@ -352,8 +389,8 @@ def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res:
         'sl_order_exchange_id': sl.get('exchange_order_id'),
         'time_stop_client_order_id': None,
         'time_stop_exchange_order_id': None,
-        'tp_price': float(signal.get('tp_price') or 0.0),
-        'sl_trigger_price': float(signal.get('sl_price') or 0.0),
+        'tp_price': float(tp_price or 0.0),
+        'sl_trigger_price': float(sl_trigger_price or 0.0),
         'status': 'OPEN',
         'exit_submit_inflight': False,
         'last_status_bj': _now_bj_str(),
@@ -361,7 +398,7 @@ def _build_open_trade(entry_res: dict[str, Any], signal: dict[str, Any], tp_res:
     }
 
 
-def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str) -> dict[str, Any]:
+def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entry_notional_usdt: float, *, order_root: str, entry_client_order_id: str, tp_client_order_id: str, sl_client_order_id: str, tp_price: float, sl_price: float) -> dict[str, Any]:
     entry = entry_res['data']
     return {
         'symbol': signal['symbol'],
@@ -374,8 +411,8 @@ def _build_pending_entry(entry_res: dict[str, Any], signal: dict[str, Any], entr
         'entry_notional_usdt': float(entry_notional_usdt),
         'signal_digest': _signal_digest(signal),
         'signal_snapshot': signal,
-        'tp_price': float(signal.get('tp_price') or 0.0),
-        'sl_price': float(signal.get('sl_price') or 0.0),
+        'tp_price': float(tp_price or 0.0),
+        'sl_price': float(sl_price or 0.0),
         'tp_client_order_id': tp_client_order_id,
         'sl_client_order_id': sl_client_order_id,
         'created_bj': _now_bj_str(),
@@ -2814,6 +2851,34 @@ def _consume_signal_precheck_and_prepare(
             'reason': f'current_price={current_price}',
         }
 
+    requested_leverage = int(live_cfg['leverage'])
+    leverage_res = ensure_leverage(account, symbol, requested_leverage)
+    if bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'leverage_ensured' if leverage_res.get('ok') else 'leverage_ensure_failed', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'requested_leverage': requested_leverage,
+            'exchange_snapshot': leverage_res,
+        })
+    if not leverage_res.get('ok'):
+        mark_error(
+            account,
+            symbol,
+            error_code='leverage_ensure_failed',
+            error_message=leverage_res.get('reason'),
+            error_bj=current_time_bj,
+        )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'failed_leverage_ensure',
+            'reason': str(leverage_res.get('reason') or ''),
+        }
+
     quantity = entry_notional_usdt / current_price
     retry_max = int(live_cfg['order_retry_max'])
     retry_delay_secs = float(live_cfg['api_retry_delay_secs'])
@@ -2832,6 +2897,16 @@ def _consume_signal_precheck_and_prepare(
             'signal_snapshot': signal,
             'order_root': order_root,
         })
+        write_event(account, 'execution_plan_ready', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'order_root': order_root,
+            'entry_notional_usdt': entry_notional_usdt,
+            'current_price': current_price,
+            'quantity': quantity,
+            'requested_leverage': requested_leverage,
+        })
 
     return {
         'ok': True,
@@ -2844,6 +2919,7 @@ def _consume_signal_precheck_and_prepare(
         'quantity': quantity,
         'retry_max': retry_max,
         'retry_delay_secs': retry_delay_secs,
+        'requested_leverage': requested_leverage,
         'entry_client_order_id': entry_client_order_id,
         'tp_client_order_id': tp_client_order_id,
         'sl_client_order_id': sl_client_order_id,
@@ -2932,6 +3008,8 @@ def _submit_entry_and_exit_orders(
         entry_client_order_id=prep['entry_client_order_id'],
         tp_client_order_id=prep['tp_client_order_id'],
         sl_client_order_id=prep['sl_client_order_id'],
+        tp_price=resolved_tp_price,
+        sl_price=resolved_sl_price,
     )
     set_pending_entry_order(account, symbol, pending_entry)
     entry_data = entry_res['data']
@@ -2939,12 +3017,45 @@ def _submit_entry_and_exit_orders(
     if qty_for_exit <= 0:
         qty_for_exit = prep['quantity']
 
+    fill_price_res = resolve_order_fill_price(entry_data, fallback_price=prep['current_price'])
+    entry_fill_price = float((fill_price_res.get('data') or {}).get('fill_price') or prep['current_price'] or 0.0)
+    entry_fill_price_source = str((fill_price_res.get('data') or {}).get('price_source') or 'fallback_price')
+    resolved_tp_price, resolved_tp_price_source, selected_tp_pct = _resolve_tp_price_from_fill(signal, entry_fill_price)
+    resolved_sl_price = float(signal.get('sl_price') or 0.0)
+
+    if bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'entry_fill_observed', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'order_root': order_root,
+            'entry_fill_price': entry_fill_price,
+            'entry_fill_price_source': entry_fill_price_source,
+            'executed_qty': float(entry_data.get('executed_qty') or 0.0),
+            'cum_quote': float(entry_data.get('cum_quote') or 0.0),
+            'requested_leverage': prep.get('requested_leverage'),
+        })
+        write_event(account, 'exit_price_plan', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'order_root': order_root,
+            'signal_tp_price': float(signal.get('tp_price') or 0.0),
+            'signal_sl_price': float(signal.get('sl_price') or 0.0),
+            'entry_fill_price': entry_fill_price,
+            'entry_fill_price_source': entry_fill_price_source,
+            'selected_tp_pct': selected_tp_pct,
+            'resolved_tp_price': resolved_tp_price,
+            'resolved_tp_price_source': resolved_tp_price_source,
+            'resolved_sl_price': resolved_sl_price,
+        })
+
     tp_res = place_tp_order(
         account,
         symbol,
         FIXED_POSITION_SIDE,
         qty_for_exit,
-        float(signal['tp_price']),
+        float(resolved_tp_price),
         retry_max=prep['retry_max'],
         retry_delay_secs=prep['retry_delay_secs'],
         client_order_id=prep['tp_client_order_id'],
@@ -2953,7 +3064,7 @@ def _submit_entry_and_exit_orders(
         account,
         symbol,
         FIXED_POSITION_SIDE,
-        float(signal['sl_price']),
+        float(resolved_sl_price),
         retry_max=prep['retry_max'],
         retry_delay_secs=prep['retry_delay_secs'],
         client_order_id=prep['sl_client_order_id'],
@@ -2996,6 +3107,11 @@ def _submit_entry_and_exit_orders(
             'entry_ok': bool(entry_res.get('ok')),
             'tp_ok': bool(tp_res.get('ok')),
             'sl_ok': bool(sl_res.get('ok')),
+            'requested_leverage': prep.get('requested_leverage'),
+            'entry_fill_price': entry_fill_price,
+            'entry_fill_price_source': entry_fill_price_source,
+            'resolved_tp_price': resolved_tp_price,
+            'resolved_sl_price': resolved_sl_price,
             'entry_client_order_id': entry_res['data'].get('client_order_id', prep['entry_client_order_id']),
             'tp_client_order_id': prep['tp_client_order_id'],
             'sl_client_order_id': prep['sl_client_order_id'],
@@ -3020,6 +3136,8 @@ def _submit_entry_and_exit_orders(
         entry_client_order_id=prep['entry_client_order_id'],
         tp_client_order_id=prep['tp_client_order_id'],
         sl_client_order_id=prep['sl_client_order_id'],
+        tp_price=resolved_tp_price,
+        sl_trigger_price=resolved_sl_price,
     )
 
     return {
@@ -3040,6 +3158,11 @@ def _submit_entry_and_exit_orders(
         'sl_client_order_id': prep['sl_client_order_id'],
         'entry_notional_usdt': prep['entry_notional_usdt'],
         'current_price': prep['current_price'],
+        'requested_leverage': prep.get('requested_leverage'),
+        'entry_fill_price': entry_fill_price,
+        'entry_fill_price_source': entry_fill_price_source,
+        'resolved_tp_price': resolved_tp_price,
+        'resolved_sl_price': resolved_sl_price,
         'signal': signal,
     }
 
@@ -3339,10 +3462,23 @@ def _finalize_entry_state_after_submit(
         })
     mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
 
+    if entry_position_confirmed and (not entry_bracket_gap_critical) and bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'entry_immediate_bracket_complete', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'order_root': order_root,
+            'entry_fill_price': submit_ctx.get('entry_fill_price'),
+            'entry_fill_price_source': submit_ctx.get('entry_fill_price_source'),
+            'tp_price': open_trade.get('tp_price'),
+            'sl_trigger_price': open_trade.get('sl_trigger_price'),
+        })
+
     if entry_position_confirmed and (not entry_bracket_gap_critical) and bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_submit', True)):
-        tp_px = float(signal.get('tp_price') or 0.0)
-        sl_px = float(signal.get('sl_price') or 0.0)
-        _notify(True, f'[Snapback-Live] 开仓 {symbol} | entry≈{submit_ctx["current_price"]:.6f} | TP={tp_px:.6f} | SL={sl_px:.6f}')
+        tp_px = float(open_trade.get('tp_price') or 0.0)
+        sl_px = float(open_trade.get('sl_trigger_price') or 0.0)
+        entry_px = float(open_trade.get('entry_price') or submit_ctx.get('entry_fill_price') or submit_ctx["current_price"] or 0.0)
+        _notify(True, f'[Snapback-Live] 开仓 {symbol} | entry≈{entry_px:.6f} | TP={tp_px:.6f} | SL={sl_px:.6f}')
 
     outcome = 'consumed_open_confirmed' if entry_position_confirmed and not entry_bracket_gap_critical else 'consumed_pending_wait_fill'
     if entry_bracket_gap_critical:
