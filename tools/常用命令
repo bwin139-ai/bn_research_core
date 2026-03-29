@@ -25,6 +25,13 @@ python3 audit_tools/live_audit/audit_live_scene_v1.py \
   --symbols QUSDT \
   --day 2026-03-29 \
   --json-out output/state/audit_qusdt_scene.json
+# *************** live 提炼日志 ***************
+python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
+  --input output/live/snapback_live.console.log \
+  --output output/live/snapback_live.cut_with_marker.log \
+  --start-bj "2026-03-26 00:00:00" \
+  --end-bj "2026-03-29 18:00:00" \
+  --keep-keyboardinterrupt-marker
 
 # ============== sim / live 一致性审计 ===============
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_window_diff.py \
@@ -104,10 +111,11 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
 # *************** 拉 冒烟 sim 数据 ***************
-DEST=~/ai_projects/bn_research_core/state4
+DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/state/sim_signals.Snapback_V5.0_SmokeTest3.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest3.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest3.jsonl" \
   "$DEST"
 # *************** 拉 sim/live一致性审计数据 ***************
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
@@ -138,11 +146,11 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
   --start 2026-03-25T17:00:00+00:00 \
-  --end   2026-03-29T06:00:00+00:00 \
+  --end   2026-03-29T09:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_V6.1_SmokeTest2"
+  --run-id "Snapback_V6.1_SmokeTest3"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
@@ -173,7 +181,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 2 \
+  --days 5 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
