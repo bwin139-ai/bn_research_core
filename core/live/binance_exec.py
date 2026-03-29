@@ -57,16 +57,16 @@ def _raise_api_error(data: Any) -> None:
         code = data.get("code")
         msg = data.get("msg") or data
         if code is not None and str(code).startswith("-"):
-            raise RuntimeError(f"APIError(code={{code}}): {{msg}}")
+            raise RuntimeError(f"APIError(code={code}): {msg}")
 
 
 def _signed_futures_algo_request(account: str, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     secrets = load_account_secrets(account)
-    params = {{
+    params = {
         str(k): v
-        for k, v in dict(payload or {{}}).items()
+        for k, v in dict(payload or {}).items()
         if v is not None and v != ""
-    }}
+    }
     params["timestamp"] = int(time.time() * 1000)
     query = urlencode(params, doseq=True)
     signature = hmac.new(
@@ -75,27 +75,27 @@ def _signed_futures_algo_request(account: str, method: str, path: str, payload: 
         hashlib.sha256,
     ).hexdigest()
     params["signature"] = signature
-    headers = {{
+    headers = {
         "X-MBX-APIKEY": str(secrets["api_key"]),
-    }}
-    request_kwargs: dict[str, Any] = {{
+    }
+    request_kwargs: dict[str, Any] = {
         "headers": headers,
         "timeout": 10.0,
-    }}
+    }
     method_upper = str(method or "GET").upper()
-    if method_upper in {{"GET", "DELETE"}}:
+    if method_upper in {"GET", "DELETE"}:
         request_kwargs["params"] = params
     else:
         request_kwargs["data"] = params
-    resp = requests.request(method_upper, f"{{_algo_base_url()}}{{path}}", **request_kwargs)
+    resp = requests.request(method_upper, f"{_algo_base_url()}{path}", **request_kwargs)
     try:
         data = resp.json()
     except Exception:
         resp.raise_for_status()
-        raise RuntimeError(f"algo api non-json response status={{resp.status_code}}")
+        raise RuntimeError(f"algo api non-json response status={resp.status_code}")
     if resp.status_code >= 400:
         _raise_api_error(data)
-        raise RuntimeError(f"algo api http status={{resp.status_code}}: {{data}}")
+        raise RuntimeError(f"algo api http status={resp.status_code}: {data}")
     _raise_api_error(data)
     return data
 
@@ -106,7 +106,7 @@ def _normalize_algo_order_row(raw: dict[str, Any]) -> dict[str, Any]:
     price = raw.get("price", 0.0)
     quantity = raw.get("quantity", 0.0)
     actual_price = raw.get("actualPrice", 0.0)
-    return {{
+    return {
         "symbol": raw.get("symbol"),
         "order_id": raw.get("algoId"),
         "client_order_id": raw.get("clientAlgoId"),
@@ -129,7 +129,7 @@ def _normalize_algo_order_row(raw: dict[str, Any]) -> dict[str, Any]:
         "actual_price": float(actual_price or 0.0),
         "is_algo_order": True,
         "raw": raw,
-    }}
+    }
 
 
 def _is_order_not_found_reason(reason: str | None) -> bool:
@@ -145,18 +145,18 @@ def _is_order_not_found_reason(reason: str | None) -> bool:
 
 
 def _get_open_algo_orders(account: str, symbol: str | None = None) -> list[dict[str, Any]]:
-    payload: dict[str, Any] = {{}}
+    payload: dict[str, Any] = {}
     su = (symbol or "").upper().strip()
     if su:
         payload["symbol"] = su
     data = _signed_futures_algo_request(account, "GET", "/fapi/v1/openAlgoOrders", payload)
     if not isinstance(data, list):
-        raise RuntimeError(f"unexpected openAlgoOrders payload: {{data}}")
+        raise RuntimeError(f"unexpected openAlgoOrders payload: {data}")
     return data
 
 
 def _query_algo_order(account: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {{}}
+    payload: dict[str, Any] = {}
     if exchange_order_id is not None:
         payload["algoId"] = int(exchange_order_id)
     if client_order_id:
@@ -165,12 +165,12 @@ def _query_algo_order(account: str, *, exchange_order_id: int | None = None, cli
         raise ValueError("查询 algo 订单必须提供 algoId 或 clientAlgoId")
     data = _signed_futures_algo_request(account, "GET", "/fapi/v1/algoOrder", payload)
     if not isinstance(data, dict):
-        raise RuntimeError(f"unexpected algoOrder payload: {{data}}")
+        raise RuntimeError(f"unexpected algoOrder payload: {data}")
     return data
 
 
 def _cancel_algo_order(account: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {{}}
+    payload: dict[str, Any] = {}
     if exchange_order_id is not None:
         payload["algoId"] = int(exchange_order_id)
     if client_order_id:
@@ -179,7 +179,7 @@ def _cancel_algo_order(account: str, *, exchange_order_id: int | None = None, cl
         raise ValueError("撤销 algo 订单必须提供 algoId 或 clientAlgoId")
     data = _signed_futures_algo_request(account, "DELETE", "/fapi/v1/algoOrder", payload)
     if not isinstance(data, dict):
-        raise RuntimeError(f"unexpected cancel algo payload: {{data}}")
+        raise RuntimeError(f"unexpected cancel algo payload: {data}")
     return data
 
 
@@ -614,7 +614,7 @@ def place_sl_order(
         return filters_res
     px = _normalize_price(stop_price, filters_res["data"]["tick_size"])
     if px <= 0:
-        return _err(f"stop_price 非法: {{stop_price}}")
+        return _err(f"stop_price 非法: {stop_price}")
     cid = client_order_id or _gen_client_order_id("SL", su)
     payload = {
         "algoType": "CONDITIONAL",
