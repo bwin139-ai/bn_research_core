@@ -41,6 +41,16 @@ KEY_EVENTS = [
     "signal_scan_skipped_orphan_exchange_activity",
 ]
 
+ROOTLESS_KEEP_EVENTS = {
+    "orphan_exchange_activity",
+    "orphan_exchange_position",
+    "orphan_exchange_open_orders",
+}
+
+NOISE_EVENTS = {
+    "signal_scan_skipped_orphan_exchange_activity",
+}
+
 
 def _safe_float(v: Any) -> float | None:
     try:
@@ -252,6 +262,44 @@ def print_group_summary(summary: dict[str, Any]) -> None:
 
 
 
+def _is_rootless_group(order_root: str) -> bool:
+    return str(order_root or "").startswith("NO_ROOT::")
+
+
+def _filter_summaries_for_default_view(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    seen_rootless_symbol_event: set[tuple[str, str]] = set()
+
+    for summary in summaries:
+        order_root = str(summary.get("order_root") or "")
+        symbol = str(summary.get("symbol") or "").upper().strip()
+        events = [str(x or "") for x in summary.get("events") or []]
+        event_set = set(events)
+
+        if not _is_rootless_group(order_root):
+            kept.append(summary)
+            continue
+
+        if not symbol:
+            continue
+
+        if event_set and event_set.issubset(NOISE_EVENTS):
+            continue
+
+        rootless_keep_event = next((ev for ev in events if ev in ROOTLESS_KEEP_EVENTS), None)
+        if not rootless_keep_event:
+            continue
+
+        dedupe_key = (symbol, rootless_keep_event)
+        if dedupe_key in seen_rootless_symbol_event:
+            continue
+
+        seen_rootless_symbol_event.add(dedupe_key)
+        kept.append(summary)
+
+    return kept
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="审计 Snapback live 现场执行链路")
     parser.add_argument("--audit-file", required=True, help="例如 state/live_audit/snapback_mybwin139.jsonl")
@@ -279,6 +327,8 @@ def main() -> int:
 
     groups = build_groups(events)
     summaries = [summarize_group(order_root, arr) for order_root, arr in groups.items()]
+    if not args.show_all_events:
+        summaries = _filter_summaries_for_default_view(summaries)
 
     print(f"audit_file : {audit_path}")
     print(f"symbols    : {sorted(symbols) if symbols else 'ALL'}")
