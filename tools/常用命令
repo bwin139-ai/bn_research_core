@@ -1,6 +1,13 @@
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
 输出patch方案、 patch脚本附件、patch运行命令行、以及一行 git add 和 git commit命令，对齐指纹和副本：
+# ============== 项目根目录 ===============
+ cd ~/ai_projects/bn_research_core
+ cd /root/bn_research_core
+
+# ========= 阿里云运行 拉取最新代码 =========
+ git fetch --all && git switch main && git pull --ff-only origin main
+
 ```bash
 
 ```
@@ -36,12 +43,6 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/au
   --c-time-bj "2026-03-26 09:15:00" \
   --out-dir output/sim_live_audit
 
-# ============== 项目根目录 ===============
- cd ~/ai_projects/bn_research_core
- cd /root/bn_research_core
-
-# ========= 阿里云运行 拉取最新代码 =========
- git fetch --all && git switch main && git pull --ff-only origin main
 
 # ========= 全量并行调度主进程 =========
 RUNSET="SNAP_V6.1_30D_P6_$(date +%m%dT%H%M)"
@@ -131,11 +132,11 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
   --start 2026-03-25T17:00:00+00:00 \
-  --end   2026-03-26T03:00:00+00:00 \
+  --end   2026-03-29T06:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_V6.1_SmokeTest1"
+  --run-id "Snapback_V6.1_SmokeTest2"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
@@ -255,6 +256,9 @@ cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py 
 # ========= 上传隐私数据 =========
 scp -r ~/ai_projects/bn_research_core/deploy.env aliyun-bn:/root/bn_research_core  
 scp -r ~/ai_projects/bn_research_core/secrets_*.json aliyun-bn:/root/bn_research_core  
+
+scp -r ~/ai_projects/bn_research_core/clear_4usdt_stale_live_state_once.py aliyun-bn:/root/bn_research_core  
+
 
 # ========= 消息投递员 进程 =========
 cd /root/bn_research_core
@@ -689,3 +693,10 @@ live/sim 对齐测试
 2026-03-26 09:57:35,442 | INFO     | [PUSH] queued label=snapback msg="[Snapback-Live] runner error | Object of type int64 is not J…"
 
 
+对当前项目、当前账户 mybwin139、当前策略 snapback，我后续默认使用这两个固定现场文件：
+
+本地 live state 文件：
+state/live/snapback_mybwin139.state.json
+
+审计 jsonl 文件：
+state/live_audit/snapback_mybwin139.jsonl

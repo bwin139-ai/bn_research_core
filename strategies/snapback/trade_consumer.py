@@ -346,6 +346,14 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     checks: dict[str, Any] = {}
 
     def _resolve_leg_order(*, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
+        if exchange_order_id is None and not client_order_id:
+            return {
+                'ok': True,
+                'reason': '',
+                'data': None,
+                'skipped': True,
+                'missing_identity': True,
+            }
         matched_open_order = _find_open_order(
             known_open_orders or [],
             exchange_order_id=exchange_order_id,
