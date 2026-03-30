@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import math
 import time
 import uuid
@@ -12,6 +13,7 @@ from urllib.parse import urlencode
 import requests
 
 from core.live.binance_client import get_client, load_account_secrets
+from core.message_bridge import send_to_bot
 
 MARGIN_TYPE = "CROSSED"
 POSITION_MODE = "HEDGE"
@@ -31,6 +33,66 @@ def _err(reason: str, **extra: Any) -> dict[str, Any]:
     payload = {"ok": False, "reason": str(reason), "data": None}
     payload.update(extra)
     return payload
+
+
+def _preview_reason(reason: Any, limit: int = 180) -> str:
+    text = str(reason or "").replace("\r\n", " | ").replace("\r", " | ").replace("\n", " | ").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _emit_trade_event(
+    action: str,
+    status: str,
+    *,
+    account: str,
+    symbol: str,
+    position_side: str | None = None,
+    side: str | None = None,
+    qty: float | None = None,
+    price: float | None = None,
+    stop_price: float | None = None,
+    client_order_id: str | None = None,
+    exchange_order_id: int | None = None,
+    order_status: str | None = None,
+    reason: str | None = None,
+    attempts: int | None = None,
+    is_algo_order: bool | None = None,
+) -> None:
+    parts: list[str] = [
+        f"[BN_EXEC] {str(action or '').upper()} {str(status or '').lower()}",
+        f"account={account}",
+        f"symbol={symbol}",
+    ]
+    if position_side:
+        parts.append(f"pos={position_side}")
+    if side:
+        parts.append(f"side={side}")
+    if qty is not None:
+        parts.append(f"qty={qty}")
+    if price is not None:
+        parts.append(f"price={price}")
+    if stop_price is not None:
+        parts.append(f"stop={stop_price}")
+    if client_order_id:
+        parts.append(f"cid={client_order_id}")
+    if exchange_order_id is not None:
+        parts.append(f"oid={exchange_order_id}")
+    if order_status:
+        parts.append(f"status={order_status}")
+    if attempts is not None:
+        parts.append(f"attempts={attempts}")
+    if is_algo_order is not None:
+        parts.append(f"algo={bool(is_algo_order)}")
+    if reason:
+        parts.append(f"reason={_preview_reason(reason)}")
+    msg = " | ".join(parts)
+    if str(status or "").lower() == "ok":
+        logging.info(msg)
+    else:
+        logging.error(msg)
+    send_to_bot(msg, label="snapback")
 
 
 def _call_with_retry(fn, *, retry_max: int = 0, retry_delay_secs: float = 1.0):
@@ -571,6 +633,16 @@ def place_entry_order(
     pos = _normalize_position_side(position_side)
     qty_res = _normalize_quantity(account, su, quantity)
     if not qty_res["ok"]:
+        _emit_trade_event(
+            "ENTRY",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            client_order_id=client_order_id,
+            reason=qty_res["reason"],
+            attempts=qty_res.get("attempts"),
+        )
         return qty_res
     side = "BUY" if pos == "LONG" else "SELL"
     cid = client_order_id or _gen_client_order_id("ENT", su)
@@ -588,6 +660,18 @@ def place_entry_order(
         retry_delay_secs=retry_delay_secs,
     )
     if not res["ok"]:
+        _emit_trade_event(
+            "ENTRY",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=side,
+            qty=qty_res["data"]["qty"],
+            client_order_id=cid,
+            reason=res["reason"],
+            attempts=res.get("attempts"),
+        )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
     client_order_id_value = raw.get("clientOrderId", cid)
@@ -616,6 +700,20 @@ def place_entry_order(
             normalized_entry["cum_quote"] = float(queried_entry.get("cum_quote", 0.0) or 0.0)
             normalized_entry["status"] = queried_entry.get("status") or normalized_entry.get("status")
 
+    _emit_trade_event(
+        "ENTRY",
+        "ok",
+        account=account,
+        symbol=su,
+        position_side=pos,
+        side=side,
+        qty=qty_res["data"]["qty"],
+        price=float(normalized_entry.get("avg_price", 0.0) or 0.0) or None,
+        client_order_id=client_order_id_value,
+        exchange_order_id=exchange_order_id_value,
+        order_status=normalized_entry.get("status"),
+        attempts=res.get("attempts"),
+    )
     return _ok(
         {
             "symbol": su,
@@ -640,8 +738,6 @@ def place_entry_order(
         },
         attempts=res.get("attempts"),
     )
-
-
 def place_tp_order(
     account: str,
     symbol: str,
@@ -658,11 +754,33 @@ def place_tp_order(
     pos = _normalize_position_side(position_side)
     qty_res = _normalize_quantity(account, su, quantity)
     if not qty_res["ok"]:
+        _emit_trade_event(
+            "TP",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            client_order_id=client_order_id,
+            reason=qty_res["reason"],
+            attempts=qty_res.get("attempts"),
+        )
         return qty_res
     f = qty_res["data"]["filters"]
     px = _normalize_price(limit_price, f["tick_size"])
     if px <= 0:
-        return _err(f"limit_price 非法: {limit_price}")
+        reason = f"limit_price 非法: {limit_price}"
+        _emit_trade_event(
+            "TP",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=_exit_side_for_position(pos),
+            qty=qty_res["data"]["qty"],
+            client_order_id=client_order_id,
+            reason=reason,
+        )
+        return _err(reason)
     cid = client_order_id or _gen_client_order_id("TP", su)
     payload = {
         "symbol": su,
@@ -681,8 +799,35 @@ def place_tp_order(
         retry_delay_secs=retry_delay_secs,
     )
     if not res["ok"]:
+        _emit_trade_event(
+            "TP",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=payload["side"],
+            qty=qty_res["data"]["qty"],
+            price=px,
+            client_order_id=cid,
+            reason=res["reason"],
+            attempts=res.get("attempts"),
+        )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
+    _emit_trade_event(
+        "TP",
+        "ok",
+        account=account,
+        symbol=su,
+        position_side=pos,
+        side=payload["side"],
+        qty=qty_res["data"]["qty"],
+        price=px,
+        client_order_id=raw.get("clientOrderId", cid),
+        exchange_order_id=raw.get("orderId"),
+        order_status=raw.get("status"),
+        attempts=res.get("attempts"),
+    )
     return _ok(
         {
             "symbol": su,
@@ -700,8 +845,6 @@ def place_tp_order(
         },
         attempts=res.get("attempts"),
     )
-
-
 def place_sl_order(
     account: str,
     symbol: str,
@@ -716,10 +859,34 @@ def place_sl_order(
     pos = _normalize_position_side(position_side)
     filters_res = get_symbol_filters(account, su)
     if not filters_res["ok"]:
+        _emit_trade_event(
+            "SL",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            stop_price=stop_price,
+            client_order_id=client_order_id,
+            reason=filters_res["reason"],
+            attempts=filters_res.get("attempts"),
+            is_algo_order=True,
+        )
         return filters_res
     px = _normalize_price(stop_price, filters_res["data"]["tick_size"])
     if px <= 0:
-        return _err(f"stop_price 非法: {stop_price}")
+        reason = f"stop_price 非法: {stop_price}"
+        _emit_trade_event(
+            "SL",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            stop_price=stop_price,
+            client_order_id=client_order_id,
+            reason=reason,
+            is_algo_order=True,
+        )
+        return _err(reason)
     cid = client_order_id or _gen_client_order_id("SL", su)
     payload = {
         "algoType": "CONDITIONAL",
@@ -738,8 +905,35 @@ def place_sl_order(
         retry_delay_secs=retry_delay_secs,
     )
     if not res["ok"]:
+        _emit_trade_event(
+            "SL",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=payload["side"],
+            stop_price=px,
+            client_order_id=cid,
+            reason=res["reason"],
+            attempts=res.get("attempts"),
+            is_algo_order=True,
+        )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
+    _emit_trade_event(
+        "SL",
+        "ok",
+        account=account,
+        symbol=su,
+        position_side=pos,
+        side=payload["side"],
+        stop_price=px,
+        client_order_id=raw.get("clientAlgoId", cid),
+        exchange_order_id=raw.get("algoId"),
+        order_status=raw.get("algoStatus"),
+        attempts=res.get("attempts"),
+        is_algo_order=True,
+    )
     return _ok(
         {
             "symbol": su,
@@ -757,8 +951,6 @@ def place_sl_order(
         },
         attempts=res.get("attempts"),
     )
-
-
 def place_time_stop_order(
     account: str,
     symbol: str,
@@ -774,6 +966,16 @@ def place_time_stop_order(
     pos = _normalize_position_side(position_side)
     qty_res = _normalize_quantity(account, su, quantity)
     if not qty_res["ok"]:
+        _emit_trade_event(
+            "TIME_STOP",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            client_order_id=client_order_id,
+            reason=qty_res["reason"],
+            attempts=qty_res.get("attempts"),
+        )
         return qty_res
     cid = client_order_id or _gen_client_order_id("TS", su)
     payload = {
@@ -790,8 +992,34 @@ def place_time_stop_order(
         retry_delay_secs=retry_delay_secs,
     )
     if not res["ok"]:
+        _emit_trade_event(
+            "TIME_STOP",
+            "fail",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=payload["side"],
+            qty=qty_res["data"]["qty"],
+            client_order_id=cid,
+            reason=res["reason"],
+            attempts=res.get("attempts"),
+        )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
+    _emit_trade_event(
+        "TIME_STOP",
+        "ok",
+        account=account,
+        symbol=su,
+        position_side=pos,
+        side=payload["side"],
+        qty=qty_res["data"]["qty"],
+        price=float(raw.get("avgPrice", 0.0) or 0.0) or None,
+        client_order_id=raw.get("clientOrderId", cid),
+        exchange_order_id=raw.get("orderId"),
+        order_status=raw.get("status"),
+        attempts=res.get("attempts"),
+    )
     return _ok(
         {
             "symbol": su,
@@ -810,9 +1038,6 @@ def place_time_stop_order(
         },
         attempts=res.get("attempts"),
     )
-
-
-
 def get_all_orders(
     account: str,
     symbol: str,
@@ -952,10 +1177,20 @@ def cancel_order(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
-    if exchange_order_id is None and not client_order_id:
-        return _err("撤单必须提供 exchange_order_id 或 client_order_id")
-    client = get_client(account)
     su = (symbol or "").upper().strip()
+    if exchange_order_id is None and not client_order_id:
+        reason = "撤单必须提供 exchange_order_id 或 client_order_id"
+        _emit_trade_event(
+            "CANCEL",
+            "fail",
+            account=account,
+            symbol=su,
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+            reason=reason,
+        )
+        return _err(reason)
+    client = get_client(account)
     payload = {"symbol": su}
     if exchange_order_id is not None:
         payload["orderId"] = int(exchange_order_id)
@@ -968,6 +1203,17 @@ def cancel_order(
     )
     if res["ok"]:
         raw = res["data"]
+        _emit_trade_event(
+            "CANCEL",
+            "ok",
+            account=account,
+            symbol=su,
+            client_order_id=raw.get("clientOrderId"),
+            exchange_order_id=raw.get("orderId"),
+            order_status=raw.get("status"),
+            attempts=res.get("attempts"),
+            is_algo_order=False,
+        )
         return _ok(
             {
                 "symbol": su,
@@ -980,6 +1226,16 @@ def cancel_order(
             attempts=res.get("attempts"),
         )
     if not _is_order_not_found_reason(res["reason"]):
+        _emit_trade_event(
+            "CANCEL",
+            "fail",
+            account=account,
+            symbol=su,
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+            reason=res["reason"],
+            attempts=res.get("attempts"),
+        )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     algo_res = _call_with_retry(
         lambda: _cancel_algo_order(
@@ -991,8 +1247,30 @@ def cancel_order(
         retry_delay_secs=retry_delay_secs,
     )
     if not algo_res["ok"]:
+        _emit_trade_event(
+            "CANCEL",
+            "fail",
+            account=account,
+            symbol=su,
+            client_order_id=client_order_id,
+            exchange_order_id=exchange_order_id,
+            reason=algo_res["reason"],
+            attempts=algo_res.get("attempts"),
+            is_algo_order=True,
+        )
         return _err(algo_res["reason"], payload=payload, attempts=algo_res.get("attempts"))
     raw = algo_res["data"]
+    _emit_trade_event(
+        "CANCEL",
+        "ok",
+        account=account,
+        symbol=su,
+        client_order_id=raw.get("clientAlgoId"),
+        exchange_order_id=raw.get("algoId"),
+        order_status=raw.get("msg") or raw.get("code"),
+        attempts=algo_res.get("attempts"),
+        is_algo_order=True,
+    )
     return _ok(
         {
             "symbol": su,
@@ -1005,8 +1283,6 @@ def cancel_order(
         },
         attempts=algo_res.get("attempts"),
     )
-
-
 def cancel_all_orders(
     account: str,
     symbol: str,
