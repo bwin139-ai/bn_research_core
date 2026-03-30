@@ -158,20 +158,7 @@ LOGIC_ONLY
 
 如无必要，不扩展到其他文件。
 
-### 3.6 固定现场路径
-如果某项目/策略/账户的现场路径已经固定，应在新聊天开头直接带上。
-
-当前 snapback / mybwin139 现场固定路径为：
-
-```text
-固定现场路径：
-- live state：state/live/snapback_mybwin139.state.json
-- audit jsonl：state/live_audit/snapback_mybwin139.jsonl
-```
-
-后续在同一项目内，默认直接按这两条路径查，不再重复猜测。
-
-### 3.7 锁定指纹
+### 3.6 锁定指纹
 进入 patch 前必须锁定基线文件指纹。
 
 标准格式：
