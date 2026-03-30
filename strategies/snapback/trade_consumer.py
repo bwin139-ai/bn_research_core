@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -158,6 +159,90 @@ def _signal_tp_tier(signal: dict[str, Any]) -> str | None:
     if value in (None, ''):
         return None
     return str(value)
+
+
+def _fmt_notify_price(value: Any) -> str:
+    try:
+        px = float(value)
+    except Exception:
+        return 'NA'
+    if px <= 0:
+        return 'NA'
+    return f'{px:.6f}'
+
+
+def _fmt_notify_pct(value: Any) -> str:
+    try:
+        pct = float(value) * 100.0
+    except Exception:
+        return 'NA'
+    return f'{pct:.2f}%'
+
+
+def _build_signal_locked_message(signal: dict[str, Any]) -> str:
+    context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
+    signal_time_bj = str(signal.get('signal_time_bj') or 'UNKNOWN')
+    symbol = str(signal.get('symbol') or '').upper().strip()
+    current_price = _fmt_notify_price(signal.get('current_price'))
+    drop_pct = _fmt_notify_pct(context.get('drop_pct'))
+    vol_ratio = context.get('vol_ratio')
+    try:
+        vol_ratio_text = f'{float(vol_ratio):.2f}'
+    except Exception:
+        vol_ratio_text = 'NA'
+    rebound_ratio = _fmt_notify_pct(context.get('rebound_ratio'))
+    tp_tier = _signal_tp_tier(signal) or 'UNKNOWN'
+    selected_tp_pct = _signal_selected_tp_pct(signal)
+    tp_tier_text = f'{tp_tier}({_fmt_notify_pct(selected_tp_pct)})' if selected_tp_pct is not None else tp_tier
+    return (
+        f'[{signal_time_bj} BJ] 🦅 洗盘反抽雷达锁定: {symbol} | 当前价: {current_price} | '
+        f'15m跌幅: {drop_pct} | 爆量倍数: {vol_ratio_text} | ABC反弹比例: {rebound_ratio} | TP档位: {tp_tier_text}'
+    )
+
+
+def _build_exit_detected_message(
+    *,
+    symbol: str,
+    exit_reason: str,
+    order_root: str | None,
+    trade_row: dict[str, Any] | None = None,
+) -> str:
+    row = trade_row or {}
+    entry_price = _fmt_notify_price(row.get('entry_price'))
+    exit_price = _fmt_notify_price(row.get('exit_price'))
+    pnl_pct = _fmt_notify_pct(row.get('pnl_pct'))
+    reason_text = str(exit_reason or 'UNKNOWN_EXIT')
+    root_text = str(order_root or '').strip()
+    parts = [
+        f'[Snapback-Live] 离场 {str(symbol).upper().strip()}',
+        f'reason={reason_text}',
+        f'entry≈{entry_price}',
+        f'exit≈{exit_price}',
+        f'pnl={pnl_pct}',
+    ]
+    if root_text:
+        parts.append(f'root={root_text}')
+    return ' | '.join(parts)
+
+
+def _notify_signal_locked(account: str, live_cfg: dict[str, Any], signal: dict[str, Any]) -> None:
+    if not bool(live_cfg.get('notify_enabled', False)):
+        return
+    if not bool(live_cfg.get('notify_on_signal_locked', True)):
+        return
+    _notify(True, _build_signal_locked_message(signal))
+
+
+def _emit_exit_detected(account: str, live_cfg: dict[str, Any], *, symbol: str, exit_reason: str, order_root: str | None, trade_row: dict[str, Any] | None = None) -> None:
+    message = _build_exit_detected_message(
+        symbol=symbol,
+        exit_reason=exit_reason,
+        order_root=order_root,
+        trade_row=trade_row,
+    )
+    logging.info(message)
+    if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_exit_detected', True)):
+        _notify(True, message)
 
 
 def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None = None) -> dict[str, Any]:
@@ -2215,6 +2300,14 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                             'reason': trade_projection_res.get('reason'),
                             'projection_path': trade_projection_res.get('path'),
                         })
+                    _emit_exit_detected(
+                        account,
+                        live_cfg,
+                        symbol=symbol,
+                        exit_reason=exit_reason,
+                        order_root=pending.get('order_root'),
+                        trade_row=trade_projection_res.get('row') if trade_projection_res.get('ok') else None,
+                    )
                     if audit_enabled:
                         write_event(account, 'entry_filled_but_position_missing', {
                             'symbol': symbol,
@@ -2720,6 +2813,14 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             set_pending_entry_order(account, symbol, None)
             _clear_symbol_error(account, symbol)
             _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
+            _emit_exit_detected(
+                account,
+                live_cfg,
+                symbol=symbol,
+                exit_reason=exit_reason,
+                order_root=open_trade.get('order_root'),
+                trade_row=trade_projection_res.get('row') if trade_projection_res.get('ok') else None,
+            )
             if audit_enabled and not trade_projection_res.get('ok'):
                 write_event(account, 'live_trade_projection_write_failed', {
                     'symbol': symbol,
@@ -3263,6 +3364,7 @@ def _consume_signal_precheck_and_prepare(
         signal_digest=signal_digest,
         signal_snapshot=signal,
     )
+    _notify_signal_locked(account, live_cfg, signal)
 
     cooldown_until_ts = symbol_state.get('cooldown_until_ts')
     if cooldown_until_ts and int(cooldown_until_ts) > current_time_ms:
