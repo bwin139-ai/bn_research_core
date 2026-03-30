@@ -19,6 +19,8 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
  ls -lht state/live_audit
  tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
+ nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py >> output/logs/bn_sync.console.log 2>&1' &
+ nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py --account mybwin139 --symbols BTCUSDT,ETHUSDT >> output/logs/bn_sync.console.log 2>&1' &
 # *****审审审审审审***** live 提炼日志 *****审审审审审审*****
 python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
   --input output/live/snapback_live.console.log \
@@ -88,10 +90,11 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
 # ========= 找 run-id =========
 ls -ldht output/logs | head -n 3
 ls -ldht output/state/*ALL* | head -n 3
-ls -ldht output/state/* | head -n 5
+ls -ldht output/live_projection/* | head -n 5
 
-# ========= 拉 服务器数据 到 MacBook =========
-# *************** 拉 live 输出 ***************
+
+# ========= download 服务器数据 到 MacBook download=========
+# *****download*****  拉 live 输出 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/live
 mkdir -p "$DEST"
 scp \
@@ -146,7 +149,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
   --start 2026-03-25T17:00:00+00:00 \
-  --end   2026-03-29T09:00:00+00:00 \
+  --end   2026-03-30T14:40:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
@@ -181,7 +184,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 5 \
+  --days 3 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
