@@ -100,7 +100,10 @@ def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _get_c_time_from_ctx(row: dict[str, Any]) -> int | None:
+def _row_c_time_ms(row: dict[str, Any]) -> int | None:
+    direct = _safe_int(row.get("c_time"))
+    if direct is not None:
+        return direct
     ctx = row.get("context") or {}
     return _safe_int(ctx.get("c_time"))
 
@@ -109,16 +112,28 @@ def _find_sim_trade(path: Path, symbol: str, c_time_ms: int) -> dict[str, Any] |
     for row in _load_jsonl_rows(path):
         if _normalize_symbol(row.get("symbol")) != symbol:
             continue
-        if _get_c_time_from_ctx(row) == c_time_ms:
+        if _row_c_time_ms(row) == c_time_ms:
             return row
     return None
 
 
-def _find_live_trade(path: Path, symbol: str, c_time_ms: int) -> dict[str, Any] | None:
+def _find_live_signal(path: Path, symbol: str, c_time_ms: int) -> dict[str, Any] | None:
     for row in _load_jsonl_rows(path):
         if _normalize_symbol(row.get("symbol")) != symbol:
             continue
-        if _get_c_time_from_ctx(row) == c_time_ms:
+        if _row_c_time_ms(row) == c_time_ms:
+            return row
+    return None
+
+
+def _find_live_trade(path: Path, symbol: str, c_time_ms: int, live_signal: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    target_digest = str((live_signal or {}).get("signal_digest") or "").strip()
+    for row in _load_jsonl_rows(path):
+        if _normalize_symbol(row.get("symbol")) != symbol:
+            continue
+        if _row_c_time_ms(row) == c_time_ms:
+            return row
+        if target_digest and str(row.get("signal_digest") or "").strip() == target_digest:
             return row
     return None
 
@@ -262,14 +277,21 @@ def _summary_lines(report: dict[str, Any]) -> str:
 
     matched = report["matched_records"]
     lines.append("[matched records]")
-    for k in ("sim_trade", "live_trade", "live_scene", "bn_orders", "bn_fills", "bn_income", "bn_position_facts"):
+    for k in ("sim_trade", "live_signal", "live_trade", "live_scene", "bn_orders", "bn_fills", "bn_income", "bn_position_facts"):
         lines.append(f"{k}: {matched[k]}")
     lines.append("")
+
+    live_signal = report.get("live_signal") or {}
+    if live_signal:
+        lines.append("[live signal]")
+        for k in ("run_id", "projection_schema_version", "strategy_name", "signal_time", "signal_time_bj", "c_time", "c_time_bj", "tp_tier", "selected_tp_pct", "signal_digest"):
+            lines.append(f"{k}: {live_signal.get(k)}")
+        lines.append("")
 
     live = report.get("live_trade") or {}
     if live:
         lines.append("[live trade]")
-        for k in ("order_root", "reason", "entry_price", "exit_price", "entry_price_source", "exit_price_source", "resolved_tp_price", "resolved_sl_price", "entry_client_order_id", "exit_order_client_id", "exit_order_exchange_id"):
+        for k in ("run_id", "projection_schema_version", "strategy_name", "order_root", "reason", "entry_price", "exit_price", "entry_price_source", "exit_price_source", "entry_time_source", "resolved_tp_price", "resolved_tp_price_source", "resolved_sl_price", "selected_tp_pct", "tp_tier", "entry_client_order_id", "entry_exchange_order_id", "tp_order_exchange_id", "sl_order_exchange_id", "time_stop_exchange_order_id", "exit_order_client_id", "exit_order_exchange_id", "exit_order_leg"):
             lines.append(f"{k}: {live.get(k)}")
         lines.append("")
 
@@ -285,6 +307,11 @@ def _summary_lines(report: dict[str, Any]) -> str:
     lines.append(f"sim_reason: {comp.get('sim_reason')}")
     lines.append(f"live_reason: {comp.get('live_reason')}")
     lines.append(f"bn_reason  : {comp.get('bn_reason')}")
+    lines.append("")
+
+    lines.append("[signal comparison]")
+    for key, payload in (comp.get("signal_checks") or {}).items():
+        lines.append(f"{key}: same={payload.get('same')} | left={payload.get('left')} | right={payload.get('right')}")
     lines.append("")
 
     lines.append("[price comparison]")
@@ -307,6 +334,7 @@ def _write_json(path: Path, data: Any) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Audit one trade across sim / live / bn truth layers.")
     p.add_argument("--sim-trades", required=True)
+    p.add_argument("--live-signals", required=True)
     p.add_argument("--live-trades", required=True)
     p.add_argument("--live-audit-file", required=True)
     p.add_argument("--bn-orders", required=True)
@@ -327,7 +355,8 @@ def main() -> None:
     c_time_ms = int(args.c_time_ms) if args.c_time_ms is not None else _bj_to_ms(args.c_time_bj)
 
     sim_trade = _find_sim_trade(Path(args.sim_trades), symbol, c_time_ms)
-    live_trade = _find_live_trade(Path(args.live_trades), symbol, c_time_ms)
+    live_signal = _find_live_signal(Path(args.live_signals), symbol, c_time_ms)
+    live_trade = _find_live_trade(Path(args.live_trades), symbol, c_time_ms, live_signal=live_signal)
     live_scene_group = _group_for_target_from_audit(Path(args.live_audit_file), symbol, c_time_ms)
 
     bn_orders = _find_bn_orders(Path(args.bn_orders), symbol, live_trade)
@@ -342,6 +371,9 @@ def main() -> None:
     if live_trade:
         time_start = _safe_int(live_trade.get("signal_time")) or c_time_ms
         time_end = _safe_int(live_trade.get("exit_time")) or ((time_start or c_time_ms) + 3600_000)
+    elif live_signal:
+        time_start = _safe_int(live_signal.get("signal_time")) or c_time_ms
+        time_end = (time_start or c_time_ms) + 3600_000
     else:
         time_start = c_time_ms
         time_end = c_time_ms + 3600_000
@@ -387,6 +419,13 @@ def main() -> None:
     live_reason = live_trade.get("reason") if live_trade else None
     bn_reason = bn_trade_facts.get("exit_reason_from_bn_order")
 
+    signal_checks = {
+        "live_signal_vs_live_trade_signal_digest": dict(zip(("same", "left", "right"), _compare_values((live_signal or {}).get("signal_digest"), (live_trade or {}).get("signal_digest")))),
+        "live_signal_vs_live_trade_selected_tp_pct": dict(zip(("same", "left", "right"), _compare_values((live_signal or {}).get("selected_tp_pct"), (live_trade or {}).get("selected_tp_pct")))),
+        "live_signal_vs_live_trade_tp_tier": dict(zip(("same", "left", "right"), _compare_values((live_signal or {}).get("tp_tier"), (live_trade or {}).get("tp_tier"), tol=0.0))),
+        "live_signal_vs_live_trade_c_time": dict(zip(("same", "left", "right"), _compare_values((live_signal or {}).get("c_time"), (live_trade or {}).get("c_time")))),
+    }
+
     price_checks = {
         "sim_entry_vs_live_entry": dict(zip(("same","left","right"), _compare_values(sim_trade.get("entry_price") if sim_trade else None, live_trade.get("entry_price") if live_trade else None))),
         "live_entry_vs_bn_entry": dict(zip(("same","left","right"), _compare_values(live_trade.get("entry_price") if live_trade else None, bn_trade_facts.get("entry_avg_fill_price")))),
@@ -396,7 +435,8 @@ def main() -> None:
 
     timing_checks = {
         "sim_signal_time": _safe_int(sim_trade.get("signal_time")) if sim_trade else None,
-        "live_signal_time": _safe_int(live_trade.get("signal_time")) if live_trade else None,
+        "live_signal_projection_time": _safe_int(live_signal.get("signal_time")) if live_signal else None,
+        "live_trade_signal_time": _safe_int(live_trade.get("signal_time")) if live_trade else None,
         "live_exit_time": _safe_int(live_trade.get("exit_time")) if live_trade else None,
         "bn_income_rows": len(bn_income),
         "bn_position_facts_rows": len(bn_position_facts),
@@ -410,6 +450,7 @@ def main() -> None:
         },
         "matched_records": {
             "sim_trade": sim_trade is not None,
+            "live_signal": live_signal is not None,
             "live_trade": live_trade is not None,
             "live_scene": live_scene_group is not None,
             "bn_orders": len(bn_orders),
@@ -418,6 +459,7 @@ def main() -> None:
             "bn_position_facts": len(bn_position_facts),
         },
         "sim_trade": sim_trade,
+        "live_signal": live_signal,
         "live_trade": live_trade,
         "live_scene_group": live_scene_group,
         "bn_orders": bn_orders,
@@ -429,6 +471,7 @@ def main() -> None:
             "sim_reason": sim_reason,
             "live_reason": live_reason,
             "bn_reason": bn_reason,
+            "signal_checks": signal_checks,
             "price_checks": price_checks,
             "timing_checks": timing_checks,
         },

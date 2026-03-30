@@ -165,6 +165,10 @@ def _build_live_projection_run_id(account: str) -> str:
     return f'SNAPBACKLIVE_{account_key}_{ts_utc}'
 
 
+def _live_projection_schema_version() -> int:
+    return 2
+
+
 def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
     if enabled:
         send_to_bot(message, label=label)
@@ -849,6 +853,8 @@ def main() -> None:
 
     live_cfg['_projection_run_id'] = _build_live_projection_run_id(account)
     live_cfg['_projection_output_dir'] = 'output/live_projection'
+    live_cfg['_projection_schema_version'] = _live_projection_schema_version()
+    live_cfg['_projection_strategy_name'] = 'snapback'
 
     snapshot_meta = _write_config_snapshot(account, args.config, args.live_config, strategy_cfg, live_cfg)
 
@@ -863,6 +869,8 @@ def main() -> None:
         'live_config_file_sha256': snapshot_meta['live_config_file_sha256'],
         'projection_run_id': live_cfg.get('_projection_run_id'),
         'projection_output_dir': live_cfg.get('_projection_output_dir'),
+        'projection_schema_version': live_cfg.get('_projection_schema_version'),
+        'projection_strategy_name': live_cfg.get('_projection_strategy_name'),
         'started_bj': _now_bj_str(),
     })
     bootstrap_res = bootstrap_consumer_gate(

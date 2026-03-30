@@ -97,6 +97,13 @@ def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None =
 LIVE_PROJECTION_DIR = 'output/live_projection'
 
 
+def _projection_schema_version(live_cfg: dict[str, Any]) -> int:
+    try:
+        return int(live_cfg.get('_projection_schema_version') or 1)
+    except Exception:
+        return 1
+
+
 def _projection_run_id(live_cfg: dict[str, Any]) -> str:
     return str(live_cfg.get('_projection_run_id') or 'UNSET').strip() or 'UNSET'
 
@@ -121,9 +128,42 @@ def _append_projection_row(path: Path, row: dict[str, Any]) -> None:
         f.write(_json_safe_dumps(row) + '\n')
 
 
+def _signal_c_time_ms(signal: dict[str, Any]) -> int | None:
+    context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
+    try:
+        value = context.get('c_time')
+        if value in (None, ''):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _signal_selected_tp_pct(signal: dict[str, Any]) -> float | None:
+    params = signal.get('params') if isinstance(signal.get('params'), dict) else {}
+    context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
+    for raw in (params.get('selected_take_profit_pct'), params.get('selected_tp_pct'), context.get('selected_tp_pct')):
+        try:
+            value = float(raw)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _signal_tp_tier(signal: dict[str, Any]) -> str | None:
+    context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
+    value = context.get('tp_tier')
+    if value in (None, ''):
+        return None
+    return str(value)
+
+
 def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None = None) -> dict[str, Any]:
     signal_time = int(signal.get('signal_time') or fallback_time_ms or 0)
     signal_time_bj = signal.get('signal_time_bj') or _fmt_bj_from_ms(signal_time)
+    c_time = _signal_c_time_ms(signal)
     return {
         'signal_time': signal_time,
         'signal_time_bj': signal_time_bj,
@@ -134,6 +174,10 @@ def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None 
         'sl_price': _normalize_scalar(signal.get('sl_price')),
         'params': _json_roundtrip(signal.get('params') or {}),
         'context': _json_roundtrip(signal.get('context') or {}),
+        'c_time': c_time,
+        'c_time_bj': _fmt_bj_from_ms(c_time),
+        'selected_tp_pct': _normalize_scalar(_signal_selected_tp_pct(signal)),
+        'tp_tier': _signal_tp_tier(signal),
     }
 
 
@@ -156,6 +200,8 @@ def append_live_signal_projection(
             **_signal_core_fields(signal, fallback_time_ms=current_time_ms),
             'run_mode': 'live',
             'projection_type': 'live_signal',
+            'projection_schema_version': _projection_schema_version(live_cfg),
+            'strategy_name': 'snapback',
             'account': account,
             'run_id': _projection_run_id(live_cfg),
             'source': source,
@@ -243,14 +289,21 @@ def _build_live_trade_projection_row(
     signal_snapshot: dict[str, Any],
     order_root: str | None,
     entry_time_ms: int | None,
+    entry_time_source: str | None,
     entry_price: float,
     entry_price_source: str | None,
     resolved_tp_price: float,
+    resolved_tp_price_source: str | None,
     resolved_sl_price: float,
+    selected_tp_pct: float | None,
     tp_client_order_id: str | None,
+    tp_exchange_order_id: int | None,
     sl_client_order_id: str | None,
+    sl_exchange_order_id: int | None,
     time_stop_client_order_id: str | None,
+    time_stop_exchange_order_id: int | None,
     entry_client_order_id: str | None,
+    entry_exchange_order_id: int | None,
     exit_reason: str,
     order_checks: dict[str, Any],
     tp_cancel: dict[str, Any] | None,
@@ -277,7 +330,10 @@ def _build_live_trade_projection_row(
         'symbol': signal_core['symbol'],
         'signal_time': signal_core['signal_time'],
         'signal_price': signal_core['current_price'],
+        'c_time': signal_core.get('c_time'),
+        'c_time_bj': signal_core.get('c_time_bj'),
         'entry_time': int(entry_time_ms or signal_core['signal_time']),
+        'entry_time_source': entry_time_source,
         'exit_time': int(exit_time_ms),
         'entry_price': float(entry_price or 0.0),
         'exit_price': float(exit_price or 0.0) if exit_price is not None else None,
@@ -290,6 +346,8 @@ def _build_live_trade_projection_row(
         'exit_time_bj': _fmt_bj_from_ms(int(exit_time_ms)),
         'run_mode': 'live',
         'projection_type': 'live_trade',
+        'projection_schema_version': _projection_schema_version(live_cfg),
+        'strategy_name': 'snapback',
         'account': account,
         'run_id': _projection_run_id(live_cfg),
         'source': source,
@@ -300,14 +358,22 @@ def _build_live_trade_projection_row(
         'entry_price_source': entry_price_source,
         'exit_price_source': exit_price_source,
         'resolved_tp_price': _normalize_scalar(resolved_tp_price),
+        'resolved_tp_price_source': resolved_tp_price_source,
         'resolved_sl_price': _normalize_scalar(resolved_sl_price),
+        'selected_tp_pct': _normalize_scalar(selected_tp_pct),
+        'tp_tier': signal_core.get('tp_tier'),
         'entry_client_order_id': entry_client_order_id,
+        'entry_exchange_order_id': entry_exchange_order_id,
         'tp_order_client_id': tp_client_order_id,
+        'tp_order_exchange_id': tp_exchange_order_id,
         'sl_order_client_id': sl_client_order_id,
+        'sl_order_exchange_id': sl_exchange_order_id,
         'time_stop_client_order_id': time_stop_client_order_id,
+        'time_stop_exchange_order_id': time_stop_exchange_order_id,
         'exit_order_client_id': (exit_order or {}).get('client_order_id'),
         'exit_order_exchange_id': (exit_order or {}).get('order_id'),
         'exit_order_status': (exit_order or {}).get('status'),
+        'exit_order_leg': ('TP' if exit_reason == 'TAKE_PROFIT' else 'SL' if exit_reason == 'STOP_LOSS' else 'TS' if exit_reason == 'TIME_STOP' else None),
     }
     return row
 
@@ -334,14 +400,21 @@ def append_live_trade_projection_from_open_trade(
             signal_snapshot=signal_snapshot,
             order_root=open_trade.get('order_root'),
             entry_time_ms=open_trade.get('entry_submit_finished_utc_ms') or open_trade.get('entry_ts'),
+            entry_time_source='entry_submit_finished_utc_ms' if open_trade.get('entry_submit_finished_utc_ms') else 'entry_ts',
             entry_price=float(open_trade.get('entry_price') or 0.0),
             entry_price_source=open_trade.get('entry_price_source'),
             resolved_tp_price=float(open_trade.get('tp_price') or 0.0),
+            resolved_tp_price_source=open_trade.get('resolved_tp_price_source'),
             resolved_sl_price=float(open_trade.get('sl_trigger_price') or 0.0),
+            selected_tp_pct=_normalize_scalar(open_trade.get('selected_tp_pct')),
             tp_client_order_id=open_trade.get('tp_order_client_id'),
+            tp_exchange_order_id=open_trade.get('tp_order_exchange_id'),
             sl_client_order_id=open_trade.get('sl_order_client_id'),
+            sl_exchange_order_id=open_trade.get('sl_order_exchange_id'),
             time_stop_client_order_id=open_trade.get('time_stop_client_order_id'),
+            time_stop_exchange_order_id=open_trade.get('time_stop_exchange_order_id'),
             entry_client_order_id=open_trade.get('entry_client_order_id'),
+            entry_exchange_order_id=open_trade.get('entry_exchange_order_id'),
             exit_reason=exit_reason,
             order_checks=order_checks,
             tp_cancel=tp_cancel,
@@ -384,14 +457,21 @@ def append_live_trade_projection_from_pending_terminal(
             signal_snapshot=signal_snapshot,
             order_root=pending.get('order_root'),
             entry_time_ms=pending.get('signal_time'),
+            entry_time_source='pending_signal_time',
             entry_price=float(entry_fill_payload.get('fill_price') or pending.get('current_price') or 0.0),
             entry_price_source=str(entry_fill_payload.get('price_source') or pending.get('entry_fill_price_source') or 'pending_current_price'),
             resolved_tp_price=float(pending.get('tp_price') or signal_snapshot.get('tp_price') or 0.0),
+            resolved_tp_price_source=pending.get('resolved_tp_price_source'),
             resolved_sl_price=float(pending.get('sl_price') or signal_snapshot.get('sl_price') or 0.0),
+            selected_tp_pct=_normalize_scalar(pending.get('selected_tp_pct')),
             tp_client_order_id=pending.get('tp_client_order_id'),
+            tp_exchange_order_id=None,
             sl_client_order_id=pending.get('sl_client_order_id'),
+            sl_exchange_order_id=None,
             time_stop_client_order_id=pending.get('time_stop_client_order_id'),
+            time_stop_exchange_order_id=None,
             entry_client_order_id=pending.get('client_order_id'),
+            entry_exchange_order_id=pending.get('exchange_order_id'),
             exit_reason=exit_reason,
             order_checks=order_checks,
             tp_cancel=tp_cancel,
