@@ -200,6 +200,18 @@ def _build_signal_locked_message(signal: dict[str, Any]) -> str:
     )
 
 
+def _fmt_notify_hold_mins(trade_row: dict[str, Any] | None = None) -> str:
+    row = trade_row or {}
+    try:
+        entry_time_ms = int(row.get('entry_time') or 0)
+        exit_time_ms = int(row.get('exit_time') or 0)
+    except Exception:
+        return 'NA'
+    if entry_time_ms <= 0 or exit_time_ms <= 0 or exit_time_ms < entry_time_ms:
+        return 'NA'
+    return f'{(exit_time_ms - entry_time_ms) / 60000.0:.1f}m'
+
+
 def _build_exit_detected_message(
     *,
     symbol: str,
@@ -210,18 +222,17 @@ def _build_exit_detected_message(
     row = trade_row or {}
     entry_price = _fmt_notify_price(row.get('entry_price'))
     exit_price = _fmt_notify_price(row.get('exit_price'))
+    hold_mins = _fmt_notify_hold_mins(row)
     pnl_pct = _fmt_notify_pct(row.get('pnl_pct'))
     reason_text = str(exit_reason or 'UNKNOWN_EXIT')
-    root_text = str(order_root or '').strip()
     parts = [
         f'[Snapback-Live] 离场 {str(symbol).upper().strip()}',
         f'reason={reason_text}',
         f'entry≈{entry_price}',
         f'exit≈{exit_price}',
+        f'持仓={hold_mins}',
         f'pnl={pnl_pct}',
     ]
-    if root_text:
-        parts.append(f'root={root_text}')
     return ' | '.join(parts)
 
 
