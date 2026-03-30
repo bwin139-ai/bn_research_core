@@ -305,6 +305,20 @@ def _normalize_trade_row(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_income_row(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": raw.get("symbol"),
+        "income_type": raw.get("incomeType"),
+        "income": float(raw.get("income", 0.0) or 0.0),
+        "asset": raw.get("asset"),
+        "info": raw.get("info"),
+        "time_ms": raw.get("time"),
+        "tran_id": raw.get("tranId"),
+        "trade_id": raw.get("tradeId"),
+        "raw": raw,
+    }
+
+
 def get_account_status(account: str) -> dict[str, Any]:
     client = get_client(account)
     res = _call_with_retry(client.futures_account)
@@ -397,6 +411,24 @@ def get_order(
     if not algo_res["ok"]:
         return _err(algo_res["reason"], payload=payload, attempts=algo_res.get("attempts"))
     return _ok(_normalize_algo_order_row(algo_res["data"]), attempts=algo_res.get("attempts"))
+
+
+def _normalize_position_snapshot_row(raw: dict[str, Any]) -> dict[str, Any]:
+    amt = float(raw.get("positionAmt", 0.0) or 0.0)
+    pos_side = str(raw.get("positionSide", "")).upper()
+    return {
+        "symbol": raw.get("symbol"),
+        "position_side": pos_side,
+        "qty": abs(amt),
+        "signed_qty": amt,
+        "entry_price": float(raw.get("entryPrice", 0.0) or 0.0),
+        "unrealized_usdt": float(raw.get("unRealizedProfit", 0.0) or 0.0),
+        "mark_price": float(raw.get("markPrice", 0.0) or 0.0),
+        "liquidation_price": float(raw.get("liquidationPrice", 0.0) or 0.0),
+        "margin_type": raw.get("marginType"),
+        "isolated_wallet": float(raw.get("isolatedWallet", 0.0) or 0.0),
+        "raw": raw,
+    }
 
 
 def get_positions(account: str, symbol: str | None = None) -> dict[str, Any]:
@@ -841,6 +873,75 @@ def get_account_trades(
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     rows = [_normalize_trade_row(o) for o in (res["data"] or [])]
     return _ok(rows, payload=payload, attempts=res.get("attempts"))
+
+def get_income_history(
+    account: str,
+    symbol: str | None = None,
+    *,
+    income_type: str | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 1000,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+) -> dict[str, Any]:
+    client = get_client(account)
+    payload: dict[str, Any] = {
+        "limit": int(limit),
+    }
+    su = (symbol or "").upper().strip()
+    if su:
+        payload["symbol"] = su
+    income_type_value = str(income_type or "").strip()
+    if income_type_value:
+        payload["incomeType"] = income_type_value
+    if start_time_ms is not None:
+        payload["startTime"] = int(start_time_ms)
+    if end_time_ms is not None:
+        payload["endTime"] = int(end_time_ms)
+    res = _call_with_retry(
+        lambda: client.futures_income_history(**payload),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    rows = [_normalize_income_row(o) for o in (res["data"] or [])]
+    return _ok(rows, payload=payload, attempts=res.get("attempts"))
+
+
+def get_position_snapshots(
+    account: str,
+    symbol: str | None = None,
+    *,
+    include_zero: bool = True,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+) -> dict[str, Any]:
+    client = get_client(account)
+    res = _call_with_retry(
+        client.futures_position_information,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return res
+    su = (symbol or "").upper().strip()
+    rows = []
+    for p in res["data"] or []:
+        if su and p.get("symbol") != su:
+            continue
+        pos_side = str(p.get("positionSide", "")).upper()
+        if pos_side not in {"LONG", "SHORT"}:
+            continue
+        amt = float(p.get("positionAmt", 0.0) or 0.0)
+        if (not include_zero) and math.isclose(amt, 0.0, abs_tol=1e-12):
+            continue
+        rows.append(_normalize_position_snapshot_row(p))
+    return _ok(rows)
+
+
+
 
 def cancel_order(
     account: str,
