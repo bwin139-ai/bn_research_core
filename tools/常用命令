@@ -24,7 +24,7 @@ python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
   --input output/live/snapback_live.console.log \
   --output output/live/snapback_live.cut_with_marker.log \
   --start-bj "2026-03-26 00:00:00" \
-  --end-bj "2026-03-29 18:00:00" \
+  --end-bj "2026-03-30 10:00:00" \
   --keep-keyboardinterrupt-marker
 # *****审审审审审审***** live 现场审计 *****审审审审审审*****
 python3 audit_tools/live_audit/audit_live_scene_v1.py \
@@ -91,11 +91,12 @@ ls -ldht output/state/*ALL* | head -n 3
 ls -ldht output/state/* | head -n 5
 
 # ========= 拉 服务器数据 到 MacBook =========
-# *************** 拉 live 日志 ***************
+# *************** 拉 live 输出 ***************
 DEST=~/ai_projects/bn_research_core/output/live
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.log" \
+  "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260329T130316Z.*" \
   "$DEST"
 # *****download***** 拉 全量 sim 数据 *****download***** 
 RUNID="SNAP_V6.1_30D_P6_0325T2335_ALL"

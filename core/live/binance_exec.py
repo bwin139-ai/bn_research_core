@@ -269,6 +269,38 @@ def _normalize_order_row(raw: dict[str, Any]) -> dict[str, Any]:
         "stop_price": float(raw.get("stopPrice", 0.0) or 0.0),
         "reduce_only": bool(raw.get("reduceOnly", False)),
         "close_position": bool(raw.get("closePosition", False)),
+        "time_ms": raw.get("time"),
+        "update_time_ms": raw.get("updateTime"),
+        "working_type": raw.get("workingType"),
+        "orig_type": raw.get("origType"),
+        "price_protect": raw.get("priceProtect"),
+        "raw": raw,
+    }
+
+
+def _normalize_trade_row(raw: dict[str, Any]) -> dict[str, Any]:
+    buyer = raw.get("buyer")
+    side = raw.get("side")
+    if not side:
+        if buyer is True:
+            side = "BUY"
+        elif buyer is False:
+            side = "SELL"
+    return {
+        "symbol": raw.get("symbol"),
+        "trade_id": raw.get("id"),
+        "order_id": raw.get("orderId"),
+        "side": side,
+        "position_side": raw.get("positionSide"),
+        "price": float(raw.get("price", 0.0) or 0.0),
+        "qty": float(raw.get("qty", 0.0) or 0.0),
+        "quote_qty": float(raw.get("quoteQty", 0.0) or 0.0),
+        "commission": float(raw.get("commission", 0.0) or 0.0),
+        "commission_asset": raw.get("commissionAsset"),
+        "realized_pnl": float(raw.get("realizedPnl", 0.0) or 0.0),
+        "maker": bool(raw.get("maker", False)),
+        "buyer": raw.get("buyer"),
+        "time_ms": raw.get("time"),
         "raw": raw,
     }
 
@@ -747,6 +779,68 @@ def place_time_stop_order(
         attempts=res.get("attempts"),
     )
 
+
+
+def get_all_orders(
+    account: str,
+    symbol: str,
+    *,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 1000,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+) -> dict[str, Any]:
+    client = get_client(account)
+    su = (symbol or "").upper().strip()
+    payload: dict[str, Any] = {
+        "symbol": su,
+        "limit": int(limit),
+    }
+    if start_time_ms is not None:
+        payload["startTime"] = int(start_time_ms)
+    if end_time_ms is not None:
+        payload["endTime"] = int(end_time_ms)
+    res = _call_with_retry(
+        lambda: client.futures_get_all_orders(**payload),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    rows = [_normalize_order_row(o) for o in (res["data"] or [])]
+    return _ok(rows, payload=payload, attempts=res.get("attempts"))
+
+
+def get_account_trades(
+    account: str,
+    symbol: str,
+    *,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 1000,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+) -> dict[str, Any]:
+    client = get_client(account)
+    su = (symbol or "").upper().strip()
+    payload: dict[str, Any] = {
+        "symbol": su,
+        "limit": int(limit),
+    }
+    if start_time_ms is not None:
+        payload["startTime"] = int(start_time_ms)
+    if end_time_ms is not None:
+        payload["endTime"] = int(end_time_ms)
+    res = _call_with_retry(
+        lambda: client.futures_account_trades(**payload),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    rows = [_normalize_trade_row(o) for o in (res["data"] or [])]
+    return _ok(rows, payload=payload, attempts=res.get("attempts"))
 
 def cancel_order(
     account: str,
