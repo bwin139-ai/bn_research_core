@@ -3490,6 +3490,39 @@ def _consume_signal_precheck_and_prepare(
             'reason': f'current_price={current_price}',
         }
 
+    resolved_sl_price = float(signal.get('sl_price') or 0.0)
+    if resolved_sl_price > 0 and current_price <= resolved_sl_price:
+        skip_reason = f'current_price={current_price:.8f} <= sl_price={resolved_sl_price:.8f}'
+        mark_error(
+            account,
+            symbol,
+            error_code='signal_invalid_sl_price',
+            error_message=skip_reason,
+            error_bj=current_time_bj,
+        )
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'precheck_skip_invalid_sl_price', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'reason': skip_reason,
+                'signal_snapshot': signal,
+            })
+        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
+            _notify(
+                True,
+                f'[Snapback-Live] 跳过 {symbol} | 当前价已不高于SL，信号废弃 | current={current_price:.6f} | SL={resolved_sl_price:.6f}',
+            )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'skipped_invalid_sl_price',
+            'reason': skip_reason,
+        }
+
     requested_leverage = int(live_cfg['leverage'])
     leverage_res = ensure_leverage(account, symbol, requested_leverage)
     if bool(live_cfg.get('audit_enabled', True)):
@@ -3696,16 +3729,6 @@ def _submit_entry_and_exit_orders(
             'resolved_sl_price': resolved_sl_price,
         })
 
-    tp_res = place_tp_order(
-        account,
-        symbol,
-        FIXED_POSITION_SIDE,
-        qty_for_exit,
-        float(resolved_tp_price),
-        retry_max=prep['retry_max'],
-        retry_delay_secs=prep['retry_delay_secs'],
-        client_order_id=prep['tp_client_order_id'],
-    )
     sl_res = place_sl_order(
         account,
         symbol,
@@ -3715,6 +3738,12 @@ def _submit_entry_and_exit_orders(
         retry_delay_secs=prep['retry_delay_secs'],
         client_order_id=prep['sl_client_order_id'],
     )
+    tp_res: dict[str, Any] = {
+        'ok': False,
+        'reason': 'skipped_due_to_sl_failure',
+        'data': None,
+        'skipped': True,
+    }
 
     if bool(live_cfg.get('audit_enabled', True)):
         write_event(account, 'entry_submitted', {
@@ -3728,14 +3757,6 @@ def _submit_entry_and_exit_orders(
             'order_root': order_root,
             'entry_client_order_id': entry_res['data'].get('client_order_id', prep['entry_client_order_id']),
         })
-        write_event(account, 'tp_submitted' if tp_res.get('ok') else 'tp_submit_failed', {
-            'symbol': symbol,
-            'bar_ts': current_time_ms,
-            'bar_bj': current_time_bj,
-            'exchange_snapshot': tp_res,
-            'order_root': order_root,
-            'tp_client_order_id': prep['tp_client_order_id'],
-        })
         write_event(account, 'sl_submitted' if sl_res.get('ok') else 'sl_submit_failed', {
             'symbol': symbol,
             'bar_ts': current_time_ms,
@@ -3743,6 +3764,145 @@ def _submit_entry_and_exit_orders(
             'exchange_snapshot': sl_res,
             'order_root': order_root,
             'sl_client_order_id': prep['sl_client_order_id'],
+        })
+
+    if not sl_res.get('ok'):
+        ts_client_order_id = build_client_order_id(
+            broker_id=BROKER_ID,
+            strat=STRAT_CODE,
+            leg=LEG_TIME_STOP,
+            root=order_root,
+        )
+        ts_res = place_time_stop_order(
+            account,
+            symbol,
+            FIXED_POSITION_SIDE,
+            qty_for_exit,
+            retry_max=prep['retry_max'],
+            retry_delay_secs=prep['retry_delay_secs'],
+            client_order_id=ts_client_order_id,
+        )
+        fail_trade = _build_open_trade(
+            entry_res,
+            signal,
+            {'ok': False, 'reason': 'tp_skipped_due_to_sl_failure', 'data': {}},
+            {'ok': False, 'reason': sl_res.get('reason'), 'data': {}},
+            prep['entry_notional_usdt'],
+            order_root=order_root,
+            entry_client_order_id=prep['entry_client_order_id'],
+            tp_client_order_id=prep['tp_client_order_id'],
+            sl_client_order_id=prep['sl_client_order_id'],
+            tp_price=resolved_tp_price,
+            sl_trigger_price=resolved_sl_price,
+            entry_price_source=entry_fill_price_source,
+            entry_submit_started_utc_ms=entry_submit_started_utc_ms,
+            entry_submit_finished_utc_ms=entry_submit_finished_utc_ms,
+            resolved_tp_price_source=resolved_tp_price_source,
+            selected_tp_pct=selected_tp_pct,
+        )
+        fail_trade['tp_order_client_id'] = None
+        fail_trade['tp_order_exchange_id'] = None
+        fail_trade['sl_order_client_id'] = None
+        fail_trade['sl_order_exchange_id'] = None
+        if ts_res.get('ok'):
+            ts_data = ts_res.get('data') or {}
+            fail_trade['time_stop_client_order_id'] = ts_data.get('client_order_id', ts_client_order_id)
+            fail_trade['time_stop_exchange_order_id'] = ts_data.get('exchange_order_id')
+            fail_trade['exit_submit_inflight'] = True
+            fail_trade['status'] = 'EXIT_SUBMITTED'
+            fail_trade['last_status_bj'] = current_time_bj
+        set_open_trade(account, symbol, fail_trade)
+        set_pending_entry_order(account, symbol, None)
+        mark_error(
+            account,
+            symbol,
+            error_code='entry_sl_submit_failed',
+            error_message=sl_res.get('reason'),
+            error_bj=current_time_bj,
+        )
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'entry_sl_submit_failed', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'order_root': order_root,
+                'entry_fill_price': entry_fill_price,
+                'entry_fill_price_source': entry_fill_price_source,
+                'resolved_sl_price': resolved_sl_price,
+                'exchange_snapshot': sl_res,
+            })
+            write_event(account, 'time_stop_submitted' if ts_res.get('ok') else 'time_stop_submit_failed', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'source': 'entry_sl_fail_flatten',
+                'order_root': order_root,
+                'exchange_snapshot': ts_res,
+            })
+            stage8_payload = {
+                'event': 'entry_submit',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'order_root': order_root,
+                'entry_ok': bool(entry_res.get('ok')),
+                'tp_ok': False,
+                'sl_ok': False,
+                'requested_leverage': prep.get('requested_leverage'),
+                'entry_fill_price': entry_fill_price,
+                'entry_fill_price_source': entry_fill_price_source,
+                'resolved_tp_price': resolved_tp_price,
+                'resolved_sl_price': resolved_sl_price,
+                'entry_client_order_id': entry_res['data'].get('client_order_id', prep['entry_client_order_id']),
+                'tp_client_order_id': prep['tp_client_order_id'],
+                'sl_client_order_id': prep['sl_client_order_id'],
+                'time_stop_client_order_id': ts_client_order_id,
+                'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+                'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+                'entry_submit_started_utc_ms': entry_submit_started_utc_ms,
+                'entry_submit_finished_utc_ms': entry_submit_finished_utc_ms,
+                'entry_submit_started_bj': _fmt_bj_from_ms(entry_submit_started_utc_ms),
+                'entry_submit_finished_bj': _fmt_bj_from_ms(entry_submit_finished_utc_ms),
+            }
+            if timing_fields:
+                stage8_payload.update(timing_fields)
+            _write_stage_record(account, 'stage8_exec', stage8_payload)
+        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
+            tail = '已提交市价强平' if ts_res.get('ok') else '强平提交失败，请立即人工检查'
+            _notify(
+                True,
+                f'[Snapback-Live] 风险告警 {symbol} | entry后SL建立失败 | entry≈{entry_fill_price:.6f} | SL={resolved_sl_price:.6f} | {tail}',
+            )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': prep['signal_digest'],
+            'order_root': order_root,
+            'outcome': 'failed_entry_sl_submit',
+            'reason': str(sl_res.get('reason') or ''),
+        }
+
+    tp_res = place_tp_order(
+        account,
+        symbol,
+        FIXED_POSITION_SIDE,
+        qty_for_exit,
+        float(resolved_tp_price),
+        retry_max=prep['retry_max'],
+        retry_delay_secs=prep['retry_delay_secs'],
+        client_order_id=prep['tp_client_order_id'],
+    )
+
+    if bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'tp_submitted' if tp_res.get('ok') else 'tp_submit_failed', {
+            'symbol': symbol,
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'exchange_snapshot': tp_res,
+            'order_root': order_root,
+            'tp_client_order_id': prep['tp_client_order_id'],
         })
         stage8_payload = {
             'event': 'entry_submit',
