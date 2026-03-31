@@ -149,11 +149,11 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
   --start 2026-03-25T17:00:00+00:00 \
-  --end   2026-03-30T14:40:00+00:00 \
+  --end   2026-03-31T10:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_V6.1_SmokeTest3"
+  --run-id "Snapback_V6.1_SmokeTest4"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \
