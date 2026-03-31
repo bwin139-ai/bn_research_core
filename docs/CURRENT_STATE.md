@@ -1,103 +1,152 @@
-# CURRENT_STATE.md
+# 当前项目状态
+（`CURRENT_STATE.md`）
 
-我们之前一直强调的“铁律”对项目质量起到关键作用，俗话说“被误会是表达者的宿命”，沟通双方的统一“基线”是稳定且高效合作的地基，我们能否整理一份简洁且不漏的“基线”，包括策略公共语义和行动纪律(铁律)，你觉得怎样，必须简洁不能冗长、必须不漏避免缺失关键线索，这个阶段我认为该创立并持续维护这个“基线”
+## 0. 文档定位
 
-例如公共语义，即所有策略的共同点：
-1、HBs 和 CB ，所有策略都遵从这个原则
-2、signal_time(信号生产时间) 严格等于 entry_time(包括挂市价单和同一时间挂sl/tp)，在分钟上严格等于CB的时间，所有策略都遵从这个原则
-3、各策略都包含 strategy_name / runtime / universe / structure / exit_policy / risk_controls 这六组section(策略段)
-4、价格区分为 contract 和 idx
-......
+本文件只用于记录 **当前现场状态**。  
+它回答的是：
 
-行动纪律：
-1、所有分析和结论、方案必须基于“事实”，绝不臆测，缺少事实必须先补齐事实
-2、patch节奏 ： 先锁指纹 → 出最小方案 → patch 脚本 → 现场验证 → 再推进下一刀
-3、提问和回答都要精准、简练，不遗漏同时也不发散、不啰嗦
-......
+**我们当前正在做什么、已经做到哪里、下一步做什么。**
 
-你觉得怎样，给出你的意见
+本文件不是：
 
+- `PROJECT_BASELINE.md`
+- `STANDARD_PATCH_FRAMEWORK.md`
 
+三者分工固定为：
 
+- `PROJECT_BASELINE.md`：原则、边界、禁令、优先级
+- `STANDARD_PATCH_FRAMEWORK.md`：Patch 协作规则与交付结构
+- `CURRENT_STATE.md`：当前现场快照
 
-禁止在聊天窗输出整段脚本，所有脚本都走附件
-fail_fast原则，禁止带病运行
-禁止一切的默认值兜底
-禁止一切的硬编码
-禁止“向下兼容”破坏业务语义,严禁兼容旧字段(旧字段残留)、严禁多套语义并存
-patch 严格按三类推进，
-  - `PERF_ONLY`：只优化性能(提速)，不动业务语义
-  - `ARCH_ONLY`：只优化结构，不动交易逻辑
-  - `LOGIC_ONLY`：只改策略逻辑，不顺手改结构和性能
-审计工具严禁“猜字段”、严禁兼容多个字段、每条语义必须严格命中唯一字段
+若本文件与前两者冲突，优先级固定为：
 
+1. `PROJECT_BASELINE.md`
+2. `STANDARD_PATCH_FRAMEWORK.md`
+3. `CURRENT_STATE.md`
 
+---
 
-是，明显更默契了。
-最直接的表现有三点：
-你现在会先钉语义和边界，我再按这个去审代码，不容易跑偏。
-我们已经形成了固定节奏：先锁指纹 → 出最小方案 → patch 脚本 → 现场验证 → 再推进下一刀。
-你给的信息越来越精准，我也越来越知道你最在意什么，比如：
-sim 是基线
-先修真实问题，不做想当然猜测
-先讨论方案，最后一步才 patch
-区分“逻辑错误”和“记账错误”
-对齐到你的 CB / HBs 世界观
+## 1. 当前项目定位
 
-说得更直白一点，前面很多地方已经不是“我在回答问题”，而是我们在一起做连续法医式审计了。
+### 1.1 当前仓库
+```text
+bn_research_core
+```
 
+### 1.2 当前主线
+```text
+strategies/snapback
+```
 
-- 项目：bn_research_core
-- 当前可信基线：0579bcb（已验证）
-- 当前阶段：PERF_ONLY
-- 第一刀结果：通过
-- 一致性：sim_trades 字节级一致
-- 性能：load_panel 提升 41.17%，总耗时提升 3.53%
-- 下一步：设计 PERF_ONLY 第二刀（聚焦 data_feeder 高频横截面访问）
+### 1.3 当前阶段
+```text
+审计 / 投影主线首轮联调验证阶段
+```
 
+### 1.4 当前阶段目标
+```text
+把 live_signals / live_trades / bn 真相层 串成稳定、可复核、可长期使用的审计基础设施，并完成 sim / live / bn 首轮真实样本闭环验证。
+```
 
-cd /root/bn_research_core
+---
 
-/root/service_env/bin/python tools/audit_perf_and_trades.py \
-  --old-log /root/BN_strategy/output/logs/sim.Snapback_V1_A1.log \
-  --new-log /root/bn_research_core/output/logs/sim.PERF_NEWBASELINE.log \
-  --old-trades /root/BN_strategy/output/state/sim_trades.Snapback_V1_A1.jsonl \
-  --new-trades /root/bn_research_core/output/state/sim_trades.PERF_NEWBASELINE.jsonl
+## 2. 固定现场路径
 
-/root/service_env/bin/python audit_snapback_baseline_compare.py \
-  --old-log /root/BN_strategy/output/logs/sim.Snapback_V1_A1.log \
-  --new-log /root/bn_research_core/output/logs/sim.PERF0000_VERIFY_FULL.console.log \
-  --old-trades /root/BN_strategy/output/state/sim_trades.Snapback_V1_A1.jsonl \
-  --new-trades /root/bn_research_core/output/state/sim_trades.PERF0000_VERIFY_FULL.jsonl \
-  --price-tol 1e-12 \
-  --pnl-tol 1e-12 \
-  --context-float-tol 0.0 \
-  --out-json /root/bn_research_core/output/state/audit_snapback_newbaseline.json
+```text
+- live state：state/live/snapback_mybwin139.state.json
+- audit jsonl：state/live_audit/snapback_mybwin139.jsonl
+- live projection dir：output/live_projection
+```
 
-cd /root/bn_research_core
-/root/service_env/bin/python audit_trades_overlap.py \
-  --old-trades /root/BN_strategy/output/state/sim_trades.Snapback_V1_A_ALL.jsonl \
-  --new-trades /root/bn_research_core/output/state/sim_trades.SNAP40D_P3.merged.jsonl \
-  --abs-tol 1e-8 \
-  --rel-tol 1e-8 \
-  --report-out /root/bn_research_core/output/state/audit_trades_overlap.SNAP40D_P3_vs_V1_A_ALL.json
+---
 
-cd /root/bn_research_core
-/root/service_env/bin/python audit_trades_overlap.py \
-  --old-trades /root/bn_research_core/output/state/sim_trades.SNAP40D_P3_B09_20260304_20260311.jsonl \
-  --new-trades /root/bn_research_core/output/state/sim_trades.Snapback_V1.1.jsonl \
-  --abs-tol 1e-8 \
-  --rel-tol 1e-8 \
-  --report-out /root/bn_research_core/output/state/audit_trades_overlap.20260304_20260311.json
+## 3. 当前唯一主线
 
-cd /root/bn_research_core
-nohup /root/service_env/bin/python strategies/run_backtest.py \
-  --strategy snapback \
-  --start "2025-04-18T00:00:00+00:00" \
-  --end "2025-06-28T00:00:00+00:00" \
-  --kline-window 240 \
-  --config "snapback/config.json" \
-  --out-dir "output/state" \
-  --run-id "PERF_NEWBASELINE" \
-  > output/logs/sim.PERF_NEWBASELINE.log 2>&1 &
+```text
+当前唯一主线：
+继续推进并验证 live projection + bn truth + triplet audit 这条审计闭环主线。
 
+当前优先级：
+1. 巩固三方审计闭环（sim / live / bn）
+2. 修补审计字段完整性缺口
+3. 在不扩功能、不改策略逻辑前提下，增强当前基础设施稳定性
+```
+
+---
+
+## 4. 最近已完成
+
+1. `live_signals.<run_id>.jsonl` 与 `live_trades.<run_id>.jsonl` 已落地。
+2. `bn_sync` 已可按样本 symbol 同步 `bn_orders / bn_fills / bn_income`。
+3. `audit_trade_triplet_diff.py` 已能对单笔样本完成 sim / live / bn 联调审计。
+4. `binance_exec.py` 已补充交易动作日志与 Telegram Bot 推送。
+5. live 侧已补充：
+   - 雷达锁定消息推送
+   - 离场日志与 Bot 推送
+   - 离场消息持仓时间显示
+6. 已完成 3 笔真实 live 样本的首轮 triplet audit。
+
+---
+
+## 5. 当前已验证通过
+
+1. live projection 主线可用：`live_signal` 与 `live_trade` 均可稳定落盘。
+2. bn truth 主线可用：`bn_orders / bn_fills / bn_income` 可围绕指定 symbol 成功补齐。
+3. triplet audit 主线可用：已成功审计 3 笔真实样本。
+4. 三笔样本的离场原因三方一致：
+   - ONUSDT：`STOP_LOSS`
+   - AIAUSDT：`STOP_LOSS`
+   - BRUSDT：`TAKE_PROFIT`
+5. live 与 bn 的入场价格已对齐。
+6. live 与 bn 的离场价格已实质对齐；少量差异属于浮点精度差异。
+7. 当前审计主锚点可优先使用：
+   - `client_order_id`
+   - `order_root`
+   - `leg`
+8. 条件单场景下，已确认：
+   - live 侧记录的 `exit_order_exchange_id` 可能是条件单 / algo 父单 ID
+   - bn `exchange_order_id` 记录的是最终基础成交子单 ID
+   - 父单 / 子单当前样本中保留相同 custom_id，可用于稳定认亲
+
+---
+
+## 6. 当前 pending
+
+1. `live_trade.selected_tp_pct` 在部分链路中丢失，需修补字段完整性。
+2. 是否为 bn truth 增加“条件委托 / algo 父单”独立真相层，尚未决定。
+3. triplet audit 后续是否要把“SL 父单 ID ≠ 基础子单 ID”显式纳入报告解释层，尚未决定。
+4. 需要形成当前阶段的正式结论归档（验证通过项 / 待改进项）。
+
+---
+
+## 7. 当前明确不做
+
+- 不扩新功能
+- 不主动改策略逻辑
+- 不主动重构 `bn_sync`
+- 不回到旧主线问题
+- 不重复已完成并已 push 的 patch
+- 不把当前阶段变成大规模结构重构
+
+---
+
+## 8. 下一步
+
+```text
+下一步顺序：
+1. 打完 selected_tp_pct 字段完整性这小刀 patch
+2. 形成当前阶段结论归档（验证通过项 / 待改进项）
+```
+
+---
+
+## 9. 当前协作提醒
+
+1. 当前阶段优先“验证与收束”，不是继续发散扩展。
+2. 审计主键优先使用 `custom_id / order_root / leg`，不要硬要求父单 ID 与子单 ID 相等。
+3. 正式 Patch 必须继续遵守：
+   - 先锁基线
+   - 固定输出顺序
+   - 对齐输入 + 对齐输出
+4. 文件唯一身份以 `MD5` 为准；`Lines` 只作辅助诊断。

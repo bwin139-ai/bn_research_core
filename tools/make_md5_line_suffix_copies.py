@@ -42,7 +42,7 @@ FILES = [
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
-    #"strategies/snapback/trade_consumer.py",
+    "strategies/snapback/trade_consumer.py",
     #"strategies/snapback/run_consumer.py",
     # "================ 币安 ================="
     # "core/live/binance_client.py",
@@ -57,8 +57,8 @@ FILES = [
     #"audit_tools/sim_live_audit/audit_signal_snapshot_diff.py",
     #"audit_tools/sim_live_audit/audit_trade_triplet_diff.py",
     # "================ 文档 =================",
-    #"docs/PROJECT_BASELINE_v1.md",
-    "docs/STANDARD_PATCH_FRAMEWORK.md",
+    #"docs/PROJECT_BASELINE.md",
+    #"docs/STANDARD_PATCH_FRAMEWORK.md",
 ]
 
 

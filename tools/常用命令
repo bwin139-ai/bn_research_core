@@ -1,6 +1,6 @@
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
-输出patch方案、 patch脚本附件、patch运行命令行、以及一行 git add 和 git commit命令，对齐指纹和副本：
+输出patch方案、 patch脚本附件、patch运行命令行、预期新指纹、以及一行 git add 和 git commit命令，对齐指纹和副本：
 # ============== 项目根目录 ===============
  cd ~/ai_projects/bn_research_core
  cd /root/bn_research_core
@@ -717,3 +717,20 @@ state/live/snapback_mybwin139.state.json
 
 审计 jsonl 文件：
 state/live_audit/snapback_mybwin139.jsonl
+
+
+以后新聊天最稳的三件套就是：
+
+1. PROJECT_BASELINE.md
+
+锁原则
+
+2. STANDARD_PATCH_FRAMEWORK.md
+
+锁 patch 流程
+
+3. CURRENT_STATE.md
+
+锁当前现场
+
+这三份的职责是清晰分层的，不冲突，而且正好互补。
