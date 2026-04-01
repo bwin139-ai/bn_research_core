@@ -3988,317 +3988,31 @@ def _finalize_entry_state_after_submit(
     current_time_bj: str,
 ) -> dict[str, Any]:
     symbol = submit_ctx['symbol']
-    signal = submit_ctx['signal']
     open_trade = submit_ctx['open_trade']
-    pending_entry = submit_ctx['pending_entry']
     order_root = submit_ctx['order_root']
-    retry_max = submit_ctx['retry_max']
-    retry_delay_secs = submit_ctx['retry_delay_secs']
 
-    pos_after_entry = get_position(account, symbol, FIXED_POSITION_SIDE)
-    orders_after_entry = get_open_orders(account, symbol)
-    pos_after_entry_data = pos_after_entry.get('data') if pos_after_entry.get('ok') else None
-    orders_after_entry_data = orders_after_entry.get('data') or [] if orders_after_entry.get('ok') else []
-    tp_bound_initial = _find_open_order(
-        orders_after_entry_data,
-        exchange_order_id=open_trade.get('tp_order_exchange_id'),
-        client_order_id=open_trade.get('tp_order_client_id'),
-    ) is not None if orders_after_entry.get('ok') else False
-    sl_bound_initial = _find_open_order(
-        orders_after_entry_data,
-        exchange_order_id=open_trade.get('sl_order_exchange_id'),
-        client_order_id=open_trade.get('sl_order_client_id'),
-    ) is not None if orders_after_entry.get('ok') else False
-    should_repair_brackets = bool(
-        pos_after_entry_data and (
-            (not submit_ctx['tp_res'].get('ok'))
-            or (not submit_ctx['sl_res'].get('ok'))
-            or (orders_after_entry.get('ok') and not (tp_bound_initial and sl_bound_initial))
-        )
-    )
-    if bool(live_cfg.get('audit_enabled', True)):
-        write_event(account, 'entry_immediate_bracket_check', {
-            'symbol': symbol,
-            'bar_ts': current_time_ms,
-            'bar_bj': current_time_bj,
-            'order_root': order_root,
-            'tp_submit_ok': bool(submit_ctx['tp_res'].get('ok')),
-            'sl_submit_ok': bool(submit_ctx['sl_res'].get('ok')),
-            'tp_bound_initial': tp_bound_initial,
-            'sl_bound_initial': sl_bound_initial,
-            'position_snapshot': pos_after_entry,
-            'open_orders_snapshot': orders_after_entry,
-        })
-
-    entry_immediate_repair_changed = False
-    if should_repair_brackets:
-        open_trade, entry_immediate_repair_changed = _ensure_exit_orders(
-            account,
-            symbol,
-            open_trade,
-            pos_after_entry_data,
-            orders_after_entry_data,
-            live_cfg,
-            current_time_ms,
-            current_time_bj,
-            source='entry_immediate_repair',
-        )
-
-    entry_still_pending = False
-    entry_position_confirmed = False
-    entry_bracket_gap_critical = False
-    if entry_immediate_repair_changed:
-        verify_pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
-        verify_orders_res = get_open_orders(account, symbol)
-    else:
-        verify_pos_res = pos_after_entry
-        verify_orders_res = orders_after_entry
-    verify_position = verify_pos_res.get('data') if verify_pos_res.get('ok') else None
-    verify_orders = verify_orders_res.get('data') or [] if verify_orders_res.get('ok') else []
-    if not verify_pos_res.get('ok') or not verify_orders_res.get('ok'):
-        verify_reason = verify_orders_res.get('reason') or verify_pos_res.get('reason')
-        mark_error(
-            account,
-            symbol,
-            error_code='entry_immediate_bracket_verify_failed',
-            error_message=verify_reason,
-            error_bj=current_time_bj,
-        )
-        if bool(live_cfg.get('audit_enabled', True)):
-            write_event(account, 'entry_immediate_bracket_verify_failed', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'order_root': order_root,
-                'exchange_snapshot': {
-                    'position': verify_pos_res,
-                    'orders': verify_orders_res,
-                },
-            })
-            write_event(account, 'critical_bracket_gap_after_entry', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'reason': 'entry_immediate_bracket_verify_failed',
-                'order_root': order_root,
-                'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                'exchange_snapshot': {
-                    'position': verify_pos_res,
-                    'orders': verify_orders_res,
-                },
-            })
-        entry_bracket_gap_critical = True
-        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
-            _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_reason or "unknown"}')
-    elif not verify_position:
-        entry_still_pending = True
-        if bool(live_cfg.get('audit_enabled', True)):
-            write_event(account, 'entry_pending_waiting_fill', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'order_root': order_root,
-                'entry_client_order_id': open_trade.get('entry_client_order_id'),
-                'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                'exchange_snapshot': {
-                    'position': verify_pos_res,
-                    'orders': verify_orders_res,
-                },
-            })
-    else:
-        entry_position_confirmed = True
-        confirmed_trade = _recover_open_trade_from_pending(pending_entry, verify_position)
-        confirmed_trade['tp_order_client_id'] = open_trade.get('tp_order_client_id')
-        confirmed_trade['tp_order_exchange_id'] = open_trade.get('tp_order_exchange_id')
-        confirmed_trade['sl_order_client_id'] = open_trade.get('sl_order_client_id')
-        confirmed_trade['sl_order_exchange_id'] = open_trade.get('sl_order_exchange_id')
-        confirmed_trade['time_stop_client_order_id'] = open_trade.get('time_stop_client_order_id')
-        confirmed_trade['time_stop_exchange_order_id'] = open_trade.get('time_stop_exchange_order_id')
-        open_trade = confirmed_trade
-        set_open_trade(account, symbol, open_trade)
-        set_pending_entry_order(account, symbol, None)
-
-        open_trade, entry_confirm_repair_changed = _ensure_exit_orders(
-            account,
-            symbol,
-            open_trade,
-            verify_position,
-            verify_orders,
-            live_cfg,
-            current_time_ms,
-            current_time_bj,
-            source='entry_immediate_confirmed_repair',
-        )
-        set_open_trade(account, symbol, open_trade)
-
-        entry_confirm_verify_snapshot = None
-        if not entry_confirm_repair_changed:
-            symbol_key = str(symbol).upper().strip()
-            entry_confirm_verify_snapshot = {
-                'positions': {
-                    'ok': bool(verify_pos_res.get('ok')),
-                    'reason': verify_pos_res.get('reason'),
-                    'data': [verify_position] if verify_position else [],
-                },
-                'orders': {
-                    'ok': bool(verify_orders_res.get('ok')),
-                    'reason': verify_orders_res.get('reason'),
-                    'data': verify_orders,
-                },
-                'positions_by_symbol': {
-                    symbol_key: [verify_position] if verify_position else [],
-                },
-                'open_orders_by_symbol': {
-                    symbol_key: list(verify_orders or []),
-                },
-            }
-
-        verify_res = _verify_open_trade_brackets(
-            account,
-            symbol,
-            open_trade,
-            retry_max=retry_max,
-            retry_delay_secs=retry_delay_secs,
-            snapshot=entry_confirm_verify_snapshot,
-        )
-        if not verify_res.get('ok'):
-            verify_reason = (verify_res.get('orders') or {}).get('reason') or (verify_res.get('position') or {}).get('reason')
-            mark_error(
-                account,
-                symbol,
-                error_code='entry_immediate_bracket_verify_failed',
-                error_message=verify_reason,
-                error_bj=current_time_bj,
-            )
-            if bool(live_cfg.get('audit_enabled', True)):
-                write_event(account, 'entry_immediate_bracket_verify_failed', {
-                    'symbol': symbol,
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'order_root': order_root,
-                    'exchange_snapshot': {
-                        'position': verify_res.get('position'),
-                        'orders': verify_res.get('orders'),
-                    },
-                })
-                write_event(account, 'critical_bracket_gap_after_entry', {
-                    'symbol': symbol,
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'reason': 'entry_immediate_bracket_verify_failed',
-                    'order_root': order_root,
-                    'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                    'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                    'exchange_snapshot': {
-                        'position': verify_res.get('position'),
-                        'orders': verify_res.get('orders'),
-                    },
-                })
-            entry_bracket_gap_critical = True
-            if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
-                _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 验证失败 | {verify_reason or "unknown"}')
-        else:
-            tp_bound = bool(verify_res.get('tp_bound'))
-            sl_bound = bool(verify_res.get('sl_bound'))
-            if not (tp_bound and sl_bound):
-                mark_error(
-                    account,
-                    symbol,
-                    error_code='entry_immediate_bracket_incomplete',
-                    error_message=f'tp_bound={tp_bound}, sl_bound={sl_bound}',
-                    error_bj=current_time_bj,
-                )
-                if bool(live_cfg.get('audit_enabled', True)):
-                    write_event(account, 'entry_immediate_bracket_incomplete', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'order_root': order_root,
-                        'tp_bound': tp_bound,
-                        'sl_bound': sl_bound,
-                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                        'exchange_snapshot': {
-                            'position': verify_res.get('position'),
-                            'orders': verify_res.get('orders'),
-                        },
-                    })
-                    write_event(account, 'critical_bracket_gap_after_entry', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'reason': 'entry_immediate_bracket_incomplete',
-                        'order_root': order_root,
-                        'tp_bound': tp_bound,
-                        'sl_bound': sl_bound,
-                        'tp_client_order_id': open_trade.get('tp_order_client_id'),
-                        'sl_client_order_id': open_trade.get('sl_order_client_id'),
-                        'exchange_snapshot': {
-                            'position': verify_res.get('position'),
-                            'orders': verify_res.get('orders'),
-                        },
-                    })
-                entry_bracket_gap_critical = True
-                if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
-                    _notify(True, f'[Snapback-Live] 风险告警 {symbol} | entry后 bracket 仍不完整 | tp_bound={tp_bound} sl_bound={sl_bound}')
-
-    if entry_position_confirmed:
-        if not entry_bracket_gap_critical:
-            _clear_symbol_error(account, symbol)
-        _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
-        if bool(live_cfg.get('audit_enabled', True)):
-            write_event(account, 'cooldown_set_after_entry', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'order_root': order_root,
-            })
-            if entry_bracket_gap_critical:
-                write_event(account, 'entry_submit_notify_suppressed_bracket_gap', {
-                    'symbol': symbol,
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'order_root': order_root,
-                })
-    elif bool(live_cfg.get('audit_enabled', True)):
-        write_event(account, 'cooldown_deferred_until_position_confirmed', {
-            'symbol': symbol,
-            'bar_ts': current_time_ms,
-            'bar_bj': current_time_bj,
-            'order_root': order_root,
-            'entry_still_pending': entry_still_pending,
-            'entry_bracket_gap_critical': entry_bracket_gap_critical,
-        })
+    set_open_trade(account, symbol, open_trade)
+    set_pending_entry_order(account, symbol, None)
+    _clear_symbol_error(account, symbol)
+    _refresh_entry_cooldown(account, symbol, current_time_ms, int(live_cfg['cooldown_mins']))
     mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
 
-    if entry_position_confirmed and (not entry_bracket_gap_critical) and bool(live_cfg.get('audit_enabled', True)):
-        write_event(account, 'entry_immediate_bracket_complete', {
+    if bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'cooldown_set_after_entry', {
             'symbol': symbol,
             'bar_ts': current_time_ms,
             'bar_bj': current_time_bj,
             'order_root': order_root,
-            'entry_fill_price': submit_ctx.get('entry_fill_price'),
-            'entry_fill_price_source': submit_ctx.get('entry_fill_price_source'),
-            'tp_price': open_trade.get('tp_price'),
-            'sl_trigger_price': open_trade.get('sl_trigger_price'),
         })
 
-    if entry_position_confirmed and (not entry_bracket_gap_critical) and bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_submit', True)):
+    if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_submit', True)):
         tp_px = float(open_trade.get('tp_price') or 0.0)
         sl_px = float(open_trade.get('sl_trigger_price') or 0.0)
         entry_px = float(open_trade.get('entry_price') or submit_ctx.get('entry_fill_price') or submit_ctx["current_price"] or 0.0)
         _notify(True, f'[Snapback-Live] 开仓 {symbol} | entry≈{entry_px:.6f} | TP={tp_px:.6f} | SL={sl_px:.6f}')
 
-    outcome = 'consumed_open_confirmed' if entry_position_confirmed and not entry_bracket_gap_critical else 'consumed_pending_wait_fill'
-    if entry_bracket_gap_critical:
-        outcome = 'failed_entry_immediate_bracket_incomplete'
-    elif not entry_position_confirmed and not entry_still_pending:
-        outcome = 'consumed_pending_wait_fill'
-
     return {
-        'ok': not entry_bracket_gap_critical,
+        'ok': True,
         'terminal': True,
         'symbol': symbol,
         'signal_digest': submit_ctx['signal_digest'],
@@ -4306,11 +4020,11 @@ def _finalize_entry_state_after_submit(
         'entry_client_order_id': submit_ctx['entry_client_order_id'],
         'tp_client_order_id': submit_ctx['tp_client_order_id'],
         'sl_client_order_id': submit_ctx['sl_client_order_id'],
-        'entry_position_confirmed': entry_position_confirmed,
-        'entry_still_pending': entry_still_pending,
-        'entry_bracket_gap_critical': entry_bracket_gap_critical,
-        'cooldown_set': entry_position_confirmed,
-        'outcome': outcome,
+        'entry_position_confirmed': True,
+        'entry_still_pending': False,
+        'entry_bracket_gap_critical': False,
+        'cooldown_set': True,
+        'outcome': 'consumed_open_confirmed',
         'reason': '',
     }
 

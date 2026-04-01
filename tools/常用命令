@@ -154,6 +154,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
   --run-id "Snapback_V6.1_SmokeTest4"
+  3月31日 22:00 BJ 超时参数调整为3分钟
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy top1 \

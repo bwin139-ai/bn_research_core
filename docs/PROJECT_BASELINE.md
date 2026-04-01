@@ -1,4 +1,5 @@
 # 项目基线（宪法）
+（`PROJECT_BASELINE.md`）
 
 ## 0. 总则
 0.1 本基线适用于本项目内全部策略、全部 `sim / live / audit / patch / review / 对话协作`。  

@@ -57,6 +57,7 @@ FILES = [
     #"audit_tools/sim_live_audit/audit_signal_snapshot_diff.py",
     #"audit_tools/sim_live_audit/audit_trade_triplet_diff.py",
     # "================ 文档 =================",
+    #"docs/CURRENT_STATE.md",
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
 ]

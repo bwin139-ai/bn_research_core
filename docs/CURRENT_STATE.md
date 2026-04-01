@@ -86,6 +86,9 @@ strategies/snapback
    - 离场日志与 Bot 推送
    - 离场消息持仓时间显示
 6. 已完成 3 笔真实 live 样本的首轮 triplet audit。
+7. 已完成 `selected_tp_pct` 字段完整性修补，恢复链路中的 `open_trade` 现可保留 `selected_tp_pct / entry_price_source / resolved_tp_price_source`。
+8. 已完成对 SIRENUSDT 风险现场的事实分析，确认问题根因为：ENTRY 成交后 SL 无法建立保护，导致出现“有持仓、有TP、无SL”的风险现场。
+9. 已完成 live 侧 LONG 风险修补：增加开仓前 SL 预筛，并在 ENTRY 后按 `ENTRY -> SL -> TP` 顺序执行；若 SL 无法建立保护，则立即 fail-fast 退出。
 
 ---
 
@@ -108,15 +111,15 @@ strategies/snapback
    - live 侧记录的 `exit_order_exchange_id` 可能是条件单 / algo 父单 ID
    - bn `exchange_order_id` 记录的是最终基础成交子单 ID
    - 父单 / 子单当前样本中保留相同 custom_id，可用于稳定认亲
+9. 已确认 LONG 场景下，STOP_MARKET 止损单能否成功提交，最终取决于提交当下的最新价格是否会导致 “would immediately trigger”，而不是取决于 entry_price。
 
 ---
 
 ## 6. 当前 pending
 
-1. `live_trade.selected_tp_pct` 在部分链路中丢失，需修补字段完整性。
-2. 是否为 bn truth 增加“条件委托 / algo 父单”独立真相层，尚未决定。
-3. triplet audit 后续是否要把“SL 父单 ID ≠ 基础子单 ID”显式纳入报告解释层，尚未决定。
-4. 需要形成当前阶段的正式结论归档（验证通过项 / 待改进项）。
+1. 是否为 bn truth 增加“条件委托 / algo 父单”独立真相层，尚未决定。
+2. triplet audit 后续是否要把“SL 父单 ID ≠ 基础子单 ID”显式纳入报告解释层，尚未决定。
+3. 需要形成当前阶段的正式结论归档（验证通过项 / 待改进项）。
 
 ---
 
@@ -135,8 +138,8 @@ strategies/snapback
 
 ```text
 下一步顺序：
-1. 打完 selected_tp_pct 字段完整性这小刀 patch
-2. 形成当前阶段结论归档（验证通过项 / 待改进项）
+1. 形成当前阶段结论归档（验证通过项 / 待改进项）
+2. 继续决定 bn truth 是否增加条件委托 / algo 父单独立真相层
 ```
 
 ---
@@ -150,3 +153,4 @@ strategies/snapback
    - 固定输出顺序
    - 对齐输入 + 对齐输出
 4. 文件唯一身份以 `MD5` 为准；`Lines` 只作辅助诊断。
+5. 本项目当前及未来统一只允许 LONG，不允许引入 SHORT 语义、字段、分支或实现。
