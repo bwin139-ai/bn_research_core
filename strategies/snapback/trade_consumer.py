@@ -2943,19 +2943,17 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             else:
                 _clear_symbol_error(account, symbol)
             set_open_trade(account, symbol, open_trade)
-            if bracket_gap_blocking:
-                if audit_enabled:
-                    write_event(account, 'open_trade_reconcile_blocked_after_bracket_gap', {
-                        'symbol': symbol,
-                        'bar_ts': current_time_ms,
-                        'bar_bj': current_time_bj,
-                        'source': source,
-                        'order_root': open_trade.get('order_root'),
-                        'verify_ok': verify_res.get('ok'),
-                        'tp_bound': verify_res.get('tp_bound'),
-                        'sl_bound': verify_res.get('sl_bound'),
-                    })
-                continue
+            if bracket_gap_blocking and audit_enabled:
+                write_event(account, 'open_trade_reconcile_blocked_after_bracket_gap', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'order_root': open_trade.get('order_root'),
+                    'verify_ok': verify_res.get('ok'),
+                    'tp_bound': verify_res.get('tp_bound'),
+                    'sl_bound': verify_res.get('sl_bound'),
+                })
 
         if open_trade.get('exit_submit_inflight'):
             open_trade, should_skip = _reconcile_inflight_exit(
