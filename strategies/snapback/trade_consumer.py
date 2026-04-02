@@ -1374,6 +1374,9 @@ def prepare_consumer_loop_gate(
     exchange_activity_snapshot: dict[str, Any],
     source: str = 'loop',
 ) -> dict[str, Any]:
+    loop_gate_started_perf = time.perf_counter()
+
+    maintain_started_perf = time.perf_counter()
     maintain_res = maintain_consumer_once(
         account,
         strategy_cfg,
@@ -1384,6 +1387,9 @@ def prepare_consumer_loop_gate(
         source=source,
         exchange_snapshot=exchange_activity_snapshot,
     )
+    maintain_elapsed_ms = _perf_elapsed_ms(maintain_started_perf)
+
+    scan_gate_started_perf = time.perf_counter()
     scan_gate = evaluate_consumer_signal_scan_gate(
         account,
         live_cfg,
@@ -1396,7 +1402,31 @@ def prepare_consumer_loop_gate(
         maintain_res=maintain_res,
         source=source,
     )
+    scan_gate_elapsed_ms = _perf_elapsed_ms(scan_gate_started_perf)
+
+    active_symbols_started_perf = time.perf_counter()
     active_symbols = sorted(build_consumer_active_symbols(scan_gate)) if scan_gate.get('ok_to_scan') else []
+    active_symbols_elapsed_ms = _perf_elapsed_ms(active_symbols_started_perf)
+
+    total_elapsed_ms = _perf_elapsed_ms(loop_gate_started_perf)
+
+    _log_perf_stage(
+        'prepare_consumer_loop_gate',
+        account=account,
+        source=source,
+        bar_bj=current_time_bj,
+        maintain_elapsed_ms=maintain_elapsed_ms,
+        scan_gate_elapsed_ms=scan_gate_elapsed_ms,
+        active_symbols_elapsed_ms=active_symbols_elapsed_ms,
+        total_elapsed_ms=total_elapsed_ms,
+        candidate_symbols_count=len(candidate_symbols or []),
+        extra_reconcile_symbols_count=len(extra_reconcile_symbols or []),
+        latest_closes_symbols_count=len(latest_closes or {}),
+        ok_to_scan=bool(scan_gate.get('ok_to_scan')),
+        skip_reason=scan_gate.get('skip_reason'),
+        active_symbols_count=len(active_symbols),
+    )
+
     return {
         'ok_to_scan': bool(scan_gate.get('ok_to_scan')),
         'maintain_res': maintain_res,
@@ -1457,6 +1487,7 @@ def audit_consumer_orphan_exchange_activity(
     audit_enabled: bool,
     snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    audit_started_perf = time.perf_counter()
     findings: list[dict[str, Any]] = []
     if not audit_enabled:
         return findings
@@ -1475,17 +1506,32 @@ def audit_consumer_orphan_exchange_activity(
             positions_by_symbol.setdefault(symbol, []).append(row)
 
     seen: set[str] = set()
+    perf_seen_symbols = 0
+    perf_skipped_local_active = 0
+    perf_precheck_elapsed_ms = 0
+    perf_mark_position_elapsed_ms = 0
+    perf_mark_order_elapsed_ms = 0
     for raw_symbol in symbols:
         symbol = str(raw_symbol).upper().strip()
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
+        perf_seen_symbols += 1
         if symbol in local_active_symbols:
+            perf_skipped_local_active += 1
             continue
 
+        precheck_started_perf = time.perf_counter()
         exch = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+        perf_precheck_elapsed_ms += _perf_elapsed_ms(precheck_started_perf)
+
+        mark_position_started_perf = time.perf_counter()
         mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
+        perf_mark_position_elapsed_ms += _perf_elapsed_ms(mark_position_started_perf)
+
+        mark_order_started_perf = time.perf_counter()
         mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
+        perf_mark_order_elapsed_ms += _perf_elapsed_ms(mark_order_started_perf)
 
         pos_res = exch.get('position') or {}
         ord_res = exch.get('orders') or {}
@@ -1543,6 +1589,22 @@ def audit_consumer_orphan_exchange_activity(
                 'source': source,
                 'exchange_snapshot': ord_res,
             })
+
+    total_elapsed_ms = _perf_elapsed_ms(audit_started_perf)
+    _log_perf_stage(
+        'audit_consumer_orphan_exchange_activity',
+        account=account,
+        source=source,
+        bar_bj=current_time_bj,
+        total_elapsed_ms=total_elapsed_ms,
+        input_symbols_count=len(symbols or []),
+        seen_symbols_count=perf_seen_symbols,
+        skipped_local_active_count=perf_skipped_local_active,
+        findings_count=len(findings),
+        precheck_elapsed_ms=perf_precheck_elapsed_ms,
+        mark_position_elapsed_ms=perf_mark_position_elapsed_ms,
+        mark_order_elapsed_ms=perf_mark_order_elapsed_ms,
+    )
     return findings
 
 
@@ -1680,6 +1742,7 @@ def evaluate_consumer_signal_scan_gate(
     maintain_res: dict[str, Any],
     source: str = 'loop',
 ) -> dict[str, Any]:
+    scan_gate_started_perf = time.perf_counter()
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
     snapshot = dict(exchange_activity_snapshot or {})
     if audit_enabled and not snapshot.get('ok'):
@@ -1693,21 +1756,29 @@ def evaluate_consumer_signal_scan_gate(
             },
         })
 
+    local_active_symbols_started_perf = time.perf_counter()
+    local_activity_symbols = collect_consumer_local_activity_symbols(account)
     snapshot['local_active_symbols'] = sorted(
         set(snapshot.get('local_active_symbols') or [])
-        | set(collect_consumer_local_activity_symbols(account))
+        | set(local_activity_symbols)
     )
+    local_active_symbols_elapsed_ms = _perf_elapsed_ms(local_active_symbols_started_perf)
+
     local_active_symbols = sorted(set(snapshot.get('local_active_symbols') or []))
     exchange_activity_symbols = sorted(set(snapshot.get('symbols') or set()))
+    orphan_audit_symbols = sorted(set(candidate_symbols or []) | set(exchange_activity_symbols))
+
+    orphan_audit_started_perf = time.perf_counter()
     orphan_findings = audit_consumer_orphan_exchange_activity(
         account,
-        sorted(set(candidate_symbols or []) | set(exchange_activity_symbols)),
+        orphan_audit_symbols,
         current_time_ms,
         current_time_bj,
         source=source,
         audit_enabled=audit_enabled,
         snapshot=snapshot,
     )
+    orphan_audit_elapsed_ms = _perf_elapsed_ms(orphan_audit_started_perf)
 
     pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
     open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
@@ -1715,6 +1786,30 @@ def evaluate_consumer_signal_scan_gate(
     required_reconcile_symbols = sorted(set(local_active_symbols) | set(exchange_activity_symbols))
     latest_close_symbols = {str(symbol).upper().strip() for symbol in (latest_closes or {}).keys()}
     missing_reconcile_symbols = [symbol for symbol in required_reconcile_symbols if symbol not in latest_close_symbols]
+
+    total_elapsed_ms = _perf_elapsed_ms(scan_gate_started_perf)
+
+    def _return(payload: dict[str, Any]) -> dict[str, Any]:
+        _log_perf_stage(
+            'evaluate_consumer_signal_scan_gate',
+            account=account,
+            source=source,
+            bar_bj=current_time_bj,
+            total_elapsed_ms=total_elapsed_ms,
+            local_active_symbols_elapsed_ms=local_active_symbols_elapsed_ms,
+            orphan_audit_elapsed_ms=orphan_audit_elapsed_ms,
+            candidate_symbols_count=len(candidate_symbols or []),
+            exchange_activity_symbols_count=len(exchange_activity_symbols),
+            orphan_audit_symbols_count=len(orphan_audit_symbols),
+            orphan_findings_count=len(orphan_findings),
+            local_active_symbols_count=len(local_active_symbols),
+            required_reconcile_symbols_count=len(required_reconcile_symbols),
+            missing_reconcile_symbols_count=len(missing_reconcile_symbols),
+            active_state_errors_count=len(active_state_errors),
+            skip_reason=payload.get('skip_reason'),
+            ok_to_scan=bool(payload.get('ok_to_scan')),
+        )
+        return payload
 
     if orphan_findings:
         if audit_enabled:
@@ -1725,7 +1820,7 @@ def evaluate_consumer_signal_scan_gate(
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
             })
-        return {
+        return _return({
             'ok_to_scan': False,
             'skip_reason': 'orphan_exchange_activity',
             'orphan_findings': orphan_findings,
@@ -1734,7 +1829,7 @@ def evaluate_consumer_signal_scan_gate(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
-        }
+        })
 
     if pending_reconcile_error or open_trade_reconcile_error:
         if audit_enabled:
@@ -1746,7 +1841,7 @@ def evaluate_consumer_signal_scan_gate(
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
             })
-        return {
+        return _return({
             'ok_to_scan': False,
             'skip_reason': 'reconcile_query_error',
             'orphan_findings': orphan_findings,
@@ -1755,7 +1850,7 @@ def evaluate_consumer_signal_scan_gate(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
-        }
+        })
 
     if missing_reconcile_symbols:
         if audit_enabled:
@@ -1766,7 +1861,7 @@ def evaluate_consumer_signal_scan_gate(
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
             })
-        return {
+        return _return({
             'ok_to_scan': False,
             'skip_reason': 'missing_reconcile_data',
             'orphan_findings': orphan_findings,
@@ -1775,7 +1870,7 @@ def evaluate_consumer_signal_scan_gate(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
-        }
+        })
 
     if not snapshot.get('ok'):
         if audit_enabled:
@@ -1789,7 +1884,7 @@ def evaluate_consumer_signal_scan_gate(
                     'orders': snapshot.get('orders'),
                 },
             })
-        return {
+        return _return({
             'ok_to_scan': False,
             'skip_reason': 'exchange_activity_query_error',
             'orphan_findings': orphan_findings,
@@ -1798,7 +1893,7 @@ def evaluate_consumer_signal_scan_gate(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
-        }
+        })
 
     if active_state_errors:
         if audit_enabled:
@@ -1809,7 +1904,7 @@ def evaluate_consumer_signal_scan_gate(
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
             })
-        return {
+        return _return({
             'ok_to_scan': False,
             'skip_reason': 'active_state_error',
             'orphan_findings': orphan_findings,
@@ -1818,9 +1913,9 @@ def evaluate_consumer_signal_scan_gate(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
-        }
+        })
 
-    return {
+    return _return({
         'ok_to_scan': True,
         'skip_reason': '',
         'orphan_findings': orphan_findings,
@@ -1829,7 +1924,7 @@ def evaluate_consumer_signal_scan_gate(
         'exchange_snapshot': snapshot,
         'local_active_symbols': local_active_symbols,
         'exchange_activity_symbols': exchange_activity_symbols,
-    }
+    })
 
 
 def finalize_consumer_scan_skip(
