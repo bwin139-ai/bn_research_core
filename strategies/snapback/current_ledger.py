@@ -91,3 +91,39 @@ def build_consumer_active_symbols(scan_gate: dict[str, Any]) -> set[str]:
         )
         if str(symbol).strip()
     }
+def collect_consumer_state_summary(account: str) -> dict[str, Any]:
+    state = load_live_state(account)
+    pending_symbols: list[str] = []
+    open_symbols: list[str] = []
+    active_state_errors: list[dict[str, Any]] = []
+    for raw_symbol, payload in (state.get('symbols') or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            continue
+        has_pending_entry = bool(payload.get('pending_entry_order'))
+        has_open_trade = bool(payload.get('open_trade'))
+        if has_pending_entry:
+            pending_symbols.append(symbol)
+        if has_open_trade:
+            open_symbols.append(symbol)
+        error_code = payload.get('last_error_code')
+        error_message = payload.get('last_error_message')
+        error_bj = payload.get('last_error_bj')
+        if (error_code or error_message) and (has_pending_entry or has_open_trade):
+            active_state_errors.append({
+                'symbol': symbol,
+                'last_error_code': error_code,
+                'last_error_message': error_message,
+                'last_error_bj': error_bj,
+            })
+    return {
+        'pending_symbols': sorted(set(pending_symbols)),
+        'open_symbols': sorted(set(open_symbols)),
+        'active_state_errors': sorted(active_state_errors, key=lambda x: (str(x.get('symbol') or ''), str(x.get('last_error_code') or ''))),
+    }
+
+
+def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
+    return list(collect_consumer_state_summary(account)['active_state_errors'])

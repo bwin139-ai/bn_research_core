@@ -38,8 +38,10 @@ from core.message_bridge import send_to_bot
 from strategies.snapback.current_ledger import (
     build_consumer_active_symbols,
     build_consumer_reconcile_plan,
+    collect_consumer_active_state_errors,
     collect_consumer_exchange_activity_snapshot,
     collect_consumer_local_activity_symbols,
+    collect_consumer_state_summary,
 )
 
 BJ = timezone(timedelta(hours=8))
@@ -1298,42 +1300,6 @@ def prepare_consumer_loop_gate(
         'active_symbols': active_symbols,
         'local_active_symbols': list(scan_gate.get('local_active_symbols') or []),
         'exchange_activity_symbols': list(scan_gate.get('exchange_activity_symbols') or []),
-    }
-
-def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
-    return list(_collect_consumer_state_summary(account)['active_state_errors'])
-
-def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
-    state = load_live_state(account)
-    pending_symbols: list[str] = []
-    open_symbols: list[str] = []
-    active_state_errors: list[dict[str, Any]] = []
-    for raw_symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        symbol = str(raw_symbol).upper().strip()
-        if not symbol:
-            continue
-        has_pending_entry = bool(payload.get('pending_entry_order'))
-        has_open_trade = bool(payload.get('open_trade'))
-        if has_pending_entry:
-            pending_symbols.append(symbol)
-        if has_open_trade:
-            open_symbols.append(symbol)
-        error_code = payload.get('last_error_code')
-        error_message = payload.get('last_error_message')
-        error_bj = payload.get('last_error_bj')
-        if (error_code or error_message) and (has_pending_entry or has_open_trade):
-            active_state_errors.append({
-                'symbol': symbol,
-                'last_error_code': error_code,
-                'last_error_message': error_message,
-                'last_error_bj': error_bj,
-            })
-    return {
-        'pending_symbols': sorted(set(pending_symbols)),
-        'open_symbols': sorted(set(open_symbols)),
-        'active_state_errors': sorted(active_state_errors, key=lambda x: (str(x.get('symbol') or ''), str(x.get('last_error_code') or ''))),
     }
 
 def audit_consumer_orphan_exchange_activity(
@@ -4014,7 +3980,7 @@ def maintain_consumer_once(
     )
     open_elapsed_ms = _perf_elapsed_ms(open_started_perf)
 
-    state_summary = _collect_consumer_state_summary(account)
+    state_summary = collect_consumer_state_summary(account)
     touched_symbols = sorted(set(state_summary['pending_symbols']) | set(state_summary['open_symbols']))
     total_elapsed_ms = _perf_elapsed_ms(maintain_started_perf)
 
