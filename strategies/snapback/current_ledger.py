@@ -698,6 +698,177 @@ def bootstrap_consumer_gate_impl(
     }
 
 
+def finalize_consumer_scan_skip_impl(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    mark_last_processed_bar_fn,
+) -> dict[str, Any]:
+    processed_symbols = sorted({
+        str(symbol).upper().strip()
+        for symbol in (symbols or [])
+        if str(symbol).strip()
+    })
+    for symbol in processed_symbols:
+        mark_last_processed_bar_fn(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+    return {
+        'processed_symbols': processed_symbols,
+        'processed_count': len(processed_symbols),
+    }
+
+
+def finalize_consumer_no_candidate_data_impl(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    candidate_reason: str | None,
+    candidate_errors: Any,
+    extra_reconcile_symbols_count: int,
+    audit_enabled: bool,
+    mark_last_processed_bar_fn,
+) -> dict[str, Any]:
+    if audit_enabled:
+        write_event(account, 'signal_scan_skipped_no_candidate_data', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'candidate_reason': candidate_reason,
+            'candidate_errors': candidate_errors,
+            'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
+        })
+    result = finalize_consumer_scan_skip_impl(
+        account,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+        mark_last_processed_bar_fn=mark_last_processed_bar_fn,
+    )
+    result.update({
+        'skip_reason': 'no_candidate_data',
+        'candidate_reason': candidate_reason,
+    })
+    return result
+
+
+def finalize_consumer_signal_none_impl(
+    account: str,
+    *,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    candidate_payload: dict[str, Any],
+    extra_reconcile_symbols_count: int,
+    timing_fields: dict[str, Any],
+    signal_eval_started_utc_ms: int | None,
+    signal_eval_finished_utc_ms: int | None,
+    audit_enabled: bool,
+    mark_last_processed_bar_fn,
+    write_stage_record_fn,
+    fmt_bj_from_ms_fn,
+) -> dict[str, Any]:
+    payload = {
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
+        'freshest_bar_bj': candidate_payload.get('freshest_bar_bj'),
+        'stale_cutoff_bj': candidate_payload.get('stale_cutoff_bj'),
+        'symbol_count': candidate_payload['symbol_count'],
+        'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
+        'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
+    }
+    if audit_enabled:
+        write_event(account, 'signal_none', payload)
+        write_stage_record_fn(account, 'stage6_signal', {
+            **payload,
+            'event': 'signal_none',
+            'selected_symbol': None,
+            'signal_digest': None,
+            **timing_fields,
+            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
+            'signal_eval_started_bj': fmt_bj_from_ms_fn(signal_eval_started_utc_ms),
+            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
+            'signal_eval_finished_bj': fmt_bj_from_ms_fn(signal_eval_finished_utc_ms),
+        })
+    result = finalize_consumer_scan_skip_impl(
+        account,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+        mark_last_processed_bar_fn=mark_last_processed_bar_fn,
+    )
+    result.update({
+        'skip_reason': 'signal_none',
+    })
+    return result
+
+
+def finalize_consumer_loop_state_impl(
+    account: str,
+    *,
+    mode: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    symbols: list[str] | set[str] | tuple[str, ...],
+    audit_enabled: bool,
+    scan_gate: dict[str, Any] | None = None,
+    candidate_payload: dict[str, Any] | None = None,
+    candidate_reason: str | None = None,
+    candidate_errors: Any = None,
+    extra_reconcile_symbols_count: int = 0,
+    timing_fields: dict[str, Any] | None = None,
+    signal_eval_started_utc_ms: int | None = None,
+    signal_eval_finished_utc_ms: int | None = None,
+    mark_last_processed_bar_fn=None,
+    write_stage_record_fn=None,
+    fmt_bj_from_ms_fn=None,
+) -> dict[str, Any]:
+    if mode == 'scan_blocked':
+        result = finalize_consumer_scan_skip_impl(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+            mark_last_processed_bar_fn=mark_last_processed_bar_fn,
+        )
+        if scan_gate is not None:
+            result['skip_reason'] = str(scan_gate.get('skip_reason') or 'scan_gate_blocked')
+        return result
+    if mode == 'no_candidate_data':
+        return finalize_consumer_no_candidate_data_impl(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+            candidate_reason=candidate_reason,
+            candidate_errors=candidate_errors,
+            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+            audit_enabled=audit_enabled,
+            mark_last_processed_bar_fn=mark_last_processed_bar_fn,
+        )
+    if mode == 'signal_none':
+        if candidate_payload is None:
+            raise ValueError('candidate_payload is required when mode=signal_none')
+        return finalize_consumer_signal_none_impl(
+            account,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=symbols,
+            candidate_payload=candidate_payload,
+            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+            timing_fields=timing_fields or {},
+            signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+            signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+            audit_enabled=audit_enabled,
+            mark_last_processed_bar_fn=mark_last_processed_bar_fn,
+            write_stage_record_fn=write_stage_record_fn,
+            fmt_bj_from_ms_fn=fmt_bj_from_ms_fn,
+        )
+    raise ValueError(f'unsupported finalize mode: {mode}')
+
+
 def collect_consumer_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     symbols: set[str] = set()
     positions_by_symbol: dict[str, list[dict[str, Any]]] = {}

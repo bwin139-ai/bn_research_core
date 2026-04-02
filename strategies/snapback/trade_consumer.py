@@ -45,6 +45,10 @@ from strategies.snapback.current_ledger import (
     collect_consumer_local_activity_symbols,
     collect_consumer_state_summary,
     evaluate_consumer_signal_scan_gate_impl as _ledger_evaluate_consumer_signal_scan_gate_impl,
+    finalize_consumer_loop_state_impl as _ledger_finalize_consumer_loop_state_impl,
+    finalize_consumer_no_candidate_data_impl as _ledger_finalize_consumer_no_candidate_data_impl,
+    finalize_consumer_scan_skip_impl as _ledger_finalize_consumer_scan_skip_impl,
+    finalize_consumer_signal_none_impl as _ledger_finalize_consumer_signal_none_impl,
     has_position_or_orders,
     precheck_exchange_blockers,
     prepare_consumer_loop_gate_impl as _ledger_prepare_consumer_loop_gate_impl,
@@ -1242,17 +1246,13 @@ def finalize_consumer_scan_skip(
     current_time_bj: str,
     symbols: list[str] | set[str] | tuple[str, ...],
 ) -> dict[str, Any]:
-    processed_symbols = sorted({
-        str(symbol).upper().strip()
-        for symbol in (symbols or [])
-        if str(symbol).strip()
-    })
-    for symbol in processed_symbols:
-        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
-    return {
-        'processed_symbols': processed_symbols,
-        'processed_count': len(processed_symbols),
-    }
+    return _ledger_finalize_consumer_scan_skip_impl(
+        account,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+        mark_last_processed_bar_fn=mark_last_processed_bar,
+    )
 
 def finalize_consumer_no_candidate_data(
     account: str,
@@ -1265,25 +1265,17 @@ def finalize_consumer_no_candidate_data(
     extra_reconcile_symbols_count: int,
     audit_enabled: bool,
 ) -> dict[str, Any]:
-    if audit_enabled:
-        write_event(account, 'signal_scan_skipped_no_candidate_data', {
-            'bar_ts': current_time_ms,
-            'bar_bj': current_time_bj,
-            'candidate_reason': candidate_reason,
-            'candidate_errors': candidate_errors,
-            'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
-        })
-    result = finalize_consumer_scan_skip(
+    return _ledger_finalize_consumer_no_candidate_data_impl(
         account,
         current_time_ms=current_time_ms,
         current_time_bj=current_time_bj,
         symbols=symbols,
+        candidate_reason=candidate_reason,
+        candidate_errors=candidate_errors,
+        extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+        audit_enabled=audit_enabled,
+        mark_last_processed_bar_fn=mark_last_processed_bar,
     )
-    result.update({
-        'skip_reason': 'no_candidate_data',
-        'candidate_reason': candidate_reason,
-    })
-    return result
 
 def finalize_consumer_signal_none(
     account: str,
@@ -1298,39 +1290,21 @@ def finalize_consumer_signal_none(
     signal_eval_finished_utc_ms: int | None,
     audit_enabled: bool,
 ) -> dict[str, Any]:
-    payload = {
-        'bar_ts': current_time_ms,
-        'bar_bj': current_time_bj,
-        'freshest_bar_ts': candidate_payload.get('freshest_bar_ts'),
-        'freshest_bar_bj': candidate_payload.get('freshest_bar_bj'),
-        'stale_cutoff_bj': candidate_payload.get('stale_cutoff_bj'),
-        'symbol_count': candidate_payload['symbol_count'],
-        'stale_symbol_count': candidate_payload.get('stale_symbol_count', 0),
-        'extra_reconcile_symbols_count': int(extra_reconcile_symbols_count),
-    }
-    if audit_enabled:
-        write_event(account, 'signal_none', payload)
-        _write_stage_record(account, 'stage6_signal', {
-            **payload,
-            'event': 'signal_none',
-            'selected_symbol': None,
-            'signal_digest': None,
-            **timing_fields,
-            'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
-            'signal_eval_started_bj': _fmt_bj_from_ms(signal_eval_started_utc_ms),
-            'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
-            'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
-        })
-    result = finalize_consumer_scan_skip(
+    return _ledger_finalize_consumer_signal_none_impl(
         account,
         current_time_ms=current_time_ms,
         current_time_bj=current_time_bj,
         symbols=symbols,
+        candidate_payload=candidate_payload,
+        extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+        timing_fields=timing_fields,
+        signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+        signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+        audit_enabled=audit_enabled,
+        mark_last_processed_bar_fn=mark_last_processed_bar,
+        write_stage_record_fn=_write_stage_record,
+        fmt_bj_from_ms_fn=_fmt_bj_from_ms,
     )
-    result.update({
-        'skip_reason': 'signal_none',
-    })
-    return result
 
 def finalize_consumer_loop_state(
     account: str,
@@ -1349,43 +1323,25 @@ def finalize_consumer_loop_state(
     signal_eval_started_utc_ms: int | None = None,
     signal_eval_finished_utc_ms: int | None = None,
 ) -> dict[str, Any]:
-    if mode == 'scan_blocked':
-        result = finalize_consumer_scan_skip(
-            account,
-            current_time_ms=current_time_ms,
-            current_time_bj=current_time_bj,
-            symbols=symbols,
-        )
-        if scan_gate is not None:
-            result['skip_reason'] = str(scan_gate.get('skip_reason') or 'scan_gate_blocked')
-        return result
-    if mode == 'no_candidate_data':
-        return finalize_consumer_no_candidate_data(
-            account,
-            current_time_ms=current_time_ms,
-            current_time_bj=current_time_bj,
-            symbols=symbols,
-            candidate_reason=candidate_reason,
-            candidate_errors=candidate_errors,
-            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
-            audit_enabled=audit_enabled,
-        )
-    if mode == 'signal_none':
-        if candidate_payload is None:
-            raise ValueError('candidate_payload is required when mode=signal_none')
-        return finalize_consumer_signal_none(
-            account,
-            current_time_ms=current_time_ms,
-            current_time_bj=current_time_bj,
-            symbols=symbols,
-            candidate_payload=candidate_payload,
-            extra_reconcile_symbols_count=extra_reconcile_symbols_count,
-            timing_fields=timing_fields or {},
-            signal_eval_started_utc_ms=signal_eval_started_utc_ms,
-            signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
-            audit_enabled=audit_enabled,
-        )
-    raise ValueError(f'unsupported finalize mode: {mode}')
+    return _ledger_finalize_consumer_loop_state_impl(
+        account,
+        mode=mode,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        symbols=symbols,
+        audit_enabled=audit_enabled,
+        scan_gate=scan_gate,
+        candidate_payload=candidate_payload,
+        candidate_reason=candidate_reason,
+        candidate_errors=candidate_errors,
+        extra_reconcile_symbols_count=extra_reconcile_symbols_count,
+        timing_fields=timing_fields,
+        signal_eval_started_utc_ms=signal_eval_started_utc_ms,
+        signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
+        mark_last_processed_bar_fn=mark_last_processed_bar,
+        write_stage_record_fn=_write_stage_record,
+        fmt_bj_from_ms_fn=_fmt_bj_from_ms,
+    )
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
