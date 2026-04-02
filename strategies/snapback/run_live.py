@@ -60,6 +60,17 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _perf_elapsed_ms(start_perf: float) -> int:
+    return int(round((time.perf_counter() - start_perf) * 1000))
+
+
+def _log_perf_stage(stage: str, payload: dict[str, Any]) -> None:
+    logging.info('[run_live_perf] %s', _json_safe_dumps({
+        'stage': stage,
+        **payload,
+    }, sort_keys=True, separators=(',', ':')))
+
+
 
 def _hydrate_strategy_cooldowns(strategy: WashoutSnapbackStrategy, account: str, current_time_ms: int) -> None:
     strategy.cooldown_until = load_cooldown_map(account, now_ts=current_time_ms)
@@ -591,6 +602,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     account = str(live_cfg['account']).strip()
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    run_once_perf_started = time.perf_counter()
     loop_started_epoch = time.time()
     loop_started_utc_ms = int(loop_started_epoch * 1000)
     loop_started_bj = _fmt_bj_from_ms(loop_started_utc_ms) or _now_bj_str()
@@ -602,22 +614,91 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     history_window_mins = int(runtime_cfg['max_history_window_mins'])
     if history_window_mins <= 0:
         raise ValueError('strategy_cfg.runtime.max_history_window_mins must be > 0')
+
+    candidate_symbols_count = 0
+    extra_reconcile_symbols_count = 0
+    exchange_activity_symbols_count = 0
+    local_activity_symbols_count = 0
+    active_symbols_count = 0
+
+    candidate_plan_elapsed_ms: int | None = None
+    candidate_md_elapsed_ms: int | None = None
+    extra_md_elapsed_ms: int | None = None
+    stage3_elapsed_ms: int | None = None
+    latest_closes_elapsed_ms: int | None = None
+    loop_gate_elapsed_ms: int | None = None
+    stage4_elapsed_ms: int | None = None
+    signal_eval_elapsed_ms: int | None = None
+    stage5_elapsed_ms: int | None = None
+    live_signal_projection_elapsed_ms: int | None = None
+    consume_signal_elapsed_ms: int | None = None
+    signal_present = False
+    signal_symbol: str | None = None
+    signal_digest_preview: str | None = None
+
+    current_time_ms: int | None = None
+    current_time_bj: str | None = None
+    c_bar_ts: int | None = None
+    c_bar_bj: str | None = None
+
+    def _emit_run_once_perf(outcome: str) -> None:
+        _log_perf_stage('run_once', {
+            'account': account,
+            'bar_bj': current_time_bj,
+            'bar_ts': current_time_ms,
+            'c_bar_bj': c_bar_bj,
+            'c_bar_ts': c_bar_ts,
+            'outcome': outcome,
+            'scheduled_signal_check_bj': scheduled_signal_check_bj,
+            'candidate_symbols_count': candidate_symbols_count,
+            'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
+            'exchange_activity_symbols_count': exchange_activity_symbols_count,
+            'local_activity_symbols_count': local_activity_symbols_count,
+            'active_symbols_count': active_symbols_count,
+            'candidate_plan_elapsed_ms': candidate_plan_elapsed_ms,
+            'candidate_md_elapsed_ms': candidate_md_elapsed_ms,
+            'extra_md_elapsed_ms': extra_md_elapsed_ms,
+            'stage3_elapsed_ms': stage3_elapsed_ms,
+            'latest_closes_elapsed_ms': latest_closes_elapsed_ms,
+            'loop_gate_elapsed_ms': loop_gate_elapsed_ms,
+            'stage4_elapsed_ms': stage4_elapsed_ms,
+            'signal_eval_elapsed_ms': signal_eval_elapsed_ms,
+            'stage5_elapsed_ms': stage5_elapsed_ms,
+            'live_signal_projection_elapsed_ms': live_signal_projection_elapsed_ms,
+            'consume_signal_elapsed_ms': consume_signal_elapsed_ms,
+            'signal_present': signal_present,
+            'signal_symbol': signal_symbol,
+            'signal_digest': signal_digest_preview,
+            'total_elapsed_ms': _perf_elapsed_ms(run_once_perf_started),
+        })
+
+    candidate_plan_perf_started = time.perf_counter()
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
     reconcile_plan = build_consumer_reconcile_plan(account, candidate_symbols)
+    candidate_plan_elapsed_ms = _perf_elapsed_ms(candidate_plan_perf_started)
+
     exchange_activity_snapshot = dict(reconcile_plan['exchange_snapshot'])
     exchange_activity_symbols = set(reconcile_plan['exchange_activity_symbols'])
     local_activity_symbols = set(reconcile_plan['local_active_symbols'])
     extra_reconcile_symbols = list(reconcile_plan['extra_reconcile_symbols'])
+    candidate_symbols_count = len(candidate_symbols)
+    extra_reconcile_symbols_count = len(extra_reconcile_symbols)
+    exchange_activity_symbols_count = len(exchange_activity_symbols)
+    local_activity_symbols_count = len(local_activity_symbols)
 
     candidate_md_started_utc_ms = _now_utc_ms()
+    candidate_md_perf_started = time.perf_counter()
     candidate_md_res = build_live_inputs(account, candidate_symbols, history_window_mins, strategy_cfg, audit_label='candidate')
+    candidate_md_elapsed_ms = _perf_elapsed_ms(candidate_md_perf_started)
     candidate_md_finished_utc_ms = _now_utc_ms()
     extra_md_res: dict[str, Any] | None = None
     extra_md_started_utc_ms: int | None = None
     extra_md_finished_utc_ms: int | None = None
     if extra_reconcile_symbols:
         extra_md_started_utc_ms = _now_utc_ms()
+        extra_md_perf_started = time.perf_counter()
         extra_md_res = build_live_inputs(account, extra_reconcile_symbols, history_window_mins, strategy_cfg, audit_label='reconcile')
+        extra_md_elapsed_ms = _perf_elapsed_ms(extra_md_perf_started)
         extra_md_finished_utc_ms = _now_utc_ms()
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
@@ -633,6 +714,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'candidate_symbols_count': len(candidate_symbols),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
             })
+        _emit_run_once_perf('no_live_inputs')
         return
 
     c_bar_ts = int(payload['latest_closed_bar_ts'])
@@ -666,18 +748,23 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     merged_full_df = dict(candidate_full_df)
     merged_full_df.update(extra_full_df)
 
+    stage3_perf_started = time.perf_counter()
     if audit_enabled:
         if candidate_full_df:
             _write_stage3_enriched_snapshot(account, 'candidate', current_time_ms, current_time_bj, candidate_full_df, timing_fields)
         if extra_full_df:
             _write_stage3_enriched_snapshot(account, 'reconcile', current_time_ms, current_time_bj, extra_full_df, timing_fields)
+    stage3_elapsed_ms = _perf_elapsed_ms(stage3_perf_started)
 
+    latest_closes_perf_started = time.perf_counter()
     latest_closes = {
         str(symbol).upper().strip(): float(df.loc[c_bar_ts, 'close'])
         for symbol, df in merged_full_df.items()
         if c_bar_ts in df.index
     }
+    latest_closes_elapsed_ms = _perf_elapsed_ms(latest_closes_perf_started)
 
+    loop_gate_perf_started = time.perf_counter()
     loop_gate = prepare_consumer_loop_gate(
         account,
         strategy_cfg,
@@ -690,7 +777,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         exchange_activity_snapshot=exchange_activity_snapshot,
         source='loop',
     )
+    loop_gate_elapsed_ms = _perf_elapsed_ms(loop_gate_perf_started)
     scan_gate = loop_gate['scan_gate']
+    active_symbols = {
+        str(symbol).upper().strip()
+        for symbol in (loop_gate.get('active_symbols') or [])
+        if str(symbol).strip()
+    }
+    active_symbols_count = len(active_symbols)
     if not loop_gate.get('ok_to_scan'):
         finalize_consumer_loop_state(
             account,
@@ -701,6 +795,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             audit_enabled=audit_enabled,
             scan_gate=scan_gate,
         )
+        _emit_run_once_perf('scan_blocked')
         return
 
     exchange_activity_snapshot = dict(loop_gate.get('exchange_snapshot') or exchange_activity_snapshot)
@@ -716,6 +811,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             candidate_errors=candidate_md_res.get('errors'),
             extra_reconcile_symbols_count=len(extra_reconcile_symbols),
         )
+        _emit_run_once_perf('no_candidate_data')
         return
 
     cross_section = candidate_cross_section
@@ -723,12 +819,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     strategy = WashoutSnapbackStrategy(strategy_cfg)
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
     pre_signal_cooldown_map = dict(getattr(strategy, 'cooldown_until', {}) or {})
-    active_symbols = {
-        str(symbol).upper().strip()
-        for symbol in (loop_gate.get('active_symbols') or [])
-        if str(symbol).strip()
-    }
 
+    stage4_perf_started = time.perf_counter()
     if audit_enabled:
         for stage_symbol, row in cross_section.iterrows():
             symbol_key = str(stage_symbol).upper().strip()
@@ -747,8 +839,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'input_pass_to_logic': True,
                 **timing_fields,
             })
+    stage4_elapsed_ms = _perf_elapsed_ms(stage4_perf_started)
 
     signal_eval_started_utc_ms = _now_utc_ms()
+    signal_eval_perf_started = time.perf_counter()
     signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
     # 只持久化进入本轮前已经存在于 state 的 cooldown。
     # strategy.on_kline_close() 在“刚选出 signal”时会先写内部 cooldown，
@@ -756,8 +850,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     # 因 cooldown_active 直接跳过这条刚产生的 signal。
     strategy.cooldown_until = pre_signal_cooldown_map
     _persist_strategy_cooldowns(strategy, account, current_time_ms)
+    signal_eval_elapsed_ms = _perf_elapsed_ms(signal_eval_perf_started)
     signal_eval_finished_utc_ms = _now_utc_ms()
+    signal_present = bool(signal)
+    signal_symbol = str(signal['symbol']).upper().strip() if signal else None
     signal_digest_preview = consumer_signal_digest(signal) if signal else None
+
+    stage5_perf_started = time.perf_counter()
     stage5_rows = _build_stage5_structure_rows(
         c_bar_ts,
         current_time_ms,
@@ -766,7 +865,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         active_symbols,
         full_df,
         strategy_cfg,
-        logic_selected_symbol=(str(signal['symbol']).upper().strip() if signal else None),
+        logic_selected_symbol=signal_symbol,
         signal_digest=signal_digest_preview,
     )
     if audit_enabled:
@@ -779,6 +878,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
                 'signal_eval_finished_bj': _fmt_bj_from_ms(signal_eval_finished_utc_ms),
             })
+    stage5_elapsed_ms = _perf_elapsed_ms(stage5_perf_started)
 
     if not signal:
         finalize_consumer_loop_state(
@@ -794,8 +894,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             signal_eval_started_utc_ms=signal_eval_started_utc_ms,
             signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
         )
+        _emit_run_once_perf('signal_none')
         return
 
+    live_signal_projection_perf_started = time.perf_counter()
     live_signal_projection_res = append_live_signal_projection(
         account,
         live_cfg,
@@ -809,6 +911,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         signal_eval_started_utc_ms=signal_eval_started_utc_ms,
         signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
     )
+    live_signal_projection_elapsed_ms = _perf_elapsed_ms(live_signal_projection_perf_started)
     if audit_enabled and not live_signal_projection_res.get('ok'):
         write_event(account, 'live_signal_projection_write_failed', {
             'bar_ts': current_time_ms,
@@ -818,6 +921,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'projection_path': live_signal_projection_res.get('path'),
         })
 
+    consume_signal_perf_started = time.perf_counter()
     consume_signal(
         account,
         strategy_cfg,
@@ -833,6 +937,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         signal_eval_started_utc_ms=signal_eval_started_utc_ms,
         signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
     )
+    consume_signal_elapsed_ms = _perf_elapsed_ms(consume_signal_perf_started)
+    _emit_run_once_perf('signal_consumed')
     return
 
 def main() -> None:
