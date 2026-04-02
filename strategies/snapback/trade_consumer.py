@@ -1687,7 +1687,6 @@ def bootstrap_consumer_gate(
     startup_snapshot = dict(bootstrap_res.get('exchange_snapshot') or {})
     startup_symbols = sorted(
         set(bootstrap_res.get('local_active_symbols') or [])
-        | {str(symbol).upper().strip() for symbol in (candidate_symbols or []) if str(symbol).strip()}
         | set(startup_snapshot.get('symbols') or set())
     )
     startup_snapshot['startup_symbols'] = startup_symbols
@@ -1766,7 +1765,7 @@ def evaluate_consumer_signal_scan_gate(
 
     local_active_symbols = sorted(set(snapshot.get('local_active_symbols') or []))
     exchange_activity_symbols = sorted(set(snapshot.get('symbols') or set()))
-    orphan_audit_symbols = sorted(set(candidate_symbols or []) | set(exchange_activity_symbols))
+    orphan_audit_symbols = sorted(set(local_active_symbols) | set(exchange_activity_symbols))
 
     orphan_audit_started_perf = time.perf_counter()
     orphan_findings = audit_consumer_orphan_exchange_activity(
