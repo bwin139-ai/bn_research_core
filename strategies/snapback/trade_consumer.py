@@ -603,6 +603,17 @@ def _normalize_scalar(value: Any) -> Any:
 def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
     return append_stage_record(account, stage, payload)
 
+
+def _perf_elapsed_ms(start_perf: float) -> int:
+    return int((time.perf_counter() - start_perf) * 1000)
+
+
+def _log_perf_stage(stage: str, **fields: Any) -> None:
+    payload = {'stage': stage}
+    for key, value in fields.items():
+        payload[key] = _normalize_scalar(value)
+    logging.info('[trade_consumer_perf] %s', _json_safe_dumps(payload, sort_keys=True, separators=(',', ':')))
+
 def _signal_digest(signal: dict[str, Any]) -> str:
     base = {
         'symbol': _normalize_scalar(signal.get('symbol')),
@@ -4039,7 +4050,9 @@ def maintain_consumer_once(
     source: str,
     exchange_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
+    maintain_started_perf = time.perf_counter()
+
+    pending_started_perf = time.perf_counter()
     pending_reconcile_error = _reconcile_pending_entries(
         account,
         live_cfg,
@@ -4048,6 +4061,11 @@ def maintain_consumer_once(
         source=source,
         snapshot=exchange_snapshot,
     )
+    pending_elapsed_ms = _perf_elapsed_ms(pending_started_perf)
+
+    max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
+
+    open_started_perf = time.perf_counter()
     open_trade_reconcile_error = _reconcile_open_trades(
         account,
         live_cfg,
@@ -4059,8 +4077,29 @@ def maintain_consumer_once(
         source=source,
         snapshot=exchange_snapshot,
     )
+    open_elapsed_ms = _perf_elapsed_ms(open_started_perf)
+
     state_summary = _collect_consumer_state_summary(account)
     touched_symbols = sorted(set(state_summary['pending_symbols']) | set(state_summary['open_symbols']))
+    total_elapsed_ms = _perf_elapsed_ms(maintain_started_perf)
+
+    _log_perf_stage(
+        'maintain_consumer_once',
+        account=account,
+        source=source,
+        bar_bj=current_time_bj,
+        pending_elapsed_ms=pending_elapsed_ms,
+        open_elapsed_ms=open_elapsed_ms,
+        total_elapsed_ms=total_elapsed_ms,
+        touched_symbols_count=len(touched_symbols),
+        pending_symbols_count=len(state_summary['pending_symbols']),
+        open_symbols_count=len(state_summary['open_symbols']),
+        active_state_errors_count=len(state_summary['active_state_errors']),
+        latest_closes_symbols_count=len(latest_closes or {}),
+        pending_reconcile_error=pending_reconcile_error,
+        open_trade_reconcile_error=open_trade_reconcile_error,
+    )
+
     return {
         'ok': not (pending_reconcile_error or open_trade_reconcile_error),
         'blocking': bool(pending_reconcile_error or open_trade_reconcile_error),
@@ -4091,6 +4130,10 @@ def consume_signal(
     signal_eval_started_utc_ms: int | None = None,
     signal_eval_finished_utc_ms: int | None = None,
 ) -> dict[str, Any]:
+    consume_started_perf = time.perf_counter()
+    symbol = str(signal.get('symbol') or '').upper().strip()
+
+    precheck_started_perf = time.perf_counter()
     prep = _consume_signal_precheck_and_prepare(
         account,
         live_cfg,
@@ -4102,9 +4145,26 @@ def consume_signal(
         source=source,
         exchange_snapshot=exchange_snapshot,
     )
+    precheck_elapsed_ms = _perf_elapsed_ms(precheck_started_perf)
     if prep.get('terminal'):
+        total_elapsed_ms = _perf_elapsed_ms(consume_started_perf)
+        _log_perf_stage(
+            'consume_signal',
+            account=account,
+            source=source,
+            bar_bj=current_time_bj,
+            symbol=symbol or prep.get('symbol'),
+            signal_digest=prep.get('signal_digest'),
+            precheck_elapsed_ms=precheck_elapsed_ms,
+            submit_elapsed_ms=0,
+            finalize_elapsed_ms=0,
+            total_elapsed_ms=total_elapsed_ms,
+            outcome=prep.get('outcome'),
+            terminal=True,
+        )
         return prep
 
+    submit_started_perf = time.perf_counter()
     submit_ctx = _submit_entry_and_exit_orders(
         account,
         live_cfg,
@@ -4117,13 +4177,51 @@ def consume_signal(
         signal_eval_started_utc_ms=signal_eval_started_utc_ms,
         signal_eval_finished_utc_ms=signal_eval_finished_utc_ms,
     )
+    submit_elapsed_ms = _perf_elapsed_ms(submit_started_perf)
     if submit_ctx.get('terminal'):
+        total_elapsed_ms = _perf_elapsed_ms(consume_started_perf)
+        _log_perf_stage(
+            'consume_signal',
+            account=account,
+            source=source,
+            bar_bj=current_time_bj,
+            symbol=symbol or submit_ctx.get('symbol'),
+            signal_digest=submit_ctx.get('signal_digest'),
+            precheck_elapsed_ms=precheck_elapsed_ms,
+            submit_elapsed_ms=submit_elapsed_ms,
+            finalize_elapsed_ms=0,
+            total_elapsed_ms=total_elapsed_ms,
+            outcome=submit_ctx.get('outcome'),
+            terminal=True,
+            order_root=submit_ctx.get('order_root'),
+        )
         return submit_ctx
 
-    return _finalize_entry_state_after_submit(
+    finalize_started_perf = time.perf_counter()
+    final_res = _finalize_entry_state_after_submit(
         account,
         live_cfg,
         submit_ctx=submit_ctx,
         current_time_ms=current_time_ms,
         current_time_bj=current_time_bj,
     )
+    finalize_elapsed_ms = _perf_elapsed_ms(finalize_started_perf)
+    total_elapsed_ms = _perf_elapsed_ms(consume_started_perf)
+
+    _log_perf_stage(
+        'consume_signal',
+        account=account,
+        source=source,
+        bar_bj=current_time_bj,
+        symbol=symbol or final_res.get('symbol'),
+        signal_digest=final_res.get('signal_digest'),
+        precheck_elapsed_ms=precheck_elapsed_ms,
+        submit_elapsed_ms=submit_elapsed_ms,
+        finalize_elapsed_ms=finalize_elapsed_ms,
+        total_elapsed_ms=total_elapsed_ms,
+        outcome=final_res.get('outcome'),
+        terminal=True,
+        order_root=final_res.get('order_root'),
+    )
+
+    return final_res

@@ -42,7 +42,7 @@ FILES = [
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
-    #"strategies/snapback/trade_consumer.py",
+    "strategies/snapback/trade_consumer.py",
     #"strategies/snapback/run_consumer.py",
     # "================ 币安 ================="
     # "core/live/binance_client.py",
@@ -60,7 +60,7 @@ FILES = [
     #"docs/CURRENT_STATE.md",
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
-    "docs/新聊天开场白.md",
+    #"docs/新聊天开场白.md",
 ]
 
 
