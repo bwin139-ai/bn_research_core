@@ -1,10 +1,68 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 from typing import Any
 
 from core.live.audit_log import write_event
 from core.live.binance_exec import get_open_orders, get_positions
 from core.live.live_state import load_live_state, mark_order_reconcile, mark_position_reconcile
+
+
+
+FIXED_POSITION_SIDE = 'LONG'
+
+
+def _normalize_scalar(value: Any) -> Any:
+    if hasattr(value, 'item'):
+        value = value.item()
+    try:
+        import pandas as _pd  # type: ignore
+        if _pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, int):
+        return int(value)
+    return value
+
+
+def _json_default(v: Any) -> Any:
+    if hasattr(v, 'item'):
+        return v.item()
+    if isinstance(v, set):
+        return sorted(v)
+    if isinstance(v, tuple):
+        return list(v)
+    raise TypeError(f"Object of type {type(v).__name__} is not JSON serializable")
+
+
+def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None = None, separators: tuple[str, str] | None = None) -> str:
+    kwargs: dict[str, Any] = {
+        'ensure_ascii': False,
+        'default': _json_default,
+    }
+    if sort_keys:
+        kwargs['sort_keys'] = True
+    if indent is not None:
+        kwargs['indent'] = indent
+    if separators is not None:
+        kwargs['separators'] = separators
+    return json.dumps(data, **kwargs)
+
+
+def _perf_elapsed_ms(start_perf: float) -> int:
+    return int((time.perf_counter() - start_perf) * 1000)
+
+
+def _log_perf_stage(stage: str, **fields: Any) -> None:
+    payload = {'stage': stage}
+    for key, value in fields.items():
+        payload[key] = _normalize_scalar(value)
+    logging.info('[trade_consumer_perf] %s', _json_safe_dumps(payload, sort_keys=True, separators=(',', ':')))
 
 
 def precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
