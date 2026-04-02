@@ -50,6 +50,7 @@ from strategies.snapback.current_ledger import (
     finalize_consumer_scan_skip_impl as _ledger_finalize_consumer_scan_skip_impl,
     finalize_consumer_signal_none_impl as _ledger_finalize_consumer_signal_none_impl,
     has_position_or_orders,
+    maintain_consumer_once_impl as _ledger_maintain_consumer_once_impl,
     precheck_exchange_blockers,
     prepare_consumer_loop_gate_impl as _ledger_prepare_consumer_loop_gate_impl,
 )
@@ -3395,67 +3396,19 @@ def maintain_consumer_once(
     source: str,
     exchange_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    maintain_started_perf = time.perf_counter()
-
-    pending_started_perf = time.perf_counter()
-    pending_reconcile_error = _reconcile_pending_entries(
+    return _ledger_maintain_consumer_once_impl(
         account,
+        strategy_cfg,
         live_cfg,
-        current_time_ms,
-        current_time_bj,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        latest_closes=latest_closes,
         source=source,
-        snapshot=exchange_snapshot,
+        exchange_snapshot=exchange_snapshot,
+        reconcile_pending_entries_fn=_reconcile_pending_entries,
+        reconcile_open_trades_fn=_reconcile_open_trades,
+        extract_time_stop_config_fn=_extract_time_stop_config,
     )
-    pending_elapsed_ms = _perf_elapsed_ms(pending_started_perf)
-
-    max_hold_mins, min_profit_pct = _extract_time_stop_config(strategy_cfg)
-
-    open_started_perf = time.perf_counter()
-    open_trade_reconcile_error = _reconcile_open_trades(
-        account,
-        live_cfg,
-        current_time_ms,
-        current_time_bj,
-        latest_closes,
-        max_hold_mins,
-        min_profit_pct,
-        source=source,
-        snapshot=exchange_snapshot,
-    )
-    open_elapsed_ms = _perf_elapsed_ms(open_started_perf)
-
-    state_summary = collect_consumer_state_summary(account)
-    touched_symbols = sorted(set(state_summary['pending_symbols']) | set(state_summary['open_symbols']))
-    total_elapsed_ms = _perf_elapsed_ms(maintain_started_perf)
-
-    _log_perf_stage(
-        'maintain_consumer_once',
-        account=account,
-        source=source,
-        bar_bj=current_time_bj,
-        pending_elapsed_ms=pending_elapsed_ms,
-        open_elapsed_ms=open_elapsed_ms,
-        total_elapsed_ms=total_elapsed_ms,
-        touched_symbols_count=len(touched_symbols),
-        pending_symbols_count=len(state_summary['pending_symbols']),
-        open_symbols_count=len(state_summary['open_symbols']),
-        active_state_errors_count=len(state_summary['active_state_errors']),
-        latest_closes_symbols_count=len(latest_closes or {}),
-        pending_reconcile_error=pending_reconcile_error,
-        open_trade_reconcile_error=open_trade_reconcile_error,
-    )
-
-    return {
-        'ok': not (pending_reconcile_error or open_trade_reconcile_error),
-        'blocking': bool(pending_reconcile_error or open_trade_reconcile_error),
-        'pending_reconcile_error': pending_reconcile_error,
-        'open_trade_reconcile_error': open_trade_reconcile_error,
-        'touched_symbols': touched_symbols,
-        'pending_symbols': state_summary['pending_symbols'],
-        'open_symbols': state_summary['open_symbols'],
-        'active_state_errors': state_summary['active_state_errors'],
-        'latest_closes_symbols': sorted(set((latest_closes or {}).keys())),
-    }
 
 def consume_signal(
     account: str,
