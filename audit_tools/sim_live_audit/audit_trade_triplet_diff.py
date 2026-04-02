@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -159,10 +158,7 @@ def _group_for_target_from_audit(path: Path, symbol: str, c_time_ms: int) -> dic
         ctx_c_time = _safe_int(ctx.get("c_time"))
         sig_ms = _safe_int(signal_snapshot.get("signal_time")) or _safe_int(signal_snapshot.get("signal_time_ts"))
         if ctx_c_time is not None and ctx_c_time == c_time_ms:
-            return {
-                "order_root": order_root,
-                "events": [e.raw for e in arr],
-            }
+            return {"order_root": order_root, "events": [e.raw for e in arr]}
         if sig_ms is not None:
             diff = abs(sig_ms - target_signal_time)
             if best is None or diff < best[0]:
@@ -195,7 +191,6 @@ def _find_bn_orders(path: Path, symbol: str, live_trade: dict[str, Any] | None) 
         if live_trade.get("exit_order_exchange_id") is not None and row.get("exchange_order_id") == live_trade.get("exit_order_exchange_id"):
             out.append(row)
             continue
-    # de-dup
     dedup = {}
     for row in out:
         key = (row.get("exchange_order_id"), row.get("client_order_id"))
@@ -266,6 +261,49 @@ def _determine_bn_exit_reason(exit_order: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _classify_layer_status(report: dict[str, Any]) -> dict[str, str]:
+    comp = report.get("comparison") or {}
+    signal_checks = comp.get("signal_checks") or {}
+    price_checks = comp.get("price_checks") or {}
+
+    signal_unknown = any(v.get("same") is None for v in signal_checks.values()) if signal_checks else True
+    signal_ok = bool(signal_checks) and all(v.get("same") is True for v in signal_checks.values())
+    price_unknown = any(v.get("same") is None for v in price_checks.values()) if price_checks else True
+
+    if signal_ok:
+        signal_layer = "OK"
+    elif signal_unknown:
+        signal_layer = "PARTIAL"
+    else:
+        signal_layer = "DIFF"
+
+    live_bn_entry = price_checks.get("live_entry_vs_bn_entry") or {}
+    live_bn_exit = price_checks.get("live_exit_vs_bn_exit") or {}
+    live_reason = comp.get("live_reason")
+    bn_reason = comp.get("bn_reason")
+
+    if live_bn_entry.get("same") is True and live_bn_exit.get("same") is True and live_reason == bn_reason:
+        execution_layer = "OK"
+    elif live_bn_entry.get("same") is None or live_bn_exit.get("same") is None or live_reason is None or bn_reason is None:
+        execution_layer = "PARTIAL"
+    else:
+        execution_layer = "DIFF"
+
+    sim_ref = comp.get("sim_reason")
+    if sim_ref is None:
+        reference_layer = "NO_SIM_REFERENCE"
+    elif sim_ref == live_reason:
+        reference_layer = "SIM_REF_ALIGNED"
+    else:
+        reference_layer = "SIM_REF_DIFF"
+
+    return {
+        "signal_layer_status": signal_layer,
+        "execution_layer_status": execution_layer,
+        "sim_reference_status": reference_layer,
+    }
+
+
 def _summary_lines(report: dict[str, Any]) -> str:
     lines: list[str] = []
     target = report["target"]
@@ -280,6 +318,13 @@ def _summary_lines(report: dict[str, Any]) -> str:
     for k in ("sim_trade", "live_signal", "live_trade", "live_scene", "bn_orders", "bn_fills", "bn_income", "bn_position_facts"):
         lines.append(f"{k}: {matched[k]}")
     lines.append("")
+
+    layer_status = report.get("layer_status") or {}
+    if layer_status:
+        lines.append("[layer status]")
+        for k, v in layer_status.items():
+            lines.append(f"{k}: {v}")
+        lines.append("")
 
     live_signal = report.get("live_signal") or {}
     if live_signal:
@@ -443,11 +488,7 @@ def main() -> None:
     }
 
     report = {
-        "target": {
-            "symbol": symbol,
-            "c_time_ms": c_time_ms,
-            "c_time_bj": _to_bj(c_time_ms),
-        },
+        "target": {"symbol": symbol, "c_time_ms": c_time_ms, "c_time_bj": _to_bj(c_time_ms)},
         "matched_records": {
             "sim_trade": sim_trade is not None,
             "live_signal": live_signal is not None,
@@ -476,6 +517,7 @@ def main() -> None:
             "timing_checks": timing_checks,
         },
     }
+    report["layer_status"] = _classify_layer_status(report)
 
     slug = f"{symbol}.{c_time_ms}"
     out_dir = Path(args.out_dir)
