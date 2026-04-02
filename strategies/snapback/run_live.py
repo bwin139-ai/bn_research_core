@@ -561,11 +561,11 @@ def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
     now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
-    current_minute_first_second = now.replace(second=1, microsecond=0)
-    if now < current_minute_first_second:
-        return current_minute_first_second.timestamp()
-    next_minute_first_second = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=1)
-    return next_minute_first_second.timestamp()
+    current_minute_second_second = now.replace(second=2, microsecond=0)
+    if now < current_minute_second_second:
+        return current_minute_second_second.timestamp()
+    next_minute_second_second = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=2)
+    return next_minute_second_second.timestamp()
 
 
 def _sleep_until_next_signal_check(target_epoch: float | None) -> float:

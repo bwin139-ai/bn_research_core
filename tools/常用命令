@@ -36,19 +36,30 @@ python3 audit_tools/live_audit/audit_live_scene_v1.py \
   --json-out output/state/audit_qusdt_scene.json
 
 # *****审审审审审审***** sim / live 一致性审计 *****审审审审审审*****
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_window_diff.py \
-  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest3.jsonl \
-  --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
-  --start-c-time-bj "2026-03-26 01:00:00" \
-  --end-c-time-bj "2026-03-29 17:00:00" \
+/root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_window_diff.py \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest5.jsonl \
+  --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --start-c-time-bj "2026-04-01 15:30:00" \
+  --end-c-time-bj "2026-04-02 09:50:00" \
   --out-dir output/sim_live_audit
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python sim_live_audit/audit_signal_snapshot_diff.py \
-  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest1.jsonl \
-  --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest1.jsonl \
-  --live-stage3 state/live_audit/stage_audit/snapback_mybwin139.stage3_enriched.jsonl \
-  --live-stage5 state/live_audit/stage_audit/snapback_mybwin139.stage5_structure_audit.jsonl \
-  --symbol MUSDT \
-  --c-time-bj "2026-03-26 09:15:00" \
+
+/root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_snapshot_diff.py \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest5.jsonl \
+  --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --symbol BANKUSDT \
+  --c-time-bj "2026-04-02 09:36:00" \
+  --out-dir output/sim_live_audit
+
+/root/service_env/bin/python audit_tools/sim_live_audit/audit_trade_triplet_diff.py \
+  --sim-trades output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest5.jsonl \
+  --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --live-trades output/live_projection/live_trades.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --live-audit-file state/live_audit/snapback_mybwin139.jsonl \
+  --bn-orders output/live_projection/bn_orders.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --bn-fills output/live_projection/bn_fills.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --bn-income output/live_projection/bn_income.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
+  --symbol BANKUSDT \
+  --c-time-bj "2026-04-02 09:36:00" \
   --out-dir output/sim_live_audit
 
 
@@ -124,7 +135,7 @@ scp \
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1774458000000_1774774800000.*" \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1775028600000_1775094600000.*" \
   "$DEST"
 # *****download*****  拉复盘k线图表 *****download***** 
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
@@ -149,7 +160,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
   --start 2026-04-01T07:30:00+00:00 \
-  --end   2026-04-02T01:50:00+00:00 \
+  --end   2026-04-02T04:00:00+00:00 \
   --kline-window 60 \
   --config snapback/config.json \
   --out-dir "output/SmokeTest" \
@@ -186,7 +197,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 2 \
+  --days 1 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \
