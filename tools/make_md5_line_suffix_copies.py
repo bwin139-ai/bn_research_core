@@ -43,6 +43,7 @@ FILES = [
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     "strategies/snapback/trade_consumer.py",
+    "strategies/snapback/current_ledger.py",
     #"strategies/snapback/run_consumer.py",
     # "================ 币安 ================="
     # "core/live/binance_client.py",

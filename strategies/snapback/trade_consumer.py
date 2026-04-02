@@ -35,6 +35,12 @@ from core.live.live_state import (
     set_pending_entry_order,
 )
 from core.message_bridge import send_to_bot
+from strategies.snapback.current_ledger import (
+    build_consumer_active_symbols,
+    build_consumer_reconcile_plan,
+    collect_consumer_exchange_activity_snapshot,
+    collect_consumer_local_activity_symbols,
+)
 
 BJ = timezone(timedelta(hours=8))
 FIXED_POSITION_SIDE = 'LONG'
@@ -46,26 +52,21 @@ LEG_TIME_STOP = 'TS'
 TERMINAL_ORDER_STATUSES = {'FILLED', 'FINISHED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'}
 FILLED_ORDER_STATUSES = {'FILLED', 'FINISHED'}
 
-
 def _now_bj_str() -> str:
     return datetime.now(timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
-
 
 def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
 
-
 def _cooldown_until(current_time_ms: int, cooldown_mins: int) -> tuple[int, str | None]:
     cooldown_until_ts = int(current_time_ms) + int(cooldown_mins) * 60 * 1000
     return cooldown_until_ts, _fmt_bj_from_ms(cooldown_until_ts)
 
-
 def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
     if enabled:
         send_to_bot(message, label=label)
-
 
 def _json_default(v: Any) -> Any:
     if hasattr(v, 'item'):
@@ -80,7 +81,6 @@ def _json_default(v: Any) -> Any:
         return list(v)
     raise TypeError(f'Object of type {type(v).__name__} is not JSON serializable')
 
-
 def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None = None, separators: tuple[str, str] | None = None) -> str:
     kwargs: dict[str, Any] = {
         'ensure_ascii': False,
@@ -94,9 +94,7 @@ def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None =
         kwargs['separators'] = separators
     return json.dumps(data, **kwargs)
 
-
 LIVE_PROJECTION_DIR = 'output/live_projection'
-
 
 def _projection_schema_version(live_cfg: dict[str, Any]) -> int:
     try:
@@ -104,30 +102,24 @@ def _projection_schema_version(live_cfg: dict[str, Any]) -> int:
     except Exception:
         return 1
 
-
 def _projection_run_id(live_cfg: dict[str, Any]) -> str:
     return str(live_cfg.get('_projection_run_id') or 'UNSET').strip() or 'UNSET'
-
 
 def _projection_dir(live_cfg: dict[str, Any]) -> Path:
     raw = str(live_cfg.get('_projection_output_dir') or LIVE_PROJECTION_DIR).strip() or LIVE_PROJECTION_DIR
     return Path(raw)
 
-
 def _projection_path(live_cfg: dict[str, Any], kind: str) -> Path:
     run_id = _projection_run_id(live_cfg)
     return _projection_dir(live_cfg) / f'{kind}.{run_id}.jsonl'
 
-
 def _json_roundtrip(data: Any) -> Any:
     return json.loads(_json_safe_dumps(data))
-
 
 def _append_projection_row(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a', encoding='utf-8') as f:
         f.write(_json_safe_dumps(row) + '\n')
-
 
 def _signal_c_time_ms(signal: dict[str, Any]) -> int | None:
     context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
@@ -138,7 +130,6 @@ def _signal_c_time_ms(signal: dict[str, Any]) -> int | None:
         return int(value)
     except Exception:
         return None
-
 
 def _signal_selected_tp_pct(signal: dict[str, Any]) -> float | None:
     params = signal.get('params') if isinstance(signal.get('params'), dict) else {}
@@ -152,14 +143,12 @@ def _signal_selected_tp_pct(signal: dict[str, Any]) -> float | None:
             return value
     return None
 
-
 def _signal_tp_tier(signal: dict[str, Any]) -> str | None:
     context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
     value = context.get('tp_tier')
     if value in (None, ''):
         return None
     return str(value)
-
 
 def _fmt_notify_price(value: Any) -> str:
     try:
@@ -170,14 +159,12 @@ def _fmt_notify_price(value: Any) -> str:
         return 'NA'
     return f'{px:.6f}'
 
-
 def _fmt_notify_pct(value: Any) -> str:
     try:
         pct = float(value) * 100.0
     except Exception:
         return 'NA'
     return f'{pct:.2f}%'
-
 
 def _build_signal_locked_message(signal: dict[str, Any]) -> str:
     context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
@@ -199,7 +186,6 @@ def _build_signal_locked_message(signal: dict[str, Any]) -> str:
         f'15m跌幅: {drop_pct} | 爆量倍数: {vol_ratio_text} | ABC反弹比例: {rebound_ratio} | TP档位: {tp_tier_text}'
     )
 
-
 def _fmt_notify_hold_mins(trade_row: dict[str, Any] | None = None) -> str:
     row = trade_row or {}
     try:
@@ -210,7 +196,6 @@ def _fmt_notify_hold_mins(trade_row: dict[str, Any] | None = None) -> str:
     if entry_time_ms <= 0 or exit_time_ms <= 0 or exit_time_ms < entry_time_ms:
         return 'NA'
     return f'{(exit_time_ms - entry_time_ms) / 60000.0:.1f}m'
-
 
 def _build_exit_detected_message(
     *,
@@ -235,14 +220,12 @@ def _build_exit_detected_message(
     ]
     return ' | '.join(parts)
 
-
 def _notify_signal_locked(account: str, live_cfg: dict[str, Any], signal: dict[str, Any]) -> None:
     if not bool(live_cfg.get('notify_enabled', False)):
         return
     if not bool(live_cfg.get('notify_on_signal_locked', True)):
         return
     _notify(True, _build_signal_locked_message(signal))
-
 
 def _emit_exit_detected(account: str, live_cfg: dict[str, Any], *, symbol: str, exit_reason: str, order_root: str | None, trade_row: dict[str, Any] | None = None) -> None:
     message = _build_exit_detected_message(
@@ -254,7 +237,6 @@ def _emit_exit_detected(account: str, live_cfg: dict[str, Any], *, symbol: str, 
     logging.info(message)
     if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_exit_detected', True)):
         _notify(True, message)
-
 
 def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None = None) -> dict[str, Any]:
     signal_time = int(signal.get('signal_time') or fallback_time_ms or 0)
@@ -275,7 +257,6 @@ def _signal_core_fields(signal: dict[str, Any], *, fallback_time_ms: int | None 
         'selected_tp_pct': _normalize_scalar(_signal_selected_tp_pct(signal)),
         'tp_tier': _signal_tp_tier(signal),
     }
-
 
 def append_live_signal_projection(
     account: str,
@@ -320,7 +301,6 @@ def append_live_signal_projection(
     except Exception as e:
         return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_signals'))}
 
-
 def _extract_order_event_ts_ms(order_row: dict[str, Any] | None, *, fallback_ms: int | None = None) -> int | None:
     row = order_row or {}
     raw = row.get('raw') if isinstance(row.get('raw'), dict) else {}
@@ -333,7 +313,6 @@ def _extract_order_event_ts_ms(order_row: dict[str, Any] | None, *, fallback_ms:
         if ts_ms and ts_ms > 0:
             return ts_ms
     return fallback_ms
-
 
 def _resolve_exit_order_payload(
     exit_reason: str,
@@ -349,7 +328,6 @@ def _resolve_exit_order_payload(
     if exit_reason == 'TIME_STOP':
         return (order_checks.get('time_stop') or {}).get('data') or (ts_cancel or {}).get('data')
     return None
-
 
 def _resolve_live_exit_price(
     exit_reason: str,
@@ -376,7 +354,6 @@ def _resolve_live_exit_price(
     except Exception:
         px = None
     return px, str(source)
-
 
 def _build_live_trade_projection_row(
     account: str,
@@ -473,7 +450,6 @@ def _build_live_trade_projection_row(
     }
     return row
 
-
 def append_live_trade_projection_from_open_trade(
     account: str,
     live_cfg: dict[str, Any],
@@ -525,7 +501,6 @@ def append_live_trade_projection_from_open_trade(
         return {'ok': True, 'path': str(path), 'row': row}
     except Exception as e:
         return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_trades'))}
-
 
 def append_live_trade_projection_from_pending_terminal(
     account: str,
@@ -583,7 +558,6 @@ def append_live_trade_projection_from_pending_terminal(
     except Exception as e:
         return {'ok': False, 'reason': str(e), 'path': str(_projection_path(live_cfg, 'live_trades'))}
 
-
 def _normalize_scalar(value: Any) -> Any:
     if hasattr(value, 'item'):
         value = value.item()
@@ -599,14 +573,11 @@ def _normalize_scalar(value: Any) -> Any:
         return int(value)
     return value
 
-
 def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
     return append_stage_record(account, stage, payload)
 
-
 def _perf_elapsed_ms(start_perf: float) -> int:
     return int((time.perf_counter() - start_perf) * 1000)
-
 
 def _log_perf_stage(stage: str, **fields: Any) -> None:
     payload = {'stage': stage}
@@ -624,7 +595,6 @@ def _signal_digest(signal: dict[str, Any]) -> str:
         'sl_price': _normalize_scalar(signal.get('sl_price')),
     }
     return _json_safe_dumps(base, sort_keys=True)
-
 
 def _resolve_selected_tp_pct(signal: dict[str, Any]) -> float | None:
     params = signal.get('params') if isinstance(signal.get('params'), dict) else {}
@@ -650,7 +620,6 @@ def _resolve_selected_tp_pct(signal: dict[str, Any]) -> float | None:
         return (signal_tp_price / current_price) - 1.0
     return None
 
-
 def _resolve_tp_price_from_fill(signal: dict[str, Any], entry_fill_price: float) -> tuple[float, str, float | None]:
     selected_tp_pct = _resolve_selected_tp_pct(signal)
     if entry_fill_price > 0 and selected_tp_pct is not None and selected_tp_pct > 0:
@@ -659,7 +628,6 @@ def _resolve_tp_price_from_fill(signal: dict[str, Any], entry_fill_price: float)
     if fallback_tp_price > 0:
         return fallback_tp_price, 'signal_tp_price', selected_tp_pct
     return 0.0, 'unavailable', selected_tp_pct
-
 
 def _resolve_live_entry_fill_price(
     account: str,
@@ -688,7 +656,6 @@ def _resolve_live_entry_fill_price(
         return fallback, 'fallback_price'
 
     return entry_fill_price, (entry_fill_price_source or 'fallback_price')
-
 
 def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     symbol_key = str(symbol).upper().strip()
@@ -764,7 +731,6 @@ def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, A
         'orders': ord_res,
     }
 
-
 def _has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
     pos_res = snapshot['position']
     all_pos_res = snapshot.get('positions_all_sides') or {}
@@ -783,11 +749,9 @@ def _has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
         return True, 'exchange_has_open_orders'
     return False, ''
 
-
 def _extract_time_stop_config(strategy_cfg: dict[str, Any]) -> tuple[int, float]:
     time_stop = ((strategy_cfg or {}).get('exit_policy') or {}).get('time_stop') or {}
     return int(time_stop.get('max_hold_mins', 0)), float(time_stop.get('min_profit_pct', 0.0))
-
 
 def _order_query(account: str, symbol: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None, retry_max: int = 0, retry_delay_secs: float = 1.0) -> dict[str, Any]:
     if exchange_order_id is None and not client_order_id:
@@ -800,7 +764,6 @@ def _order_query(account: str, symbol: str, *, exchange_order_id: int | None = N
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
-
 
 def _cancel_order_if_present(account: str, symbol: str, *, exchange_order_id: int | None = None, client_order_id: str | None = None, prefetched_order_res: dict[str, Any] | None = None, known_open_orders: list[dict[str, Any]] | None = None, retry_max: int = 0, retry_delay_secs: float = 1.0) -> dict[str, Any]:
     if exchange_order_id is None and not client_order_id:
@@ -841,7 +804,6 @@ def _cancel_order_if_present(account: str, symbol: str, *, exchange_order_id: in
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
-
 
 def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], retry_max: int, retry_delay_secs: float, known_open_orders: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any]]:
     checks: dict[str, Any] = {}
@@ -902,8 +864,6 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
         return 'STOP_LOSS', checks
     return 'UNKNOWN_EXIT', checks
 
-
-
 def _build_open_trade(
     entry_res: dict[str, Any],
     signal: dict[str, Any],
@@ -960,7 +920,6 @@ def _build_open_trade(
         'time_stop_last_check_bj': None,
     }
 
-
 def _build_pending_entry(
     entry_res: dict[str, Any],
     signal: dict[str, Any],
@@ -999,7 +958,6 @@ def _build_pending_entry(
         'created_bj': _now_bj_str(),
     }
 
-
 def _recover_open_trade_from_pending(pending: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
     signal_snapshot = pending.get('signal_snapshot') if isinstance(pending.get('signal_snapshot'), dict) else {}
     return {
@@ -1032,7 +990,6 @@ def _recover_open_trade_from_pending(pending: dict[str, Any], position: dict[str
         'time_stop_last_check_bj': None,
     }
 
-
 def _find_open_order(open_orders: list[dict[str, Any]], *, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any] | None:
     if exchange_order_id is None and not client_order_id:
         return None
@@ -1042,7 +999,6 @@ def _find_open_order(open_orders: list[dict[str, Any]], *, exchange_order_id: in
         if client_order_id and str(row.get('client_order_id') or '') == str(client_order_id):
             return row
     return None
-
 
 def _ensure_exit_orders(account: str, symbol: str, open_trade: dict[str, Any], position: dict[str, Any], open_orders: list[dict[str, Any]], live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str) -> tuple[dict[str, Any], bool]:
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
@@ -1251,115 +1207,22 @@ def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str,
         'sl_bound': sl_bound,
     }
 
-
 def _refresh_entry_cooldown(account: str, symbol: str, current_time_ms: int, cooldown_mins: int) -> None:
     cooldown_until_ts, cooldown_until_bj = _cooldown_until(current_time_ms, cooldown_mins)
     set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
-
 
 def _refresh_exit_cooldown(account: str, symbol: str, current_time_ms: int, cooldown_mins: int) -> dict[str, Any]:
     cooldown_until_ts, cooldown_until_bj = _cooldown_until(current_time_ms, cooldown_mins)
     return set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
 
-
 def _clear_symbol_error(account: str, symbol: str) -> None:
     mark_error(account, symbol, error_code=None, error_message=None, error_bj=None)
-
 
 def consumer_signal_digest(signal: dict[str, Any]) -> str:
     return _signal_digest(signal)
 
-
 def precheck_consumer_exchange_blockers(account: str, symbol: str, *, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     return _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
-
-
-def collect_consumer_exchange_activity_snapshot(account: str) -> dict[str, Any]:
-    symbols: set[str] = set()
-    positions_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    open_orders_by_symbol: dict[str, list[dict[str, Any]]] = {}
-
-    pos_res = get_positions(account)
-    if pos_res.get('ok'):
-        for row in pos_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            positions_by_symbol.setdefault(symbol, []).append(row)
-
-    ord_res = get_open_orders(account)
-    if ord_res.get('ok'):
-        for row in ord_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            symbols.add(symbol)
-            open_orders_by_symbol.setdefault(symbol, []).append(row)
-
-    return {
-        'ok': bool(pos_res.get('ok') and ord_res.get('ok')),
-        'symbols': symbols,
-        'positions': pos_res,
-        'orders': ord_res,
-        'positions_by_symbol': positions_by_symbol,
-        'open_orders_by_symbol': open_orders_by_symbol,
-    }
-
-
-def collect_consumer_local_activity_symbols(account: str) -> set[str]:
-    state = load_live_state(account)
-    out: set[str] = set()
-    for symbol, payload in (state.get('symbols') or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('pending_entry_order') or payload.get('open_trade'):
-            out.add(str(symbol).upper().strip())
-    return out
-
-
-def build_consumer_reconcile_plan(
-    account: str,
-    candidate_symbols: list[str],
-    *,
-    exchange_snapshot: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    snapshot = dict(exchange_snapshot) if exchange_snapshot is not None else collect_consumer_exchange_activity_snapshot(account)
-    exchange_activity_symbols = {
-        str(symbol).upper().strip()
-        for symbol in (snapshot.get('symbols') or set())
-        if str(symbol).strip()
-    }
-    local_active_symbols = {
-        str(symbol).upper().strip()
-        for symbol in collect_consumer_local_activity_symbols(account)
-        if str(symbol).strip()
-    }
-    candidate_symbol_set = {
-        str(symbol).upper().strip()
-        for symbol in (candidate_symbols or [])
-        if str(symbol).strip()
-    }
-    snapshot['symbols'] = exchange_activity_symbols
-    snapshot['local_active_symbols'] = sorted(local_active_symbols)
-    return {
-        'exchange_snapshot': snapshot,
-        'exchange_activity_symbols': sorted(exchange_activity_symbols),
-        'local_active_symbols': sorted(local_active_symbols),
-        'extra_reconcile_symbols': sorted((exchange_activity_symbols | local_active_symbols) - candidate_symbol_set),
-    }
-
-
-def build_consumer_active_symbols(scan_gate: dict[str, Any]) -> set[str]:
-    return {
-        str(symbol).upper().strip()
-        for symbol in (
-            list(scan_gate.get('local_active_symbols') or [])
-            + list(scan_gate.get('exchange_activity_symbols') or [])
-        )
-        if str(symbol).strip()
-    }
-
 
 def prepare_consumer_loop_gate(
     account: str,
@@ -1437,10 +1300,8 @@ def prepare_consumer_loop_gate(
         'exchange_activity_symbols': list(scan_gate.get('exchange_activity_symbols') or []),
     }
 
-
 def collect_consumer_active_state_errors(account: str) -> list[dict[str, Any]]:
     return list(_collect_consumer_state_summary(account)['active_state_errors'])
-
 
 def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
     state = load_live_state(account)
@@ -1474,8 +1335,6 @@ def _collect_consumer_state_summary(account: str) -> dict[str, Any]:
         'open_symbols': sorted(set(open_symbols)),
         'active_state_errors': sorted(active_state_errors, key=lambda x: (str(x.get('symbol') or ''), str(x.get('last_error_code') or ''))),
     }
-
-
 
 def audit_consumer_orphan_exchange_activity(
     account: str,
@@ -1607,7 +1466,6 @@ def audit_consumer_orphan_exchange_activity(
     )
     return findings
 
-
 def bootstrap_consumer(
     account: str,
     strategy_cfg: dict[str, Any],
@@ -1665,7 +1523,6 @@ def bootstrap_consumer(
         'open_symbols': list(maintain_res.get('open_symbols') or []),
         'active_state_errors': active_state_errors,
     }
-
 
 def bootstrap_consumer_gate(
     account: str,
@@ -1726,7 +1583,6 @@ def bootstrap_consumer_gate(
         'local_active_symbols': list(bootstrap_res.get('local_active_symbols') or []),
         'exchange_symbols': list(bootstrap_res.get('exchange_symbols') or []),
     }
-
 
 def evaluate_consumer_signal_scan_gate(
     account: str,
@@ -1925,7 +1781,6 @@ def evaluate_consumer_signal_scan_gate(
         'exchange_activity_symbols': exchange_activity_symbols,
     })
 
-
 def finalize_consumer_scan_skip(
     account: str,
     *,
@@ -1944,7 +1799,6 @@ def finalize_consumer_scan_skip(
         'processed_symbols': processed_symbols,
         'processed_count': len(processed_symbols),
     }
-
 
 def finalize_consumer_no_candidate_data(
     account: str,
@@ -1976,7 +1830,6 @@ def finalize_consumer_no_candidate_data(
         'candidate_reason': candidate_reason,
     })
     return result
-
 
 def finalize_consumer_signal_none(
     account: str,
@@ -2024,7 +1877,6 @@ def finalize_consumer_signal_none(
         'skip_reason': 'signal_none',
     })
     return result
-
 
 def finalize_consumer_loop_state(
     account: str,
@@ -2080,7 +1932,6 @@ def finalize_consumer_loop_state(
             audit_enabled=audit_enabled,
         )
     raise ValueError(f'unsupported finalize mode: {mode}')
-
 
 def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
@@ -2599,7 +2450,6 @@ def _reset_inflight_exit_state(open_trade: dict[str, Any], current_time_bj: str)
     open_trade['last_status_bj'] = current_time_bj
     return open_trade
 
-
 def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, Any], current_time_ms: int, current_time_bj: str, *, source: str, retry_max: int, retry_delay_secs: float, audit_enabled: bool, snapshot: dict[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     ts_exchange_order_id = open_trade.get('time_stop_exchange_order_id')
     ts_client_order_id = open_trade.get('time_stop_client_order_id')
@@ -2738,7 +2588,6 @@ def _reconcile_inflight_exit(account: str, symbol: str, open_trade: dict[str, An
             'exchange_snapshot': ts_order_res,
         })
     return open_trade, True
-
 
 def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_ms: int, current_time_bj: str, latest_closes: dict[str, float], max_hold_mins: int, min_profit_pct: float, *, source: str, snapshot: dict[str, Any] | None = None) -> bool:
     had_blocking_error = False
@@ -3443,8 +3292,6 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             })
     return had_blocking_error
 
-
-
 def _consume_signal_precheck_and_prepare(
     account: str,
     live_cfg: dict[str, Any],
@@ -3701,8 +3548,6 @@ def _consume_signal_precheck_and_prepare(
         'signal': signal,
         'exchange_snapshot': exch,
     }
-
-
 
 def _submit_entry_and_exit_orders(
     account: str,
@@ -4080,8 +3925,6 @@ def _submit_entry_and_exit_orders(
         'signal': signal,
     }
 
-
-
 def _finalize_entry_state_after_submit(
     account: str,
     live_cfg: dict[str, Any],
@@ -4130,8 +3973,6 @@ def _finalize_entry_state_after_submit(
         'outcome': 'consumed_open_confirmed',
         'reason': '',
     }
-
-
 
 def maintain_consumer_once(
     account: str,
@@ -4205,8 +4046,6 @@ def maintain_consumer_once(
         'active_state_errors': state_summary['active_state_errors'],
         'latest_closes_symbols': sorted(set((latest_closes or {}).keys())),
     }
-
-
 
 def consume_signal(
     account: str,
