@@ -14,7 +14,6 @@ from core.live.binance_exec import (
     get_open_orders,
     get_order,
     get_position,
-    get_positions,
     place_entry_order,
     place_sl_order,
     place_time_stop_order,
@@ -36,12 +35,15 @@ from core.live.live_state import (
 )
 from core.message_bridge import send_to_bot
 from strategies.snapback.current_ledger import (
+    audit_consumer_orphan_exchange_activity,
     build_consumer_active_symbols,
     build_consumer_reconcile_plan,
     collect_consumer_active_state_errors,
     collect_consumer_exchange_activity_snapshot,
     collect_consumer_local_activity_symbols,
     collect_consumer_state_summary,
+    has_position_or_orders,
+    precheck_exchange_blockers,
 )
 
 BJ = timezone(timedelta(hours=8))
@@ -659,98 +661,6 @@ def _resolve_live_entry_fill_price(
 
     return entry_fill_price, (entry_fill_price_source or 'fallback_price')
 
-def _precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
-    symbol_key = str(symbol).upper().strip()
-
-    if snapshot is not None:
-        all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
-        all_ord_res = snapshot.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
-        symbol_positions = list((snapshot.get('positions_by_symbol') or {}).get(symbol_key) or [])
-        symbol_open_orders = list((snapshot.get('open_orders_by_symbol') or {}).get(symbol_key) or [])
-
-        long_position = None
-        if all_pos_res.get('ok'):
-            for row in symbol_positions:
-                position_side = str(row.get('position_side') or '').upper().strip()
-                try:
-                    qty = abs(float(row.get('qty') or 0.0))
-                except (TypeError, ValueError):
-                    qty = 0.0
-                if position_side == FIXED_POSITION_SIDE and qty > 0:
-                    long_position = row
-                    break
-
-        return {
-            'position': {
-                'ok': bool(all_pos_res.get('ok')),
-                'reason': all_pos_res.get('reason'),
-                'data': long_position,
-            },
-            'positions_all_sides': {
-                'ok': bool(all_pos_res.get('ok')),
-                'reason': all_pos_res.get('reason'),
-                'data': symbol_positions,
-            },
-            'orders': {
-                'ok': bool(all_ord_res.get('ok')),
-                'reason': all_ord_res.get('reason'),
-                'data': symbol_open_orders,
-            },
-        }
-
-    all_pos_res = get_positions(account)
-    ord_res = get_open_orders(account, symbol)
-
-    symbol_positions: list[dict[str, Any]] = []
-    long_position = None
-    if all_pos_res.get('ok'):
-        for row in all_pos_res.get('data') or []:
-            row_symbol = str(row.get('symbol') or '').upper().strip()
-            if row_symbol != symbol_key:
-                continue
-            symbol_positions.append(row)
-            if long_position is not None:
-                continue
-            position_side = str(row.get('position_side') or '').upper().strip()
-            try:
-                qty = abs(float(row.get('qty') or 0.0))
-            except (TypeError, ValueError):
-                qty = 0.0
-            if position_side == FIXED_POSITION_SIDE and qty > 0:
-                long_position = row
-
-    return {
-        'position': {
-            'ok': bool(all_pos_res.get('ok')),
-            'reason': all_pos_res.get('reason'),
-            'data': long_position,
-        },
-        'positions_all_sides': {
-            'ok': bool(all_pos_res.get('ok')),
-            'reason': all_pos_res.get('reason'),
-            'data': symbol_positions,
-        },
-        'orders': ord_res,
-    }
-
-def _has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
-    pos_res = snapshot['position']
-    all_pos_res = snapshot.get('positions_all_sides') or {}
-    ord_res = snapshot['orders']
-    if not pos_res.get('ok'):
-        return True, 'precheck_position_query_failed'
-    if not all_pos_res.get('ok'):
-        return True, 'precheck_positions_query_failed'
-    if not ord_res.get('ok'):
-        return True, 'precheck_orders_query_failed'
-    if pos_res.get('data'):
-        return True, 'exchange_has_position'
-    if all_pos_res.get('data'):
-        return True, 'exchange_has_nonlong_position'
-    if ord_res.get('data'):
-        return True, 'exchange_has_open_orders'
-    return False, ''
-
 def _extract_time_stop_config(strategy_cfg: dict[str, Any]) -> tuple[int, float]:
     time_stop = ((strategy_cfg or {}).get('exit_policy') or {}).get('time_stop') or {}
     return int(time_stop.get('max_hold_mins', 0)), float(time_stop.get('min_profit_pct', 0.0))
@@ -1164,7 +1074,7 @@ def _verify_open_trade_brackets(account: str, symbol: str, open_trade: dict[str,
         }
     else:
         if snapshot is not None:
-            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+            precheck = precheck_exchange_blockers(account, symbol, snapshot=snapshot)
             pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
             ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
         else:
@@ -1224,7 +1134,7 @@ def consumer_signal_digest(signal: dict[str, Any]) -> str:
     return _signal_digest(signal)
 
 def precheck_consumer_exchange_blockers(account: str, symbol: str, *, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
-    return _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+    return precheck_exchange_blockers(account, symbol, snapshot=snapshot)
 
 def prepare_consumer_loop_gate(
     account: str,
@@ -1301,136 +1211,6 @@ def prepare_consumer_loop_gate(
         'local_active_symbols': list(scan_gate.get('local_active_symbols') or []),
         'exchange_activity_symbols': list(scan_gate.get('exchange_activity_symbols') or []),
     }
-
-def audit_consumer_orphan_exchange_activity(
-    account: str,
-    symbols: list[str],
-    current_time_ms: int,
-    current_time_bj: str,
-    *,
-    source: str,
-    audit_enabled: bool,
-    snapshot: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    audit_started_perf = time.perf_counter()
-    findings: list[dict[str, Any]] = []
-    if not audit_enabled:
-        return findings
-
-    local_active_symbols = set(snapshot.get('local_active_symbols') or []) if snapshot else collect_consumer_local_activity_symbols(account)
-    all_positions_res = (snapshot or {}).get('positions') if snapshot else None
-    if not all_positions_res:
-        all_positions_res = get_positions(account)
-
-    positions_by_symbol: dict[str, list[dict[str, Any]]] = dict((snapshot or {}).get('positions_by_symbol') or {})
-    if not positions_by_symbol and all_positions_res.get('ok'):
-        for row in all_positions_res.get('data') or []:
-            symbol = str(row.get('symbol') or '').upper().strip()
-            if not symbol:
-                continue
-            positions_by_symbol.setdefault(symbol, []).append(row)
-
-    seen: set[str] = set()
-    perf_seen_symbols = 0
-    perf_skipped_local_active = 0
-    perf_precheck_elapsed_ms = 0
-    perf_mark_position_elapsed_ms = 0
-    perf_mark_order_elapsed_ms = 0
-    for raw_symbol in symbols:
-        symbol = str(raw_symbol).upper().strip()
-        if not symbol or symbol in seen:
-            continue
-        seen.add(symbol)
-        perf_seen_symbols += 1
-        if symbol in local_active_symbols:
-            perf_skipped_local_active += 1
-            continue
-
-        precheck_started_perf = time.perf_counter()
-        exch = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
-        perf_precheck_elapsed_ms += _perf_elapsed_ms(precheck_started_perf)
-
-        mark_position_started_perf = time.perf_counter()
-        mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
-        perf_mark_position_elapsed_ms += _perf_elapsed_ms(mark_position_started_perf)
-
-        mark_order_started_perf = time.perf_counter()
-        mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
-        perf_mark_order_elapsed_ms += _perf_elapsed_ms(mark_order_started_perf)
-
-        pos_res = exch.get('position') or {}
-        ord_res = exch.get('orders') or {}
-        symbol_positions = positions_by_symbol.get(symbol) or []
-        has_long_position = bool(pos_res.get('ok') and pos_res.get('data'))
-        has_any_position = bool(symbol_positions)
-        has_orders = bool(ord_res.get('ok') and ord_res.get('data'))
-        if not has_any_position and not has_orders:
-            continue
-
-        findings.append({
-            'symbol': symbol,
-            'has_any_position': has_any_position,
-            'has_long_position': has_long_position,
-            'has_orders': has_orders,
-        })
-
-        exchange_snapshot = {
-            'position': pos_res,
-            'orders': ord_res,
-            'positions_all_sides': {
-                'ok': all_positions_res.get('ok', False),
-                'reason': all_positions_res.get('reason'),
-                'data': symbol_positions,
-            },
-        }
-        write_event(account, 'orphan_exchange_activity', {
-            'symbol': symbol,
-            'bar_ts': current_time_ms,
-            'bar_bj': current_time_bj,
-            'source': source,
-            'exchange_snapshot': exchange_snapshot,
-        })
-        if has_any_position:
-            write_event(account, 'orphan_exchange_position', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': source,
-                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
-            })
-        if has_any_position and not has_long_position:
-            write_event(account, 'orphan_exchange_nonlong_position', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': source,
-                'exchange_snapshot': exchange_snapshot['positions_all_sides'],
-            })
-        if has_orders:
-            write_event(account, 'orphan_exchange_open_orders', {
-                'symbol': symbol,
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'source': source,
-                'exchange_snapshot': ord_res,
-            })
-
-    total_elapsed_ms = _perf_elapsed_ms(audit_started_perf)
-    _log_perf_stage(
-        'audit_consumer_orphan_exchange_activity',
-        account=account,
-        source=source,
-        bar_bj=current_time_bj,
-        total_elapsed_ms=total_elapsed_ms,
-        input_symbols_count=len(symbols or []),
-        seen_symbols_count=perf_seen_symbols,
-        skipped_local_active_count=perf_skipped_local_active,
-        findings_count=len(findings),
-        precheck_elapsed_ms=perf_precheck_elapsed_ms,
-        mark_position_elapsed_ms=perf_mark_position_elapsed_ms,
-        mark_order_elapsed_ms=perf_mark_order_elapsed_ms,
-    )
-    return findings
 
 def bootstrap_consumer(
     account: str,
@@ -1921,7 +1701,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
 
         precheck = None
         if snapshot is not None:
-            precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot)
+            precheck = precheck_exchange_blockers(account, symbol, snapshot=snapshot)
             pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
         else:
             pos_res = get_position(account, symbol, FIXED_POSITION_SIDE)
@@ -2570,7 +2350,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
         open_trade = payload.get('open_trade')
         if not isinstance(open_trade, dict):
             continue
-        precheck = _precheck_exchange_blockers(account, symbol, snapshot=snapshot) if snapshot is not None else _precheck_exchange_blockers(account, symbol)
+        precheck = precheck_exchange_blockers(account, symbol, snapshot=snapshot) if snapshot is not None else precheck_exchange_blockers(account, symbol)
         pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}
         ord_res = precheck.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
         all_pos_res_from_precheck = precheck.get('positions_all_sides') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
@@ -3315,10 +3095,10 @@ def _consume_signal_precheck_and_prepare(
             'reason': 'cooldown_active',
         }
 
-    exch = _precheck_exchange_blockers(account, symbol, snapshot=exchange_snapshot)
+    exch = precheck_exchange_blockers(account, symbol, snapshot=exchange_snapshot)
     mark_position_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     mark_order_reconcile(account, symbol, reconcile_bj=_now_bj_str())
-    blocked, block_reason = _has_position_or_orders(exch)
+    blocked, block_reason = has_position_or_orders(exch)
     if blocked:
         if block_reason in {'precheck_position_query_failed', 'precheck_positions_query_failed', 'precheck_orders_query_failed'}:
             mark_error(
