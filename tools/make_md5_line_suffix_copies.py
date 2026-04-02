@@ -37,9 +37,9 @@ FILES = [
     # "core/live/market_data.py",
     # "core/live/custom_id.py",
     # "=============== 策略 ==================",
-     "strategies/run_backtest.py",
-     "strategies/snapback/run_live.py",
-     "strategies/snapback/logic.py",
+    # "strategies/run_backtest.py",
+    # "strategies/snapback/run_live.py",
+    # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     #"strategies/snapback/trade_consumer.py",
@@ -60,6 +60,7 @@ FILES = [
     #"docs/CURRENT_STATE.md",
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
+    "docs/新聊天开场白.md",
 ]
 
 

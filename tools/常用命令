@@ -18,7 +18,8 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
 
  nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.profit.json' >> /root/bn_research_core/output/logs/snapback_live.console.profit.log 2>&1 &
  
- tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.log
+ tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.highfreq.log
+ tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.profit.log
  ls -lht state/live_audit
  tail -n 100 -f state/live_audit/snapback_mybwin139.jsonl
 
