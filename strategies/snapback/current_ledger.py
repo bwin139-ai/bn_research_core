@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+BJ = timezone(timedelta(hours=8))
 
 from core.live.audit_log import write_event
 from core.live.binance_exec import get_open_orders, get_positions
@@ -560,6 +563,140 @@ def evaluate_consumer_signal_scan_gate_impl(
         'local_active_symbols': local_active_symbols,
         'exchange_activity_symbols': exchange_activity_symbols,
     })
+
+
+def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
+    if ts_ms is None:
+        return None
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _now_bj_str() -> str:
+    return datetime.now(timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def bootstrap_consumer_impl(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    live_cfg: dict[str, Any],
+    maintain_fn,
+    *,
+    source: str = 'startup',
+    current_time_ms: int | None = None,
+    current_time_bj: str | None = None,
+    exchange_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if current_time_ms is None:
+        current_time_ms = int(time.time() * 1000)
+    if current_time_bj is None:
+        current_time_bj = _fmt_bj_from_ms(current_time_ms) or _now_bj_str()
+
+    snapshot = dict(exchange_snapshot) if exchange_snapshot is not None else collect_consumer_exchange_activity_snapshot(account)
+    raw_symbols = snapshot.get('symbols') or set()
+    symbols = {str(symbol).upper().strip() for symbol in raw_symbols if str(symbol).strip()}
+    snapshot['symbols'] = symbols
+    local_active_symbols = sorted(collect_consumer_local_activity_symbols(account))
+    snapshot['local_active_symbols'] = local_active_symbols
+
+    maintain_res = maintain_fn(
+        account,
+        strategy_cfg,
+        live_cfg,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        latest_closes={},
+        source=source,
+        exchange_snapshot=snapshot,
+    )
+    pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
+    open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
+    active_state_errors = list(maintain_res.get('active_state_errors') or [])
+    blocking = bool(
+        pending_reconcile_error
+        or open_trade_reconcile_error
+        or (not snapshot.get('ok'))
+        or active_state_errors
+    )
+    return {
+        'ok': not blocking,
+        'blocking': blocking,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'pending_reconcile_error': pending_reconcile_error,
+        'open_trade_reconcile_error': open_trade_reconcile_error,
+        'exchange_activity_snapshot_ok': bool(snapshot.get('ok')),
+        'exchange_snapshot': snapshot,
+        'exchange_symbols': sorted(symbols),
+        'local_active_symbols': local_active_symbols,
+        'touched_symbols': list(maintain_res.get('touched_symbols') or []),
+        'pending_symbols': list(maintain_res.get('pending_symbols') or []),
+        'open_symbols': list(maintain_res.get('open_symbols') or []),
+        'active_state_errors': active_state_errors,
+    }
+
+
+def bootstrap_consumer_gate_impl(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    live_cfg: dict[str, Any],
+    maintain_fn,
+    *,
+    candidate_symbols: list[str],
+    source: str = 'startup',
+) -> dict[str, Any]:
+    audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    bootstrap_res = bootstrap_consumer_impl(
+        account,
+        strategy_cfg,
+        live_cfg,
+        maintain_fn,
+        source=source,
+    )
+    current_time_ms = int(bootstrap_res['bar_ts'])
+    current_time_bj = str(bootstrap_res['bar_bj'])
+    startup_snapshot = dict(bootstrap_res.get('exchange_snapshot') or {})
+    startup_symbols = sorted(
+        set(bootstrap_res.get('local_active_symbols') or [])
+        | set(startup_snapshot.get('symbols') or set())
+    )
+    startup_snapshot['startup_symbols'] = startup_symbols
+
+    if audit_enabled and not bootstrap_res.get('exchange_activity_snapshot_ok'):
+        write_event(account, 'exchange_activity_snapshot_error', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'source': source,
+            'exchange_snapshot': {
+                'positions': startup_snapshot.get('positions'),
+                'orders': startup_snapshot.get('orders'),
+            },
+        })
+
+    orphan_findings = audit_consumer_orphan_exchange_activity(
+        account,
+        startup_symbols,
+        current_time_ms,
+        current_time_bj,
+        source=source,
+        audit_enabled=audit_enabled,
+        snapshot=startup_snapshot,
+    )
+    active_state_errors = list(bootstrap_res.get('active_state_errors') or [])
+    blocking = bool(bootstrap_res.get('blocking') or orphan_findings)
+    return {
+        'blocking': blocking,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'pending_reconcile_error': bool(bootstrap_res.get('pending_reconcile_error')),
+        'open_trade_reconcile_error': bool(bootstrap_res.get('open_trade_reconcile_error')),
+        'exchange_activity_snapshot_ok': bool(bootstrap_res.get('exchange_activity_snapshot_ok')),
+        'orphan_findings': orphan_findings,
+        'active_state_errors': active_state_errors,
+        'exchange_snapshot': startup_snapshot,
+        'local_active_symbols': list(bootstrap_res.get('local_active_symbols') or []),
+        'exchange_symbols': list(bootstrap_res.get('exchange_symbols') or []),
+    }
+
 
 def collect_consumer_exchange_activity_snapshot(account: str) -> dict[str, Any]:
     symbols: set[str] = set()
