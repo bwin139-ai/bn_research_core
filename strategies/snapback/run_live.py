@@ -192,6 +192,13 @@ def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
         send_to_bot(message, label=label)
 
 
+def _cache_miss_symbols_preview(stats: dict[str, Any] | None, key: str, limit: int = 8) -> list[str] | None:
+    if not isinstance(stats, dict):
+        return None
+    items = [str(x).upper().strip() for x in (stats.get(key) or []) if str(x).strip()]
+    return items[:limit]
+
+
 
 def _json_default(v: Any) -> Any:
     if hasattr(v, 'item'):
@@ -806,7 +813,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     c_bar_bj: str | None = None
 
     def _emit_run_once_perf(outcome: str) -> None:
-        _log_perf_stage('run_once', {
+        payload = {
             'account': account,
             'bar_bj': current_time_bj,
             'bar_ts': current_time_ms,
@@ -821,14 +828,20 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'candidate_contract_cache_misses': (candidate_cache_stats or {}).get('contract_misses') if 'candidate_cache_stats' in locals() else None,
             'candidate_index_cache_hits': (candidate_cache_stats or {}).get('index_hits') if 'candidate_cache_stats' in locals() else None,
             'candidate_index_cache_misses': (candidate_cache_stats or {}).get('index_misses') if 'candidate_cache_stats' in locals() else None,
+            'candidate_contract_cache_miss_symbols_preview': _cache_miss_symbols_preview(candidate_cache_stats, 'contract_miss_symbols') if 'candidate_cache_stats' in locals() else None,
+            'candidate_index_cache_miss_symbols_preview': _cache_miss_symbols_preview(candidate_cache_stats, 'index_miss_symbols') if 'candidate_cache_stats' in locals() else None,
             'extra_contract_cache_hits': (extra_cache_stats or {}).get('contract_hits') if 'extra_cache_stats' in locals() else None,
             'extra_contract_cache_misses': (extra_cache_stats or {}).get('contract_misses') if 'extra_cache_stats' in locals() else None,
             'extra_index_cache_hits': (extra_cache_stats or {}).get('index_hits') if 'extra_cache_stats' in locals() else None,
             'extra_index_cache_misses': (extra_cache_stats or {}).get('index_misses') if 'extra_cache_stats' in locals() else None,
+            'extra_contract_cache_miss_symbols_preview': _cache_miss_symbols_preview(extra_cache_stats, 'contract_miss_symbols') if 'extra_cache_stats' in locals() else None,
+            'extra_index_cache_miss_symbols_preview': _cache_miss_symbols_preview(extra_cache_stats, 'index_miss_symbols') if 'extra_cache_stats' in locals() else None,
             'finalize_contract_cache_hits': (finalize_cache_stats or {}).get('contract_hits') if 'finalize_cache_stats' in locals() else None,
             'finalize_contract_cache_misses': (finalize_cache_stats or {}).get('contract_misses') if 'finalize_cache_stats' in locals() else None,
             'finalize_index_cache_hits': (finalize_cache_stats or {}).get('index_hits') if 'finalize_cache_stats' in locals() else None,
             'finalize_index_cache_misses': (finalize_cache_stats or {}).get('index_misses') if 'finalize_cache_stats' in locals() else None,
+            'finalize_contract_cache_miss_symbols_preview': _cache_miss_symbols_preview(finalize_cache_stats, 'contract_miss_symbols') if 'finalize_cache_stats' in locals() else None,
+            'finalize_index_cache_miss_symbols_preview': _cache_miss_symbols_preview(finalize_cache_stats, 'index_miss_symbols') if 'finalize_cache_stats' in locals() else None,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -849,7 +862,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'signal_symbol': signal_symbol,
             'signal_digest': signal_digest_preview,
             'total_elapsed_ms': _perf_elapsed_ms(run_once_perf_started),
-        })
+        }
+        _log_perf_stage('run_once', payload)
+        if audit_enabled:
+            _write_stage_record(account, 'stage0_run_once_perf', payload)
 
     candidate_plan_perf_started = time.perf_counter()
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
