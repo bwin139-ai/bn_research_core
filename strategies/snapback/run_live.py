@@ -831,6 +831,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     candidate_symbol_count_before_finalize: int | None = None
     candidate_symbol_count_after_finalize: int | None = None
     finalize_removed_symbol_count: int | None = None
+    finalize_removed_ratio_pct: float | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -875,6 +876,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
             'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             'finalize_removed_symbol_count': finalize_removed_symbol_count,
+            'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -995,6 +997,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         finalize_elapsed_ms = _perf_elapsed_ms(finalize_perf_started)
         candidate_symbol_count_after_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         finalize_removed_symbol_count = max(0, int(candidate_symbol_count_before_finalize or 0) - int(candidate_symbol_count_after_finalize or 0))
+        finalize_removed_ratio_pct = round((float(finalize_removed_symbol_count) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload
     finalize_cache_stats = dict((candidate_payload or {}).get('finalize_shared_symbol_bars_cache') or {}) if candidate_payload else None
@@ -1009,6 +1012,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
             'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             'finalize_removed_symbol_count': finalize_removed_symbol_count,
+            'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
             **finalize_summary,
         })
 
@@ -1048,6 +1052,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
         'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
         'finalize_removed_symbol_count': finalize_removed_symbol_count,
+        'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
