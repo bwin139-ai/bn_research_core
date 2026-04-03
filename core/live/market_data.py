@@ -55,6 +55,7 @@ _SHARED_MARKET_DIRNAME = 'shared_market'
 _SHARED_TICKER_TTL_SECS = 55
 _SHARED_EXCHANGE_INFO_TTL_SECS = 300
 _SHARED_LATEST_CLOSED_BAR_TTL_SECS = 2
+_SHARED_SYMBOL_BARS_TTL_SECS = 2
 
 
 def _shared_market_dir() -> Path:
@@ -101,6 +102,47 @@ def _ticker_snapshot_path() -> Path:
 
 def _latest_closed_bar_snapshot_path() -> Path:
     return _shared_market_dir() / 'latest_closed_bar.shared.json'
+
+
+def _symbol_bars_dir() -> Path:
+    path = _shared_market_dir() / 'bars'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_symbol_key(symbol: str) -> str:
+    return str(symbol).upper().strip()
+
+
+def _symbol_bars_snapshot_path(symbol: str, limit: int, kind: str) -> Path:
+    symbol_key = _safe_symbol_key(symbol)
+    return _symbol_bars_dir() / f'{symbol_key}.{kind}.{int(limit)}.shared.json'
+
+
+def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, kind: str) -> list[list[Any]]:
+    path = _symbol_bars_snapshot_path(symbol, limit, kind)
+    cached = _read_json_file(path)
+    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS):
+        rows = cached.get('data')
+        if isinstance(rows, list):
+            return rows
+    now_ms = int(time.time() * 1000)
+    if kind == 'contract':
+        rows = _fetch_symbol_klines_remote(account, symbol, limit)
+    elif kind == 'index':
+        rows = _fetch_symbol_index_price_klines_remote(account, symbol, limit)
+    else:
+        raise ValueError(f'unsupported bars kind: {kind}')
+    payload = {
+        'fetched_utc_ms': now_ms,
+        'fetched_bj': _fmt_bj_from_ms(now_ms),
+        'symbol': _safe_symbol_key(symbol),
+        'limit': int(limit),
+        'kind': kind,
+        'data': rows,
+    }
+    _atomic_write_json(path, payload)
+    return rows
 
 
 def _load_or_refresh_latest_closed_bar_snapshot(account: str) -> dict[str, Any]:
@@ -313,13 +355,21 @@ def _filter_symbols_by_universe(
     return eligible, errors
 
 
-def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+def _fetch_symbol_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
     client = get_client(account)
     return client.futures_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
 
 
-def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+def _fetch_symbol_index_price_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
     return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
+
+
+def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='contract')
+
+
+def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='index')
 
 
 def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
