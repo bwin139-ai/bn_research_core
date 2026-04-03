@@ -71,7 +71,11 @@ def _perf_elapsed_ms(start_perf: float) -> int:
 
 
 def _log_perf_stage(stage: str, payload: dict[str, Any]) -> None:
-    return None
+    try:
+        body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
+    except Exception:
+        body = str(payload)
+    logging.info('[perf:%s] %s', stage, body)
 
 
 
