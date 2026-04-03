@@ -828,6 +828,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     extra_cache_stats: dict[str, Any] | None = None
     finalize_cache_stats: dict[str, Any] | None = None
     finalize_summary: dict[str, Any] | None = None
+    candidate_symbol_count_before_finalize: int | None = None
+    candidate_symbol_count_after_finalize: int | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -869,6 +871,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_delayed_finalize_count': (finalize_summary or {}).get('delayed_finalize_count') if 'finalize_summary' in locals() else None,
             'finalize_verify_failed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'verify_failed_symbols') if 'finalize_summary' in locals() else None,
             'finalize_delayed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'delayed_symbols') if 'finalize_summary' in locals() else None,
+            'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
+            'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -970,6 +974,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     current_time_bj = str(payload.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
 
     if candidate_payload:
+        candidate_symbol_count_before_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         finalize_perf_started = time.perf_counter()
         candidate_payload = _finalize_candidate_payload(
             account,
@@ -986,6 +991,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             ticker_map=ticker_map_snapshot,
         )
         finalize_elapsed_ms = _perf_elapsed_ms(finalize_perf_started)
+        candidate_symbol_count_after_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload
     finalize_cache_stats = dict((candidate_payload or {}).get('finalize_shared_symbol_bars_cache') or {}) if candidate_payload else None
@@ -997,6 +1003,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'c_bar_ts': c_bar_ts,
             'c_bar_bj': c_bar_bj,
             'finalize_elapsed_ms': finalize_elapsed_ms,
+            'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
+            'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             **finalize_summary,
         })
 
@@ -1033,6 +1041,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'finalize_verify_failed_symbols': (finalize_summary or {}).get('verify_failed_symbols'),
         'finalize_delayed_symbols': (finalize_summary or {}).get('delayed_symbols'),
         'finalize_elapsed_ms': finalize_elapsed_ms,
+        'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
+        'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
