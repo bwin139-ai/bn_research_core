@@ -61,10 +61,55 @@ def _perf_elapsed_ms(start_perf: float) -> int:
     return int((time.perf_counter() - start_perf) * 1000)
 
 
+def _should_log_perf_stage(stage: str, payload: dict[str, Any]) -> bool:
+    if stage == 'audit_consumer_orphan_exchange_activity':
+        return bool(
+            payload.get('findings_count')
+            or payload.get('input_symbols_count')
+            or payload.get('seen_symbols_count')
+            or payload.get('skipped_local_active_count')
+            or int(payload.get('total_elapsed_ms') or 0) >= 50
+        )
+    if stage == 'evaluate_consumer_signal_scan_gate':
+        return bool(
+            not payload.get('ok_to_scan')
+            or payload.get('skip_reason')
+            or payload.get('orphan_findings_count')
+            or payload.get('missing_reconcile_symbols_count')
+            or payload.get('active_state_errors_count')
+            or payload.get('exchange_activity_symbols_count')
+            or payload.get('local_active_symbols_count')
+            or int(payload.get('total_elapsed_ms') or 0) >= 50
+        )
+    if stage == 'prepare_consumer_loop_gate':
+        return bool(
+            not payload.get('ok_to_scan')
+            or payload.get('skip_reason')
+            or payload.get('active_symbols_count')
+            or int(payload.get('maintain_elapsed_ms') or 0) >= 50
+            or int(payload.get('scan_gate_elapsed_ms') or 0) >= 50
+            or int(payload.get('active_symbols_elapsed_ms') or 0) >= 50
+            or int(payload.get('total_elapsed_ms') or 0) >= 100
+        )
+    if stage == 'maintain_consumer_once':
+        return bool(
+            payload.get('pending_reconcile_error')
+            or payload.get('open_trade_reconcile_error')
+            or payload.get('active_state_errors_count')
+            or payload.get('pending_symbols_count')
+            or payload.get('open_symbols_count')
+            or payload.get('touched_symbols_count')
+            or int(payload.get('total_elapsed_ms') or 0) >= 50
+        )
+    return True
+
+
 def _log_perf_stage(stage: str, **fields: Any) -> None:
     payload = {'stage': stage}
     for key, value in fields.items():
         payload[key] = _normalize_scalar(value)
+    if not _should_log_perf_stage(stage, payload):
+        return
     logging.info('[trade_consumer_perf] %s', _json_safe_dumps(payload, sort_keys=True, separators=(',', ':')))
 
 
