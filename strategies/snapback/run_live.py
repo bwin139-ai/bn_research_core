@@ -342,6 +342,33 @@ def _drop_symbol_from_cross_section(cross_section: Any, symbol: str) -> Any:
         return cross_section
 
 
+def _build_finalized_candidate_payload(
+    candidate_payload: dict[str, Any],
+    candidate_cross_section: Any,
+    candidate_full_df: dict[str, Any],
+    finalize_cache_stats: dict[str, Any],
+    finalize_summary: dict[str, Any],
+) -> dict[str, Any]:
+    latest_closed_bar_ts = int((candidate_payload or {}).get('latest_closed_bar_ts') or 0)
+    latest_closed_bar_bj = (candidate_payload or {}).get('latest_closed_bar_bj') or _fmt_bj_from_ms(latest_closed_bar_ts)
+    return {
+        **candidate_payload,
+        'cross_section': candidate_cross_section,
+        'full_df': candidate_full_df,
+        'symbol_count': int(len(candidate_full_df)),
+        'bars_loaded_min': int(min(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
+        'bars_loaded_max': int(max(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
+        'freshest_bar_ts': latest_closed_bar_ts,
+        'freshest_bar_bj': latest_closed_bar_bj,
+        'stale_cutoff_ts': latest_closed_bar_ts,
+        'stale_cutoff_bj': latest_closed_bar_bj,
+        'stale_symbol_count': 0,
+        'stale_symbols': {},
+        'finalize_shared_symbol_bars_cache': finalize_cache_stats,
+        'finalize_summary': finalize_summary,
+    }
+
+
 def _finalize_candidate_payload(
     account: str,
     strategy_cfg: dict[str, Any],
@@ -466,18 +493,13 @@ def _finalize_candidate_payload(
             except Exception:
                 candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
 
-    return {
-        **candidate_payload,
-        'cross_section': candidate_cross_section,
-        'full_df': candidate_full_df,
-        'symbol_count': int(len(candidate_full_df)),
-        'bars_loaded_min': int(min(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
-        'bars_loaded_max': int(max(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
-        'stale_symbol_count': 0,
-        'stale_symbols': {},
-        'finalize_shared_symbol_bars_cache': finalize_cache_stats,
-        'finalize_summary': finalize_summary,
-    }
+    return _build_finalized_candidate_payload(
+        candidate_payload,
+        candidate_cross_section,
+        candidate_full_df,
+        finalize_cache_stats,
+        finalize_summary,
+    )
 
 
 def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
