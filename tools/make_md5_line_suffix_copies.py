@@ -39,7 +39,7 @@ FILES = [
     # "=============== 策略 ==================",
      "strategies/run_backtest.py",
     # "strategies/snapback/run_live.py",
-    # "strategies/snapback/logic.py",
+     "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.json",
     # "strategies/snapback/config.json",
     #"strategies/snapback/trade_consumer.py",

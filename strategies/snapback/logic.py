@@ -58,6 +58,235 @@ class WashoutSnapbackStrategy:
 
         self.cooldown_until: Dict[str, int] = {}
 
+    def audit_symbols_at_kline_close(
+        self,
+        current_time_ms: int,
+        cross_section: pd.DataFrame,
+        active_symbols: set,
+        full_df: Dict[str, pd.DataFrame] = None,
+        target_symbols: set | None = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        audits: Dict[str, Dict[str, Any]] = {}
+        target_set = {str(s).upper().strip() for s in (target_symbols or set()) if str(s).strip()}
+        if not target_set:
+            return audits
+        if cross_section is None or cross_section.empty or full_df is None:
+            for sym in target_set:
+                audits[sym] = {
+                    "stage5_pass": False,
+                    "fail_reason": "cross_section_empty_or_full_df_missing",
+                }
+            return audits
+
+        for sym in target_set:
+            record: Dict[str, Any] = {
+                "symbol": sym,
+                "stage5_pass": False,
+                "fail_reason": "",
+            }
+            row = cross_section.loc[sym] if sym in cross_section.index else None
+            if row is not None:
+                record["current_price"] = row["close"]
+                record["chg_24h"] = row["chg_24h"]
+                record["vol_24h"] = row["vol_24h"]
+            if row is None:
+                record["fail_reason"] = "symbol_not_in_cross_section"
+                audits[sym] = record
+                continue
+            if pd.isna(row["vol_24h"]) or pd.isna(row["chg_24h"]):
+                record["fail_reason"] = "cross_section_nan_metrics"
+                audits[sym] = record
+                continue
+            if row["vol_24h"] < self.min_24h_vol:
+                record["fail_reason"] = "vol_24h_below_min"
+                audits[sym] = record
+                continue
+            if row["chg_24h"] * 100 < self.min_24h_chg:
+                record["fail_reason"] = "chg_24h_below_min"
+                audits[sym] = record
+                continue
+            if row["chg_24h"] * 100 > self.max_24h_chg:
+                record["fail_reason"] = "chg_24h_above_max"
+                audits[sym] = record
+                continue
+            if sym in active_symbols:
+                record["fail_reason"] = "symbol_in_active_symbols"
+                audits[sym] = record
+                continue
+
+            cooldown_until = self.cooldown_until.get(sym, 0)
+            record["cooldown_until"] = cooldown_until
+            if current_time_ms < cooldown_until:
+                record["fail_reason"] = "symbol_in_cooldown"
+                audits[sym] = record
+                continue
+
+            sym_df = full_df.get(sym)
+            if sym_df is None:
+                record["fail_reason"] = "symbol_df_missing"
+                audits[sym] = record
+                continue
+
+            idx = sym_df.index.searchsorted(current_time_ms, side="right")
+            record["history_right_index"] = int(idx)
+            if idx < self.vol_baseline_window:
+                record["fail_reason"] = "history_short_before_baseline"
+                audits[sym] = record
+                continue
+
+            start_idx = max(0, idx - self.vol_baseline_window - 5)
+            history_df = sym_df.iloc[start_idx:idx]
+            record["history_rows"] = int(len(history_df))
+            if len(history_df) < self.vol_baseline_window:
+                record["fail_reason"] = "history_short_after_slice"
+                audits[sym] = record
+                continue
+
+            current_price = row["close"]
+            recent_drop_df = history_df.tail(self.drop_window)
+            sc_window_df = history_df.tail(self.drop_window + 1)
+            if len(sc_window_df) < self.drop_window + 1:
+                record["fail_reason"] = "sc_window_short"
+                audits[sym] = record
+                continue
+
+            s_ts = sc_window_df.index[0]
+            s_close = sc_window_df.iloc[0]["close"]
+            record["s_time"] = int(s_ts)
+            record["s_close"] = s_close
+            if pd.isna(s_close) or s_close <= 0:
+                record["fail_reason"] = "invalid_s_close"
+                audits[sym] = record
+                continue
+
+            drop_window_chg = (current_price - s_close) / s_close
+            record["drop_window_chg"] = drop_window_chg
+            if drop_window_chg < self.min_drop_window_chg:
+                record["fail_reason"] = "drop_window_chg_below_min"
+                audits[sym] = record
+                continue
+            if drop_window_chg > self.max_drop_window_chg:
+                record["fail_reason"] = "drop_window_chg_above_max"
+                audits[sym] = record
+                continue
+            if row["chg_24h"] > 0 and drop_window_chg > 0:
+                record["fail_reason"] = "hot_market_quadrant_skip"
+                audits[sym] = record
+                continue
+
+            recent_high_ts = recent_drop_df["high"].idxmax()
+            recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
+            ac_df = recent_drop_df.loc[recent_high_ts:]
+            record["a_time"] = int(recent_high_ts)
+            record["a_high_price"] = recent_high_price
+            if ac_df.empty:
+                record["fail_reason"] = "ac_df_empty"
+                audits[sym] = record
+                continue
+
+            drop_pct = ((recent_high_price - current_price) / recent_high_price) if recent_high_price > 0 else 0
+            record["drop_pct"] = drop_pct
+            if drop_pct < self.min_drop_pct:
+                record["fail_reason"] = "drop_pct_below_min"
+                audits[sym] = record
+                continue
+            if drop_pct > self.max_drop_pct:
+                record["fail_reason"] = "drop_pct_above_max"
+                audits[sym] = record
+                continue
+
+            vol_climax = history_df["quote_asset_volume"].tail(self.vol_climax_window).mean()
+            vol_baseline = history_df["quote_asset_volume"].tail(self.vol_baseline_window).mean()
+            vol_ratio = vol_climax / vol_baseline if vol_baseline > 0 else 0
+            record["vol_ratio"] = vol_ratio
+            if vol_ratio < self.min_vol_ratio:
+                record["fail_reason"] = "vol_ratio_below_min"
+                audits[sym] = record
+                continue
+
+            b_contract_ts = ac_df["low"].idxmin()
+            b_contract_price = ac_df.loc[b_contract_ts, "low"]
+            b_index_price = ac_df.loc[b_contract_ts, "low_idx"]
+            record["b_time"] = int(b_contract_ts)
+            record["b_contract_price"] = b_contract_price
+            record["b_index_price"] = b_index_price
+            if pd.isna(b_index_price) or b_index_price <= 0:
+                record["fail_reason"] = "invalid_b_index_price"
+                audits[sym] = record
+                continue
+
+            basis_b_pct = (b_contract_price - b_index_price) / b_index_price
+            record["basis_b_pct"] = basis_b_pct
+            if basis_b_pct > self.max_basis_b_pct:
+                record["fail_reason"] = "basis_b_pct_above_max"
+                audits[sym] = record
+                continue
+
+            extreme_drop_range = recent_high_price - b_index_price
+            record["extreme_drop_range"] = extreme_drop_range
+            if extreme_drop_range <= 0:
+                record["fail_reason"] = "extreme_drop_range_non_positive"
+                audits[sym] = record
+                continue
+            if current_price <= b_index_price:
+                record["fail_reason"] = "current_price_below_or_equal_b_index"
+                audits[sym] = record
+                continue
+
+            b_pos = ac_df.index.get_indexer([b_contract_ts])[0]
+            record["b_pos"] = int(b_pos)
+            if b_pos < 0:
+                record["fail_reason"] = "invalid_b_pos"
+                audits[sym] = record
+                continue
+
+            ab_bars = b_pos
+            record["ab_bars"] = int(ab_bars)
+            if ab_bars < self.min_ab_bars:
+                record["fail_reason"] = "ab_bars_below_min"
+                audits[sym] = record
+                continue
+            if ab_bars > self.max_ab_bars:
+                record["fail_reason"] = "ab_bars_above_max"
+                audits[sym] = record
+                continue
+
+            bc_bars = (len(ac_df) - 1) - b_pos
+            record["bc_bars"] = int(bc_bars)
+            if bc_bars < self.min_bc_bars:
+                record["fail_reason"] = "bc_bars_below_min"
+                audits[sym] = record
+                continue
+
+            rebound_ratio = (current_price - b_index_price) / extreme_drop_range
+            record["rebound_ratio"] = rebound_ratio
+            if rebound_ratio < self.min_rebound_ratio:
+                record["fail_reason"] = "rebound_ratio_below_min"
+                audits[sym] = record
+                continue
+            if rebound_ratio > self.max_rebound_ratio:
+                record["fail_reason"] = "rebound_ratio_above_max"
+                audits[sym] = record
+                continue
+
+            trigger_name = "ABC_BINDEX"
+            selected_tp_pct = self.base_tp_pct
+            tp_tier = "BASE"
+            if drop_pct >= self.strong_tp_min_drop_pct and rebound_ratio >= self.strong_tp_min_rebound_ratio:
+                selected_tp_pct = self.strong_tp_pct
+                tp_tier = "STRONG"
+
+            record.update({
+                "stage5_pass": True,
+                "fail_reason": "",
+                "trigger_name": trigger_name,
+                "selected_tp_pct": selected_tp_pct,
+                "tp_tier": tp_tier,
+            })
+            audits[sym] = record
+
+        return audits
+
 
     def on_kline_close(
         self,

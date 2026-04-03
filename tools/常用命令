@@ -127,11 +127,12 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/sim_smoke
+DEST=~/ai_projects/bn_research_core/output/sim_smoke2
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest6.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest6.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.Snapback_V6.1_SmokeTest6.jsonl" \
   "$DEST"
 # *****download*****  拉 sim/live一致性审计数据 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
@@ -167,6 +168,20 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --config snapback/config.highfreq.json \
   --out-dir "output/SmokeTest" \
   --run-id "Snapback_V6.1_SmokeTest6"
+
+/root/service_env/bin/python strategies/run_backtest.py \
+  --strategy snapback \
+  --start 2026-04-03T02:00:00+08:00 \
+  --end   2026-04-03T09:30:00+08:00 \
+  --kline-window 60 \
+  --config snapback/config.highfreq.json \
+  --out-dir "output/SmokeTest" \
+  --run-id "Snapback_V6.1_SmokeTest6" \
+  --audit-start-bj "2026-04-03 02:00:00" \
+  --audit-end-bj "2026-04-03 02:40:00" \
+  --audit-symbols "RIVERUSDT,VVVUSDT" \
+  --audit-out-dir "output/SmokeTest"
+
   #最初--start 2026-03-25T17:00:00+00:00 \
   #3月31日 22:00 BJ 超时参数调整为3分钟
 

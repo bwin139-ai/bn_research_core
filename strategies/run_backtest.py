@@ -472,6 +472,16 @@ def main():
             ts, cross_section, active_symbols, full_df=df_dict
         )
 
+        structure_audit_map = {}
+        if audit_enabled and hasattr(strategy, "audit_symbols_at_kline_close"):
+            structure_audit_map = strategy.audit_symbols_at_kline_close(
+                ts,
+                cross_section,
+                active_symbols,
+                full_df=df_dict,
+                target_symbols=audit_symbols,
+            )
+
         if audit_enabled and audit_start_ms is not None and audit_end_ms is not None and audit_out_path:
             if audit_start_ms <= int(ts) <= audit_end_ms:
                 signal_symbol = str((signal or {}).get("symbol") or "").upper().strip() if signal else ""
@@ -499,6 +509,7 @@ def main():
                             "selected_signal_symbol": signal_symbol or None,
                             "selected_signal_digest": signal_digest,
                             "cross_snapshot": _series_snapshot(row),
+                            "structure_audit": structure_audit_map.get(audit_symbol, {}),
                             "history_bars": _history_records(symbol_df.loc[:ts], args.audit_history_window_bars) if symbol_df is not None else [],
                         }
                         f.write(json.dumps(forensic_row, ensure_ascii=False, cls=NumpyEncoder) + "\n")
