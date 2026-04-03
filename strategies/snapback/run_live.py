@@ -1002,12 +1002,12 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         candidate_symbol_count_after_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         finalize_removed_symbol_count = max(0, int(candidate_symbol_count_before_finalize or 0) - int(candidate_symbol_count_after_finalize or 0))
         finalize_removed_ratio_pct = round((float(finalize_removed_symbol_count) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
-        finalize_verify_failed_ratio_pct = round((float((finalize_summary or {}).get('verify_failed_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
-        finalize_delayed_ratio_pct = round((float((finalize_summary or {}).get('delayed_finalize_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload
     finalize_cache_stats = dict((candidate_payload or {}).get('finalize_shared_symbol_bars_cache') or {}) if candidate_payload else None
     finalize_summary = deepcopy((candidate_payload or {}).get('finalize_summary') or {}) if candidate_payload else None
+    finalize_verify_failed_ratio_pct = round((float((finalize_summary or {}).get('verify_failed_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
+    finalize_delayed_ratio_pct = round((float((finalize_summary or {}).get('delayed_finalize_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
     if audit_enabled and finalize_summary is not None:
         write_event(account, 'c_bar_finalize_summary', {
             'bar_ts': current_time_ms,
