@@ -287,6 +287,147 @@ def _write_stage3_enriched_snapshot(account: str, audit_label: str, current_time
         })
 
 
+def _sleep_until_finalize_probe_ready(first_snapshot_finished_utc_ms: int | None) -> None:
+    if first_snapshot_finished_utc_ms is None:
+        return
+    target_epoch = (int(first_snapshot_finished_utc_ms) + 1000) / 1000.0
+    remaining = target_epoch - time.time()
+    if remaining > 0:
+        time.sleep(remaining)
+
+
+def _extract_closed_bar_snapshot(df: Any, c_bar_ts: int) -> dict[str, Any] | None:
+    if df is None:
+        return None
+    try:
+        if c_bar_ts not in df.index:
+            return None
+        row = df.loc[c_bar_ts]
+    except Exception:
+        return None
+    return {
+        'open': _normalize_scalar(_series_value(row, 'open')),
+        'high': _normalize_scalar(_series_value(row, 'high')),
+        'low': _normalize_scalar(_series_value(row, 'low')),
+        'close': _normalize_scalar(_series_value(row, 'close')),
+        'quote_asset_volume': _normalize_scalar(_series_value(row, 'quote_asset_volume')),
+        'high_idx': _normalize_scalar(_series_value(row, 'high_idx')),
+        'low_idx': _normalize_scalar(_series_value(row, 'low_idx')),
+        'close_idx': _normalize_scalar(_series_value(row, 'close_idx')),
+    }
+
+
+def _drop_symbol_from_cross_section(cross_section: Any, symbol: str) -> Any:
+    if cross_section is None:
+        return cross_section
+    try:
+        return cross_section.drop(index=[symbol], errors='ignore')
+    except Exception:
+        return cross_section
+
+
+def _finalize_candidate_payload(
+    account: str,
+    strategy_cfg: dict[str, Any],
+    candidate_payload: dict[str, Any],
+    *,
+    history_window_mins: int,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    candidate_md_finished_utc_ms: int | None,
+    audit_enabled: bool,
+) -> dict[str, Any]:
+    candidate_cross_section = candidate_payload['cross_section']
+    candidate_full_df = dict(candidate_payload['full_df'])
+    if not candidate_full_df:
+        return candidate_payload
+
+    _sleep_until_finalize_probe_ready(candidate_md_finished_utc_ms)
+
+    for raw_symbol in list(candidate_full_df.keys()):
+        symbol = str(raw_symbol).upper().strip()
+        initial_df = candidate_full_df.get(raw_symbol)
+        initial_snapshot = _extract_closed_bar_snapshot(initial_df, c_bar_ts)
+        if initial_snapshot is None:
+            continue
+
+        refresh_res = build_live_inputs(
+            account,
+            [symbol],
+            history_window_mins,
+            strategy_cfg,
+            audit_label='candidate_finalize',
+        )
+        refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
+        refreshed_c_bar_ts = int(refresh_payload['latest_closed_bar_ts']) if refresh_payload else None
+        refreshed_full_df = dict((refresh_payload or {}).get('full_df') or {})
+        refreshed_df = refreshed_full_df.get(symbol)
+        refreshed_snapshot = _extract_closed_bar_snapshot(refreshed_df, c_bar_ts) if refreshed_df is not None else None
+
+        if (not refresh_res.get('ok')) or refresh_payload is None or refreshed_c_bar_ts != c_bar_ts or refreshed_snapshot is None:
+            logging.warning(
+                '[c_bar_finalize] verify_failed | symbol=%s | c_bar_bj=%s | reason=%s | refreshed_c_bar_bj=%s',
+                symbol,
+                c_bar_bj,
+                refresh_res.get('reason') or 'refresh_payload_invalid',
+                _fmt_bj_from_ms(refreshed_c_bar_ts),
+            )
+            if audit_enabled:
+                write_event(account, 'c_bar_finalize_verify_failed', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'c_bar_ts': c_bar_ts,
+                    'c_bar_bj': c_bar_bj,
+                    'refreshed_c_bar_ts': refreshed_c_bar_ts,
+                    'refreshed_c_bar_bj': _fmt_bj_from_ms(refreshed_c_bar_ts),
+                    'reason': refresh_res.get('reason') or 'refresh_payload_invalid',
+                    'exchange_snapshot': refresh_res,
+                })
+            candidate_full_df.pop(raw_symbol, None)
+            candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
+            continue
+
+        changed_fields = [
+            field
+            for field in refreshed_snapshot.keys()
+            if refreshed_snapshot.get(field) != initial_snapshot.get(field)
+        ]
+        if changed_fields:
+            logging.warning(
+                '[c_bar_finalize] delayed_finalize | symbol=%s | c_bar_bj=%s | changed_fields=%s',
+                symbol,
+                c_bar_bj,
+                ','.join(changed_fields),
+            )
+            if audit_enabled:
+                write_event(account, 'c_bar_delayed_finalize_detected', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'c_bar_ts': c_bar_ts,
+                    'c_bar_bj': c_bar_bj,
+                    'changed_fields': changed_fields,
+                    'initial_snapshot': initial_snapshot,
+                    'refreshed_snapshot': refreshed_snapshot,
+                })
+            candidate_full_df[raw_symbol] = refreshed_df
+            refreshed_cross_section = (refresh_payload or {}).get('cross_section')
+            try:
+                if refreshed_cross_section is not None and symbol in refreshed_cross_section.index:
+                    candidate_cross_section.loc[symbol] = refreshed_cross_section.loc[symbol]
+            except Exception:
+                candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
+
+    return {
+        **candidate_payload,
+        'cross_section': candidate_cross_section,
+        'full_df': candidate_full_df,
+    }
+
+
 def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
     import pandas as pd  # type: ignore
 
@@ -721,6 +862,23 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     c_bar_bj = payload['latest_closed_bar_bj']
     current_time_ms = int(payload.get('signal_time_ts') or (c_bar_ts + 60000))
     current_time_bj = str(payload.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
+
+    if candidate_payload:
+        candidate_payload = _finalize_candidate_payload(
+            account,
+            strategy_cfg,
+            candidate_payload,
+            history_window_mins=history_window_mins,
+            c_bar_ts=c_bar_ts,
+            c_bar_bj=c_bar_bj,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            candidate_md_finished_utc_ms=candidate_md_finished_utc_ms,
+            audit_enabled=audit_enabled,
+        )
+        if payload is candidate_md_res.get('data'):
+            payload = candidate_payload
+
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
         'loop_started_bj': loop_started_bj,
