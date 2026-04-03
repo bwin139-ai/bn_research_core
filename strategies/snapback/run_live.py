@@ -777,6 +777,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     signal_present = False
     signal_symbol: str | None = None
     signal_digest_preview: str | None = None
+    candidate_cache_stats: dict[str, Any] | None = None
+    extra_cache_stats: dict[str, Any] | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -795,6 +797,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'market_snapshot_fetched_bj': market_snapshot_fetched_bj if 'market_snapshot_fetched_bj' in locals() else None,
             'shared_symbol_bars_cache_enabled': True,
             'history_window_mins': history_window_mins,
+            'candidate_contract_cache_hits': (candidate_cache_stats or {}).get('contract_hits') if 'candidate_cache_stats' in locals() else None,
+            'candidate_contract_cache_misses': (candidate_cache_stats or {}).get('contract_misses') if 'candidate_cache_stats' in locals() else None,
+            'candidate_index_cache_hits': (candidate_cache_stats or {}).get('index_hits') if 'candidate_cache_stats' in locals() else None,
+            'candidate_index_cache_misses': (candidate_cache_stats or {}).get('index_misses') if 'candidate_cache_stats' in locals() else None,
+            'extra_contract_cache_hits': (extra_cache_stats or {}).get('contract_hits') if 'extra_cache_stats' in locals() else None,
+            'extra_contract_cache_misses': (extra_cache_stats or {}).get('contract_misses') if 'extra_cache_stats' in locals() else None,
+            'extra_index_cache_hits': (extra_cache_stats or {}).get('index_hits') if 'extra_cache_stats' in locals() else None,
+            'extra_index_cache_misses': (extra_cache_stats or {}).get('index_misses') if 'extra_cache_stats' in locals() else None,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -870,6 +880,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
     extra_payload = extra_md_res.get('data') if extra_md_res and extra_md_res.get('ok') else None
+    candidate_cache_stats = dict((candidate_payload or {}).get('shared_symbol_bars_cache') or {}) if candidate_payload else None
+    extra_cache_stats = dict((extra_payload or {}).get('shared_symbol_bars_cache') or {}) if extra_payload else None
 
     payload = candidate_payload or extra_payload
     if payload is None:
@@ -916,6 +928,18 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'market_snapshot_fetched_bj': market_snapshot_fetched_bj,
         'shared_symbol_bars_cache_enabled': True,
         'history_window_mins': history_window_mins,
+        'candidate_contract_cache_hits': (candidate_cache_stats or {}).get('contract_hits'),
+        'candidate_contract_cache_misses': (candidate_cache_stats or {}).get('contract_misses'),
+        'candidate_index_cache_hits': (candidate_cache_stats or {}).get('index_hits'),
+        'candidate_index_cache_misses': (candidate_cache_stats or {}).get('index_misses'),
+        'candidate_contract_cache_miss_symbols': (candidate_cache_stats or {}).get('contract_miss_symbols'),
+        'candidate_index_cache_miss_symbols': (candidate_cache_stats or {}).get('index_miss_symbols'),
+        'extra_contract_cache_hits': (extra_cache_stats or {}).get('contract_hits'),
+        'extra_contract_cache_misses': (extra_cache_stats or {}).get('contract_misses'),
+        'extra_index_cache_hits': (extra_cache_stats or {}).get('index_hits'),
+        'extra_index_cache_misses': (extra_cache_stats or {}).get('index_misses'),
+        'extra_contract_cache_miss_symbols': (extra_cache_stats or {}).get('contract_miss_symbols'),
+        'extra_index_cache_miss_symbols': (extra_cache_stats or {}).get('index_miss_symbols'),
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,

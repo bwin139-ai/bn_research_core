@@ -119,12 +119,49 @@ def _symbol_bars_snapshot_path(symbol: str, limit: int, kind: str) -> Path:
     return _symbol_bars_dir() / f'{symbol_key}.{kind}.{int(limit)}.shared.json'
 
 
-def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, kind: str) -> list[list[Any]]:
+def _new_shared_symbol_bars_cache_stats() -> dict[str, Any]:
+    return {
+        'contract_hits': 0,
+        'contract_misses': 0,
+        'index_hits': 0,
+        'index_misses': 0,
+        'contract_miss_symbols': [],
+        'index_miss_symbols': [],
+    }
+
+
+def _record_shared_symbol_bars_cache_event(stats: dict[str, Any] | None, *, kind: str, symbol: str, cache_hit: bool) -> None:
+    if stats is None:
+        return
+    symbol_key = _safe_symbol_key(symbol)
+    if kind == 'contract':
+        if cache_hit:
+            stats['contract_hits'] = int(stats.get('contract_hits', 0)) + 1
+        else:
+            stats['contract_misses'] = int(stats.get('contract_misses', 0)) + 1
+            miss_symbols = stats.setdefault('contract_miss_symbols', [])
+            if symbol_key not in miss_symbols:
+                miss_symbols.append(symbol_key)
+        return
+    if kind == 'index':
+        if cache_hit:
+            stats['index_hits'] = int(stats.get('index_hits', 0)) + 1
+        else:
+            stats['index_misses'] = int(stats.get('index_misses', 0)) + 1
+            miss_symbols = stats.setdefault('index_miss_symbols', [])
+            if symbol_key not in miss_symbols:
+                miss_symbols.append(symbol_key)
+        return
+    raise ValueError(f'unsupported bars kind: {kind}')
+
+
+def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, kind: str, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)
     if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS):
         rows = cached.get('data')
         if isinstance(rows, list):
+            _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=True)
             return rows
     now_ms = int(time.time() * 1000)
     if kind == 'contract':
@@ -142,6 +179,7 @@ def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, k
         'data': rows,
     }
     _atomic_write_json(path, payload)
+    _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=False)
     return rows
 
 
@@ -364,12 +402,12 @@ def _fetch_symbol_index_price_klines_remote(account: str, symbol: str, limit: in
     return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
 
 
-def _fetch_symbol_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
-    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='contract')
+def _fetch_symbol_klines(account: str, symbol: str, limit: int, *, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='contract', cache_stats=cache_stats)
 
 
-def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int) -> list[list[Any]]:
-    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='index')
+def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int, *, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='index', cache_stats=cache_stats)
 
 
 def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
@@ -466,6 +504,7 @@ def build_live_inputs(
         return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': errors}
 
     keep = int(history_window_mins)
+    shared_symbol_bars_cache = _new_shared_symbol_bars_cache_stats()
 
     histories: dict[str, pd.DataFrame] = {}
     stale_symbols: dict[str, str] = {}
@@ -474,14 +513,14 @@ def build_live_inputs(
 
     for symbol in eligible_symbols:
         try:
-            rows = _fetch_symbol_klines(account, symbol, keep)
+            rows = _fetch_symbol_klines(account, symbol, keep, cache_stats=shared_symbol_bars_cache)
             raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
             stage3_frames.append(raw_df)
             df = _rows_to_df(raw_df, ticker_map.get(symbol) or {})
             if latest_closed_bar_ts not in df.index:
                 stale_symbols[symbol] = _fmt_bj_from_ms(_to_int(df.index.max()))
                 continue
-            index_rows = _fetch_symbol_index_price_klines(account, symbol, keep)
+            index_rows = _fetch_symbol_index_price_klines(account, symbol, keep, cache_stats=shared_symbol_bars_cache)
             index_df = _rows_to_index_df(symbol, index_rows, latest_closed_bar_ts)
             aligned_idx = index_df.reindex(df.index)
             if aligned_idx[['high_idx', 'low_idx', 'close_idx']].isna().any().any():
@@ -526,5 +565,6 @@ def build_live_inputs(
             'symbol_count': len(histories),
             'bars_loaded_min': int(min(len(df) for df in histories.values())),
             'bars_loaded_max': int(max(len(df) for df in histories.values())),
+            'shared_symbol_bars_cache': shared_symbol_bars_cache,
         },
     }
