@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from copy import deepcopy
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
@@ -358,16 +360,25 @@ def _finalize_candidate_payload(
     candidate_cross_section = candidate_payload['cross_section']
     candidate_full_df = dict(candidate_payload['full_df'])
     finalize_cache_stats = new_shared_symbol_bars_cache_stats()
+    finalize_summary = {
+        'processed_symbols': 0,
+        'verify_failed_count': 0,
+        'delayed_finalize_count': 0,
+        'verify_failed_symbols': [],
+        'delayed_symbols': [],
+    }
     if not candidate_full_df:
         return {
             **candidate_payload,
             'finalize_shared_symbol_bars_cache': finalize_cache_stats,
+            'finalize_summary': finalize_summary,
         }
 
     _sleep_until_finalize_probe_ready(candidate_md_finished_utc_ms)
 
     for raw_symbol in list(candidate_full_df.keys()):
         symbol = str(raw_symbol).upper().strip()
+        finalize_summary['processed_symbols'] = int(finalize_summary.get('processed_symbols', 0)) + 1
         initial_df = candidate_full_df.get(raw_symbol)
         initial_snapshot = _extract_closed_bar_snapshot(initial_df, c_bar_ts)
         if initial_snapshot is None:
@@ -412,6 +423,10 @@ def _finalize_candidate_payload(
                     'reason': refresh_res.get('reason') or 'refresh_payload_invalid',
                     'exchange_snapshot': refresh_res,
                 })
+            finalize_summary['verify_failed_count'] = int(finalize_summary.get('verify_failed_count', 0)) + 1
+            verify_failed_symbols = finalize_summary.setdefault('verify_failed_symbols', [])
+            if symbol not in verify_failed_symbols:
+                verify_failed_symbols.append(symbol)
             candidate_full_df.pop(raw_symbol, None)
             candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
             continue
@@ -439,6 +454,10 @@ def _finalize_candidate_payload(
                     'initial_snapshot': initial_snapshot,
                     'refreshed_snapshot': refreshed_snapshot,
                 })
+            finalize_summary['delayed_finalize_count'] = int(finalize_summary.get('delayed_finalize_count', 0)) + 1
+            delayed_symbols = finalize_summary.setdefault('delayed_symbols', [])
+            if symbol not in delayed_symbols:
+                delayed_symbols.append(symbol)
             candidate_full_df[raw_symbol] = refreshed_df
             refreshed_cross_section = (refresh_payload or {}).get('cross_section')
             try:
@@ -452,6 +471,7 @@ def _finalize_candidate_payload(
         'cross_section': candidate_cross_section,
         'full_df': candidate_full_df,
         'finalize_shared_symbol_bars_cache': finalize_cache_stats,
+        'finalize_summary': finalize_summary,
     }
 
 
@@ -806,6 +826,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     candidate_cache_stats: dict[str, Any] | None = None
     extra_cache_stats: dict[str, Any] | None = None
     finalize_cache_stats: dict[str, Any] | None = None
+    finalize_summary: dict[str, Any] | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -842,6 +863,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_index_cache_misses': (finalize_cache_stats or {}).get('index_misses') if 'finalize_cache_stats' in locals() else None,
             'finalize_contract_cache_miss_symbols_preview': _cache_miss_symbols_preview(finalize_cache_stats, 'contract_miss_symbols') if 'finalize_cache_stats' in locals() else None,
             'finalize_index_cache_miss_symbols_preview': _cache_miss_symbols_preview(finalize_cache_stats, 'index_miss_symbols') if 'finalize_cache_stats' in locals() else None,
+            'finalize_processed_symbols': (finalize_summary or {}).get('processed_symbols') if 'finalize_summary' in locals() else None,
+            'finalize_verify_failed_count': (finalize_summary or {}).get('verify_failed_count') if 'finalize_summary' in locals() else None,
+            'finalize_delayed_finalize_count': (finalize_summary or {}).get('delayed_finalize_count') if 'finalize_summary' in locals() else None,
+            'finalize_verify_failed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'verify_failed_symbols') if 'finalize_summary' in locals() else None,
+            'finalize_delayed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'delayed_symbols') if 'finalize_summary' in locals() else None,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -959,6 +985,15 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload
     finalize_cache_stats = dict((candidate_payload or {}).get('finalize_shared_symbol_bars_cache') or {}) if candidate_payload else None
+    finalize_summary = deepcopy((candidate_payload or {}).get('finalize_summary') or {}) if candidate_payload else None
+    if audit_enabled and finalize_summary is not None:
+        write_event(account, 'c_bar_finalize_summary', {
+            'bar_ts': current_time_ms,
+            'bar_bj': current_time_bj,
+            'c_bar_ts': c_bar_ts,
+            'c_bar_bj': c_bar_bj,
+            **finalize_summary,
+        })
 
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
@@ -987,6 +1022,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'finalize_index_cache_misses': (finalize_cache_stats or {}).get('index_misses'),
         'finalize_contract_cache_miss_symbols': (finalize_cache_stats or {}).get('contract_miss_symbols'),
         'finalize_index_cache_miss_symbols': (finalize_cache_stats or {}).get('index_miss_symbols'),
+        'finalize_processed_symbols': (finalize_summary or {}).get('processed_symbols'),
+        'finalize_verify_failed_count': (finalize_summary or {}).get('verify_failed_count'),
+        'finalize_delayed_finalize_count': (finalize_summary or {}).get('delayed_finalize_count'),
+        'finalize_verify_failed_symbols': (finalize_summary or {}).get('verify_failed_symbols'),
+        'finalize_delayed_symbols': (finalize_summary or {}).get('delayed_symbols'),
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
