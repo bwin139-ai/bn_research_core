@@ -54,6 +54,7 @@ def _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts: int) -> int:
 _SHARED_MARKET_DIRNAME = 'shared_market'
 _SHARED_TICKER_TTL_SECS = 55
 _SHARED_EXCHANGE_INFO_TTL_SECS = 300
+_SHARED_LATEST_CLOSED_BAR_TTL_SECS = 2
 
 
 def _shared_market_dir() -> Path:
@@ -98,6 +99,30 @@ def _ticker_snapshot_path() -> Path:
     return _shared_market_dir() / 'futures_ticker.shared.json'
 
 
+def _latest_closed_bar_snapshot_path() -> Path:
+    return _shared_market_dir() / 'latest_closed_bar.shared.json'
+
+
+def _load_or_refresh_latest_closed_bar_snapshot(account: str) -> dict[str, Any]:
+    path = _latest_closed_bar_snapshot_path()
+    cached = _read_json_file(path)
+    if _cache_is_fresh(cached, _SHARED_LATEST_CLOSED_BAR_TTL_SECS):
+        return cached
+    now_ms = int(time.time() * 1000)
+    latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
+    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
+    payload = {
+        'fetched_utc_ms': now_ms,
+        'fetched_bj': _fmt_bj_from_ms(now_ms),
+        'latest_closed_bar_ts': latest_closed_bar_ts,
+        'latest_closed_bar_bj': _fmt_bj_from_ms(latest_closed_bar_ts),
+        'signal_time_ts': signal_time_ts,
+        'signal_time_bj': _fmt_bj_from_ms(signal_time_ts),
+    }
+    _atomic_write_json(path, payload)
+    return payload
+
+
 def _load_or_refresh_exchange_info(account: str) -> dict[str, Any]:
     path = _exchange_info_snapshot_path()
     cached = _read_json_file(path)
@@ -132,13 +157,14 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 
 
 def build_market_snapshot(account: str) -> dict[str, Any]:
-    latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
-    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
+    latest_closed_bar_snapshot = _load_or_refresh_latest_closed_bar_snapshot(account)
     return {
-        'latest_closed_bar_ts': latest_closed_bar_ts,
-        'latest_closed_bar_bj': _fmt_bj_from_ms(latest_closed_bar_ts),
-        'signal_time_ts': signal_time_ts,
-        'signal_time_bj': _fmt_bj_from_ms(signal_time_ts),
+        'latest_closed_bar_ts': int(latest_closed_bar_snapshot['latest_closed_bar_ts']),
+        'latest_closed_bar_bj': latest_closed_bar_snapshot['latest_closed_bar_bj'],
+        'signal_time_ts': int(latest_closed_bar_snapshot['signal_time_ts']),
+        'signal_time_bj': latest_closed_bar_snapshot['signal_time_bj'],
+        'market_snapshot_fetched_utc_ms': int(latest_closed_bar_snapshot['fetched_utc_ms']),
+        'market_snapshot_fetched_bj': latest_closed_bar_snapshot['fetched_bj'],
         'ticker_map': _ticker_map(account),
     }
 

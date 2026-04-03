@@ -792,6 +792,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'c_bar_ts': c_bar_ts,
             'outcome': outcome,
             'scheduled_signal_check_bj': scheduled_signal_check_bj,
+            'market_snapshot_fetched_bj': market_snapshot_fetched_bj if 'market_snapshot_fetched_bj' in locals() else None,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -831,6 +832,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     market_snapshot = build_market_snapshot(account)
     latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
     ticker_map_snapshot = dict(market_snapshot['ticker_map'])
+    market_snapshot_fetched_utc_ms = int(market_snapshot['market_snapshot_fetched_utc_ms'])
+    market_snapshot_fetched_bj = str(market_snapshot['market_snapshot_fetched_bj'])
 
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
@@ -907,6 +910,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'loop_started_bj': loop_started_bj,
         'scheduled_signal_check_utc': scheduled_signal_check_utc,
         'scheduled_signal_check_bj': scheduled_signal_check_bj,
+        'market_snapshot_fetched_utc_ms': market_snapshot_fetched_utc_ms,
+        'market_snapshot_fetched_bj': market_snapshot_fetched_bj,
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
