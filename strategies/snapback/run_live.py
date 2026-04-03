@@ -44,6 +44,8 @@ from strategies.snapback.trade_consumer import (
 )
 
 BJ = timezone(timedelta(hours=8))
+_MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
+_MARKET_DATA_LOG_DIR = Path('output/logs')
 
 
 def setup_logging() -> None:
@@ -72,12 +74,40 @@ def _perf_elapsed_ms(start_perf: float) -> int:
     return int(round((time.perf_counter() - start_perf) * 1000))
 
 
-def _log_perf_stage(stage: str, payload: dict[str, Any]) -> None:
+def _market_data_log_path(account: str) -> Path:
+    account_key = str(account).strip() or 'unknown'
+    _MARKET_DATA_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return _MARKET_DATA_LOG_DIR / f'snapback_market_data.{account_key}.log'
+
+
+def _get_market_data_logger(account: str) -> logging.Logger:
+    account_key = str(account).strip() or 'unknown'
+    logger = _MARKET_DATA_LOGGERS.get(account_key)
+    if logger is not None:
+        return logger
+    logger = logging.getLogger(f'snapback.market_data.{account_key}')
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        handler = logging.FileHandler(_market_data_log_path(account_key), encoding='utf-8')
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s'))
+        logger.addHandler(handler)
+    _MARKET_DATA_LOGGERS[account_key] = logger
+    return logger
+
+
+def _log_market_data_event(account: str, level: int, message: str, *args: Any) -> None:
+    logger = _get_market_data_logger(account)
+    logger.log(level, message, *args)
+
+
+def _log_perf_stage(account: str, stage: str, payload: dict[str, Any]) -> None:
     try:
         body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
     except Exception:
         body = str(payload)
-    logging.info('[perf:%s] %s', stage, body)
+    _log_market_data_event(account, logging.INFO, '[perf:%s] %s', stage, body)
 
 
 
@@ -431,7 +461,9 @@ def _finalize_candidate_payload(
         refreshed_snapshot = _extract_closed_bar_snapshot(refreshed_df, c_bar_ts) if refreshed_df is not None else None
 
         if (not refresh_res.get('ok')) or refresh_payload is None or refreshed_c_bar_ts != c_bar_ts or refreshed_snapshot is None:
-            logging.warning(
+            _log_market_data_event(
+                account,
+                logging.WARNING,
                 '[c_bar_finalize] verify_failed | symbol=%s | c_bar_bj=%s | reason=%s | refreshed_c_bar_bj=%s',
                 symbol,
                 c_bar_bj,
@@ -464,7 +496,9 @@ def _finalize_candidate_payload(
             if refreshed_snapshot.get(field) != initial_snapshot.get(field)
         ]
         if changed_fields:
-            logging.warning(
+            _log_market_data_event(
+                account,
+                logging.WARNING,
                 '[c_bar_finalize] delayed_finalize | symbol=%s | c_bar_bj=%s | changed_fields=%s',
                 symbol,
                 c_bar_bj,
@@ -938,7 +972,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'signal_digest': signal_digest_preview,
             'total_elapsed_ms': _perf_elapsed_ms(run_once_perf_started),
         }
-        _log_perf_stage('run_once', payload)
+        _log_perf_stage(account, 'run_once', payload)
         if audit_enabled:
             _write_stage_record(account, 'stage0_run_once_perf', payload)
 
