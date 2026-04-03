@@ -710,10 +710,10 @@ def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
     now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
-    current_minute_second_second = now.replace(second=40, microsecond=0)
+    current_minute_second_second = now.replace(second=5, microsecond=0)
     if now < current_minute_second_second:
         return current_minute_second_second.timestamp()
-    next_minute_second_second = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=40)
+    next_minute_second_second = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=5)
     return next_minute_second_second.timestamp()
 
 
