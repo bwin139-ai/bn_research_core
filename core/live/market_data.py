@@ -155,6 +155,35 @@ def _record_shared_symbol_bars_cache_event(stats: dict[str, Any] | None, *, kind
     raise ValueError(f'unsupported bars kind: {kind}')
 
 
+def new_shared_symbol_bars_cache_stats() -> dict[str, Any]:
+    return _new_shared_symbol_bars_cache_stats()
+
+
+def merge_shared_symbol_bars_cache_stats(target: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
+    out = dict(target or _new_shared_symbol_bars_cache_stats())
+    src = dict(incoming or {})
+    out['contract_hits'] = int(out.get('contract_hits', 0)) + int(src.get('contract_hits', 0) or 0)
+    out['contract_misses'] = int(out.get('contract_misses', 0)) + int(src.get('contract_misses', 0) or 0)
+    out['index_hits'] = int(out.get('index_hits', 0)) + int(src.get('index_hits', 0) or 0)
+    out['index_misses'] = int(out.get('index_misses', 0)) + int(src.get('index_misses', 0) or 0)
+
+    contract_miss_symbols = [str(x).upper().strip() for x in (out.get('contract_miss_symbols') or []) if str(x).strip()]
+    for symbol in (src.get('contract_miss_symbols') or []):
+        symbol_key = _safe_symbol_key(symbol)
+        if symbol_key not in contract_miss_symbols:
+            contract_miss_symbols.append(symbol_key)
+    out['contract_miss_symbols'] = contract_miss_symbols
+
+    index_miss_symbols = [str(x).upper().strip() for x in (out.get('index_miss_symbols') or []) if str(x).strip()]
+    for symbol in (src.get('index_miss_symbols') or []):
+        symbol_key = _safe_symbol_key(symbol)
+        if symbol_key not in index_miss_symbols:
+            index_miss_symbols.append(symbol_key)
+    out['index_miss_symbols'] = index_miss_symbols
+    return out
+
+
+
 def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, kind: str, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)

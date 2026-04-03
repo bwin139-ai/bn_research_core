@@ -22,7 +22,13 @@ from core.live.live_state import (
     mark_loop_heartbeat,
     sync_cooldown_map,
 )
-from core.live.market_data import build_live_inputs, build_market_snapshot, list_candidate_symbols
+from core.live.market_data import (
+    build_live_inputs,
+    build_market_snapshot,
+    list_candidate_symbols,
+    merge_shared_symbol_bars_cache_stats,
+    new_shared_symbol_bars_cache_stats,
+)
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
@@ -340,8 +346,12 @@ def _finalize_candidate_payload(
 ) -> dict[str, Any]:
     candidate_cross_section = candidate_payload['cross_section']
     candidate_full_df = dict(candidate_payload['full_df'])
+    finalize_cache_stats = new_shared_symbol_bars_cache_stats()
     if not candidate_full_df:
-        return candidate_payload
+        return {
+            **candidate_payload,
+            'finalize_shared_symbol_bars_cache': finalize_cache_stats,
+        }
 
     _sleep_until_finalize_probe_ready(candidate_md_finished_utc_ms)
 
@@ -362,6 +372,10 @@ def _finalize_candidate_payload(
             ticker_map=ticker_map,
         )
         refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
+        finalize_cache_stats = merge_shared_symbol_bars_cache_stats(
+            finalize_cache_stats,
+            (refresh_payload or {}).get('shared_symbol_bars_cache'),
+        )
         refreshed_c_bar_ts = int(refresh_payload['latest_closed_bar_ts']) if refresh_payload else None
         refreshed_full_df = dict((refresh_payload or {}).get('full_df') or {})
         refreshed_df = refreshed_full_df.get(symbol)
@@ -426,6 +440,7 @@ def _finalize_candidate_payload(
         **candidate_payload,
         'cross_section': candidate_cross_section,
         'full_df': candidate_full_df,
+        'finalize_shared_symbol_bars_cache': finalize_cache_stats,
     }
 
 
@@ -779,6 +794,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     signal_digest_preview: str | None = None
     candidate_cache_stats: dict[str, Any] | None = None
     extra_cache_stats: dict[str, Any] | None = None
+    finalize_cache_stats: dict[str, Any] | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -805,6 +821,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'extra_contract_cache_misses': (extra_cache_stats or {}).get('contract_misses') if 'extra_cache_stats' in locals() else None,
             'extra_index_cache_hits': (extra_cache_stats or {}).get('index_hits') if 'extra_cache_stats' in locals() else None,
             'extra_index_cache_misses': (extra_cache_stats or {}).get('index_misses') if 'extra_cache_stats' in locals() else None,
+            'finalize_contract_cache_hits': (finalize_cache_stats or {}).get('contract_hits') if 'finalize_cache_stats' in locals() else None,
+            'finalize_contract_cache_misses': (finalize_cache_stats or {}).get('contract_misses') if 'finalize_cache_stats' in locals() else None,
+            'finalize_index_cache_hits': (finalize_cache_stats or {}).get('index_hits') if 'finalize_cache_stats' in locals() else None,
+            'finalize_index_cache_misses': (finalize_cache_stats or {}).get('index_misses') if 'finalize_cache_stats' in locals() else None,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -918,6 +938,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         )
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload
+    finalize_cache_stats = dict((candidate_payload or {}).get('finalize_shared_symbol_bars_cache') or {}) if candidate_payload else None
 
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
@@ -940,6 +961,12 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'extra_index_cache_misses': (extra_cache_stats or {}).get('index_misses'),
         'extra_contract_cache_miss_symbols': (extra_cache_stats or {}).get('contract_miss_symbols'),
         'extra_index_cache_miss_symbols': (extra_cache_stats or {}).get('index_miss_symbols'),
+        'finalize_contract_cache_hits': (finalize_cache_stats or {}).get('contract_hits'),
+        'finalize_contract_cache_misses': (finalize_cache_stats or {}).get('contract_misses'),
+        'finalize_index_cache_hits': (finalize_cache_stats or {}).get('index_hits'),
+        'finalize_index_cache_misses': (finalize_cache_stats or {}).get('index_misses'),
+        'finalize_contract_cache_miss_symbols': (finalize_cache_stats or {}).get('contract_miss_symbols'),
+        'finalize_index_cache_miss_symbols': (finalize_cache_stats or {}).get('index_miss_symbols'),
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
