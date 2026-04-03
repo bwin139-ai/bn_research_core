@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,86 @@ def _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts: int) -> int:
     return int(latest_closed_bar_ts) + 60000
 
 
+_SHARED_MARKET_DIRNAME = 'shared_market'
+_SHARED_TICKER_TTL_SECS = 55
+_SHARED_EXCHANGE_INFO_TTL_SECS = 300
+
+
+def _shared_market_dir() -> Path:
+    path = get_stage_audit_dir().parent / _SHARED_MARKET_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False) + '\n', encoding='utf-8')
+    os.replace(tmp_path, path)
+
+
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _cache_is_fresh(snapshot: dict[str, Any] | None, ttl_secs: int) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    fetched_utc_ms = snapshot.get('fetched_utc_ms')
+    if fetched_utc_ms is None:
+        return False
+    try:
+        age_ms = int(time.time() * 1000) - int(fetched_utc_ms)
+    except Exception:
+        return False
+    return age_ms >= 0 and age_ms <= int(ttl_secs * 1000)
+
+
+def _exchange_info_snapshot_path() -> Path:
+    return _shared_market_dir() / 'futures_exchange_info.shared.json'
+
+
+def _ticker_snapshot_path() -> Path:
+    return _shared_market_dir() / 'futures_ticker.shared.json'
+
+
+def _load_or_refresh_exchange_info(account: str) -> dict[str, Any]:
+    path = _exchange_info_snapshot_path()
+    cached = _read_json_file(path)
+    if _cache_is_fresh(cached, _SHARED_EXCHANGE_INFO_TTL_SECS):
+        return cached
+    client = get_client(account)
+    now_ms = int(time.time() * 1000)
+    payload = {
+        'fetched_utc_ms': now_ms,
+        'fetched_bj': _fmt_bj_from_ms(now_ms),
+        'data': client.futures_exchange_info(),
+    }
+    _atomic_write_json(path, payload)
+    return payload
+
+
+def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
+    path = _ticker_snapshot_path()
+    cached = _read_json_file(path)
+    if _cache_is_fresh(cached, _SHARED_TICKER_TTL_SECS):
+        return cached
+    client = get_client(account)
+    now_ms = int(time.time() * 1000)
+    payload = {
+        'fetched_utc_ms': now_ms,
+        'fetched_bj': _fmt_bj_from_ms(now_ms),
+        'data': client.futures_ticker(),
+    }
+    _atomic_write_json(path, payload)
+    return payload
+
+
+
 def build_market_snapshot(account: str) -> dict[str, Any]:
     latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
     signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
@@ -77,8 +159,8 @@ def _write_stage3_parquet(account: str, audit_label: str, bar_ts: int, rows: pd.
 
 
 def list_candidate_symbols(account: str, *, exclude_symbols: list[str] | None = None) -> list[str]:
-    client = get_client(account)
-    info = client.futures_exchange_info()
+    info_snapshot = _load_or_refresh_exchange_info(account)
+    info = info_snapshot['data']
     exclude = {str(x).upper().strip() for x in (exclude_symbols or []) if str(x).strip()}
     out: list[str] = []
     for item in info.get('symbols', []):
@@ -97,8 +179,7 @@ def list_candidate_symbols(account: str, *, exclude_symbols: list[str] | None = 
 
 
 def _ticker_map(account: str) -> dict[str, dict[str, Any]]:
-    client = get_client(account)
-    rows = client.futures_ticker()
+    rows = _load_or_refresh_ticker_rows(account)['data']
     out: dict[str, dict[str, Any]] = {}
     for row in rows:
         symbol = str(row.get('symbol', '')).upper().strip()
