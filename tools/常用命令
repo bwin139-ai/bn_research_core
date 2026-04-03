@@ -39,10 +39,10 @@ python3 audit_tools/live_audit/audit_live_scene_v1.py \
 
 # *****审审审审审审***** sim / live 一致性审计 *****审审审审审审*****
 /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_window_diff.py \
-  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest5.jsonl \
-  --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.jsonl \
-  --start-c-time-bj "2026-04-01 15:30:00" \
-  --end-c-time-bj "2026-04-02 09:50:00" \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest6.jsonl \
+  --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260402T180842Z.jsonl \
+  --start-c-time-bj "2026-04-03 02:00:00" \
+  --end-c-time-bj "2026-04-03 09:00:00" \
   --out-dir output/sim_live_audit
 
 /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_snapshot_diff.py \
@@ -112,7 +112,7 @@ DEST=~/ai_projects/bn_research_core/output/live
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.log" \
-  "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260401T073519Z.*" \
+  "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260402T180842Z.*" \
   "$DEST"
 # *****download***** 拉 全量 sim 数据 *****download***** 
 RUNID="SNAP_V6.1_30D_P6_0325T2335_ALL"
@@ -130,14 +130,14 @@ scp \
 DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest5.jsonl" \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest5.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest6.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest6.jsonl" \
   "$DEST"
 # *****download*****  拉 sim/live一致性审计数据 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
 mkdir -p "$DEST"
 scp \
-  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1775028600000_1775094600000.*" \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1775152800000_1775178000000.*" \
   "$DEST"
 # *****download*****  拉复盘k线图表 *****download***** 
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
@@ -161,12 +161,12 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 # ========= 前端冒烟测试 Top1 / Snapback =========
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-04-01T07:30:00+00:00 \
-  --end   2026-04-02T04:00:00+00:00 \
+  --start 2026-04-02T18:00:00+00:00 \
+  --end   2026-04-03T01:30:00+00:00 \
   --kline-window 60 \
-  --config snapback/config.json \
+  --config snapback/config.highfreq.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_V6.1_SmokeTest5"
+  --run-id "Snapback_V6.1_SmokeTest6"
   #最初--start 2026-03-25T17:00:00+00:00 \
   #3月31日 22:00 BJ 超时参数调整为3分钟
 
@@ -199,7 +199,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
 
 # *** 2.再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 1 \
+  --days 2 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \

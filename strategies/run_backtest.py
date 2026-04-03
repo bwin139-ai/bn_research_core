@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -266,11 +267,102 @@ def main():
         default="top1",
         help="选择要运行的策略大脑 (默认: top1)",
     )
+    parser.add_argument("--audit-start-bj", default="", help="取证开始时间，北京时间，格式: YYYY-MM-DD HH:MM:SS")
+    parser.add_argument("--audit-end-bj", default="", help="取证结束时间，北京时间，格式: YYYY-MM-DD HH:MM:SS")
+    parser.add_argument("--audit-symbols", default="", help="取证品种，逗号分隔，例如 RIVERUSDT,VVVUSDT")
+    parser.add_argument("--audit-history-window-bars", type=int, default=120, help="取证输出的历史bars数量")
+    parser.add_argument("--audit-out-dir", default="", help="取证输出目录，默认跟随 --out-dir")
     args = parser.parse_args()
+
+    audit_symbols = {
+        s.strip().upper()
+        for s in str(args.audit_symbols or "").split(",")
+        if s.strip()
+    }
+    audit_enabled = bool(args.audit_start_bj and args.audit_end_bj and audit_symbols)
+    audit_start_ms = None
+    audit_end_ms = None
+    audit_out_path = None
+    if audit_enabled:
+        try:
+            audit_start_dt = datetime.strptime(args.audit_start_bj, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ_TZ)
+            audit_end_dt = datetime.strptime(args.audit_end_bj, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ_TZ)
+        except ValueError as e:
+            raise SystemExit(f"取证时间解析失败，请使用北京时间格式 YYYY-MM-DD HH:MM:SS: {e}")
+        audit_start_ms = int(audit_start_dt.astimezone(timezone.utc).timestamp() * 1000)
+        audit_end_ms = int(audit_end_dt.astimezone(timezone.utc).timestamp() * 1000)
+        if audit_end_ms < audit_start_ms:
+            raise SystemExit("取证时间窗口非法: audit_end_bj 早于 audit_start_bj")
+
+    def _bj_from_ms(ts_ms: int | None) -> str | None:
+        if ts_ms is None:
+            return None
+        return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, (np.integer, np.floating, np.bool_)):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, pd.Timestamp):
+            if pd.isna(value):
+                return None
+            if value.tzinfo is None:
+                value = value.tz_localize(timezone.utc)
+            return value.isoformat()
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(v) for v in value]
+        return value
+
+    def _series_snapshot(row: Any) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if row is None:
+            return out
+        try:
+            items = row.items()
+        except Exception:
+            return out
+        for k, v in items:
+            out[str(k)] = _json_safe(v)
+        return out
+
+    def _history_records(df: Any, bars: int) -> List[Dict[str, Any]]:
+        if df is None:
+            return []
+        try:
+            if df.empty:
+                return []
+        except Exception:
+            return []
+        hist = df.tail(max(1, int(bars)))
+        out: List[Dict[str, Any]] = []
+        for open_time_ms, row in hist.iterrows():
+            ts_ms = int(open_time_ms)
+            rec = {"open_time_ms": ts_ms, "open_time_bj": _bj_from_ms(ts_ms)}
+            rec.update(_series_snapshot(row))
+            out.append(rec)
+        return out
 
     # 初始化目录和日志
     out_dir = os.path.join(PROJECT_ROOT, args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    if audit_enabled:
+        audit_dir = os.path.join(PROJECT_ROOT, args.audit_out_dir) if str(args.audit_out_dir or "").strip() else out_dir
+        os.makedirs(audit_dir, exist_ok=True)
+        audit_out_path = os.path.join(audit_dir, f"sim_forensic.{args.run_id}.jsonl")
+        if os.path.exists(audit_out_path):
+            os.remove(audit_out_path)
     log_file = os.path.join(PROJECT_ROOT, "output", "logs", f"sim.{args.run_id}.log")
     setup_logging(log_file)
 
@@ -380,6 +472,37 @@ def main():
             ts, cross_section, active_symbols, full_df=df_dict
         )
 
+        if audit_enabled and audit_start_ms is not None and audit_end_ms is not None and audit_out_path:
+            if audit_start_ms <= int(ts) <= audit_end_ms:
+                signal_symbol = str((signal or {}).get("symbol") or "").upper().strip() if signal else ""
+                signal_digest = None
+                if signal:
+                    signal_digest = {
+                        "symbol": signal_symbol or None,
+                        "signal_time": int(signal["signal_time"]) if signal.get("signal_time") is not None else None,
+                        "current_price": _json_safe(signal.get("current_price")),
+                        "tp_price": _json_safe(signal.get("tp_price")),
+                        "sl_price": _json_safe(signal.get("sl_price")),
+                    }
+                with open(audit_out_path, "a", encoding="utf-8") as f:
+                    for audit_symbol in sorted(audit_symbols):
+                        symbol_df = df_dict.get(audit_symbol)
+                        row = cross_section.loc[audit_symbol] if audit_symbol in cross_section.index else None
+                        forensic_row = {
+                            "run_id": args.run_id,
+                            "strategy": args.strategy,
+                            "bar_ts": int(ts),
+                            "bar_bj": _bj_from_ms(int(ts)),
+                            "symbol": audit_symbol,
+                            "in_cross_section": bool(audit_symbol in cross_section.index),
+                            "in_active_symbols": bool(audit_symbol in active_symbols),
+                            "selected_signal_symbol": signal_symbol or None,
+                            "selected_signal_digest": signal_digest,
+                            "cross_snapshot": _series_snapshot(row),
+                            "history_bars": _history_records(symbol_df.loc[:ts], args.audit_history_window_bars) if symbol_df is not None else [],
+                        }
+                        f.write(json.dumps(forensic_row, ensure_ascii=False, cls=NumpyEncoder) + "\n")
+
         if signal:
             signals_history.append(signal)
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单
@@ -459,6 +582,8 @@ def main():
     logging.info(f"信号快照: {signals_out}")
     logging.info(f"交易明细: {trades_out}")
     logging.info(f"业绩摘要: {summary_out}")
+    if audit_enabled and audit_out_path:
+        logging.info(f"取证现场: {audit_out_path}")
     logging.info(f"高清复盘图目录: {viz_dir}")
     logging.info("=" * 60)
 
