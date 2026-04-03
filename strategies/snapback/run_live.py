@@ -473,6 +473,8 @@ def _finalize_candidate_payload(
         'symbol_count': int(len(candidate_full_df)),
         'bars_loaded_min': int(min(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
         'bars_loaded_max': int(max(len(df) for df in candidate_full_df.values())) if candidate_full_df else 0,
+        'stale_symbol_count': 0,
+        'stale_symbols': {},
         'finalize_shared_symbol_bars_cache': finalize_cache_stats,
         'finalize_summary': finalize_summary,
     }
