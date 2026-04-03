@@ -65,10 +65,10 @@ def _shared_market_dir() -> Path:
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    unique_suffix = f".{os.getpid()}.{time.time_ns()}.tmp"
+    tmp_path = path.with_name(path.name + unique_suffix)
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False) + '\n', encoding='utf-8')
     os.replace(tmp_path, path)
-
 
 def _read_json_file(path: Path) -> dict[str, Any] | None:
     if not path.exists():
