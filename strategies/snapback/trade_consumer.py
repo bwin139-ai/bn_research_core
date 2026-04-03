@@ -593,10 +593,7 @@ def _perf_elapsed_ms(start_perf: float) -> int:
     return int((time.perf_counter() - start_perf) * 1000)
 
 def _log_perf_stage(stage: str, **fields: Any) -> None:
-    payload = {'stage': stage}
-    for key, value in fields.items():
-        payload[key] = _normalize_scalar(value)
-    logging.info('[trade_consumer_perf] %s', _json_safe_dumps(payload, sort_keys=True, separators=(',', ':')))
+    return None
 
 def _signal_digest(signal: dict[str, Any]) -> str:
     base = {

@@ -65,10 +65,7 @@ def _perf_elapsed_ms(start_perf: float) -> int:
 
 
 def _log_perf_stage(stage: str, payload: dict[str, Any]) -> None:
-    logging.info('[run_live_perf] %s', _json_safe_dumps({
-        'stage': stage,
-        **payload,
-    }, sort_keys=True, separators=(',', ':')))
+    return None
 
 
 

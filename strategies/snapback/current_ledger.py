@@ -105,12 +105,7 @@ def _should_log_perf_stage(stage: str, payload: dict[str, Any]) -> bool:
 
 
 def _log_perf_stage(stage: str, **fields: Any) -> None:
-    payload = {'stage': stage}
-    for key, value in fields.items():
-        payload[key] = _normalize_scalar(value)
-    if not _should_log_perf_stage(stage, payload):
-        return
-    logging.info('[trade_consumer_perf] %s', _json_safe_dumps(payload, sort_keys=True, separators=(',', ':')))
+    return None
 
 
 def precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
