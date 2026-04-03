@@ -834,6 +834,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     finalize_removed_ratio_pct: float | None = None
     finalize_verify_failed_ratio_pct: float | None = None
     finalize_delayed_ratio_pct: float | None = None
+    finalize_kept_ratio_pct: float | None = None
 
     current_time_ms: int | None = None
     current_time_bj: str | None = None
@@ -881,6 +882,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
             'finalize_verify_failed_ratio_pct': finalize_verify_failed_ratio_pct,
             'finalize_delayed_ratio_pct': finalize_delayed_ratio_pct,
+            'finalize_kept_ratio_pct': finalize_kept_ratio_pct,
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -1008,6 +1010,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     finalize_summary = deepcopy((candidate_payload or {}).get('finalize_summary') or {}) if candidate_payload else None
     finalize_verify_failed_ratio_pct = round((float((finalize_summary or {}).get('verify_failed_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
     finalize_delayed_ratio_pct = round((float((finalize_summary or {}).get('delayed_finalize_count') or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
+    finalize_kept_ratio_pct = round((float(candidate_symbol_count_after_finalize or 0) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
     if audit_enabled and finalize_summary is not None:
         write_event(account, 'c_bar_finalize_summary', {
             'bar_ts': current_time_ms,
@@ -1021,6 +1024,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
             'finalize_verify_failed_ratio_pct': finalize_verify_failed_ratio_pct,
             'finalize_delayed_ratio_pct': finalize_delayed_ratio_pct,
+            'finalize_kept_ratio_pct': finalize_kept_ratio_pct,
             **finalize_summary,
         })
 
@@ -1063,6 +1067,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'finalize_removed_ratio_pct': finalize_removed_ratio_pct,
         'finalize_verify_failed_ratio_pct': finalize_verify_failed_ratio_pct,
         'finalize_delayed_ratio_pct': finalize_delayed_ratio_pct,
+        'finalize_kept_ratio_pct': finalize_kept_ratio_pct,
         'candidate_md_started_utc_ms': candidate_md_started_utc_ms,
         'candidate_md_started_bj': _fmt_bj_from_ms(candidate_md_started_utc_ms),
         'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
