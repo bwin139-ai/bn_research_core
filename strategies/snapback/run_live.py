@@ -22,7 +22,7 @@ from core.live.live_state import (
     mark_loop_heartbeat,
     sync_cooldown_map,
 )
-from core.live.market_data import build_live_inputs, list_candidate_symbols
+from core.live.market_data import build_live_inputs, build_market_snapshot, list_candidate_symbols
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
 from strategies.snapback.trade_consumer import (
@@ -335,6 +335,8 @@ def _finalize_candidate_payload(
     current_time_bj: str,
     candidate_md_finished_utc_ms: int | None,
     audit_enabled: bool,
+    latest_closed_bar_ts: int,
+    ticker_map: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     candidate_cross_section = candidate_payload['cross_section']
     candidate_full_df = dict(candidate_payload['full_df'])
@@ -356,6 +358,8 @@ def _finalize_candidate_payload(
             history_window_mins,
             strategy_cfg,
             audit_label='candidate_finalize',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            ticker_map=ticker_map,
         )
         refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
         refreshed_c_bar_ts = int(refresh_payload['latest_closed_bar_ts']) if refresh_payload else None
@@ -824,9 +828,21 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     exchange_activity_symbols_count = len(exchange_activity_symbols)
     local_activity_symbols_count = len(local_activity_symbols)
 
+    market_snapshot = build_market_snapshot(account)
+    latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
+    ticker_map_snapshot = dict(market_snapshot['ticker_map'])
+
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
-    candidate_md_res = build_live_inputs(account, candidate_symbols, history_window_mins, strategy_cfg, audit_label='candidate')
+    candidate_md_res = build_live_inputs(
+        account,
+        candidate_symbols,
+        history_window_mins,
+        strategy_cfg,
+        audit_label='candidate',
+        latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
+        ticker_map=ticker_map_snapshot,
+    )
     candidate_md_elapsed_ms = _perf_elapsed_ms(candidate_md_perf_started)
     candidate_md_finished_utc_ms = _now_utc_ms()
     extra_md_res: dict[str, Any] | None = None
@@ -835,7 +851,15 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if extra_reconcile_symbols:
         extra_md_started_utc_ms = _now_utc_ms()
         extra_md_perf_started = time.perf_counter()
-        extra_md_res = build_live_inputs(account, extra_reconcile_symbols, history_window_mins, strategy_cfg, audit_label='reconcile')
+        extra_md_res = build_live_inputs(
+            account,
+            extra_reconcile_symbols,
+            history_window_mins,
+            strategy_cfg,
+            audit_label='reconcile',
+            latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
+            ticker_map=ticker_map_snapshot,
+        )
         extra_md_elapsed_ms = _perf_elapsed_ms(extra_md_perf_started)
         extra_md_finished_utc_ms = _now_utc_ms()
 
@@ -872,6 +896,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             current_time_bj=current_time_bj,
             candidate_md_finished_utc_ms=candidate_md_finished_utc_ms,
             audit_enabled=audit_enabled,
+            latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
+            ticker_map=ticker_map_snapshot,
         )
         if payload is candidate_md_res.get('data'):
             payload = candidate_payload

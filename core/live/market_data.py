@@ -49,6 +49,18 @@ def _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts: int) -> int:
     return int(latest_closed_bar_ts) + 60000
 
 
+def build_market_snapshot(account: str) -> dict[str, Any]:
+    latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
+    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
+    return {
+        'latest_closed_bar_ts': latest_closed_bar_ts,
+        'latest_closed_bar_bj': _fmt_bj_from_ms(latest_closed_bar_ts),
+        'signal_time_ts': signal_time_ts,
+        'signal_time_bj': _fmt_bj_from_ms(signal_time_ts),
+        'ticker_map': _ticker_map(account),
+    }
+
+
 def _stage_audit_dir() -> Path:
     return get_stage_audit_dir()
 
@@ -273,15 +285,17 @@ def build_live_inputs(
     strategy_cfg: dict[str, Any] | None = None,
     *,
     audit_label: str = 'candidate',
+    latest_closed_bar_ts: int | None = None,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     errors: dict[str, str] = {}
     history_window_mins = int(history_window_mins)
     if history_window_mins <= 0:
         raise ValueError('history_window_mins must be > 0')
 
-    latest_closed_bar_ts = _last_closed_bar_open_time_ms(account)
+    latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
     signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
-    ticker_map = _ticker_map(account)
+    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
     eligible_symbols, universe_errors = _filter_symbols_by_universe(
         symbols,
         ticker_map,
