@@ -470,6 +470,7 @@ def _finalize_candidate_payload(
         **candidate_payload,
         'cross_section': candidate_cross_section,
         'full_df': candidate_full_df,
+        'symbol_count': int(len(candidate_full_df)),
         'finalize_shared_symbol_bars_cache': finalize_cache_stats,
         'finalize_summary': finalize_summary,
     }
