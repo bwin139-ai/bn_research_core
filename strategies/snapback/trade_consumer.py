@@ -723,7 +723,12 @@ def _cancel_order_if_present(account: str, symbol: str, *, exchange_order_id: in
         retry_delay_secs=retry_delay_secs,
     )
 
-def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], retry_max: int, retry_delay_secs: float, known_open_orders: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any]]:
+def _is_order_not_exist_reason(reason: Any) -> bool:
+    text = str(reason or '')
+    return ('code=-2013' in text) or ('Order does not exist' in text)
+
+
+def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], retry_max: int, retry_delay_secs: float, known_open_orders: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], str | None]:
     checks: dict[str, Any] = {}
 
     def _resolve_leg_order(*, exchange_order_id: int | None = None, client_order_id: str | None = None) -> dict[str, Any]:
@@ -748,7 +753,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
                 'skipped': True,
                 'known_open_order_snapshot': True,
             }
-        return _order_query(
+        order_res = _order_query(
             account,
             symbol,
             exchange_order_id=exchange_order_id,
@@ -756,6 +761,16 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
         )
+        if (not order_res.get('ok')) and _is_order_not_exist_reason(order_res.get('reason')):
+            return {
+                'ok': True,
+                'reason': '',
+                'data': None,
+                'skipped': True,
+                'missing_on_exchange': True,
+                'missing_reason': order_res.get('reason'),
+            }
+        return order_res
 
     ts_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('time_stop_exchange_order_id'),
@@ -763,7 +778,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     )
     checks['time_stop'] = ts_res
     if ts_res.get('ok') and ts_res.get('data') and str(ts_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'TIME_STOP', checks
+        return 'TIME_STOP', checks, None
 
     tp_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('tp_order_exchange_id'),
@@ -771,7 +786,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     )
     checks['tp'] = tp_res
     if tp_res.get('ok') and tp_res.get('data') and str(tp_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'TAKE_PROFIT', checks
+        return 'TAKE_PROFIT', checks, None
 
     sl_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('sl_order_exchange_id'),
@@ -779,8 +794,15 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     )
     checks['sl'] = sl_res
     if sl_res.get('ok') and sl_res.get('data') and str(sl_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'STOP_LOSS', checks
-    return 'UNKNOWN_EXIT', checks
+        return 'STOP_LOSS', checks, None
+
+    blocking_reason = None
+    for leg in ('time_stop', 'tp', 'sl'):
+        leg_reason = (checks.get(leg) or {}).get('reason')
+        if leg_reason:
+            blocking_reason = leg_reason
+            break
+    return 'UNKNOWN_EXIT', checks, blocking_reason
 
 def _build_open_trade(
     entry_res: dict[str, Any],
@@ -1587,7 +1609,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         'time_stop_exchange_order_id': None,
                     }
                     known_open_orders = list(((precheck or {}).get('orders') or {}).get('data') or []) if snapshot is not None and ((precheck or {}).get('orders') or {}).get('ok') else None
-                    exit_reason, order_checks = _infer_exit_reason(
+                    exit_reason, order_checks, blocking_reason = _infer_exit_reason(
                         account,
                         symbol,
                         pending_terminal_trade,
@@ -2090,7 +2112,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     })
                 continue
 
-            exit_reason, order_checks = _infer_exit_reason(
+            exit_reason, order_checks, blocking_reason = _infer_exit_reason(
                 account,
                 symbol,
                 open_trade,
@@ -2107,14 +2129,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 sl_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('sl_order_exchange_id'), client_order_id=open_trade.get('sl_order_client_id'), prefetched_order_res=order_checks.get('sl'), known_open_orders=open_orders, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
                 ts_cancel = _cancel_order_if_present(account, symbol, exchange_order_id=open_trade.get('time_stop_exchange_order_id'), client_order_id=open_trade.get('time_stop_client_order_id'), prefetched_order_res=order_checks.get('time_stop'), known_open_orders=open_orders, retry_max=retry_max, retry_delay_secs=retry_delay_secs)
 
-            infer_reason = (order_checks.get('time_stop') or {}).get('reason') or (order_checks.get('tp') or {}).get('reason') or (order_checks.get('sl') or {}).get('reason')
-            if infer_reason:
+            if blocking_reason:
                 had_blocking_error = True
                 mark_error(
                     account,
                     symbol,
                     error_code='position_closed_exit_reason_infer_failed',
-                    error_message=infer_reason,
+                    error_message=blocking_reason,
                     error_bj=current_time_bj,
                 )
                 if audit_enabled:
