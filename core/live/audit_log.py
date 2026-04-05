@@ -41,13 +41,26 @@ def get_stage_audit_dir() -> Path:
     return path
 
 
-def get_stage_audit_path(account: str, stage: str) -> Path:
+def _stage_use_daily_partition(stage: str) -> bool:
+    return str(stage).strip() == "stage3_enriched"
+
+
+def _bj_date_key(dt: datetime) -> str:
+    return dt.astimezone(_BJ).strftime("%Y-%m-%d")
+
+
+def get_stage_audit_path(account: str, stage: str, *, day_bj: str | None = None) -> Path:
     account_key = str(account).strip()
     if not account_key:
         raise ValueError("account must not be empty")
     stage_key = str(stage).strip()
     if not stage_key:
         raise ValueError("stage must not be empty")
+    if _stage_use_daily_partition(stage_key):
+        day_key = str(day_bj or '').strip()
+        if not day_key:
+            raise ValueError("day_bj must not be empty for daily-partitioned stage audit")
+        return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.{day_key}.jsonl"
     return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.jsonl"
 
 
@@ -120,7 +133,12 @@ def append_stage_record(account: str, stage: str, payload: dict[str, Any] | None
     }
     if payload:
         record.update(payload)
-    return _append_json_record(get_stage_audit_path(account, stage), record)
+    path = get_stage_audit_path(
+        account,
+        stage,
+        day_bj=_bj_date_key(now) if _stage_use_daily_partition(stage) else None,
+    )
+    return _append_json_record(path, record)
 
 
 def write_runner_started(account: str, payload: dict[str, Any] | None = None) -> Path:
