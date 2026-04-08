@@ -184,10 +184,37 @@ def merge_shared_symbol_bars_cache_stats(target: dict[str, Any] | None, incoming
 
 
 
-def _load_or_refresh_symbol_bar_rows(account: str, symbol: str, limit: int, *, kind: str, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
+def _cached_rows_cover_latest_closed_bar(snapshot: dict[str, Any] | None, required_latest_closed_bar_ts: int | None) -> bool:
+    if required_latest_closed_bar_ts is None:
+        return True
+    if not isinstance(snapshot, dict):
+        return False
+    rows = snapshot.get('data')
+    if not isinstance(rows, list) or not rows:
+        return False
+    max_open_time_ms = None
+    for row in rows:
+        try:
+            open_time_ms = _to_int(row[0])
+        except Exception:
+            continue
+        if max_open_time_ms is None or open_time_ms > max_open_time_ms:
+            max_open_time_ms = open_time_ms
+    return max_open_time_ms is not None and int(max_open_time_ms) >= int(required_latest_closed_bar_ts)
+
+
+def _load_or_refresh_symbol_bar_rows(
+    account: str,
+    symbol: str,
+    limit: int,
+    *,
+    kind: str,
+    cache_stats: dict[str, Any] | None = None,
+    required_latest_closed_bar_ts: int | None = None,
+) -> list[list[Any]]:
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)
-    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS):
+    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts):
         rows = cached.get('data')
         if isinstance(rows, list):
             _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=True)
@@ -442,12 +469,40 @@ def _fetch_symbol_index_price_klines_remote(account: str, symbol: str, limit: in
     return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
 
 
-def _fetch_symbol_klines(account: str, symbol: str, limit: int, *, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
-    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='contract', cache_stats=cache_stats)
+def _fetch_symbol_klines(
+    account: str,
+    symbol: str,
+    limit: int,
+    *,
+    cache_stats: dict[str, Any] | None = None,
+    required_latest_closed_bar_ts: int | None = None,
+) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(
+        account,
+        symbol,
+        limit,
+        kind='contract',
+        cache_stats=cache_stats,
+        required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+    )
 
 
-def _fetch_symbol_index_price_klines(account: str, symbol: str, limit: int, *, cache_stats: dict[str, Any] | None = None) -> list[list[Any]]:
-    return _load_or_refresh_symbol_bar_rows(account, symbol, limit, kind='index', cache_stats=cache_stats)
+def _fetch_symbol_index_price_klines(
+    account: str,
+    symbol: str,
+    limit: int,
+    *,
+    cache_stats: dict[str, Any] | None = None,
+    required_latest_closed_bar_ts: int | None = None,
+) -> list[list[Any]]:
+    return _load_or_refresh_symbol_bar_rows(
+        account,
+        symbol,
+        limit,
+        kind='index',
+        cache_stats=cache_stats,
+        required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+    )
 
 
 def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
@@ -553,14 +608,26 @@ def build_live_inputs(
 
     for symbol in eligible_symbols:
         try:
-            rows = _fetch_symbol_klines(account, symbol, keep, cache_stats=shared_symbol_bars_cache)
+            rows = _fetch_symbol_klines(
+                account,
+                symbol,
+                keep,
+                cache_stats=shared_symbol_bars_cache,
+                required_latest_closed_bar_ts=latest_closed_bar_ts,
+            )
             raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
             stage3_frames.append(raw_df)
             df = _rows_to_df(raw_df, ticker_map.get(symbol) or {})
             if latest_closed_bar_ts not in df.index:
                 stale_symbols[symbol] = _fmt_bj_from_ms(_to_int(df.index.max()))
                 continue
-            index_rows = _fetch_symbol_index_price_klines(account, symbol, keep, cache_stats=shared_symbol_bars_cache)
+            index_rows = _fetch_symbol_index_price_klines(
+                account,
+                symbol,
+                keep,
+                cache_stats=shared_symbol_bars_cache,
+                required_latest_closed_bar_ts=latest_closed_bar_ts,
+            )
             index_df = _rows_to_index_df(symbol, index_rows, latest_closed_bar_ts)
             aligned_idx = index_df.reindex(df.index)
             if aligned_idx[['high_idx', 'low_idx', 'close_idx']].isna().any().any():
