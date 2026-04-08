@@ -42,6 +42,8 @@ SIGNAL_SUMMARY_FIELDS = [
 ]
 
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d{3}\b")
+STAGE3_SYMBOL_RE = re.compile(r'"symbol"\s*:\s*"([^"]+)"')
+STAGE3_C_BAR_TS_RE = re.compile(r'"c_bar_ts"\s*:\s*(\d+)')
 RUNNER_STARTED_TOKEN = "[Snapback-Live] runner started"
 RUNNER_ERROR_TOKEN = "[Snapback-Live] runner error"
 STARTUP_BLOCKED_TOKEN = "startup blocked: reconcile/orphan/state error detected"
@@ -181,6 +183,17 @@ def _iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                 yield obj
 
 
+def _stage3_prefilter_key_from_line(line: str) -> tuple[str, int] | None:
+    sym_m = STAGE3_SYMBOL_RE.search(line)
+    ts_m = STAGE3_C_BAR_TS_RE.search(line)
+    if not sym_m or not ts_m:
+        return None
+    try:
+        return _normalize_symbol(sym_m.group(1)), int(ts_m.group(1))
+    except Exception:
+        return None
+
+
 def _signal_context(row: dict[str, Any]) -> dict[str, Any]:
     ctx = row.get("context")
     return ctx if isinstance(ctx, dict) else {}
@@ -315,21 +328,51 @@ def _in_window(c_time: int, start_ms: int | None, end_ms: int | None) -> bool:
     return True
 
 
-def _build_stage3_index(paths: list[Path], start_ms: int | None, end_ms: int | None, symbols: set[str] | None) -> dict[tuple[str, int], dict[str, Any]]:
+def _build_stage3_index(
+    paths: list[Path],
+    start_ms: int | None,
+    end_ms: int | None,
+    symbols: set[str] | None,
+    target_keys: set[tuple[str, int]] | None = None,
+) -> dict[tuple[str, int], dict[str, Any]]:
     out: dict[tuple[str, int], dict[str, Any]] = {}
     if not paths:
         return out
+    if target_keys is not None and not target_keys:
+        return out
     for path in paths:
-        for row in _iter_jsonl(path):
-            sym = _normalize_symbol(row.get("symbol"))
-            c_bar_ts = _safe_int(row.get("c_bar_ts"))
-            if not sym or c_bar_ts is None:
-                continue
-            if symbols and sym not in symbols:
-                continue
-            if not _in_window(c_bar_ts, start_ms, end_ms):
-                continue
-            out[(sym, c_bar_ts)] = row
+        with path.open("r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                fast_key = _stage3_prefilter_key_from_line(line)
+                if fast_key is None:
+                    continue
+                if target_keys is not None and fast_key not in target_keys:
+                    continue
+                sym, c_bar_ts = fast_key
+                if symbols and sym not in symbols:
+                    continue
+                if not _in_window(c_bar_ts, start_ms, end_ms):
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                sym = _normalize_symbol(row.get("symbol"))
+                c_bar_ts = _safe_int(row.get("c_bar_ts"))
+                if not sym or c_bar_ts is None:
+                    continue
+                if symbols and sym not in symbols:
+                    continue
+                if not _in_window(c_bar_ts, start_ms, end_ms):
+                    continue
+                if target_keys is not None and (sym, c_bar_ts) not in target_keys:
+                    continue
+                out[(sym, c_bar_ts)] = row
     return out
 
 
@@ -599,14 +642,16 @@ def main() -> None:
     sim_signals = _build_sim_signal_index(sim_signals_path, start_c_time_ms, end_c_time_ms, symbols)
     sim_trades = _build_sim_trade_index(sim_trades_path, start_c_time_ms, end_c_time_ms, symbols)
     live_signals = _build_live_signal_index(live_signals_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
-    live_stage3 = _build_stage3_index(stage3_paths, start_c_time_ms, end_c_time_ms, symbols)
-    live_stage5 = _build_stage5_index(live_stage5_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
 
     sim_keys = set(sim_signals.keys())
     live_keys = set(live_signals.keys())
     matched_keys = sorted(sim_keys & live_keys)
+    matched_key_set = set(matched_keys)
     sim_only_keys = sorted(sim_keys - live_keys)
     live_only_keys = sorted(live_keys - sim_keys)
+
+    live_stage3 = _build_stage3_index(stage3_paths, start_c_time_ms, end_c_time_ms, symbols, target_keys=matched_key_set)
+    live_stage5 = _build_stage5_index(live_stage5_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
 
     matched_rows = [
         _compare_match(
@@ -675,6 +720,7 @@ def main() -> None:
         "stage3_dir": str(stage3_dir_path) if stage3_dir_path else "",
         "account": account_name,
         "stage3_daily_file_count": len(stage3_paths),
+        "stage3_target_key_count": len(matched_key_set),
         "stage3_daily_files": [str(p) for p in stage3_paths],
         "stage3_daily_signature_md5": _stage3_daily_signature(stage3_paths),
         "uptime_window_count": len(uptime_windows),
@@ -722,6 +768,7 @@ def main() -> None:
     lines.append(f"stage3_dir: {str(stage3_dir_path) if stage3_dir_path else ''}")
     lines.append(f"account: {account_name}")
     lines.append(f"stage3_daily_file_count: {len(stage3_paths)}")
+    lines.append(f"stage3_target_key_count: {len(matched_key_set)}")
     lines.append("")
     lines.append("[first input diff counts]")
     if input_metrics_enabled:
@@ -757,6 +804,7 @@ def main() -> None:
     print(f"stage3_dir: {str(stage3_dir_path) if stage3_dir_path else ''}")
     print(f"account: {account_name}")
     print(f"stage3_daily_file_count: {len(stage3_paths)}")
+    print(f"stage3_target_key_count: {len(matched_key_set)}")
     print(f"input_metrics_enabled: {input_metrics_enabled}")
     print("")
     print(f"wrote: {out_dir / (stem + '.summary.json')}")
