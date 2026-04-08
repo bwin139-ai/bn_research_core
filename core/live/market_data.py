@@ -212,6 +212,8 @@ def merge_shared_symbol_bars_cache_stats(target: dict[str, Any] | None, incoming
     out['contract_misses'] = int(out.get('contract_misses', 0)) + int(src.get('contract_misses', 0) or 0)
     out['index_hits'] = int(out.get('index_hits', 0)) + int(src.get('index_hits', 0) or 0)
     out['index_misses'] = int(out.get('index_misses', 0)) + int(src.get('index_misses', 0) or 0)
+    out['contract_hit_coverage_misses'] = int(out.get('contract_hit_coverage_misses', 0)) + int(src.get('contract_hit_coverage_misses', 0) or 0)
+    out['index_hit_coverage_misses'] = int(out.get('index_hit_coverage_misses', 0)) + int(src.get('index_hit_coverage_misses', 0) or 0)
 
     contract_miss_symbols = [str(x).upper().strip() for x in (out.get('contract_miss_symbols') or []) if str(x).strip()]
     for symbol in (src.get('contract_miss_symbols') or []):
@@ -226,6 +228,31 @@ def merge_shared_symbol_bars_cache_stats(target: dict[str, Any] | None, incoming
         if symbol_key not in index_miss_symbols:
             index_miss_symbols.append(symbol_key)
     out['index_miss_symbols'] = index_miss_symbols
+
+    contract_hit_coverage_miss_symbols = [str(x).upper().strip() for x in (out.get('contract_hit_coverage_miss_symbols') or []) if str(x).strip()]
+    for symbol in (src.get('contract_hit_coverage_miss_symbols') or []):
+        symbol_key = _safe_symbol_key(symbol)
+        if symbol_key not in contract_hit_coverage_miss_symbols:
+            contract_hit_coverage_miss_symbols.append(symbol_key)
+    out['contract_hit_coverage_miss_symbols'] = contract_hit_coverage_miss_symbols
+
+    index_hit_coverage_miss_symbols = [str(x).upper().strip() for x in (out.get('index_hit_coverage_miss_symbols') or []) if str(x).strip()]
+    for symbol in (src.get('index_hit_coverage_miss_symbols') or []):
+        symbol_key = _safe_symbol_key(symbol)
+        if symbol_key not in index_hit_coverage_miss_symbols:
+            index_hit_coverage_miss_symbols.append(symbol_key)
+    out['index_hit_coverage_miss_symbols'] = index_hit_coverage_miss_symbols
+
+    last_events = list(out.get('last_events') or [])
+    for event in (src.get('last_events') or []):
+        if not isinstance(event, dict):
+            continue
+        event_copy = dict(event)
+        if event_copy not in last_events:
+            last_events.append(event_copy)
+    if len(last_events) > 20:
+        last_events = last_events[-20:]
+    out['last_events'] = last_events
     return out
 
 
