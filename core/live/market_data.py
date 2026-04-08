@@ -286,10 +286,21 @@ def _append_stage_jsonl(account: str, stage: str, payload: dict[str, Any]) -> Pa
     return append_stage_record(account, stage, payload)
 
 
-def _write_stage3_parquet(account: str, audit_label: str, bar_ts: int, rows: pd.DataFrame) -> Path:
+def _write_stage3_parquet(
+    account: str,
+    audit_label: str,
+    c_bar_ts: int,
+    signal_time_ts: int,
+    rows: pd.DataFrame,
+) -> Path:
     account_key = str(account).strip()
-    path = _stage_audit_dir() / f'snapback_{account_key}.stage3_bars.{audit_label}.{bar_ts}.parquet'
-    rows.to_parquet(path, index=False)
+    payload = rows.copy()
+    payload['c_bar_ts'] = int(c_bar_ts)
+    payload['c_bar_bj'] = _fmt_bj_from_ms(int(c_bar_ts))
+    payload['signal_time_ts'] = int(signal_time_ts)
+    payload['signal_time_bj'] = _fmt_bj_from_ms(int(signal_time_ts))
+    path = _stage_audit_dir() / f'snapback_{account_key}.stage3_bars.{audit_label}.{c_bar_ts}.parquet'
+    payload.to_parquet(path, index=False)
     return path
 
 
@@ -565,7 +576,7 @@ def build_live_inputs(
 
     if stage3_frames:
         stage3_df = pd.concat(stage3_frames, ignore_index=True)
-        _write_stage3_parquet(account, audit_label, signal_time_ts, stage3_df)
+        _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, signal_time_ts, stage3_df)
 
     if not histories or not cross_rows:
         return {'ok': False, 'reason': 'no live symbol history loaded from binance', 'data': None, 'errors': errors | stale_symbols}
