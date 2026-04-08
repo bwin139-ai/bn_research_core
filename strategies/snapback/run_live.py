@@ -46,6 +46,7 @@ from strategies.snapback.trade_consumer import (
 BJ = timezone(timedelta(hours=8))
 _MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
 _MARKET_DATA_LOG_DIR = Path('output/logs')
+_CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
 
 
 def setup_logging() -> None:
@@ -333,13 +334,26 @@ def _write_stage3_enriched_snapshot(account: str, audit_label: str, current_time
         })
 
 
-def _sleep_until_finalize_probe_ready(first_snapshot_finished_utc_ms: int | None) -> None:
+def _candidate_finalize_deadline_utc_ms(c_bar_ts: int) -> int:
+    return int(c_bar_ts) + 60000 + int(_CANDIDATE_FINALIZE_CB_DEADLINE_SECS * 1000)
+
+
+def _sleep_until_finalize_probe_ready(
+    first_snapshot_finished_utc_ms: int | None,
+    *,
+    deadline_utc_ms: int | None = None,
+) -> bool:
     if first_snapshot_finished_utc_ms is None:
-        return
-    target_epoch = (int(first_snapshot_finished_utc_ms) + 1000) / 1000.0
-    remaining = target_epoch - time.time()
+        return False
+    target_utc_ms = int(first_snapshot_finished_utc_ms) + 1000
+    if deadline_utc_ms is not None and target_utc_ms > int(deadline_utc_ms):
+        return False
+    remaining = (target_utc_ms / 1000.0) - time.time()
     if remaining > 0:
         time.sleep(remaining)
+    if deadline_utc_ms is not None and int(time.time() * 1000) > int(deadline_utc_ms):
+        return False
+    return True
 
 
 def _extract_closed_bar_snapshot(df: Any, c_bar_ts: int) -> dict[str, Any] | None:
@@ -423,6 +437,9 @@ def _finalize_candidate_payload(
         'delayed_finalize_count': 0,
         'verify_failed_symbols': [],
         'delayed_symbols': [],
+        'skipped_due_deadline': False,
+        'finalize_deadline_utc_ms': _candidate_finalize_deadline_utc_ms(c_bar_ts),
+        'finalize_deadline_bj': _fmt_bj_from_ms(_candidate_finalize_deadline_utc_ms(c_bar_ts)),
     }
     if not candidate_full_df:
         return {
@@ -431,7 +448,37 @@ def _finalize_candidate_payload(
             'finalize_summary': finalize_summary,
         }
 
-    _sleep_until_finalize_probe_ready(candidate_md_finished_utc_ms)
+    finalize_deadline_utc_ms = int(finalize_summary['finalize_deadline_utc_ms'])
+    ready_before_deadline = _sleep_until_finalize_probe_ready(
+        candidate_md_finished_utc_ms,
+        deadline_utc_ms=finalize_deadline_utc_ms,
+    )
+    if not ready_before_deadline:
+        finalize_summary['skipped_due_deadline'] = True
+        _log_market_data_event(
+            account,
+            logging.WARNING,
+            '[c_bar_finalize] skipped_due_deadline | c_bar_bj=%s | deadline_bj=%s | candidate_md_finished_bj=%s',
+            c_bar_bj,
+            finalize_summary['finalize_deadline_bj'],
+            _fmt_bj_from_ms(candidate_md_finished_utc_ms),
+        )
+        if audit_enabled:
+            write_event(account, 'c_bar_finalize_skipped_due_deadline', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
+                'candidate_md_finished_bj': _fmt_bj_from_ms(candidate_md_finished_utc_ms),
+                'finalize_deadline_utc_ms': finalize_deadline_utc_ms,
+                'finalize_deadline_bj': finalize_summary['finalize_deadline_bj'],
+            })
+        return {
+            **candidate_payload,
+            'finalize_shared_symbol_bars_cache': finalize_cache_stats,
+            'finalize_summary': finalize_summary,
+        }
 
     for raw_symbol in list(candidate_full_df.keys()):
         symbol = str(raw_symbol).upper().strip()

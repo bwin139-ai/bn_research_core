@@ -39,11 +39,34 @@ python3 audit_tools/live_audit/audit_live_scene_v1.py \
 
 # *****审审审审审审***** sim / live 一致性审计 *****审审审审审审*****
 /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_window_diff.py \
-  --sim-signals output/SmokeTest/sim_signals.Snapback_V7_SmokeTest7.jsonl \
+  --sim-signals output/SmokeTest/sim_signals.Snapback_V7_SmokeTest7.1.jsonl \
   --live-signals output/live_projection/live_signals.SNAPBACKLIVE_MYBWIN139_20260405T064952Z.jsonl \
+  --stage3-dir state/live_audit/stage_audit \
+  --account mybwin139 \
   --start-c-time-bj "2026-04-05 15:00:00" \
   --end-c-time-bj "2026-04-08 11:00:00" \
   --out-dir output/sim_live_audit
+# *****download*****  拉 live 输出 *****download***** 
+DEST=~/ai_projects/bn_research_core/output/live
+mkdir -p "$DEST"
+scp \
+  "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.highfreq.log" \
+  "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260405T064952Z.*" \
+  "$DEST"
+# *****download*****  拉 冒烟 sim 数据 *****download***** 
+DEST=~/ai_projects/bn_research_core/output/sim_smoke2
+mkdir -p "$DEST"
+scp \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V7_SmokeTest7.1.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V7_SmokeTest7.1.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.Snapback_V7_SmokeTest7.1.jsonl" \
+  "$DEST"
+# *****download*****  拉 sim/live一致性审计数据 *****download***** 
+DEST=~/ai_projects/bn_research_core/output/sim_live_audit2
+mkdir -p "$DEST"
+scp \
+  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1775372400000_1775617200000.*" \
+  "$DEST"
 
 /root/service_env/bin/python audit_tools/sim_live_audit/audit_signal_snapshot_diff.py \
   --sim-signals output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest5.jsonl \
@@ -107,13 +130,6 @@ ls -ldht output/live_projection/* | head -n 5
 
 
 # ========= download 服务器数据 到 MacBook download=========
-# *****download*****  拉 live 输出 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/live
-mkdir -p "$DEST"
-scp \
-  "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.log" \
-  "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260402T180842Z.*" \
-  "$DEST"
 # *****download***** 拉 全量 sim 数据 *****download***** 
 RUNID="SNAP_V6.1_30D_P6_0325T2335_ALL"
 DEST=~/ai_projects/bn_research_core/state1
@@ -126,20 +142,7 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
-# *****download*****  拉 冒烟 sim 数据 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/sim_smoke2
-mkdir -p "$DEST"
-scp \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V6.1_SmokeTest7.jsonl" \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V6.1_SmokeTest7.jsonl" \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.Snapback_V6.1_SmokeTest7.jsonl" \
-  "$DEST"
-# *****download*****  拉 sim/live一致性审计数据 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/sim_live_audit
-mkdir -p "$DEST"
-scp \
-  "aliyun-bn:/root/bn_research_core/output/sim_live_audit/window.1775372400000_1775617200000.*" \
-  "$DEST"
+
 # *****download*****  拉复盘k线图表 *****download***** 
 RUNID="SNAP_V5.0_30D_P6_0321T1728_ALL"
 DEST=~/ai_projects/bn_research_core/state4
@@ -162,12 +165,12 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
 # ========= 前端冒烟测试 Top1 / Snapback =========
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-04-05T15:00:00+08:00 \
+  --start 2026-04-05T12:00:00+08:00 \
   --end   2026-04-08T11:00:00+08:00 \
   --kline-window 60 \
   --config snapback/config.highfreq.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_V7_SmokeTest7"
+  --run-id "Snapback_V7_SmokeTest7.1"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \

@@ -34,11 +34,11 @@ FILES = [
     # "core/engine/data_feeder.py",
     # "core/live/live_state.py",
     # "core/live/audit_log.py",
-    # "core/live/market_data.py",
+     "core/live/market_data.py",
     # "core/live/custom_id.py",
     # "=============== 策略 ==================",
     # "strategies/run_backtest.py",
-    # "strategies/snapback/run_live.py",
+     "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/live_config.highfreq.json",
     # "strategies/snapback/config.json",
@@ -61,7 +61,7 @@ FILES = [
     #"docs/CURRENT_STATE.md",
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
-    "docs/新聊天开场白.md",
+    #"docs/新聊天开场白.md",
 ]
 
 
