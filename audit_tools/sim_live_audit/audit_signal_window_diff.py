@@ -8,6 +8,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Iterable
+import hashlib
 
 BJ_TZ = dt.timezone(dt.timedelta(hours=8))
 
@@ -74,6 +75,62 @@ def _parse_bj_datetime_to_ms(text: str | None) -> int | None:
             last_err = e
     raise ValueError(f"invalid Beijing datetime: {text!r}") from last_err
 
+
+
+
+def _bj_date_text(ms: int | None) -> str | None:
+    if ms is None:
+        return None
+    return dt.datetime.fromtimestamp(ms / 1000.0, tz=dt.timezone.utc).astimezone(BJ_TZ).strftime("%Y-%m-%d")
+
+
+def _iter_bj_dates_inclusive(start_ms: int | None, end_ms: int | None) -> list[str]:
+    if start_ms is None or end_ms is None:
+        raise SystemExit("stage3 daily mode requires both start and end c_time")
+    start_date = dt.datetime.fromtimestamp(start_ms / 1000.0, tz=dt.timezone.utc).astimezone(BJ_TZ).date()
+    end_date = dt.datetime.fromtimestamp(end_ms / 1000.0, tz=dt.timezone.utc).astimezone(BJ_TZ).date()
+    if end_date < start_date:
+        raise SystemExit("end c_time must be >= start c_time")
+    out: list[str] = []
+    cur = start_date
+    while cur <= end_date:
+        out.append(cur.strftime("%Y-%m-%d"))
+        cur += dt.timedelta(days=1)
+    return out
+
+
+def _resolve_stage3_daily_paths(stage3_dir: Path | None, account: str | None, start_ms: int | None, end_ms: int | None) -> list[Path]:
+    if stage3_dir is None and not account:
+        return []
+    if stage3_dir is None or not account:
+        raise SystemExit("Use --stage3-dir together with --account, or omit both")
+    if not stage3_dir.exists():
+        raise SystemExit(f"stage3 dir not found: {stage3_dir}")
+    if not stage3_dir.is_dir():
+        raise SystemExit(f"stage3 dir is not a directory: {stage3_dir}")
+    account_norm = str(account).strip()
+    if not account_norm:
+        raise SystemExit("account must not be empty")
+    dates = _iter_bj_dates_inclusive(start_ms, end_ms)
+    paths: list[Path] = []
+    missing: list[str] = []
+    for d in dates:
+        p = stage3_dir / f"snapback_{account_norm}.stage3_enriched.{d}.jsonl"
+        if p.exists() and p.is_file():
+            paths.append(p)
+        else:
+            missing.append(str(p))
+    if missing:
+        missing_text = "\n".join(missing)
+        raise SystemExit(f"missing stage3 daily files:\n{missing_text}")
+    return paths
+
+
+def _stage3_daily_signature(paths: list[Path]) -> str:
+    if not paths:
+        return ""
+    joined = "|".join(str(p) for p in paths)
+    return hashlib.md5(joined.encode("utf-8")).hexdigest()
 
 def _normalize_symbol(s: Any) -> str:
     return str(s or "").upper().strip()
@@ -258,20 +315,21 @@ def _in_window(c_time: int, start_ms: int | None, end_ms: int | None) -> bool:
     return True
 
 
-def _build_stage3_index(path: Path | None, start_ms: int | None, end_ms: int | None, symbols: set[str] | None) -> dict[tuple[str, int], dict[str, Any]]:
+def _build_stage3_index(paths: list[Path], start_ms: int | None, end_ms: int | None, symbols: set[str] | None) -> dict[tuple[str, int], dict[str, Any]]:
     out: dict[tuple[str, int], dict[str, Any]] = {}
-    if path is None:
+    if not paths:
         return out
-    for row in _iter_jsonl(path):
-        sym = _normalize_symbol(row.get("symbol"))
-        c_bar_ts = _safe_int(row.get("c_bar_ts"))
-        if not sym or c_bar_ts is None:
-            continue
-        if symbols and sym not in symbols:
-            continue
-        if not _in_window(c_bar_ts, start_ms, end_ms):
-            continue
-        out[(sym, c_bar_ts)] = row
+    for path in paths:
+        for row in _iter_jsonl(path):
+            sym = _normalize_symbol(row.get("symbol"))
+            c_bar_ts = _safe_int(row.get("c_bar_ts"))
+            if not sym or c_bar_ts is None:
+                continue
+            if symbols and sym not in symbols:
+                continue
+            if not _in_window(c_bar_ts, start_ms, end_ms):
+                continue
+            out[(sym, c_bar_ts)] = row
     return out
 
 
@@ -497,7 +555,8 @@ def main() -> None:
     ap.add_argument("--sim-signals", required=True)
     ap.add_argument("--sim-trades", default="")
     ap.add_argument("--live-signals", required=True)
-    ap.add_argument("--live-stage3", default="")
+    ap.add_argument("--stage3-dir", default="", help="Directory containing snapback_<account>.stage3_enriched.YYYY-MM-DD.jsonl")
+    ap.add_argument("--account", default="", help="Account name used to resolve stage3 daily files")
     ap.add_argument("--live-stage5", default="")
     ap.add_argument("--live-log", default="", help="Cleaned live console log used to build uptime windows")
     ap.add_argument("--start-c-time-ms", type=int, default=None)
@@ -525,7 +584,8 @@ def main() -> None:
     sim_signals_path = Path(args.sim_signals)
     sim_trades_path = Path(args.sim_trades) if args.sim_trades else None
     live_signals_path = Path(args.live_signals)
-    live_stage3_path = Path(args.live_stage3) if args.live_stage3 else None
+    stage3_dir_path = Path(args.stage3_dir) if args.stage3_dir else None
+    account_name = str(args.account).strip() if args.account else ""
     live_stage5_path = Path(args.live_stage5) if args.live_stage5 else None
     live_log_path = Path(args.live_log) if args.live_log else None
 
@@ -533,12 +593,13 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     uptime_windows = _build_live_uptime_windows(live_log_path)
-    input_metrics_enabled = live_stage3_path is not None
+    stage3_paths = _resolve_stage3_daily_paths(stage3_dir_path, account_name or None, start_c_time_ms, end_c_time_ms)
+    input_metrics_enabled = bool(stage3_paths)
 
     sim_signals = _build_sim_signal_index(sim_signals_path, start_c_time_ms, end_c_time_ms, symbols)
     sim_trades = _build_sim_trade_index(sim_trades_path, start_c_time_ms, end_c_time_ms, symbols)
     live_signals = _build_live_signal_index(live_signals_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
-    live_stage3 = _build_stage3_index(live_stage3_path, start_c_time_ms, end_c_time_ms, symbols)
+    live_stage3 = _build_stage3_index(stage3_paths, start_c_time_ms, end_c_time_ms, symbols)
     live_stage5 = _build_stage5_index(live_stage5_path, start_c_time_ms, end_c_time_ms, symbols, uptime_windows=uptime_windows)
 
     sim_keys = set(sim_signals.keys())
@@ -611,6 +672,11 @@ def main() -> None:
         "end_c_time_bj": _to_bj(end_c_time_ms),
         "symbols_filter": sorted(symbols) if symbols else [],
         "live_log_path": str(live_log_path) if live_log_path else "",
+        "stage3_dir": str(stage3_dir_path) if stage3_dir_path else "",
+        "account": account_name,
+        "stage3_daily_file_count": len(stage3_paths),
+        "stage3_daily_files": [str(p) for p in stage3_paths],
+        "stage3_daily_signature_md5": _stage3_daily_signature(stage3_paths),
         "uptime_window_count": len(uptime_windows),
         "uptime_windows": [{"start_ms": s, "start_bj": _to_bj(s), "end_ms": e, "end_bj": _to_bj(e)} for s, e in uptime_windows],
         "input_metrics_enabled": input_metrics_enabled,
@@ -652,6 +718,11 @@ def main() -> None:
     lines.append(f"live_log_path: {str(live_log_path) if live_log_path else ''}")
     lines.append(f"uptime_window_count: {len(uptime_windows)}")
     lines.append("")
+    lines.append("[stage3]")
+    lines.append(f"stage3_dir: {str(stage3_dir_path) if stage3_dir_path else ''}")
+    lines.append(f"account: {account_name}")
+    lines.append(f"stage3_daily_file_count: {len(stage3_paths)}")
+    lines.append("")
     lines.append("[first input diff counts]")
     if input_metrics_enabled:
         for k, v in sorted(first_input_counts.items()):
@@ -681,6 +752,11 @@ def main() -> None:
     print("[uptime]")
     print(f"live_log_path: {str(live_log_path) if live_log_path else ''}")
     print(f"uptime_window_count: {len(uptime_windows)}")
+    print("")
+    print("[stage3]")
+    print(f"stage3_dir: {str(stage3_dir_path) if stage3_dir_path else ''}")
+    print(f"account: {account_name}")
+    print(f"stage3_daily_file_count: {len(stage3_paths)}")
     print(f"input_metrics_enabled: {input_metrics_enabled}")
     print("")
     print(f"wrote: {out_dir / (stem + '.summary.json')}")
