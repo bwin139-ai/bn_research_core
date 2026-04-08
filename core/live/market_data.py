@@ -127,8 +127,54 @@ def _new_shared_symbol_bars_cache_stats() -> dict[str, Any]:
         'index_misses': 0,
         'contract_miss_symbols': [],
         'index_miss_symbols': [],
+        'contract_hit_coverage_misses': 0,
+        'index_hit_coverage_misses': 0,
+        'contract_hit_coverage_miss_symbols': [],
+        'index_hit_coverage_miss_symbols': [],
+        'last_events': [],
     }
 
+
+
+def _record_shared_symbol_bars_cache_diag(
+    stats: dict[str, Any] | None,
+    *,
+    kind: str,
+    symbol: str,
+    cache_hit: bool,
+    required_latest_closed_bar_ts: int | None,
+    cached_max_open_time_ms: int | None,
+    coverage_ok: bool | None,
+) -> None:
+    if stats is None:
+        return
+    symbol_key = _safe_symbol_key(symbol)
+    event = {
+        'symbol': symbol_key,
+        'kind': kind,
+        'cache_hit': bool(cache_hit),
+        'required_latest_closed_bar_ts': int(required_latest_closed_bar_ts) if required_latest_closed_bar_ts is not None else None,
+        'required_latest_closed_bar_bj': _fmt_bj_from_ms(int(required_latest_closed_bar_ts)) if required_latest_closed_bar_ts is not None else None,
+        'cached_max_open_time_ms': int(cached_max_open_time_ms) if cached_max_open_time_ms is not None else None,
+        'cached_max_open_time_bj': _fmt_bj_from_ms(int(cached_max_open_time_ms)) if cached_max_open_time_ms is not None else None,
+        'coverage_ok': coverage_ok,
+    }
+    last_events = stats.setdefault('last_events', [])
+    last_events.append(event)
+    if len(last_events) > 20:
+        del last_events[:-20]
+
+    if cache_hit and coverage_ok is False:
+        if kind == 'contract':
+            stats['contract_hit_coverage_misses'] = int(stats.get('contract_hit_coverage_misses', 0)) + 1
+            miss_symbols = stats.setdefault('contract_hit_coverage_miss_symbols', [])
+            if symbol_key not in miss_symbols:
+                miss_symbols.append(symbol_key)
+        elif kind == 'index':
+            stats['index_hit_coverage_misses'] = int(stats.get('index_hit_coverage_misses', 0)) + 1
+            miss_symbols = stats.setdefault('index_hit_coverage_miss_symbols', [])
+            if symbol_key not in miss_symbols:
+                miss_symbols.append(symbol_key)
 
 def _record_shared_symbol_bars_cache_event(stats: dict[str, Any] | None, *, kind: str, symbol: str, cache_hit: bool) -> None:
     if stats is None:
@@ -184,14 +230,12 @@ def merge_shared_symbol_bars_cache_stats(target: dict[str, Any] | None, incoming
 
 
 
-def _cached_rows_cover_latest_closed_bar(snapshot: dict[str, Any] | None, required_latest_closed_bar_ts: int | None) -> bool:
-    if required_latest_closed_bar_ts is None:
-        return True
+def _cached_rows_max_open_time_ms(snapshot: dict[str, Any] | None) -> int | None:
     if not isinstance(snapshot, dict):
-        return False
+        return None
     rows = snapshot.get('data')
     if not isinstance(rows, list) or not rows:
-        return False
+        return None
     max_open_time_ms = None
     for row in rows:
         try:
@@ -200,6 +244,12 @@ def _cached_rows_cover_latest_closed_bar(snapshot: dict[str, Any] | None, requir
             continue
         if max_open_time_ms is None or open_time_ms > max_open_time_ms:
             max_open_time_ms = open_time_ms
+    return max_open_time_ms
+
+def _cached_rows_cover_latest_closed_bar(snapshot: dict[str, Any] | None, required_latest_closed_bar_ts: int | None) -> bool:
+    if required_latest_closed_bar_ts is None:
+        return True
+    max_open_time_ms = _cached_rows_max_open_time_ms(snapshot)
     return max_open_time_ms is not None and int(max_open_time_ms) >= int(required_latest_closed_bar_ts)
 
 
@@ -214,11 +264,32 @@ def _load_or_refresh_symbol_bar_rows(
 ) -> list[list[Any]]:
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)
-    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts):
+    cached_max_open_time_ms = _cached_rows_max_open_time_ms(cached)
+    coverage_ok = _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts)
+    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and coverage_ok:
         rows = cached.get('data')
         if isinstance(rows, list):
             _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=True)
+            _record_shared_symbol_bars_cache_diag(
+                cache_stats,
+                kind=kind,
+                symbol=symbol,
+                cache_hit=True,
+                required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+                cached_max_open_time_ms=cached_max_open_time_ms,
+                coverage_ok=coverage_ok,
+            )
             return rows
+    if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and not coverage_ok:
+        _record_shared_symbol_bars_cache_diag(
+            cache_stats,
+            kind=kind,
+            symbol=symbol,
+            cache_hit=True,
+            required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+            cached_max_open_time_ms=cached_max_open_time_ms,
+            coverage_ok=coverage_ok,
+        )
     now_ms = int(time.time() * 1000)
     if kind == 'contract':
         rows = _fetch_symbol_klines_remote(account, symbol, limit)
@@ -236,6 +307,15 @@ def _load_or_refresh_symbol_bar_rows(
     }
     _atomic_write_json(path, payload)
     _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=False)
+    _record_shared_symbol_bars_cache_diag(
+        cache_stats,
+        kind=kind,
+        symbol=symbol,
+        cache_hit=False,
+        required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+        cached_max_open_time_ms=_cached_rows_max_open_time_ms(payload),
+        coverage_ok=_cached_rows_cover_latest_closed_bar(payload, required_latest_closed_bar_ts),
+    )
     return rows
 
 
