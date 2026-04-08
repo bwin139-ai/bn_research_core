@@ -47,6 +47,7 @@ BJ = timezone(timedelta(hours=8))
 _MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
 _MARKET_DATA_LOG_DIR = Path('output/logs')
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
+_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 1
 
 
 def setup_logging() -> None:
@@ -338,14 +339,8 @@ def _candidate_finalize_deadline_utc_ms(c_bar_ts: int) -> int:
     return int(c_bar_ts) + 60000 + int(_CANDIDATE_FINALIZE_CB_DEADLINE_SECS * 1000)
 
 
-def _sleep_until_finalize_probe_ready(
-    first_snapshot_finished_utc_ms: int | None,
-    *,
-    deadline_utc_ms: int | None = None,
-) -> bool:
-    if first_snapshot_finished_utc_ms is None:
-        return False
-    target_utc_ms = int(first_snapshot_finished_utc_ms) + 1000
+def _sleep_until_utc_ms(target_utc_ms: int, *, deadline_utc_ms: int | None = None) -> bool:
+    target_utc_ms = int(target_utc_ms)
     if deadline_utc_ms is not None and target_utc_ms > int(deadline_utc_ms):
         return False
     remaining = (target_utc_ms / 1000.0) - time.time()
@@ -354,6 +349,14 @@ def _sleep_until_finalize_probe_ready(
     if deadline_utc_ms is not None and int(time.time() * 1000) > int(deadline_utc_ms):
         return False
     return True
+
+
+def _next_finalize_probe_utc_ms(previous_probe_utc_ms: int | None, first_snapshot_finished_utc_ms: int | None) -> int | None:
+    if previous_probe_utc_ms is None:
+        if first_snapshot_finished_utc_ms is None:
+            return None
+        return int(first_snapshot_finished_utc_ms) + int(_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS * 1000)
+    return int(previous_probe_utc_ms) + int(_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS * 1000)
 
 
 def _extract_closed_bar_snapshot(df: Any, c_bar_ts: int) -> dict[str, Any] | None:
@@ -431,148 +434,230 @@ def _finalize_candidate_payload(
     candidate_cross_section = candidate_payload['cross_section']
     candidate_full_df = dict(candidate_payload['full_df'])
     finalize_cache_stats = new_shared_symbol_bars_cache_stats()
-    finalize_summary = {
-        'processed_symbols': 0,
-        'verify_failed_count': 0,
-        'delayed_finalize_count': 0,
-        'verify_failed_symbols': [],
-        'delayed_symbols': [],
-        'skipped_due_deadline': False,
-        'finalize_deadline_utc_ms': _candidate_finalize_deadline_utc_ms(c_bar_ts),
-        'finalize_deadline_bj': _fmt_bj_from_ms(_candidate_finalize_deadline_utc_ms(c_bar_ts)),
-    }
-    if not candidate_full_df:
-        return {
-            **candidate_payload,
-            'finalize_shared_symbol_bars_cache': finalize_cache_stats,
-            'finalize_summary': finalize_summary,
-        }
+    finalize_deadline_utc_ms = _candidate_finalize_deadline_utc_ms(c_bar_ts)
 
-    finalize_deadline_utc_ms = int(finalize_summary['finalize_deadline_utc_ms'])
-    ready_before_deadline = _sleep_until_finalize_probe_ready(
-        candidate_md_finished_utc_ms,
-        deadline_utc_ms=finalize_deadline_utc_ms,
-    )
-    if not ready_before_deadline:
-        finalize_summary['skipped_due_deadline'] = True
-        _log_market_data_event(
-            account,
-            logging.WARNING,
-            '[c_bar_finalize] skipped_due_deadline | c_bar_bj=%s | deadline_bj=%s | candidate_md_finished_bj=%s',
-            c_bar_bj,
-            finalize_summary['finalize_deadline_bj'],
-            _fmt_bj_from_ms(candidate_md_finished_utc_ms),
-        )
-        if audit_enabled:
-            write_event(account, 'c_bar_finalize_skipped_due_deadline', {
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'c_bar_ts': c_bar_ts,
-                'c_bar_bj': c_bar_bj,
-                'candidate_md_finished_utc_ms': candidate_md_finished_utc_ms,
-                'candidate_md_finished_bj': _fmt_bj_from_ms(candidate_md_finished_utc_ms),
-                'finalize_deadline_utc_ms': finalize_deadline_utc_ms,
-                'finalize_deadline_bj': finalize_summary['finalize_deadline_bj'],
-            })
-        return {
-            **candidate_payload,
-            'finalize_shared_symbol_bars_cache': finalize_cache_stats,
-            'finalize_summary': finalize_summary,
-        }
+    changed_symbols: set[str] = set()
+    passed_symbols: list[str] = []
+    timeout_symbols: list[str] = []
+    verify_failed_symbols: list[str] = []
+
+    last_snapshots: dict[str, dict[str, Any]] = {}
+    last_valid_probe_utc_ms_by_symbol: dict[str, int] = {}
+    last_valid_probe_bj_by_symbol: dict[str, str] = {}
+    pending_symbols: set[str] = set()
 
     for raw_symbol in list(candidate_full_df.keys()):
         symbol = str(raw_symbol).upper().strip()
-        finalize_summary['processed_symbols'] = int(finalize_summary.get('processed_symbols', 0)) + 1
         initial_df = candidate_full_df.get(raw_symbol)
         initial_snapshot = _extract_closed_bar_snapshot(initial_df, c_bar_ts)
         if initial_snapshot is None:
-            continue
-
-        refresh_res = build_live_inputs(
-            account,
-            [symbol],
-            history_window_mins,
-            strategy_cfg,
-            audit_label='candidate_finalize',
-            latest_closed_bar_ts=latest_closed_bar_ts,
-            ticker_map=ticker_map,
-        )
-        refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
-        finalize_cache_stats = merge_shared_symbol_bars_cache_stats(
-            finalize_cache_stats,
-            (refresh_payload or {}).get('shared_symbol_bars_cache'),
-        )
-        refreshed_c_bar_ts = int(refresh_payload['latest_closed_bar_ts']) if refresh_payload else None
-        refreshed_full_df = dict((refresh_payload or {}).get('full_df') or {})
-        refreshed_df = refreshed_full_df.get(symbol)
-        refreshed_snapshot = _extract_closed_bar_snapshot(refreshed_df, c_bar_ts) if refreshed_df is not None else None
-
-        if (not refresh_res.get('ok')) or refresh_payload is None or refreshed_c_bar_ts != c_bar_ts or refreshed_snapshot is None:
-            _log_market_data_event(
-                account,
-                logging.WARNING,
-                '[c_bar_finalize] verify_failed | symbol=%s | c_bar_bj=%s | reason=%s | refreshed_c_bar_bj=%s',
-                symbol,
-                c_bar_bj,
-                refresh_res.get('reason') or 'refresh_payload_invalid',
-                _fmt_bj_from_ms(refreshed_c_bar_ts),
-            )
-            if audit_enabled:
-                write_event(account, 'c_bar_finalize_verify_failed', {
-                    'symbol': symbol,
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'c_bar_ts': c_bar_ts,
-                    'c_bar_bj': c_bar_bj,
-                    'refreshed_c_bar_ts': refreshed_c_bar_ts,
-                    'refreshed_c_bar_bj': _fmt_bj_from_ms(refreshed_c_bar_ts),
-                    'reason': refresh_res.get('reason') or 'refresh_payload_invalid',
-                    'exchange_snapshot': refresh_res,
-                })
-            finalize_summary['verify_failed_count'] = int(finalize_summary.get('verify_failed_count', 0)) + 1
-            verify_failed_symbols = finalize_summary.setdefault('verify_failed_symbols', [])
-            if symbol not in verify_failed_symbols:
-                verify_failed_symbols.append(symbol)
+            verify_failed_symbols.append(symbol)
             candidate_full_df.pop(raw_symbol, None)
             candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
             continue
+        pending_symbols.add(symbol)
+        last_snapshots[symbol] = initial_snapshot
+        last_valid_probe_utc_ms_by_symbol[symbol] = int(candidate_md_finished_utc_ms) if candidate_md_finished_utc_ms is not None else int(current_time_ms)
+        last_valid_probe_bj_by_symbol[symbol] = _fmt_bj_from_ms(last_valid_probe_utc_ms_by_symbol[symbol]) or current_time_bj
 
-        changed_fields = [
-            field
-            for field in refreshed_snapshot.keys()
-            if refreshed_snapshot.get(field) != initial_snapshot.get(field)
-        ]
-        if changed_fields:
-            _log_market_data_event(
+    finalize_summary = {
+        'processed_symbols': int(len(pending_symbols)),
+        'verify_failed_count': int(len(verify_failed_symbols)),
+        'delayed_finalize_count': 0,
+        'verify_failed_symbols': verify_failed_symbols,
+        'delayed_symbols': [],
+        'skipped_due_deadline': False,
+        'finalize_deadline_utc_ms': finalize_deadline_utc_ms,
+        'finalize_deadline_bj': _fmt_bj_from_ms(finalize_deadline_utc_ms),
+        'finalize_probe_interval_secs': int(_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS),
+        'finalize_rounds': 0,
+        'initial_pending_symbol_count': int(len(pending_symbols)),
+        'passed_count': 0,
+        'passed_symbols': [],
+        'timeout_not_finalized_count': 0,
+        'timeout_not_finalized_symbols': [],
+        'last_valid_probe_utc_ms_by_symbol': dict(last_valid_probe_utc_ms_by_symbol),
+        'last_valid_probe_bj_by_symbol': dict(last_valid_probe_bj_by_symbol),
+    }
+
+    if not pending_symbols:
+        return _build_finalized_candidate_payload(
+            candidate_payload,
+            candidate_cross_section,
+            candidate_full_df,
+            finalize_cache_stats,
+            finalize_summary,
+        )
+
+    next_probe_utc_ms = _next_finalize_probe_utc_ms(None, candidate_md_finished_utc_ms)
+    while pending_symbols and next_probe_utc_ms is not None:
+        if not _sleep_until_utc_ms(next_probe_utc_ms, deadline_utc_ms=finalize_deadline_utc_ms):
+            break
+        round_probe_utc_ms = int(time.time() * 1000)
+        round_probe_bj = _fmt_bj_from_ms(round_probe_utc_ms) or current_time_bj
+        finalize_summary['finalize_rounds'] = int(finalize_summary.get('finalize_rounds', 0)) + 1
+
+        round_pending_symbols = sorted(pending_symbols)
+        for symbol in round_pending_symbols:
+            refresh_res = build_live_inputs(
                 account,
-                logging.WARNING,
-                '[c_bar_finalize] delayed_finalize | symbol=%s | c_bar_bj=%s | changed_fields=%s',
-                symbol,
-                c_bar_bj,
-                ','.join(changed_fields),
+                [symbol],
+                history_window_mins,
+                strategy_cfg,
+                audit_label='candidate_finalize',
+                latest_closed_bar_ts=latest_closed_bar_ts,
+                ticker_map=ticker_map,
             )
-            if audit_enabled:
-                write_event(account, 'c_bar_delayed_finalize_detected', {
-                    'symbol': symbol,
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'c_bar_ts': c_bar_ts,
-                    'c_bar_bj': c_bar_bj,
-                    'changed_fields': changed_fields,
-                    'initial_snapshot': initial_snapshot,
-                    'refreshed_snapshot': refreshed_snapshot,
-                })
-            finalize_summary['delayed_finalize_count'] = int(finalize_summary.get('delayed_finalize_count', 0)) + 1
-            delayed_symbols = finalize_summary.setdefault('delayed_symbols', [])
-            if symbol not in delayed_symbols:
-                delayed_symbols.append(symbol)
-            candidate_full_df[raw_symbol] = refreshed_df
+            refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
+            finalize_cache_stats = merge_shared_symbol_bars_cache_stats(
+                finalize_cache_stats,
+                (refresh_payload or {}).get('shared_symbol_bars_cache'),
+            )
+            refreshed_c_bar_ts = int(refresh_payload['latest_closed_bar_ts']) if refresh_payload else None
+            refreshed_full_df = dict((refresh_payload or {}).get('full_df') or {})
+            refreshed_df = refreshed_full_df.get(symbol)
+            refreshed_snapshot = _extract_closed_bar_snapshot(refreshed_df, c_bar_ts) if refreshed_df is not None else None
+
+            if (not refresh_res.get('ok')) or refresh_payload is None or refreshed_c_bar_ts != c_bar_ts or refreshed_snapshot is None:
+                _log_market_data_event(
+                    account,
+                    logging.WARNING,
+                    '[c_bar_finalize] probe_pending | symbol=%s | c_bar_bj=%s | round_probe_bj=%s | reason=%s | refreshed_c_bar_bj=%s',
+                    symbol,
+                    c_bar_bj,
+                    round_probe_bj,
+                    refresh_res.get('reason') or 'refresh_payload_invalid',
+                    _fmt_bj_from_ms(refreshed_c_bar_ts),
+                )
+                if audit_enabled:
+                    write_event(account, 'c_bar_finalize_probe_pending', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'c_bar_ts': c_bar_ts,
+                        'c_bar_bj': c_bar_bj,
+                        'round_probe_utc_ms': round_probe_utc_ms,
+                        'round_probe_bj': round_probe_bj,
+                        'refreshed_c_bar_ts': refreshed_c_bar_ts,
+                        'refreshed_c_bar_bj': _fmt_bj_from_ms(refreshed_c_bar_ts),
+                        'reason': refresh_res.get('reason') or 'refresh_payload_invalid',
+                    })
+                continue
+
+            last_valid_probe_utc_ms_by_symbol[symbol] = round_probe_utc_ms
+            last_valid_probe_bj_by_symbol[symbol] = round_probe_bj
+
+            previous_snapshot = last_snapshots.get(symbol)
+            if refreshed_snapshot == previous_snapshot:
+                pending_symbols.discard(symbol)
+                passed_symbols.append(symbol)
+                candidate_full_df[symbol] = refreshed_df
+                refreshed_cross_section = (refresh_payload or {}).get('cross_section')
+                try:
+                    if refreshed_cross_section is not None and symbol in refreshed_cross_section.index:
+                        candidate_cross_section.loc[symbol] = refreshed_cross_section.loc[symbol]
+                except Exception:
+                    candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
+                _log_market_data_event(
+                    account,
+                    logging.INFO,
+                    '[c_bar_finalize] passed | symbol=%s | c_bar_bj=%s | round_probe_bj=%s | finalize_round=%s',
+                    symbol,
+                    c_bar_bj,
+                    round_probe_bj,
+                    finalize_summary['finalize_rounds'],
+                )
+                if audit_enabled:
+                    write_event(account, 'c_bar_finalize_passed', {
+                        'symbol': symbol,
+                        'bar_ts': current_time_ms,
+                        'bar_bj': current_time_bj,
+                        'c_bar_ts': c_bar_ts,
+                        'c_bar_bj': c_bar_bj,
+                        'round_probe_utc_ms': round_probe_utc_ms,
+                        'round_probe_bj': round_probe_bj,
+                        'finalize_round': finalize_summary['finalize_rounds'],
+                    })
+                continue
+
+            changed_fields = [
+                field
+                for field in refreshed_snapshot.keys()
+                if refreshed_snapshot.get(field) != (previous_snapshot or {}).get(field)
+            ]
+            last_snapshots[symbol] = refreshed_snapshot
+            candidate_full_df[symbol] = refreshed_df
             refreshed_cross_section = (refresh_payload or {}).get('cross_section')
             try:
                 if refreshed_cross_section is not None and symbol in refreshed_cross_section.index:
                     candidate_cross_section.loc[symbol] = refreshed_cross_section.loc[symbol]
             except Exception:
                 candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
+
+            if symbol not in changed_symbols:
+                changed_symbols.add(symbol)
+                delayed_symbols = finalize_summary.setdefault('delayed_symbols', [])
+                delayed_symbols.append(symbol)
+                finalize_summary['delayed_finalize_count'] = int(finalize_summary.get('delayed_finalize_count', 0)) + 1
+
+            _log_market_data_event(
+                account,
+                logging.WARNING,
+                '[c_bar_finalize] still_pending | symbol=%s | c_bar_bj=%s | round_probe_bj=%s | changed_fields=%s',
+                symbol,
+                c_bar_bj,
+                round_probe_bj,
+                ','.join(changed_fields),
+            )
+            if audit_enabled:
+                write_event(account, 'c_bar_finalize_still_pending', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'c_bar_ts': c_bar_ts,
+                    'c_bar_bj': c_bar_bj,
+                    'round_probe_utc_ms': round_probe_utc_ms,
+                    'round_probe_bj': round_probe_bj,
+                    'finalize_round': finalize_summary['finalize_rounds'],
+                    'changed_fields': changed_fields,
+                    'previous_snapshot': previous_snapshot,
+                    'refreshed_snapshot': refreshed_snapshot,
+                })
+
+        next_probe_utc_ms = _next_finalize_probe_utc_ms(next_probe_utc_ms, candidate_md_finished_utc_ms)
+
+    if pending_symbols:
+        for symbol in sorted(pending_symbols):
+            timeout_symbols.append(symbol)
+            candidate_full_df.pop(symbol, None)
+            candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
+            _log_market_data_event(
+                account,
+                logging.WARNING,
+                '[c_bar_finalize] timeout_not_finalized | symbol=%s | c_bar_bj=%s | deadline_bj=%s',
+                symbol,
+                c_bar_bj,
+                finalize_summary['finalize_deadline_bj'],
+            )
+            if audit_enabled:
+                write_event(account, 'c_bar_finalize_timeout_not_finalized', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'c_bar_ts': c_bar_ts,
+                    'c_bar_bj': c_bar_bj,
+                    'finalize_deadline_utc_ms': finalize_deadline_utc_ms,
+                    'finalize_deadline_bj': finalize_summary['finalize_deadline_bj'],
+                    'last_valid_probe_utc_ms': last_valid_probe_utc_ms_by_symbol.get(symbol),
+                    'last_valid_probe_bj': last_valid_probe_bj_by_symbol.get(symbol),
+                })
+
+    finalize_summary['passed_count'] = int(len(passed_symbols))
+    finalize_summary['passed_symbols'] = passed_symbols
+    finalize_summary['timeout_not_finalized_count'] = int(len(timeout_symbols))
+    finalize_summary['timeout_not_finalized_symbols'] = timeout_symbols
+    finalize_summary['last_valid_probe_utc_ms_by_symbol'] = dict(last_valid_probe_utc_ms_by_symbol)
+    finalize_summary['last_valid_probe_bj_by_symbol'] = dict(last_valid_probe_bj_by_symbol)
 
     return _build_finalized_candidate_payload(
         candidate_payload,
@@ -987,6 +1072,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_delayed_finalize_count': (finalize_summary or {}).get('delayed_finalize_count') if 'finalize_summary' in locals() else None,
             'finalize_verify_failed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'verify_failed_symbols') if 'finalize_summary' in locals() else None,
             'finalize_delayed_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'delayed_symbols') if 'finalize_summary' in locals() else None,
+            'finalize_passed_count': (finalize_summary or {}).get('passed_count') if 'finalize_summary' in locals() else None,
+            'finalize_timeout_not_finalized_count': (finalize_summary or {}).get('timeout_not_finalized_count') if 'finalize_summary' in locals() else None,
+            'finalize_timeout_not_finalized_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'timeout_not_finalized_symbols') if 'finalize_summary' in locals() else None,
+            'finalize_rounds': (finalize_summary or {}).get('finalize_rounds') if 'finalize_summary' in locals() else None,
             'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
             'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             'finalize_removed_symbol_count': finalize_removed_symbol_count,
@@ -997,6 +1086,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_unchanged_count': finalize_unchanged_count,
             'finalize_unchanged_ratio_pct': finalize_unchanged_ratio_pct,
             'finalize_affected_ratio_pct': finalize_affected_ratio_pct,
+            'finalize_timeout_not_finalized_count': (finalize_summary or {}).get('timeout_not_finalized_count'),
+            'finalize_timeout_not_finalized_symbols': (finalize_summary or {}).get('timeout_not_finalized_symbols'),
+            'finalize_passed_count': (finalize_summary or {}).get('passed_count'),
+            'finalize_passed_symbols': (finalize_summary or {}).get('passed_symbols'),
+            'finalize_rounds': (finalize_summary or {}).get('finalize_rounds'),
+            'finalize_probe_interval_secs': (finalize_summary or {}).get('finalize_probe_interval_secs'),
+            'finalize_deadline_utc_ms': (finalize_summary or {}).get('finalize_deadline_utc_ms'),
+            'finalize_deadline_bj': (finalize_summary or {}).get('finalize_deadline_bj'),
             'candidate_symbols_count': candidate_symbols_count,
             'extra_reconcile_symbols_count': extra_reconcile_symbols_count,
             'exchange_activity_symbols_count': exchange_activity_symbols_count,
@@ -1145,6 +1242,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_unchanged_count': finalize_unchanged_count,
             'finalize_unchanged_ratio_pct': finalize_unchanged_ratio_pct,
             'finalize_affected_ratio_pct': finalize_affected_ratio_pct,
+            'finalize_timeout_not_finalized_count': (finalize_summary or {}).get('timeout_not_finalized_count'),
+            'finalize_timeout_not_finalized_symbols': (finalize_summary or {}).get('timeout_not_finalized_symbols'),
+            'finalize_passed_count': (finalize_summary or {}).get('passed_count'),
+            'finalize_passed_symbols': (finalize_summary or {}).get('passed_symbols'),
+            'finalize_rounds': (finalize_summary or {}).get('finalize_rounds'),
+            'finalize_probe_interval_secs': (finalize_summary or {}).get('finalize_probe_interval_secs'),
+            'finalize_deadline_utc_ms': (finalize_summary or {}).get('finalize_deadline_utc_ms'),
+            'finalize_deadline_bj': (finalize_summary or {}).get('finalize_deadline_bj'),
             **finalize_summary,
         })
 
@@ -1180,6 +1285,14 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'finalize_delayed_finalize_count': (finalize_summary or {}).get('delayed_finalize_count'),
         'finalize_verify_failed_symbols': (finalize_summary or {}).get('verify_failed_symbols'),
         'finalize_delayed_symbols': (finalize_summary or {}).get('delayed_symbols'),
+        'finalize_passed_count': (finalize_summary or {}).get('passed_count'),
+        'finalize_passed_symbols': (finalize_summary or {}).get('passed_symbols'),
+        'finalize_timeout_not_finalized_count': (finalize_summary or {}).get('timeout_not_finalized_count'),
+        'finalize_timeout_not_finalized_symbols': (finalize_summary or {}).get('timeout_not_finalized_symbols'),
+        'finalize_rounds': (finalize_summary or {}).get('finalize_rounds'),
+        'finalize_probe_interval_secs': (finalize_summary or {}).get('finalize_probe_interval_secs'),
+        'finalize_deadline_utc_ms': (finalize_summary or {}).get('finalize_deadline_utc_ms'),
+        'finalize_deadline_bj': (finalize_summary or {}).get('finalize_deadline_bj'),
         'finalize_elapsed_ms': finalize_elapsed_ms,
         'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
         'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
