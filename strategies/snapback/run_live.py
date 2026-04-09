@@ -467,11 +467,18 @@ def _finalize_candidate_payload(
         'verify_failed_symbols': verify_failed_symbols,
         'delayed_symbols': [],
         'skipped_due_deadline': False,
+        'deadline_hit': False,
         'finalize_deadline_utc_ms': finalize_deadline_utc_ms,
         'finalize_deadline_bj': _fmt_bj_from_ms(finalize_deadline_utc_ms),
         'finalize_probe_interval_secs': int(_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS),
         'finalize_rounds': 0,
         'initial_pending_symbol_count': int(len(pending_symbols)),
+        'candidate_md_finished_utc_ms': int(candidate_md_finished_utc_ms) if candidate_md_finished_utc_ms is not None else None,
+        'candidate_md_finished_bj': _fmt_bj_from_ms(candidate_md_finished_utc_ms),
+        'all_passed': False,
+        'all_passed_utc_ms': None,
+        'all_passed_bj': None,
+        'all_passed_elapsed_ms': None,
         'passed_count': 0,
         'passed_symbols': [],
         'timeout_not_finalized_count': 0,
@@ -624,9 +631,45 @@ def _finalize_candidate_payload(
                     'refreshed_snapshot': refreshed_snapshot,
                 })
 
+        if (not pending_symbols) and (not finalize_summary.get('all_passed')):
+            all_passed_utc_ms = max(
+                int(last_valid_probe_utc_ms_by_symbol.get(symbol, round_probe_utc_ms))
+                for symbol in passed_symbols
+            ) if passed_symbols else int(round_probe_utc_ms)
+            all_passed_elapsed_ms = (
+                int(all_passed_utc_ms) - int(candidate_md_finished_utc_ms)
+                if candidate_md_finished_utc_ms is not None else None
+            )
+            finalize_summary['all_passed'] = True
+            finalize_summary['all_passed_utc_ms'] = int(all_passed_utc_ms)
+            finalize_summary['all_passed_bj'] = _fmt_bj_from_ms(all_passed_utc_ms)
+            finalize_summary['all_passed_elapsed_ms'] = int(all_passed_elapsed_ms) if all_passed_elapsed_ms is not None else None
+            _log_market_data_event(
+                account,
+                logging.INFO,
+                '[c_bar_finalize] all_passed | c_bar_bj=%s | round_probe_bj=%s | all_passed_elapsed_ms=%s | finalize_rounds=%s',
+                c_bar_bj,
+                round_probe_bj,
+                finalize_summary['all_passed_elapsed_ms'],
+                finalize_summary['finalize_rounds'],
+            )
+            if audit_enabled:
+                write_event(account, 'c_bar_finalize_all_passed', {
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'c_bar_ts': c_bar_ts,
+                    'c_bar_bj': c_bar_bj,
+                    'all_passed_utc_ms': finalize_summary['all_passed_utc_ms'],
+                    'all_passed_bj': finalize_summary['all_passed_bj'],
+                    'all_passed_elapsed_ms': finalize_summary['all_passed_elapsed_ms'],
+                    'finalize_rounds': finalize_summary['finalize_rounds'],
+                    'passed_count': int(len(passed_symbols)),
+                })
+
         next_probe_utc_ms = _next_finalize_probe_utc_ms(next_probe_utc_ms, candidate_md_finished_utc_ms)
 
     if pending_symbols:
+        finalize_summary['deadline_hit'] = True
         for symbol in sorted(pending_symbols):
             timeout_symbols.append(symbol)
             candidate_full_df.pop(symbol, None)
@@ -1076,6 +1119,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_timeout_not_finalized_count': (finalize_summary or {}).get('timeout_not_finalized_count') if 'finalize_summary' in locals() else None,
             'finalize_timeout_not_finalized_symbols_preview': _cache_miss_symbols_preview(finalize_summary, 'timeout_not_finalized_symbols') if 'finalize_summary' in locals() else None,
             'finalize_rounds': (finalize_summary or {}).get('finalize_rounds') if 'finalize_summary' in locals() else None,
+            'finalize_deadline_hit': (finalize_summary or {}).get('deadline_hit') if 'finalize_summary' in locals() else None,
+            'finalize_all_passed': (finalize_summary or {}).get('all_passed') if 'finalize_summary' in locals() else None,
+            'finalize_all_passed_utc_ms': (finalize_summary or {}).get('all_passed_utc_ms') if 'finalize_summary' in locals() else None,
+            'finalize_all_passed_bj': (finalize_summary or {}).get('all_passed_bj') if 'finalize_summary' in locals() else None,
+            'finalize_all_passed_elapsed_ms': (finalize_summary or {}).get('all_passed_elapsed_ms') if 'finalize_summary' in locals() else None,
             'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
             'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
             'finalize_removed_symbol_count': finalize_removed_symbol_count,
@@ -1250,6 +1298,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'finalize_probe_interval_secs': (finalize_summary or {}).get('finalize_probe_interval_secs'),
             'finalize_deadline_utc_ms': (finalize_summary or {}).get('finalize_deadline_utc_ms'),
             'finalize_deadline_bj': (finalize_summary or {}).get('finalize_deadline_bj'),
+            'deadline_hit': (finalize_summary or {}).get('deadline_hit'),
+            'all_passed': (finalize_summary or {}).get('all_passed'),
+            'all_passed_utc_ms': (finalize_summary or {}).get('all_passed_utc_ms'),
+            'all_passed_bj': (finalize_summary or {}).get('all_passed_bj'),
+            'all_passed_elapsed_ms': (finalize_summary or {}).get('all_passed_elapsed_ms'),
             **finalize_summary,
         })
 
@@ -1293,6 +1346,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         'finalize_probe_interval_secs': (finalize_summary or {}).get('finalize_probe_interval_secs'),
         'finalize_deadline_utc_ms': (finalize_summary or {}).get('finalize_deadline_utc_ms'),
         'finalize_deadline_bj': (finalize_summary or {}).get('finalize_deadline_bj'),
+        'deadline_hit': (finalize_summary or {}).get('deadline_hit'),
+        'all_passed': (finalize_summary or {}).get('all_passed'),
+        'all_passed_utc_ms': (finalize_summary or {}).get('all_passed_utc_ms'),
+        'all_passed_bj': (finalize_summary or {}).get('all_passed_bj'),
+        'all_passed_elapsed_ms': (finalize_summary or {}).get('all_passed_elapsed_ms'),
         'finalize_elapsed_ms': finalize_elapsed_ms,
         'candidate_symbol_count_before_finalize': candidate_symbol_count_before_finalize,
         'candidate_symbol_count_after_finalize': candidate_symbol_count_after_finalize,
