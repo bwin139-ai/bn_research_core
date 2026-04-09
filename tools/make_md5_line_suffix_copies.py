@@ -34,7 +34,7 @@ FILES = [
     # "core/engine/data_feeder.py",
     # "core/live/live_state.py",
     # "core/live/audit_log.py",
-     "core/live/market_data.py",
+    # "core/live/market_data.py",
     # "core/live/custom_id.py",
     # "=============== 策略 ==================",
     # "strategies/run_backtest.py",
