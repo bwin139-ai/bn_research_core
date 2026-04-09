@@ -30,7 +30,7 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
   --start 2026-04-08T12:00:00+08:00 \
   --end   2026-04-09T11:00:00+08:00 \
   --kline-window 60 \
-  --config snapback/config.highfreq.json \
+  --config snapback/config.sim.json \
   --out-dir "output/SmokeTest" \
   --run-id "Snapback_V7_SmokeTest7.2"
 
@@ -124,7 +124,7 @@ nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedu
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
-  --config snapback/config.profit.json \
+  --config snapback/config.sim.json \
   --out-dir output/state \
   --logs-dir output/logs \
   --run-prefix "'"$RUNSET"'" \
