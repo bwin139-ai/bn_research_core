@@ -46,6 +46,7 @@ class WashoutSnapbackStrategy:
         self.max_rebound_ratio = rebound["ratio"]["max"]
         self.min_bc_bars = rebound["bc_bars_min"]
         self.max_basis_b_pct = basis["b_pct"]["max"]
+        self.max_basis_c_pct = basis["c_pct"]["max"]
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -219,6 +220,20 @@ class WashoutSnapbackStrategy:
             record["basis_b_pct"] = basis_b_pct
             if basis_b_pct > self.max_basis_b_pct:
                 record["fail_reason"] = "basis_b_pct_above_max"
+                audits[sym] = record
+                continue
+
+            c_index_price = row["close_idx"]
+            record["c_index_price"] = c_index_price
+            if pd.isna(c_index_price) or c_index_price <= 0:
+                record["fail_reason"] = "invalid_c_index_price"
+                audits[sym] = record
+                continue
+
+            basis_c_pct = (current_price - c_index_price) / c_index_price
+            record["basis_c_pct"] = basis_c_pct
+            if basis_c_pct > self.max_basis_c_pct:
+                record["fail_reason"] = "basis_c_pct_above_max"
                 audits[sym] = record
                 continue
 
@@ -423,6 +438,14 @@ class WashoutSnapbackStrategy:
             if basis_b_pct > self.max_basis_b_pct:
                 continue
 
+            c_index_price = row["close_idx"]
+            if pd.isna(c_index_price) or c_index_price <= 0:
+                continue
+
+            basis_c_pct = (current_price - c_index_price) / c_index_price
+            if basis_c_pct > self.max_basis_c_pct:
+                continue
+
             extreme_drop_range = recent_high_price - b_index_price
             if extreme_drop_range <= 0:
                 continue
@@ -485,6 +508,8 @@ class WashoutSnapbackStrategy:
                     "b_contract_price": b_contract_price,
                     "b_index_price": b_index_price,
                     "basis_b_pct": basis_b_pct,
+                    "c_index_price": c_index_price,
+                    "basis_c_pct": basis_c_pct,
                     "rebound_ratio": rebound_ratio,
                     "trigger_name": trigger_name,
                     "selected_tp_pct": selected_tp_pct,
@@ -539,6 +564,7 @@ class WashoutSnapbackStrategy:
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
                 "max_basis_b_pct": self.max_basis_b_pct,
+                "max_basis_c_pct": self.max_basis_c_pct,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
             },
@@ -561,6 +587,8 @@ class WashoutSnapbackStrategy:
                 "b_contract_price": target["b_contract_price"],
                 "b_index_price": target["b_index_price"],
                 "basis_b_pct": target["basis_b_pct"],
+                "c_index_price": target["c_index_price"],
+                "basis_c_pct": target["basis_c_pct"],
                 "rebound_ratio": target["rebound_ratio"],
                 "trigger_name": target["trigger_name"],
                 "selected_tp_pct": target["selected_tp_pct"],

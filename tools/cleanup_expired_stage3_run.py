@@ -1,3 +1,7 @@
+# /root/service_env/bin/python tools/cleanup_expired_stage3_run.py
+# 运行前后执行命令记录现场
+# find state/live_audit/stage_audit -type f -name "snapback_*.stage3_bars.*.parquet" | wc -l && find state/live_audit/stage_audit -type f -name "snapback_*.stage3_bars.*.parquet" -print0 | du --files0-from=- -ch | tail -n 1
+
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 

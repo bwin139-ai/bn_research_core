@@ -744,6 +744,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     max_rebound_ratio = float(((rebound.get('ratio') or {}).get('max', 1e9)))
     min_bc_bars = int(rebound.get('bc_bars_min', 0))
     max_basis_b_pct = float(((basis.get('b_pct') or {}).get('max', 1e9)))
+    max_basis_c_pct = float(((basis.get('c_pct') or {}).get('max', 1e9)))
 
     base_tp_pct = float(take_profit.get('base_pct', 0.0))
     strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
@@ -779,6 +780,8 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             'cross_low_idx': _series_value(row, 'low_idx'),
             'cross_close_idx': _series_value(row, 'close_idx'),
             'min_24h_vol': min_24h_vol,
+            'max_basis_b_pct': max_basis_b_pct,
+            'max_basis_c_pct': max_basis_c_pct,
             'min_24h_chg_pct': min_24h_chg,
             'max_24h_chg_pct': max_24h_chg,
         }
@@ -913,6 +916,20 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
         base['basis_b_pct'] = _normalize_scalar(basis_b_pct)
         if basis_b_pct > max_basis_b_pct:
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'basis_b_pct_above_max'})
+            audit_rows.append(base)
+            continue
+
+        c_index_price = row2['close_idx']
+        base['c_index_price'] = _normalize_scalar(c_index_price)
+        if pd.isna(c_index_price) or c_index_price <= 0:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'invalid_c_index_price'})
+            audit_rows.append(base)
+            continue
+
+        basis_c_pct = (current_price - c_index_price) / c_index_price
+        base['basis_c_pct'] = _normalize_scalar(basis_c_pct)
+        if basis_c_pct > max_basis_c_pct:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'basis_c_pct_above_max'})
             audit_rows.append(base)
             continue
 
