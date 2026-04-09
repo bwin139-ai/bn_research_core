@@ -19,6 +19,7 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
  tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.highfreq.log
  tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.profit.log
  ls -lht state/live_audit
+ ls -lht state/live_audit/stage_audit/*.stage3_enriched.*jsonl
 # *************** 同步币安数据 **************
  nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py >> output/logs/bn_sync.console.log 2>&1' &
  nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py --account mybwin139 --symbols BTCUSDT,ETHUSDT >> output/logs/bn_sync.console.log 2>&1' &
