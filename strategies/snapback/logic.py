@@ -45,7 +45,9 @@ class WashoutSnapbackStrategy:
         self.min_rebound_ratio = rebound["ratio"]["min"]
         self.max_rebound_ratio = rebound["ratio"]["max"]
         self.min_bc_bars = rebound["bc_bars_min"]
+        self.min_basis_b_pct = basis["b_pct"]["min"]
         self.max_basis_b_pct = basis["b_pct"]["max"]
+        self.min_basis_c_pct = basis["c_pct"]["min"]
         self.max_basis_c_pct = basis["c_pct"]["max"]
 
         # 游击战交易参数
@@ -218,6 +220,10 @@ class WashoutSnapbackStrategy:
 
             basis_b_pct = (b_contract_price - b_index_price) / b_index_price
             record["basis_b_pct"] = basis_b_pct
+            if basis_b_pct < self.min_basis_b_pct:
+                record["fail_reason"] = "basis_b_pct_below_min"
+                audits[sym] = record
+                continue
             if basis_b_pct > self.max_basis_b_pct:
                 record["fail_reason"] = "basis_b_pct_above_max"
                 audits[sym] = record
@@ -232,6 +238,10 @@ class WashoutSnapbackStrategy:
 
             basis_c_pct = (current_price - c_index_price) / c_index_price
             record["basis_c_pct"] = basis_c_pct
+            if basis_c_pct < self.min_basis_c_pct:
+                record["fail_reason"] = "basis_c_pct_below_min"
+                audits[sym] = record
+                continue
             if basis_c_pct > self.max_basis_c_pct:
                 record["fail_reason"] = "basis_c_pct_above_max"
                 audits[sym] = record
@@ -435,6 +445,8 @@ class WashoutSnapbackStrategy:
                 continue
 
             basis_b_pct = (b_contract_price - b_index_price) / b_index_price
+            if basis_b_pct < self.min_basis_b_pct:
+                continue
             if basis_b_pct > self.max_basis_b_pct:
                 continue
 
@@ -443,6 +455,8 @@ class WashoutSnapbackStrategy:
                 continue
 
             basis_c_pct = (current_price - c_index_price) / c_index_price
+            if basis_c_pct < self.min_basis_c_pct:
+                continue
             if basis_c_pct > self.max_basis_c_pct:
                 continue
 
@@ -563,7 +577,9 @@ class WashoutSnapbackStrategy:
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
+                "min_basis_b_pct": self.min_basis_b_pct,
                 "max_basis_b_pct": self.max_basis_b_pct,
+                "min_basis_c_pct": self.min_basis_c_pct,
                 "max_basis_c_pct": self.max_basis_c_pct,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
