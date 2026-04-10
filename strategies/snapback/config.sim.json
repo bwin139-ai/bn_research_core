@@ -25,7 +25,7 @@
       },
       "a_to_c_drop_pct": {
         "min": 0.06,
-        "max": 1
+        "max": 0.25
       },
       "vol_climax": {
         "recent_window_mins": 5,
