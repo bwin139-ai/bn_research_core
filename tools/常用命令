@@ -158,8 +158,8 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SNAP_V8.1_30D_P6_0410T2134_ALL"
-DEST=~/ai_projects/bn_research_core/output/sim_all_d
+RUNID="SNAP_V8.1_30D_P6_0410T2305_ALL"
+DEST=~/ai_projects/bn_research_core/output/sim_all_e
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
