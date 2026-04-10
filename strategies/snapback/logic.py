@@ -52,6 +52,7 @@ class WashoutSnapbackStrategy:
         self.max_basis_c_pct = basis["c_pct"]["max"]
         self.min_bc_rebound_speed = float(joint_filters.get("min_bc_rebound_speed", -1e9))
         self.min_speed_ratio_bc_over_ab = float(joint_filters.get("min_speed_ratio_bc_over_ab", -1e9))
+        self.min_a_to_b_drop_speed = float(joint_filters.get("min_a_to_b_drop_speed", -1e9))
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -276,6 +277,15 @@ class WashoutSnapbackStrategy:
                 continue
             if ab_bars > self.max_ab_bars:
                 record["fail_reason"] = "ab_bars_above_max"
+                audits[sym] = record
+                continue
+
+            ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
+            record["ab_drop_pct_index"] = ab_drop_pct_index
+            a_to_b_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
+            record["a_to_b_drop_speed"] = a_to_b_drop_speed
+            if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
+                record["fail_reason"] = "a_to_b_drop_speed_below_min"
                 audits[sym] = record
                 continue
 
@@ -505,6 +515,11 @@ class WashoutSnapbackStrategy:
             if ab_bars > self.max_ab_bars:
                 continue
 
+            ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
+            a_to_b_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
+            if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
+                continue
+
             bc_bars = (len(ac_df) - 1) - b_pos
             if bc_bars < self.min_bc_bars:
                 continue
@@ -553,6 +568,8 @@ class WashoutSnapbackStrategy:
                     "a_time": recent_high_ts,
                     "a_high_price": recent_high_price,
                     "ab_bars": ab_bars,
+                    "ab_drop_pct_index": ab_drop_pct_index,
+                    "a_to_b_drop_speed": a_to_b_drop_speed,
                     "b_time": b_contract_ts,
                     "bc_bars": bc_bars,
                     "c_time": current_time_ms,
@@ -616,6 +633,7 @@ class WashoutSnapbackStrategy:
                 "max_drop_window_chg": self.max_drop_window_chg,
                 "min_ab_bars": self.min_ab_bars,
                 "max_ab_bars": self.max_ab_bars,
+                "min_a_to_b_drop_speed": self.min_a_to_b_drop_speed,
                 "min_rebound_ratio": self.min_rebound_ratio,
                 "max_rebound_ratio": self.max_rebound_ratio,
                 "min_bc_bars": self.min_bc_bars,
@@ -640,6 +658,8 @@ class WashoutSnapbackStrategy:
                 "a_time": target["a_time"],
                 "a_high_price": target["a_high_price"],
                 "ab_bars": target["ab_bars"],
+                "ab_drop_pct_index": target["ab_drop_pct_index"],
+                "a_to_b_drop_speed": target["a_to_b_drop_speed"],
                 "b_time": target["b_time"],
                 "bc_bars": target["bc_bars"],
                 "c_time": target["c_time"],
