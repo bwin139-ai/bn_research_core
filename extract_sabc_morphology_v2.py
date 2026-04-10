@@ -52,8 +52,9 @@ def _fmt_bj(ts_ms: Optional[int]) -> Optional[str]:
 
 
 class SymbolStore:
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, required_cols: List[str]):
         self.data_dir = Path(data_dir)
+        self.required_cols = list(required_cols)
         self._cache: Dict[str, Optional[pd.DataFrame]] = {}
 
     def get(self, symbol: str) -> Optional[pd.DataFrame]:
@@ -70,10 +71,9 @@ class SymbolStore:
             return None
         tbl = pq.read_table(files)
         df = tbl.to_pandas().sort_values("open_time_ms").set_index("open_time_ms")
-        required_cols = ["open", "high", "low", "close", "quote_asset_volume", "low_idx", "close_idx"]
-        for col in required_cols:
+        for col in self.required_cols:
             if col not in df.columns:
-                raise KeyError(f"symbol={sym} parquet missing required column: {col}")
+                raise KeyError(f"store={self.data_dir} symbol={sym} parquet missing required column: {col}")
         self._cache[sym] = df
         return df
 
@@ -151,7 +151,7 @@ def _extract_row(df: pd.DataFrame, ts_ms: int) -> Optional[pd.Series]:
         return None
 
 
-def build_features_pre_c_only(store: SymbolStore, item: JoinedTrade, pre_window_bars: int = 60) -> Dict[str, Any]:
+def build_features_pre_c_only(contract_store: SymbolStore, index_store: SymbolStore, item: JoinedTrade, pre_window_bars: int = 60) -> Dict[str, Any]:
     s = item.signal
     t = item.trade
 
@@ -196,11 +196,13 @@ def build_features_pre_c_only(store: SymbolStore, item: JoinedTrade, pre_window_
     if any(v is None for v in core_vals):
         raise ValueError(f"core context parse failed for symbol={symbol} signal_time={signal_time}")
 
-    df = store.get(symbol)
+    df = contract_store.get(symbol)
     if df is None or df.empty:
-        raise FileNotFoundError(f"symbol parquet missing: {symbol}")
+        raise FileNotFoundError(f"contract parquet missing: {symbol}")
     if any(_extract_row(df, ts) is None for ts in [s_time, a_time, b_time, c_time]):
-        raise KeyError(f"symbol={symbol} missing one of S/A/B/C rows in parquet")
+        raise KeyError(f"symbol={symbol} missing one of S/A/B/C rows in contract parquet")
+
+    idx_df = index_store.get(symbol)
 
     pre_df = _window_slice(df, max(0, s_time - pre_window_bars * 60_000), s_time)
     ab_df = _window_slice(df, a_time, b_time)
@@ -231,7 +233,11 @@ def build_features_pre_c_only(store: SymbolStore, item: JoinedTrade, pre_window_
     pre_close = pre_df["close"] if not pre_df.empty else pd.Series(dtype=float)
     pre_high = pre_df["high"] if not pre_df.empty else pd.Series(dtype=float)
     pre_low = pre_df["low"] if not pre_df.empty else pd.Series(dtype=float)
-    pre_idx_close = pre_df["close_idx"].dropna() if not pre_df.empty else pd.Series(dtype=float)
+    if idx_df is not None and not idx_df.empty:
+        pre_idx_df = _window_slice(idx_df, max(0, s_time - pre_window_bars * 60_000), s_time)
+        pre_idx_close = pre_idx_df["close"].dropna() if not pre_idx_df.empty else pd.Series(dtype=float)
+    else:
+        pre_idx_close = pd.Series(dtype=float)
 
     pre_trend_chg = None
     if len(pre_close) >= 2:
@@ -316,6 +322,7 @@ def main() -> None:
     ap.add_argument("--signals", required=True)
     ap.add_argument("--trades", required=True)
     ap.add_argument("--data-dir", default="data/klines_1m")
+    ap.add_argument("--index-data-dir", default="data/index_klines_1m")
     ap.add_argument("--out-csv", required=True)
     ap.add_argument("--out-jsonl", default="")
     ap.add_argument("--pre-window-bars", type=int, default=60)
@@ -324,8 +331,9 @@ def main() -> None:
     signals = _read_jsonl(args.signals)
     trades = _read_jsonl(args.trades)
     joined = _join_signals_trades_strict(signals, trades)
-    store = SymbolStore(args.data_dir)
-    rows = [build_features_pre_c_only(store, item, args.pre_window_bars) for item in joined]
+    contract_store = SymbolStore(args.data_dir, ["open", "high", "low", "close", "quote_asset_volume"])
+    index_store = SymbolStore(args.index_data_dir, ["open", "high", "low", "close", "quote_asset_volume"])
+    rows = [build_features_pre_c_only(contract_store, index_store, item, args.pre_window_bars) for item in joined]
     df = pd.DataFrame(rows)
 
     out_csv = Path(args.out_csv)
