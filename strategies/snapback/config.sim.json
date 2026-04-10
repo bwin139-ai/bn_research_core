@@ -52,7 +52,7 @@
     },
     "joint_filters": {
       "min_bc_rebound_speed": 0.003,
-      "min_speed_ratio_bc_over_ab": 0.20
+      "min_speed_ratio_bc_over_ab": -1
     }
   },
   "exit_policy": {
