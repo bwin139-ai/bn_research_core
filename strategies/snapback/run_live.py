@@ -719,6 +719,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     selloff = (structure.get('selloff') or {})
     rebound = (structure.get('rebound') or {})
     basis = (structure.get('basis') or {})
+    joint_filters = (structure.get('joint_filters') or {})
     s_to_c_window = (structure.get('s_to_c_window') or {})
     exit_policy = (strategy_cfg or {}).get('exit_policy') or {}
     take_profit = (exit_policy.get('take_profit') or {})
@@ -747,6 +748,8 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     max_basis_b_pct = float(((basis.get('b_pct') or {}).get('max', 1e9)))
     min_basis_c_pct = float(((basis.get('c_pct') or {}).get('min', -1e9)))
     max_basis_c_pct = float(((basis.get('c_pct') or {}).get('max', 1e9)))
+    min_bc_rebound_speed = float(joint_filters.get('min_bc_rebound_speed', -1e9))
+    min_speed_ratio_bc_over_ab = float(joint_filters.get('min_speed_ratio_bc_over_ab', -1e9))
 
     base_tp_pct = float(take_profit.get('base_pct', 0.0))
     strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
@@ -786,6 +789,8 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             'max_basis_b_pct': max_basis_b_pct,
             'min_basis_c_pct': min_basis_c_pct,
             'max_basis_c_pct': max_basis_c_pct,
+            'min_bc_rebound_speed': min_bc_rebound_speed,
+            'min_speed_ratio_bc_over_ab': min_speed_ratio_bc_over_ab,
             'min_24h_chg_pct': min_24h_chg,
             'max_24h_chg_pct': max_24h_chg,
         }
@@ -989,6 +994,28 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             continue
         if rebound_ratio > max_rebound_ratio:
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'rebound_ratio_above_max'})
+            audit_rows.append(base)
+            continue
+
+        c_pos_in_ac_index = rebound_ratio
+        base['c_pos_in_ac_index'] = _normalize_scalar(c_pos_in_ac_index)
+        bc_rebound_pct_index = (current_price - b_index_price) / b_index_price
+        base['bc_rebound_pct_index'] = _normalize_scalar(bc_rebound_pct_index)
+        bc_rebound_speed = (bc_rebound_pct_index / bc_bars) if bc_bars > 0 else None
+        base['bc_rebound_speed'] = _normalize_scalar(bc_rebound_speed)
+        if bc_rebound_speed is None or bc_rebound_speed < min_bc_rebound_speed:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'bc_rebound_speed_below_min'})
+            audit_rows.append(base)
+            continue
+
+        ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
+        base['ab_drop_pct_index'] = _normalize_scalar(ab_drop_pct_index)
+        ab_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
+        base['ab_drop_speed'] = _normalize_scalar(ab_drop_speed)
+        speed_ratio_bc_over_ab = (bc_rebound_speed / ab_drop_speed) if (bc_rebound_speed is not None and ab_drop_speed not in (None, 0)) else None
+        base['speed_ratio_bc_over_ab'] = _normalize_scalar(speed_ratio_bc_over_ab)
+        if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < min_speed_ratio_bc_over_ab:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'speed_ratio_bc_over_ab_below_min'})
             audit_rows.append(base)
             continue
 
