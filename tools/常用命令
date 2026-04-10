@@ -158,8 +158,8 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SNAP_V7.1_30D_P6_0409T2224_ALL"
-DEST=~/ai_projects/bn_research_core/output/sim_all_5
+RUNID="SNAP_V7.1_30D_P6_0410T1018_ALL"
+DEST=~/ai_projects/bn_research_core/output/sim_all_6
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
@@ -168,6 +168,15 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_curve_simple.${RUNID}.png" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
+  "$DEST"
+
+# *****download***** 拉 SABC 特征数据及分析 *****download***** 
+DEST=~/ai_projects/bn_research_core/output/SABC_1
+mkdir -p "$DEST"
+scp -r \
+  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_analysis_v1 \
+  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_v1.csv \
+  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_v1.jsonl \
   "$DEST"
 
 # *****download*****  拉复盘k线图表 *****download***** 
