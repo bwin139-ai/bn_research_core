@@ -54,6 +54,8 @@ class StrategyConfig:
         ("structure", "basis", "b_pct", "max"),
         ("structure", "basis", "c_pct", "min"),
         ("structure", "basis", "c_pct", "max"),
+        ("structure", "joint_filters", "min_bc_rebound_speed"),
+        ("structure", "joint_filters", "min_speed_ratio_bc_over_ab"),
         ("structure", "joint_filters", "min_a_to_b_drop_speed"),
         ("exit_policy", "take_profit", "base_pct"),
         ("exit_policy", "take_profit", "strong_pct"),

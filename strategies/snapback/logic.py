@@ -53,6 +53,9 @@ class WashoutSnapbackStrategy:
         self.min_bc_rebound_speed = float(joint_filters.get("min_bc_rebound_speed", -1e9))
         self.min_speed_ratio_bc_over_ab = float(joint_filters.get("min_speed_ratio_bc_over_ab", -1e9))
         self.min_a_to_b_drop_speed = float(joint_filters.get("min_a_to_b_drop_speed", -1e9))
+        self.enable_min_bc_rebound_speed = self.min_bc_rebound_speed >= 0
+        self.enable_min_speed_ratio_bc_over_ab = self.min_speed_ratio_bc_over_ab >= 0
+        self.enable_min_a_to_b_drop_speed = self.min_a_to_b_drop_speed >= 0
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -284,10 +287,11 @@ class WashoutSnapbackStrategy:
             record["ab_drop_pct_index"] = ab_drop_pct_index
             a_to_b_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
             record["a_to_b_drop_speed"] = a_to_b_drop_speed
-            if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
-                record["fail_reason"] = "a_to_b_drop_speed_below_min"
-                audits[sym] = record
-                continue
+            if self.enable_min_a_to_b_drop_speed:
+                if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
+                    record["fail_reason"] = "a_to_b_drop_speed_below_min"
+                    audits[sym] = record
+                    continue
 
             bc_bars = (len(ac_df) - 1) - b_pos
             record["bc_bars"] = int(bc_bars)
@@ -313,10 +317,11 @@ class WashoutSnapbackStrategy:
             record["bc_rebound_pct_index"] = bc_rebound_pct_index
             bc_rebound_speed = (bc_rebound_pct_index / bc_bars) if bc_bars > 0 else None
             record["bc_rebound_speed"] = bc_rebound_speed
-            if bc_rebound_speed is None or bc_rebound_speed < self.min_bc_rebound_speed:
-                record["fail_reason"] = "bc_rebound_speed_below_min"
-                audits[sym] = record
-                continue
+            if self.enable_min_bc_rebound_speed:
+                if bc_rebound_speed is None or bc_rebound_speed < self.min_bc_rebound_speed:
+                    record["fail_reason"] = "bc_rebound_speed_below_min"
+                    audits[sym] = record
+                    continue
 
             ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
             record["ab_drop_pct_index"] = ab_drop_pct_index
@@ -324,10 +329,11 @@ class WashoutSnapbackStrategy:
             record["ab_drop_speed"] = ab_drop_speed
             speed_ratio_bc_over_ab = (bc_rebound_speed / ab_drop_speed) if (bc_rebound_speed is not None and ab_drop_speed not in (None, 0)) else None
             record["speed_ratio_bc_over_ab"] = speed_ratio_bc_over_ab
-            if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < self.min_speed_ratio_bc_over_ab:
-                record["fail_reason"] = "speed_ratio_bc_over_ab_below_min"
-                audits[sym] = record
-                continue
+            if self.enable_min_speed_ratio_bc_over_ab:
+                if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < self.min_speed_ratio_bc_over_ab:
+                    record["fail_reason"] = "speed_ratio_bc_over_ab_below_min"
+                    audits[sym] = record
+                    continue
 
             trigger_name = "ABC_BINDEX"
             selected_tp_pct = self.base_tp_pct
@@ -517,8 +523,9 @@ class WashoutSnapbackStrategy:
 
             ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
             a_to_b_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
-            if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
-                continue
+            if self.enable_min_a_to_b_drop_speed:
+                if a_to_b_drop_speed is None or a_to_b_drop_speed < self.min_a_to_b_drop_speed:
+                    continue
 
             bc_bars = (len(ac_df) - 1) - b_pos
             if bc_bars < self.min_bc_bars:
@@ -533,14 +540,16 @@ class WashoutSnapbackStrategy:
             c_pos_in_ac_index = rebound_ratio
             bc_rebound_pct_index = (current_price - b_index_price) / b_index_price
             bc_rebound_speed = (bc_rebound_pct_index / bc_bars) if bc_bars > 0 else None
-            if bc_rebound_speed is None or bc_rebound_speed < self.min_bc_rebound_speed:
-                continue
+            if self.enable_min_bc_rebound_speed:
+                if bc_rebound_speed is None or bc_rebound_speed < self.min_bc_rebound_speed:
+                    continue
 
             ab_drop_pct_index = ((recent_high_price - b_index_price) / recent_high_price) if recent_high_price > 0 else None
             ab_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
             speed_ratio_bc_over_ab = (bc_rebound_speed / ab_drop_speed) if (bc_rebound_speed is not None and ab_drop_speed not in (None, 0)) else None
-            if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < self.min_speed_ratio_bc_over_ab:
-                continue
+            if self.enable_min_speed_ratio_bc_over_ab:
+                if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < self.min_speed_ratio_bc_over_ab:
+                    continue
 
             trigger_name = "ABC_BINDEX"
 

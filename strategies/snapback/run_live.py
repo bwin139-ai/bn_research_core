@@ -751,6 +751,9 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     min_bc_rebound_speed = float(joint_filters.get('min_bc_rebound_speed', -1e9))
     min_speed_ratio_bc_over_ab = float(joint_filters.get('min_speed_ratio_bc_over_ab', -1e9))
     min_a_to_b_drop_speed = float(joint_filters.get('min_a_to_b_drop_speed', -1e9))
+    enable_min_bc_rebound_speed = min_bc_rebound_speed >= 0
+    enable_min_speed_ratio_bc_over_ab = min_speed_ratio_bc_over_ab >= 0
+    enable_min_a_to_b_drop_speed = min_a_to_b_drop_speed >= 0
 
     base_tp_pct = float(take_profit.get('base_pct', 0.0))
     strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
@@ -985,10 +988,11 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
         base['ab_drop_pct_index'] = _normalize_scalar(ab_drop_pct_index)
         a_to_b_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
         base['a_to_b_drop_speed'] = _normalize_scalar(a_to_b_drop_speed)
-        if a_to_b_drop_speed is None or a_to_b_drop_speed < min_a_to_b_drop_speed:
-            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'a_to_b_drop_speed_below_min'})
-            audit_rows.append(base)
-            continue
+        if enable_min_a_to_b_drop_speed:
+            if a_to_b_drop_speed is None or a_to_b_drop_speed < min_a_to_b_drop_speed:
+                base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'a_to_b_drop_speed_below_min'})
+                audit_rows.append(base)
+                continue
 
         bc_bars = (len(ac_df) - 1) - b_pos
         base['bc_bars'] = bc_bars
@@ -1014,19 +1018,21 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
         base['bc_rebound_pct_index'] = _normalize_scalar(bc_rebound_pct_index)
         bc_rebound_speed = (bc_rebound_pct_index / bc_bars) if bc_bars > 0 else None
         base['bc_rebound_speed'] = _normalize_scalar(bc_rebound_speed)
-        if bc_rebound_speed is None or bc_rebound_speed < min_bc_rebound_speed:
-            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'bc_rebound_speed_below_min'})
-            audit_rows.append(base)
-            continue
+        if enable_min_bc_rebound_speed:
+            if bc_rebound_speed is None or bc_rebound_speed < min_bc_rebound_speed:
+                base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'bc_rebound_speed_below_min'})
+                audit_rows.append(base)
+                continue
 
         ab_drop_speed = (ab_drop_pct_index / ab_bars) if ab_drop_pct_index is not None and ab_bars > 0 else None
         base['ab_drop_speed'] = _normalize_scalar(ab_drop_speed)
         speed_ratio_bc_over_ab = (bc_rebound_speed / ab_drop_speed) if (bc_rebound_speed is not None and ab_drop_speed not in (None, 0)) else None
         base['speed_ratio_bc_over_ab'] = _normalize_scalar(speed_ratio_bc_over_ab)
-        if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < min_speed_ratio_bc_over_ab:
-            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'speed_ratio_bc_over_ab_below_min'})
-            audit_rows.append(base)
-            continue
+        if enable_min_speed_ratio_bc_over_ab:
+            if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < min_speed_ratio_bc_over_ab:
+                base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'speed_ratio_bc_over_ab_below_min'})
+                audit_rows.append(base)
+                continue
 
         selected_tp_pct = base_tp_pct
         tp_tier = 'BASE'
