@@ -62,7 +62,7 @@
       }
     },
     "time_stop": {
-      "max_hold_mins": 3,
+      "max_hold_mins": 15,
       "min_profit_pct": 0.005
     }
   },
