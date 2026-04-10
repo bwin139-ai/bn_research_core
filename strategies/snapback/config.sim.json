@@ -51,8 +51,8 @@
       }      
     },
     "joint_filters": {
-      "min_bc_rebound_speed": -1.0,
-      "min_speed_ratio_bc_over_ab": -1.0
+      "min_bc_rebound_speed": 0.003,
+      "min_speed_ratio_bc_over_ab": 0.20
     }
   },
   "exit_policy": {
