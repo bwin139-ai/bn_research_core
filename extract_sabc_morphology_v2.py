@@ -332,7 +332,7 @@ def main() -> None:
     trades = _read_jsonl(args.trades)
     joined = _join_signals_trades_strict(signals, trades)
     contract_store = SymbolStore(args.data_dir, ["open", "high", "low", "close", "quote_asset_volume"])
-    index_store = SymbolStore(args.index_data_dir, ["open", "high", "low", "close", "quote_asset_volume"])
+    index_store = SymbolStore(args.index_data_dir, ["open", "high", "low", "close"])
     rows = [build_features_pre_c_only(contract_store, index_store, item, args.pre_window_bars) for item in joined]
     df = pd.DataFrame(rows)
 
