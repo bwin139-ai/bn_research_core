@@ -61,7 +61,9 @@ FILES = [
     #"docs/CURRENT_STATE.md",
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
-    "docs/新聊天开场白.md",
+    #"docs/新聊天开场白.md",
+    # "================ SABC 特征抽取和分析工具 =================",
+    "extract_sabc_morphology_v2.py",
 ]
 
 

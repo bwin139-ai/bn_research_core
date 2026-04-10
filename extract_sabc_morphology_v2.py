@@ -70,7 +70,7 @@ class SymbolStore:
             return None
         tbl = pq.read_table(files)
         df = tbl.to_pandas().sort_values("open_time_ms").set_index("open_time_ms")
-        required_cols = ["open", "high", "low", "close", "quote_asset_volume", "high_idx", "low_idx", "close_idx"]
+        required_cols = ["open", "high", "low", "close", "quote_asset_volume", "low_idx", "close_idx"]
         for col in required_cols:
             if col not in df.columns:
                 raise KeyError(f"symbol={sym} parquet missing required column: {col}")
