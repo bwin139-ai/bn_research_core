@@ -716,6 +716,9 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
 
     universe = (strategy_cfg or {}).get('universe') or {}
     structure = (strategy_cfg or {}).get('structure') or {}
+    a_high_source = str(structure.get('a_high_source') or '').strip()
+    if a_high_source not in ('contract', 'idx'):
+        raise ValueError('【铁律违背】structure.a_high_source 只允许 "contract" 或 "idx"')
     selloff = (structure.get('selloff') or {})
     rebound = (structure.get('rebound') or {})
     basis = (structure.get('basis') or {})
@@ -875,8 +878,9 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             audit_rows.append(base)
             continue
 
-        recent_high_ts = int(recent_drop_df['high'].idxmax())
-        recent_high_price = recent_drop_df.loc[recent_high_ts, 'high']
+        a_high_col = 'high' if a_high_source == 'contract' else 'high_idx'
+        recent_high_ts = int(recent_drop_df[a_high_col].idxmax())
+        recent_high_price = recent_drop_df.loc[recent_high_ts, a_high_col]
         ac_df = recent_drop_df.loc[recent_high_ts:]
         base.update({
             'a_time': recent_high_ts,

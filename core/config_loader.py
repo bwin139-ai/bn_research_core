@@ -37,6 +37,7 @@ class StrategyConfig:
         ("universe", "24h_quote_volume_min"),
         ("universe", "24h_chg_pct", "min"),
         ("universe", "24h_chg_pct", "max"),
+        ("structure", "a_high_source"),
         ("structure", "s_to_c_window", "mins"),
         ("structure", "s_to_c_window", "chg_pct", "min"),
         ("structure", "s_to_c_window", "chg_pct", "max"),
@@ -102,6 +103,9 @@ class StrategyConfig:
             StrategyConfig._require_keys(raw_data, StrategyConfig.TOP1_REQUIRED_KEYS)
         elif strategy_name == "snapback":
             StrategyConfig._require_paths(raw_data, StrategyConfig.SNAPBACK_REQUIRED_PATHS)
+            a_high_source = raw_data["structure"]["a_high_source"]
+            if a_high_source not in ("contract", "idx"):
+                raise ValueError('【铁律违背】structure.a_high_source 只允许 "contract" 或 "idx"')
         else:
             raise KeyError(f"【铁律违背】未知 strategy_name: '{strategy_name}'")
 

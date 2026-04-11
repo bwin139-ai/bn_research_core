@@ -31,6 +31,7 @@ class WashoutSnapbackStrategy:
         self.max_24h_chg = universe["24h_chg_pct"]["max"]
 
         # 第一层：对超跌的观察（价 + 量 共振）
+        self.a_high_source = structure["a_high_source"]
         self.drop_window = s_to_c_window["mins"]
         self.min_drop_window_chg = s_to_c_window["chg_pct"]["min"] / 100.0
         self.max_drop_window_chg = s_to_c_window["chg_pct"]["max"] / 100.0
@@ -185,8 +186,9 @@ class WashoutSnapbackStrategy:
                 audits[sym] = record
                 continue
 
-            recent_high_ts = recent_drop_df["high"].idxmax()
-            recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
+            a_high_col = "high" if self.a_high_source == "contract" else "high_idx"
+            recent_high_ts = recent_drop_df[a_high_col].idxmax()
+            recent_high_price = recent_drop_df.loc[recent_high_ts, a_high_col]
             ac_df = recent_drop_df.loc[recent_high_ts:]
             record["a_time"] = int(recent_high_ts)
             record["a_high_price"] = recent_high_price
@@ -437,8 +439,9 @@ class WashoutSnapbackStrategy:
             if self.skip_hot_market_quadrant and row["chg_24h"] > 0 and drop_window_chg > 0:
                 continue
 
-            recent_high_ts = recent_drop_df["high"].idxmax()
-            recent_high_price = recent_drop_df.loc[recent_high_ts, "high"]
+            a_high_col = "high" if self.a_high_source == "contract" else "high_idx"
+            recent_high_ts = recent_drop_df[a_high_col].idxmax()
+            recent_high_price = recent_drop_df.loc[recent_high_ts, a_high_col]
             # 真正的 ABC 语义：
             # A = drop_window 窗口内最高点；
             # C = 当前收盘；
