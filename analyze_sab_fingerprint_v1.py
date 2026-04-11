@@ -35,6 +35,17 @@ def _bucket_quantile(series: pd.Series, q: int = 5) -> pd.Series:
         return pd.Series([None] * len(series), index=series.index)
 
 
+def _normalize_outcome(v: object) -> str:
+    s = str(v).upper().strip()
+    if s in {"TAKE_PROFIT", "TP"}:
+        return "TP"
+    if s in {"STOP_LOSS", "SL"}:
+        return "SL"
+    if s in {"TIMEOUT", "TIME_STOP", "TS"}:
+        return "TS"
+    return s
+
+
 def _group_summary(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
     grp = df.groupby(group_cols, dropna=False, observed=False)
     out = grp.agg(
@@ -106,6 +117,8 @@ def main() -> None:
     df_ok = df[df["feature_status"] == "ok"].copy()
     if df_ok.empty:
         raise SystemExit("no feature_status=ok rows")
+
+    df_ok["outcome"] = df_ok["outcome"].map(_normalize_outcome)
 
     summary = {
         "feature_scope": "hb_sab_only",
