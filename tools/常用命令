@@ -119,8 +119,8 @@ scp \
 RUNSET="SNAP_V8.3_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
-  --start 2025-04-18T00:00:00+00:00 \
-  --end 2026-04-09T02:00:00+00:00 \
+  --start 2025-04-18T00:00:00+08:00 \
+  --end 2026-04-11T20:00:00+08:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -151,7 +151,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
   --fee-side 0.0005
 
 # ********* SAB 指纹提取与分析 *********
-RUNID="SNAP_V8.3_30D_P6_0411T2026_ALL"
+RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
 /root/service_env/bin/python extract_sab_fingerprint_v1.py \
   --signals output/state/sim_signals.${RUNID}.jsonl \
   --trades output/state/sim_trades.${RUNID}.jsonl \
@@ -170,8 +170,8 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SNAP_V8.3_30D_P6_0411T2026_ALL"
-DEST=~/ai_projects/bn_research_core/output/sim_all_n
+RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
+DEST=~/ai_projects/bn_research_core/output/sim_all_o_60
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
@@ -182,7 +182,7 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
 # *****download***** 拉 SAB 指纹特征及分析 *****download***** 
-RUNID="SNAP_V8.3_30D_P6_0411T2026_ALL"
+RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
 DEST=~/ai_projects/bn_research_core/output/SAB_${RUNID}
 mkdir -p "$DEST"
 scp -r \
