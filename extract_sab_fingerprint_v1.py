@@ -277,9 +277,10 @@ def _ab_step_drop_count(a_high_price: float, b_contract_price: float, seq: List[
     if total_drop <= EPS:
         return 0
 
-    pivot_abs = max(total_drop * 0.06, float(a_high_price) * 0.0008)
-    leg_min_abs = max(total_drop * 0.18, float(a_high_price) * 0.0015)
-    recover_min_abs = max(total_drop * 0.10, float(a_high_price) * 0.0010)
+    pivot_abs = max(total_drop * 0.055, float(a_high_price) * 0.0007)
+    leg_min_abs = max(total_drop * 0.16, float(a_high_price) * 0.0013)
+    recover_min_abs = max(total_drop * 0.11, float(a_high_price) * 0.0011)
+    rebreak_min_abs = max(total_drop * 0.035, float(a_high_price) * 0.0006)
 
     pivots = _zigzag_pivots(seq, pivot_abs)
     if len(pivots) < 2:
@@ -292,19 +293,27 @@ def _ab_step_drop_count(a_high_price: float, b_contract_price: float, seq: List[
         prev = float(prev)
         curr = float(curr)
 
-        if prev > curr and (prev - curr) >= leg_min_abs:
-            if steps == 0:
-                steps = 1
+        if prev <= curr:
+            continue
+        leg_drop_abs = prev - curr
+        if leg_drop_abs < leg_min_abs:
+            if last_leg_low is None or curr < last_leg_low:
                 last_leg_low = curr
-                continue
+            continue
 
-            recovery_abs = (prev - last_leg_low) if last_leg_low is not None else 0.0
-            if recovery_abs >= recover_min_abs:
-                steps += 1
+        if steps == 0:
+            steps = 1
+            last_leg_low = curr
+            continue
+
+        recovery_abs = (prev - last_leg_low) if last_leg_low is not None else 0.0
+        rebreak_abs = (last_leg_low - curr) if last_leg_low is not None else 0.0
+        if recovery_abs >= recover_min_abs and rebreak_abs >= rebreak_min_abs:
+            steps += 1
+            last_leg_low = curr
+        else:
+            if last_leg_low is None or curr < last_leg_low:
                 last_leg_low = curr
-            else:
-                if last_leg_low is None or curr < last_leg_low:
-                    last_leg_low = curr
 
     return int(steps)
 

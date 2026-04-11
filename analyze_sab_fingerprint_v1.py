@@ -122,7 +122,7 @@ def main() -> None:
 
     summary = {
         "feature_scope": "hb_sab_only",
-        "fingerprint_version": "sab_v1_step_v3",
+        "fingerprint_version": "sab_v1_step_v4",
         "rows_total": int(len(df)),
         "rows_ok": int(len(df_ok)),
         "tp_count": int((df_ok["outcome"] == "TP").sum()),
@@ -146,7 +146,12 @@ def main() -> None:
         work = df_ok[[feat, "symbol", "outcome", "pnl_pct", "hold_mins"]].dropna().copy()
         if len(work) < max(20, args.min_sample * 2):
             continue
-        work[f"{feat}_bucket"] = _bucket_quantile(work[feat], q=5)
+        if feat == "ab_step_drop_count":
+            work[f"{feat}_bucket"] = work[feat].map(
+                lambda v: ">=3" if pd.notna(v) and float(v) >= 3 else str(int(v)) if pd.notna(v) else None
+            )
+        else:
+            work[f"{feat}_bucket"] = _bucket_quantile(work[feat], q=5)
         table = _group_summary(work, [f"{feat}_bucket"])
         table = table[table["sample_count"] >= args.min_sample]
         table.to_csv(bucket_dir / f"bucket_{feat}.csv", index=False)
