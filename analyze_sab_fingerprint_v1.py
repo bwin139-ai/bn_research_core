@@ -36,7 +36,7 @@ def _bucket_quantile(series: pd.Series, q: int = 5) -> pd.Series:
 
 
 def _group_summary(df: pd.DataFrame, group_cols: List[str]) -> pd.DataFrame:
-    grp = df.groupby(group_cols, dropna=False)
+    grp = df.groupby(group_cols, dropna=False, observed=False)
     out = grp.agg(
         sample_count=("symbol", "count"),
         avg_pnl_pct=("pnl_pct", "mean"),
@@ -141,7 +141,7 @@ def main() -> None:
     cross_dir.mkdir(parents=True, exist_ok=True)
     for feat_a, feat_b in CROSS_PAIRS:
         cols = [feat_a, feat_b, "ab_peak_vol_position", "symbol", "outcome", "pnl_pct", "hold_mins"]
-        cols = [c for c in cols if c in df_ok.columns]
+        cols = list(dict.fromkeys([c for c in cols if c in df_ok.columns]))
         work = df_ok[cols].copy()
         if feat_a == "ab_step_drop_count":
             work[feat_a + "_bucket"] = work[feat_a]
