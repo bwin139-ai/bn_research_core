@@ -732,6 +732,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     drop_window = int(s_to_c_window.get('mins', 0))
     min_drop_window_chg = float(((s_to_c_window.get('chg_pct') or {}).get('min', -100.0))) / 100.0
     max_drop_window_chg = float(((s_to_c_window.get('chg_pct') or {}).get('max', 1000.0))) / 100.0
+    skip_hot_market_quadrant = bool(s_to_c_window.get('skip_hot_market_quadrant', True))
 
     min_ab_bars = int(((selloff.get('ab_bars') or {}).get('min', 0)))
     max_ab_bars = int(((selloff.get('ab_bars') or {}).get('max', 999999)))
@@ -869,7 +870,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'drop_window_chg_above_max'})
             audit_rows.append(base)
             continue
-        if row2['chg_24h'] > 0 and drop_window_chg > 0:
+        if skip_hot_market_quadrant and row2['chg_24h'] > 0 and drop_window_chg > 0:
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'hot_market_quadrant_skip'})
             audit_rows.append(base)
             continue

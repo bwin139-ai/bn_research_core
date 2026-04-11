@@ -34,6 +34,7 @@ class WashoutSnapbackStrategy:
         self.drop_window = s_to_c_window["mins"]
         self.min_drop_window_chg = s_to_c_window["chg_pct"]["min"] / 100.0
         self.max_drop_window_chg = s_to_c_window["chg_pct"]["max"] / 100.0
+        self.skip_hot_market_quadrant = bool(s_to_c_window["skip_hot_market_quadrant"])
         self.min_ab_bars = selloff["ab_bars"]["min"]
         self.max_ab_bars = selloff["ab_bars"]["max"]
         self.min_drop_pct = selloff["a_to_c_drop_pct"]["min"]
@@ -179,7 +180,7 @@ class WashoutSnapbackStrategy:
                 record["fail_reason"] = "drop_window_chg_above_max"
                 audits[sym] = record
                 continue
-            if row["chg_24h"] > 0 and drop_window_chg > 0:
+            if self.skip_hot_market_quadrant and row["chg_24h"] > 0 and drop_window_chg > 0:
                 record["fail_reason"] = "hot_market_quadrant_skip"
                 audits[sym] = record
                 continue
@@ -433,7 +434,7 @@ class WashoutSnapbackStrategy:
             # 语义：24h 偏热，且 S->C 窗口也偏热。
             # 这类更像“热中更热”的延续，不属于 Snapback 想抓的
             # “冷却后的反弹起点”。
-            if row["chg_24h"] > 0 and drop_window_chg > 0:
+            if self.skip_hot_market_quadrant and row["chg_24h"] > 0 and drop_window_chg > 0:
                 continue
 
             recent_high_ts = recent_drop_df["high"].idxmax()

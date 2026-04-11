@@ -40,6 +40,7 @@ class StrategyConfig:
         ("structure", "s_to_c_window", "mins"),
         ("structure", "s_to_c_window", "chg_pct", "min"),
         ("structure", "s_to_c_window", "chg_pct", "max"),
+        ("structure", "s_to_c_window", "skip_hot_market_quadrant"),
         ("structure", "selloff", "ab_bars", "min"),
         ("structure", "selloff", "ab_bars", "max"),
         ("structure", "selloff", "a_to_c_drop_pct", "min"),
