@@ -386,7 +386,9 @@ def _ab_path_type(
         return "flush_one_leg"
     if ab_path_efficiency >= 0.72:
         return "clean_one_leg"
-    return "structured_one_leg"
+    if pullback_share <= 0.22:
+        return "structured_one_leg_low_pullback"
+    return "structured_one_leg_high_pullback"
 
 
 # -----------------------------
