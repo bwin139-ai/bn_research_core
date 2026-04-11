@@ -233,6 +233,43 @@ def _ab_path_efficiency(a_high_price: float, b_contract_price: float, seq: List[
     return net_displacement / path_len
 
 
+def _zigzag_pivots(seq: List[float], pivot_abs: float) -> List[float]:
+    if not seq:
+        return []
+    pts = [float(x) for x in seq]
+    if len(pts) == 1 or pivot_abs <= EPS:
+        return pts[:]
+
+    pivots: List[float] = [pts[0]]
+    candidate = pts[0]
+    direction = 0  # 1=up, -1=down, 0=unknown
+
+    for p in pts[1:]:
+        p = float(p)
+        if direction >= 0:
+            if p >= candidate:
+                candidate = p
+                pivots[-1] = p
+            elif (candidate - p) >= pivot_abs:
+                direction = -1
+                candidate = p
+                pivots.append(p)
+        if direction <= 0:
+            if p <= candidate:
+                candidate = p
+                pivots[-1] = p
+            elif (p - candidate) >= pivot_abs:
+                direction = 1
+                candidate = p
+                pivots.append(p)
+
+    out: List[float] = []
+    for x in pivots:
+        if not out or abs(out[-1] - x) > EPS:
+            out.append(x)
+    return out
+
+
 def _ab_step_drop_count(a_high_price: float, b_contract_price: float, seq: List[float]) -> Optional[int]:
     if len(seq) < 2:
         return None
@@ -240,35 +277,17 @@ def _ab_step_drop_count(a_high_price: float, b_contract_price: float, seq: List[
     if total_drop <= EPS:
         return 0
 
-    leg_min_abs = max(total_drop * 0.20, float(a_high_price) * 0.002)
-    recover_reset_abs = max(total_drop * 0.08, float(a_high_price) * 0.001)
+    pivot_abs = max(total_drop * 0.08, float(a_high_price) * 0.001)
+    leg_min_abs = max(total_drop * 0.18, float(a_high_price) * 0.0015)
+
+    pivots = _zigzag_pivots(seq, pivot_abs)
+    if len(pivots) < 2:
+        return 0
 
     steps = 0
-    local_peak = seq[0]
-    local_trough = seq[0]
-    in_effective_drop = False
-
-    for p in seq[1:]:
-        p = float(p)
-        if p < local_trough:
-            local_trough = p
-        if (local_peak - local_trough) >= leg_min_abs:
-            in_effective_drop = True
-        # meaningful recovery => previous drop leg closes and a new leg can start later
-        if in_effective_drop and (p - local_trough) >= recover_reset_abs:
+    for prev, curr in zip(pivots[:-1], pivots[1:]):
+        if prev > curr and (prev - curr) >= leg_min_abs:
             steps += 1
-            local_peak = p
-            local_trough = p
-            in_effective_drop = False
-            continue
-        # new higher pivot resets leg detection
-        if p > local_peak:
-            local_peak = p
-            local_trough = p
-            in_effective_drop = False
-
-    if (local_peak - local_trough) >= leg_min_abs:
-        steps += 1
     return int(steps)
 
 
