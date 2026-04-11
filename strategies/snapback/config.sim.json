@@ -27,7 +27,7 @@
       },
       "a_to_c_drop_pct": {
         "min": 0.06,
-        "max": 1
+        "max": 0.25
       },
       "vol_climax": {
         "recent_window_mins": 5,
@@ -55,7 +55,7 @@
     "joint_filters": {
       "min_bc_rebound_speed": -1,
       "min_speed_ratio_bc_over_ab": -1,
-      "min_a_to_b_drop_speed": 0.01
+      "min_a_to_b_drop_speed": -1
     }
   },
   "exit_policy": {
