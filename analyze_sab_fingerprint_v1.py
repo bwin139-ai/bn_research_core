@@ -17,14 +17,16 @@ FEATURES = [
     "ab_drop_speed",
     "ab_path_efficiency",
     "ab_step_drop_count",
+    "ab_pullback_share",
     "a_peak_sharpness",
     "ab_peak_vol_pos01",
+    "ab_path_type",
 ]
 
 CROSS_PAIRS = [
+    ("ab_path_type", "ab_step_drop_count"),
     ("ab_path_efficiency", "ab_step_drop_count"),
-    ("ab_vs_sa_amp_ratio", "ab_path_efficiency"),
-    ("ab_step_drop_count", "ab_peak_vol_position"),
+    ("ab_vs_sa_amp_ratio", "ab_path_type"),
 ]
 
 
@@ -77,11 +79,7 @@ def _build_proto_type(df: pd.DataFrame) -> pd.DataFrame:
         bins=[-999, 0.08, 0.12, 0.18, 999],
         labels=["shallow", "mid", "deep", "extreme"],
     )
-    work["eff_band"] = pd.cut(
-        work["ab_path_efficiency"],
-        bins=[-999, 0.55, 0.72, 0.85, 999],
-        labels=["curvy", "mixed", "direct", "very_direct"],
-    )
+    work["path_band"] = work["ab_path_type"].fillna("unknown").astype(str)
     work["step_band"] = pd.cut(
         work["ab_step_drop_count"],
         bins=[-999, 1, 2, 99],
@@ -91,7 +89,7 @@ def _build_proto_type(df: pd.DataFrame) -> pd.DataFrame:
     work["proto_type"] = (
         work["depth_band"].astype(str)
         + "|"
-        + work["eff_band"].astype(str)
+        + work["path_band"].astype(str)
         + "|"
         + work["step_band"].astype(str)
         + "|"
@@ -122,7 +120,7 @@ def main() -> None:
 
     summary = {
         "feature_scope": "hb_sab_only",
-        "fingerprint_version": "sab_v1_step_v4",
+        "fingerprint_version": "sab_v1_step_v5",
         "rows_total": int(len(df)),
         "rows_ok": int(len(df_ok)),
         "tp_count": int((df_ok["outcome"] == "TP").sum()),
@@ -150,6 +148,8 @@ def main() -> None:
             work[f"{feat}_bucket"] = work[feat].map(
                 lambda v: ">=3" if pd.notna(v) and float(v) >= 3 else str(int(v)) if pd.notna(v) else None
             )
+        elif feat == "ab_path_type":
+            work[f"{feat}_bucket"] = work[feat].astype(str)
         else:
             work[f"{feat}_bucket"] = _bucket_quantile(work[feat], q=5)
         table = _group_summary(work, [f"{feat}_bucket"])
@@ -159,22 +159,23 @@ def main() -> None:
     cross_dir = out_dir / "cross_tables"
     cross_dir.mkdir(parents=True, exist_ok=True)
     for feat_a, feat_b in CROSS_PAIRS:
-        cols = [feat_a, feat_b, "ab_peak_vol_position", "symbol", "outcome", "pnl_pct", "hold_mins"]
+        cols = [feat_a, feat_b, "symbol", "outcome", "pnl_pct", "hold_mins"]
         cols = list(dict.fromkeys([c for c in cols if c in df_ok.columns]))
         work = df_ok[cols].copy()
-        if feat_a == "ab_step_drop_count":
-            work[feat_a + "_bucket"] = work[feat_a]
-        else:
-            work = work.dropna(subset=[feat_a])
-            work[feat_a + "_bucket"] = _bucket_quantile(work[feat_a], q=4)
-        if feat_b == "ab_peak_vol_position":
-            work = work.dropna(subset=[feat_b])
-            work[feat_b + "_bucket"] = work[feat_b]
-        elif feat_b == "ab_step_drop_count":
-            work[feat_b + "_bucket"] = work[feat_b]
-        else:
-            work = work.dropna(subset=[feat_b])
-            work[feat_b + "_bucket"] = _bucket_quantile(work[feat_b], q=4)
+
+        for feat in (feat_a, feat_b):
+            if feat == "ab_step_drop_count":
+                work = work.dropna(subset=[feat])
+                work[feat + "_bucket"] = work[feat].map(
+                    lambda v: ">=3" if pd.notna(v) and float(v) >= 3 else str(int(v)) if pd.notna(v) else None
+                )
+            elif feat == "ab_path_type":
+                work = work.dropna(subset=[feat])
+                work[feat + "_bucket"] = work[feat].astype(str)
+            else:
+                work = work.dropna(subset=[feat])
+                work[feat + "_bucket"] = _bucket_quantile(work[feat], q=4)
+
         table = _group_summary(work, [feat_a + "_bucket", feat_b + "_bucket"])
         table = table[table["sample_count"] >= args.min_sample]
         table.to_csv(cross_dir / f"cross_{feat_a}__{feat_b}.csv", index=False)

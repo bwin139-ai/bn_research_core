@@ -350,6 +350,45 @@ def _ab_peak_vol_position(ab_df: pd.DataFrame) -> Tuple[Optional[float], Optiona
     return float(pos), _third_bucket(float(pos))
 
 
+def _ab_pullback_stats(pivots: List[float], total_drop: float) -> Tuple[int, Optional[float]]:
+    if len(pivots) < 2 or total_drop <= EPS:
+        return 0, None
+    pullback_count = 0
+    pullback_sum = 0.0
+    for prev, curr in zip(pivots[:-1], pivots[1:]):
+        prev = float(prev)
+        curr = float(curr)
+        if curr > prev:
+            pullback_count += 1
+            pullback_sum += (curr - prev)
+    return int(pullback_count), (pullback_sum / total_drop) if total_drop > EPS else None
+
+
+def _ab_path_type(
+    ab_path_efficiency: Optional[float],
+    ab_step_drop_count: Optional[int],
+    ab_pullback_count: int,
+    ab_pullback_share: Optional[float],
+) -> Optional[str]:
+    if ab_path_efficiency is None:
+        return None
+    step = int(ab_step_drop_count or 0)
+    pullback_share = 0.0 if ab_pullback_share is None else float(ab_pullback_share)
+
+    if step >= 2:
+        if ab_path_efficiency >= 0.78 and pullback_share <= 0.18:
+            return "clean_two_leg"
+        return "staircase_two_leg"
+
+    if ab_path_efficiency < 0.55:
+        return "messy_one_leg"
+    if ab_path_efficiency >= 0.90 and ab_pullback_count <= 1 and pullback_share <= 0.12:
+        return "flush_one_leg"
+    if ab_path_efficiency >= 0.72:
+        return "clean_one_leg"
+    return "structured_one_leg"
+
+
 # -----------------------------
 # extraction
 # -----------------------------
@@ -405,8 +444,12 @@ def build_sab_row(contract_store: SymbolStore, item: JoinedTrade, run_id: str, s
 
     ab_df = _window_slice(df, a_time, b_time)
     seq = _build_anchor_close_seq(ab_df, a_high_price, b_contract_price)
+    total_drop = max(0.0, float(a_high_price) - float(b_contract_price))
+    pivots = _zigzag_pivots(seq, max(total_drop * 0.055, float(a_high_price) * 0.0007)) if total_drop > EPS else seq[:]
     ab_path_efficiency = _ab_path_efficiency(a_high_price, b_contract_price, seq)
     ab_step_drop_count = _ab_step_drop_count(a_high_price, b_contract_price, seq)
+    ab_pullback_count, ab_pullback_share = _ab_pullback_stats(pivots, total_drop)
+    ab_path_type = _ab_path_type(ab_path_efficiency, ab_step_drop_count, ab_pullback_count, ab_pullback_share)
     a_peak_sharpness = _a_peak_sharpness(df, s_time, a_time, b_time, a_high_price, flank_bars=3)
     ab_peak_vol_pos01, ab_peak_vol_position = _ab_peak_vol_position(ab_df)
 
@@ -442,6 +485,9 @@ def build_sab_row(contract_store: SymbolStore, item: JoinedTrade, run_id: str, s
         "ab_drop_speed": ab_drop_speed,
         "ab_path_efficiency": ab_path_efficiency,
         "ab_step_drop_count": ab_step_drop_count,
+        "ab_pullback_count": ab_pullback_count,
+        "ab_pullback_share": ab_pullback_share,
+        "ab_path_type": ab_path_type,
         "a_peak_sharpness": a_peak_sharpness,
         "ab_peak_vol_pos01": ab_peak_vol_pos01,
         "ab_peak_vol_position": ab_peak_vol_position,
