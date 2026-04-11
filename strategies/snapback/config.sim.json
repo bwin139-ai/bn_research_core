@@ -18,7 +18,7 @@
         "min": -100.0,
         "max": 1000
       },
-      "skip_hot_market_quadrant": false
+      "skip_hot_market_quadrant": true
     },
     "selloff": {
       "ab_bars": {
