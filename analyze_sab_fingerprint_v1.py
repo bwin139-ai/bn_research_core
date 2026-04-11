@@ -122,7 +122,7 @@ def main() -> None:
 
     summary = {
         "feature_scope": "hb_sab_only",
-        "fingerprint_version": "sab_v1_step_v2",
+        "fingerprint_version": "sab_v1_step_v3",
         "rows_total": int(len(df)),
         "rows_ok": int(len(df_ok)),
         "tp_count": int((df_ok["outcome"] == "TP").sum()),
