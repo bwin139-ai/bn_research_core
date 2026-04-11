@@ -26,11 +26,11 @@
         "max": 999
       },
       "a_to_c_drop_pct": {
-        "min": 0.06,
-        "max": 0.25
+        "min": 0.08,
+        "max": 0.30
       },
       "vol_climax": {
-        "recent_window_mins": 5,
+        "recent_window_mins": 7,
         "baseline_window_mins": 120,
         "ratio_min": 8.0
       }
