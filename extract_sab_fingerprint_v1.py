@@ -369,11 +369,13 @@ def _ab_path_type(
     ab_step_drop_count: Optional[int],
     ab_pullback_count: int,
     ab_pullback_share: Optional[float],
+    ab_vs_sa_amp_ratio: Optional[float],
 ) -> Optional[str]:
     if ab_path_efficiency is None:
         return None
     step = int(ab_step_drop_count or 0)
     pullback_share = 0.0 if ab_pullback_share is None else float(ab_pullback_share)
+    amp_ratio = -1.0 if ab_vs_sa_amp_ratio is None else float(ab_vs_sa_amp_ratio)
 
     if step >= 2:
         if ab_path_efficiency >= 0.78 and pullback_share <= 0.18:
@@ -388,7 +390,9 @@ def _ab_path_type(
         return "clean_one_leg"
     if pullback_share <= 0.22:
         if ab_pullback_count <= 1:
-            return "structured_one_leg_sparse_pullback"
+            if amp_ratio >= 18.0:
+                return "structured_one_leg_sparse_high_ratio"
+            return "structured_one_leg_sparse_low_ratio"
         return "structured_one_leg_choppy_pullback"
     return "structured_one_leg_high_pullback"
 
@@ -453,7 +457,7 @@ def build_sab_row(contract_store: SymbolStore, item: JoinedTrade, run_id: str, s
     ab_path_efficiency = _ab_path_efficiency(a_high_price, b_contract_price, seq)
     ab_step_drop_count = _ab_step_drop_count(a_high_price, b_contract_price, seq)
     ab_pullback_count, ab_pullback_share = _ab_pullback_stats(pivots, total_drop)
-    ab_path_type = _ab_path_type(ab_path_efficiency, ab_step_drop_count, ab_pullback_count, ab_pullback_share)
+    ab_path_type = _ab_path_type(ab_path_efficiency, ab_step_drop_count, ab_pullback_count, ab_pullback_share, ab_vs_sa_amp_ratio)
     a_peak_sharpness = _a_peak_sharpness(df, s_time, a_time, b_time, a_high_price, flank_bars=3)
     ab_peak_vol_pos01, ab_peak_vol_position = _ab_peak_vol_position(ab_df)
 
