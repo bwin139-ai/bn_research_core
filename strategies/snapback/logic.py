@@ -64,6 +64,9 @@ class WashoutSnapbackStrategy:
         self.messy_one_leg_block_depth_bands = {
             str(x).strip() for x in (joint_filters.get("messy_one_leg_block_depth_bands") or []) if str(x).strip()
         }
+        self.enable_clean_one_leg_sharp_top_filter = bool(
+            joint_filters.get("enable_clean_one_leg_sharp_top_filter", False)
+        )
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -236,15 +239,54 @@ class WashoutSnapbackStrategy:
             return "deep"
         return "extreme"
 
+    def _a_peak_sharpness(
+        self,
+        df: pd.DataFrame,
+        s_time: int,
+        a_time: int,
+        b_time: int,
+        a_high_price: float,
+        flank_bars: int = 3,
+    ) -> Optional[float]:
+        left_start = max(int(s_time), int(a_time) - flank_bars * 60_000)
+        left_end = int(a_time) - 60_000
+        right_start = int(a_time) + 60_000
+        right_end = min(int(b_time), int(a_time) + flank_bars * 60_000)
+        left_df = df.loc[left_start:left_end] if left_end >= left_start else pd.DataFrame()
+        right_df = df.loc[right_start:right_end] if right_end >= right_start else pd.DataFrame()
+        if left_df.empty or right_df.empty:
+            return None
+        if "high" not in left_df.columns or "high" not in right_df.columns or a_high_price <= 0:
+            return None
+        left_max = float(left_df["high"].max())
+        right_max = float(right_df["high"].max())
+        left_gap = max(0.0, (a_high_price - left_max) / a_high_price)
+        right_gap = max(0.0, (a_high_price - right_max) / a_high_price)
+        return (left_gap + right_gap) / 2.0
+
+    def _a_peak_sharpness_band(self, a_peak_sharpness: Optional[float]) -> Optional[str]:
+        if a_peak_sharpness is None:
+            return None
+        v = float(a_peak_sharpness)
+        if v < 0.003:
+            return "flat_top"
+        if v < 0.010:
+            return "rounded_top"
+        return "sharp_top"
+
     def _apply_sab_negative_filter(
         self,
         *,
         ab_path_type: Optional[str],
         depth_band: Optional[str],
+        a_peak_sharpness_band: Optional[str],
     ) -> Optional[str]:
         if self.enable_messy_one_leg_filter:
             if ab_path_type == "messy_one_leg" and depth_band in self.messy_one_leg_block_depth_bands:
                 return "messy_one_leg_depth_blocked"
+        if self.enable_clean_one_leg_sharp_top_filter:
+            if ab_path_type == "clean_one_leg" and a_peak_sharpness_band == "sharp_top":
+                return "clean_one_leg_sharp_top_blocked"
         return None
 
     def audit_symbols_at_kline_close(
@@ -532,13 +574,20 @@ class WashoutSnapbackStrategy:
             record["ab_path_efficiency"] = ab_path_efficiency
             record["ab_step_drop_count_sab"] = ab_step_drop_count
             record["ab_pullback_count"] = ab_pullback_count
+            a_peak_sharpness = self._a_peak_sharpness(
+                history_df, int(s_ts), int(recent_high_ts), int(b_contract_ts), float(recent_high_price), flank_bars=3
+            )
+            a_peak_sharpness_band = self._a_peak_sharpness_band(a_peak_sharpness)
             record["ab_pullback_share"] = ab_pullback_share
             record["ab_path_type"] = ab_path_type
             record["depth_band"] = depth_band
+            record["a_peak_sharpness"] = a_peak_sharpness
+            record["a_peak_sharpness_band"] = a_peak_sharpness_band
 
             sab_fail_reason = self._apply_sab_negative_filter(
                 ab_path_type=ab_path_type,
                 depth_band=depth_band,
+                a_peak_sharpness_band=a_peak_sharpness_band,
             )
             if sab_fail_reason:
                 record["fail_reason"] = sab_fail_reason
@@ -776,9 +825,14 @@ class WashoutSnapbackStrategy:
                 ab_drop_pct_index / abs(((recent_high_price - s_close) / s_close)) if s_close > 0 and ((recent_high_price - s_close) / s_close) not in (None, 0) else None,
             )
             depth_band = self._depth_band(ab_drop_pct_index)
+            a_peak_sharpness = self._a_peak_sharpness(
+                history_df, int(s_ts), int(recent_high_ts), int(b_contract_ts), float(recent_high_price), flank_bars=3
+            )
+            a_peak_sharpness_band = self._a_peak_sharpness_band(a_peak_sharpness)
             sab_fail_reason = self._apply_sab_negative_filter(
                 ab_path_type=ab_path_type,
                 depth_band=depth_band,
+                a_peak_sharpness_band=a_peak_sharpness_band,
             )
             if sab_fail_reason:
                 continue
@@ -831,6 +885,8 @@ class WashoutSnapbackStrategy:
                     "ab_pullback_share": ab_pullback_share,
                     "ab_path_type": ab_path_type,
                     "depth_band": depth_band,
+                    "a_peak_sharpness": a_peak_sharpness,
+                    "a_peak_sharpness_band": a_peak_sharpness_band,
                     "trigger_name": trigger_name,
                     "selected_tp_pct": selected_tp_pct,
                     "tp_tier": tp_tier,
@@ -927,6 +983,8 @@ class WashoutSnapbackStrategy:
                 "ab_pullback_share": target["ab_pullback_share"],
                 "ab_path_type": target["ab_path_type"],
                 "depth_band": target["depth_band"],
+                "a_peak_sharpness": target["a_peak_sharpness"],
+                "a_peak_sharpness_band": target["a_peak_sharpness_band"],
                 "trigger_name": target["trigger_name"],
                 "selected_tp_pct": target["selected_tp_pct"],
                 "tp_tier": target["tp_tier"],

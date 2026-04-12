@@ -61,6 +61,7 @@ class StrategyConfig:
         ("structure", "joint_filters", "min_a_to_b_drop_speed"),
         ("structure", "joint_filters", "enable_messy_one_leg_filter"),
         ("structure", "joint_filters", "messy_one_leg_block_depth_bands"),
+        ("structure", "joint_filters", "enable_clean_one_leg_sharp_top_filter"),
         ("exit_policy", "take_profit", "base_pct"),
         ("exit_policy", "take_profit", "strong_pct"),
         ("exit_policy", "take_profit", "strong_mode", "a_to_c_drop_pct_min"),
@@ -111,6 +112,8 @@ class StrategyConfig:
             joint_filters = raw_data["structure"]["joint_filters"]
             if not isinstance(joint_filters.get("enable_messy_one_leg_filter"), bool):
                 raise ValueError('【铁律违背】structure.joint_filters.enable_messy_one_leg_filter 必须是 bool')
+            if not isinstance(joint_filters.get("enable_clean_one_leg_sharp_top_filter"), bool):
+                raise ValueError('【铁律违背】structure.joint_filters.enable_clean_one_leg_sharp_top_filter 必须是 bool')
             depth_bands = joint_filters.get("messy_one_leg_block_depth_bands")
             if not isinstance(depth_bands, list) or not depth_bands:
                 raise ValueError('【铁律违背】structure.joint_filters.messy_one_leg_block_depth_bands 必须是非空 list')

@@ -60,7 +60,8 @@
       "messy_one_leg_block_depth_bands": [
         "shallow",
         "mid"
-      ]
+      ],
+      "enable_clean_one_leg_sharp_top_filter": true
     }
   },
   "exit_policy": {

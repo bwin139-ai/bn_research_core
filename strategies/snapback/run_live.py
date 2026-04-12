@@ -861,6 +861,38 @@ def _sab_depth_band(ab_drop_pct_index: float | None) -> str | None:
     return "extreme"
 
 
+def _sab_a_peak_sharpness(df: Any, s_time: int, a_time: int, b_time: int, a_high_price: float, flank_bars: int = 3) -> float | None:
+    left_start = max(int(s_time), int(a_time) - flank_bars * 60_000)
+    left_end = int(a_time) - 60_000
+    right_start = int(a_time) + 60_000
+    right_end = min(int(b_time), int(a_time) + flank_bars * 60_000)
+    left_df = df.loc[left_start:left_end] if left_end >= left_start else None
+    right_df = df.loc[right_start:right_end] if right_end >= right_start else None
+    if left_df is None or right_df is None or getattr(left_df, 'empty', True) or getattr(right_df, 'empty', True):
+        return None
+    try:
+        left_max = float(left_df["high"].max())
+        right_max = float(right_df["high"].max())
+    except Exception:
+        return None
+    if a_high_price <= 0:
+        return None
+    left_gap = max(0.0, (a_high_price - left_max) / a_high_price)
+    right_gap = max(0.0, (a_high_price - right_max) / a_high_price)
+    return (left_gap + right_gap) / 2.0
+
+
+def _sab_a_peak_sharpness_band(a_peak_sharpness: float | None) -> str | None:
+    if a_peak_sharpness is None:
+        return None
+    v = float(a_peak_sharpness)
+    if v < 0.003:
+        return "flat_top"
+    if v < 0.010:
+        return "rounded_top"
+    return "sharp_top"
+
+
 def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
     import pandas as pd  # type: ignore
 
@@ -912,6 +944,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     messy_one_leg_block_depth_bands = {
         str(x).strip() for x in (joint_filters.get('messy_one_leg_block_depth_bands') or []) if str(x).strip()
     }
+    enable_clean_one_leg_sharp_top_filter = bool(joint_filters.get('enable_clean_one_leg_sharp_top_filter', False))
 
     base_tp_pct = float(take_profit.get('base_pct', 0.0))
     strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
@@ -1206,11 +1239,19 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
         base['ab_path_efficiency'] = _normalize_scalar(ab_path_efficiency)
         base['ab_step_drop_count_sab'] = _normalize_scalar(ab_step_drop_count)
         base['ab_pullback_count'] = _normalize_scalar(ab_pullback_count)
+        a_peak_sharpness = _sab_a_peak_sharpness(history_df, int(s_ts), int(recent_high_ts), int(b_contract_ts), float(recent_high_price), flank_bars=3)
+        a_peak_sharpness_band = _sab_a_peak_sharpness_band(a_peak_sharpness)
         base['ab_pullback_share'] = _normalize_scalar(ab_pullback_share)
         base['ab_path_type'] = ab_path_type
         base['depth_band'] = depth_band
+        base['a_peak_sharpness'] = _normalize_scalar(a_peak_sharpness)
+        base['a_peak_sharpness_band'] = a_peak_sharpness_band
         if enable_messy_one_leg_filter and ab_path_type == 'messy_one_leg' and depth_band in messy_one_leg_block_depth_bands:
             base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'messy_one_leg_depth_blocked'})
+            audit_rows.append(base)
+            continue
+        if enable_clean_one_leg_sharp_top_filter and ab_path_type == 'clean_one_leg' and a_peak_sharpness_band == 'sharp_top':
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'clean_one_leg_sharp_top_blocked'})
             audit_rows.append(base)
             continue
 
