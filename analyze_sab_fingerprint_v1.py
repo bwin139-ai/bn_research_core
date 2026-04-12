@@ -26,7 +26,7 @@ FEATURES = [
 CROSS_PAIRS = [
     ("ab_path_type", "depth_band"),
     ("ab_path_type", "a_peak_sharpness_band"),
-    ("ab_vs_sa_amp_ratio", "ab_path_type"),
+    ("ab_path_type", "ab_vs_sa_amp_band"),
 ]
 
 
@@ -124,10 +124,15 @@ def main() -> None:
         bins=[-999, 0.08, 0.12, 0.18, 999],
         labels=["shallow", "mid", "deep", "extreme"],
     )
+    df_ok["ab_vs_sa_amp_band"] = pd.cut(
+        df_ok["ab_vs_sa_amp_ratio"],
+        bins=[-999, 8.0, 18.0, 999999],
+        labels=["low_ratio", "mid_ratio", "high_ratio"],
+    )
 
     summary = {
         "feature_scope": "hb_sab_only",
-        "fingerprint_version": "sab_v1_step_v8_combo_v2",
+        "fingerprint_version": "sab_v1_step_v8_combo_v3",
         "rows_total": int(len(df)),
         "rows_ok": int(len(df_ok)),
         "tp_count": int((df_ok["outcome"] == "TP").sum()),
@@ -176,7 +181,7 @@ def main() -> None:
                 work[feat + "_bucket"] = work[feat].map(
                     lambda v: ">=3" if pd.notna(v) and float(v) >= 3 else str(int(v)) if pd.notna(v) else None
                 )
-            elif feat in {"ab_path_type", "a_peak_sharpness_band", "depth_band"}:
+            elif feat in {"ab_path_type", "a_peak_sharpness_band", "depth_band", "ab_vs_sa_amp_band"}:
                 work = work.dropna(subset=[feat])
                 work[feat + "_bucket"] = work[feat].astype(str)
             else:
