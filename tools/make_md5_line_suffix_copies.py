@@ -39,7 +39,7 @@ FILES = [
     # "=============== 策略 ==================",
     # "strategies/run_backtest.py",
     # "strategies/snapback/run_live.py",
-     "strategies/snapback/logic.py",
+    # "strategies/snapback/logic.py",
     # "strategies/snapback/config.sim.json",
     # "strategies/snapback/live_config.highfreq.json",
     #"strategies/snapback/trade_consumer.py",
@@ -65,6 +65,7 @@ FILES = [
     # "================ SAB 指纹提取和分析工具 =================",
     #"analyze_sab_fingerprint_v1.py",
     #"extract_sab_fingerprint_v1.py",
+    "audit_candidate_count_buckets_v1.py",
 ]
 
 
