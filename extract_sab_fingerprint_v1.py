@@ -393,7 +393,9 @@ def _ab_path_type(
             if amp_ratio >= 18.0:
                 return "structured_one_leg_sparse_high_ratio"
             return "structured_one_leg_sparse_low_ratio"
-        return "structured_one_leg_choppy_pullback"
+        if ab_pullback_count <= 2:
+            return "structured_one_leg_choppy_light"
+        return "structured_one_leg_choppy_heavy"
     return "structured_one_leg_high_pullback"
 
 
