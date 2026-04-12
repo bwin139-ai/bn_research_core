@@ -94,27 +94,35 @@ def load_config(config_path: Optional[Path]) -> Tuple[Optional[int], Optional[fl
 class KlineStore:
     def __init__(self, root: Path):
         self.root = root
-        self.path_cache: Dict[str, Path] = {}
+        self.path_cache: Dict[str, List[Path]] = {}
         self.df_cache: Dict[str, pd.DataFrame] = {}
 
-    def _find_path(self, symbol: str) -> Path:
+    def _find_paths(self, symbol: str) -> List[Path]:
         symbol_u = symbol.upper()
         if symbol_u in self.path_cache:
             return self.path_cache[symbol_u]
+
+        symbol_dir = self.root / symbol_u
         candidates: List[Path] = []
-        for ext in ("parquet", "csv", "feather"):
-            candidates.extend(self.root.rglob(f"{symbol_u}.{ext}"))
-            candidates.extend(self.root.rglob(f"{symbol_u.lower()}.{ext}"))
+        if symbol_dir.is_dir():
+            for ext in ("parquet", "csv", "feather"):
+                candidates.extend(sorted(symbol_dir.glob(f"*.{ext}")))
+
+        if not candidates:
+            for ext in ("parquet", "csv", "feather"):
+                candidates.extend(sorted(self.root.rglob(f"{symbol_u}.{ext}")))
+                candidates.extend(sorted(self.root.rglob(f"{symbol_u.lower()}.{ext}")))
+
         if not candidates:
             raise FileNotFoundError(f"kline file not found for symbol={symbol_u} under {self.root}")
-        path = sorted(candidates)[0]
-        self.path_cache[symbol_u] = path
-        return path
+
+        self.path_cache[symbol_u] = candidates
+        return candidates
 
     def _normalize_df(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         col_map = {str(c).lower(): c for c in df.columns}
         ts_col = None
-        for cand in ["open_time", "ts", "timestamp", "time", "t"]:
+        for cand in ["open_time_ms", "open_time", "ts", "timestamp", "time", "t"]:
             if cand in col_map:
                 ts_col = col_map[cand]
                 break
@@ -153,16 +161,24 @@ class KlineStore:
         symbol_u = symbol.upper()
         if symbol_u in self.df_cache:
             return self.df_cache[symbol_u]
-        path = self._find_path(symbol_u)
-        if path.suffix.lower() == ".parquet":
-            df = pd.read_parquet(path)
-        elif path.suffix.lower() == ".csv":
-            df = pd.read_csv(path)
-        elif path.suffix.lower() == ".feather":
-            df = pd.read_feather(path)
-        else:
-            raise RuntimeError(f"unsupported file type: {path}")
-        norm = self._normalize_df(df, symbol_u)
+
+        frames: List[pd.DataFrame] = []
+        for path in self._find_paths(symbol_u):
+            if path.suffix.lower() == ".parquet":
+                df = pd.read_parquet(path)
+            elif path.suffix.lower() == ".csv":
+                df = pd.read_csv(path)
+            elif path.suffix.lower() == ".feather":
+                df = pd.read_feather(path)
+            else:
+                raise RuntimeError(f"unsupported file type: {path}")
+            frames.append(self._normalize_df(df, symbol_u))
+
+        if not frames:
+            raise RuntimeError(f"empty kline set for symbol={symbol_u}")
+
+        norm = pd.concat(frames).sort_index()
+        norm = norm[~norm.index.duplicated(keep="first")]
         self.df_cache[symbol_u] = norm
         return norm
 
