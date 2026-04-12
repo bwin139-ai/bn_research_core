@@ -25,7 +25,7 @@ FILES = [
     # "core/analysis/sim_equity_curves.py",
     # "=============== core ==================",
     # "core/message_bridge.py",
-    # "core/config_loader.py",
+     "core/config_loader.py",
     # "core/runtime_state.py",
     # "core/analysis/analyzer.py",
     # "core/analysis/top1_equity_curve.py",
@@ -38,10 +38,10 @@ FILES = [
     # "core/live/custom_id.py",
     # "=============== 策略 ==================",
     # "strategies/run_backtest.py",
-    # "strategies/snapback/run_live.py",
-    # "strategies/snapback/logic.py",
+     "strategies/snapback/run_live.py",
+     "strategies/snapback/logic.py",
+     "strategies/snapback/config.sim.json",
     # "strategies/snapback/live_config.highfreq.json",
-    # "strategies/snapback/config.sim.json",
     #"strategies/snapback/trade_consumer.py",
     #"strategies/snapback/current_ledger.py",
     #"strategies/snapback/run_consumer.py",
@@ -63,8 +63,8 @@ FILES = [
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
     #"docs/新聊天开场白.md",
     # "================ SAB 指纹提取和分析工具 =================",
-    "analyze_sab_fingerprint_v1.py",
-    "extract_sab_fingerprint_v1.py",
+    #"analyze_sab_fingerprint_v1.py",
+    #"extract_sab_fingerprint_v1.py",
 ]
 
 

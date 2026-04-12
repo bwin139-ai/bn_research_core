@@ -116,11 +116,11 @@ scp \
 
 
 # ========= 全量并行调度主进程 =========
-RUNSET="SNAP_V8.3_30D_P6_$(date +%m%dT%H%M)"
+RUNSET="SNAP_V9.0_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && /root/service_env/bin/python schedule_backtests.py \
   --strategy snapback \
   --start 2025-04-18T00:00:00+08:00 \
-  --end 2026-04-11T20:00:00+08:00 \
+  --end 2026-04-12T11:00:00+08:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -163,6 +163,15 @@ RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
   --input-csv output/state/sab_fingerprint_ledger.${RUNID}.csv \
   --out-dir output/state/sab_fingerprint_analysis.${RUNID}
 
+# ********** download拉 SAB 数据 ********** 
+RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
+DEST=~/ai_projects/bn_research_core/output/SAB_${RUNID}_combo_v3
+mkdir -p "$DEST"
+scp -r \
+  aliyun-bn:/root/bn_research_core/output/state/sab_fingerprint_ledger.${RUNID}.csv \
+  aliyun-bn:/root/bn_research_core/output/state/sab_fingerprint_analysis.${RUNID} \
+  "$DEST"
+
 # ========= 找 run-id =========
 ls -ldht output/logs | head -n 3
 ls -ldht output/state/*ALL* | head -n 3
@@ -170,8 +179,8 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
-DEST=~/ai_projects/bn_research_core/output/sim_all_o_60
+RUNID="SNAP_V9.0_30D_P6_0412T1430_ALL"
+DEST=~/ai_projects/bn_research_core/output/sim_all_r_messy_one_leg_filter
 mkdir -p "$DEST"
 scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_summary.${RUNID}.json" \
@@ -181,30 +190,13 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/state/sim_trades.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/state/sim_signals.${RUNID}.jsonl" \
   "$DEST"
-# *****download***** 拉 SAB 指纹特征及分析 *****download***** 
-RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
-DEST=~/ai_projects/bn_research_core/output/SAB_${RUNID}
-mkdir -p "$DEST"
-scp -r \
-  aliyun-bn:/root/bn_research_core/output/state/sab_fingerprint_ledger.${RUNID}.csv \
-  aliyun-bn:/root/bn_research_core/output/state/sab_fingerprint_analysis.${RUNID} \
-  "$DEST"
 
 # *****download*****  拉复盘k线图表 *****download***** 
-RUNID="SNAP_V8.3_30D_P6_0411T1325_ALL"
-DEST=~/ai_projects/bn_research_core/output/sim_all_j
+RUNID="SNAP_V8.3_30D_P6_0411T2218_ALL"
+DEST=~/ai_projects/bn_research_core/output/sim_viz_60min
 mkdir -p "$DEST"
 scp -r \
   "aliyun-bn:/root/bn_research_core/output/state/sim_viz_${RUNID}" \
-  "$DEST"
-
-# *****download***** 拉 SABC 特征数据及分析 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/SABC_2
-mkdir -p "$DEST"
-scp -r \
-  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_analysis_v2 \
-  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_v2.csv \
-  aliyun-bn:/root/bn_research_core/output/state/sabc_morphology_v2.jsonl \
   "$DEST"
 
 # ================== 服务器资源监控 =====================
