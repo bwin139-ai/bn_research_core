@@ -59,6 +59,8 @@ class StrategyConfig:
         ("structure", "joint_filters", "min_bc_rebound_speed"),
         ("structure", "joint_filters", "min_speed_ratio_bc_over_ab"),
         ("structure", "joint_filters", "min_a_to_b_drop_speed"),
+        ("structure", "joint_filters", "enable_messy_one_leg_filter"),
+        ("structure", "joint_filters", "messy_one_leg_block_depth_bands"),
         ("exit_policy", "take_profit", "base_pct"),
         ("exit_policy", "take_profit", "strong_pct"),
         ("exit_policy", "take_profit", "strong_mode", "a_to_c_drop_pct_min"),
@@ -106,6 +108,19 @@ class StrategyConfig:
             a_high_source = raw_data["structure"]["a_high_source"]
             if a_high_source not in ("contract", "idx"):
                 raise ValueError('【铁律违背】structure.a_high_source 只允许 "contract" 或 "idx"')
+            joint_filters = raw_data["structure"]["joint_filters"]
+            if not isinstance(joint_filters.get("enable_messy_one_leg_filter"), bool):
+                raise ValueError('【铁律违背】structure.joint_filters.enable_messy_one_leg_filter 必须是 bool')
+            depth_bands = joint_filters.get("messy_one_leg_block_depth_bands")
+            if not isinstance(depth_bands, list) or not depth_bands:
+                raise ValueError('【铁律违背】structure.joint_filters.messy_one_leg_block_depth_bands 必须是非空 list')
+            allowed_depth_bands = {"shallow", "mid", "deep", "extreme"}
+            invalid_depth_bands = [str(x) for x in depth_bands if str(x) not in allowed_depth_bands]
+            if invalid_depth_bands:
+                raise ValueError(
+                    "【铁律违背】structure.joint_filters.messy_one_leg_block_depth_bands 只允许 "
+                    + str(sorted(allowed_depth_bands))
+                )
         else:
             raise KeyError(f"【铁律违背】未知 strategy_name: '{strategy_name}'")
 

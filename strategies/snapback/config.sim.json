@@ -13,7 +13,7 @@
   "structure": {
     "a_high_source": "contract",
     "s_to_c_window": {
-      "mins": 90,
+      "mins": 60,
       "chg_pct": {
         "min": -100.0,
         "max": 1000
@@ -50,12 +50,17 @@
       "c_pct": {
         "min": -1,
         "max": 1
-      }      
+      }
     },
     "joint_filters": {
       "min_bc_rebound_speed": -1,
       "min_speed_ratio_bc_over_ab": -1,
-      "min_a_to_b_drop_speed": -1
+      "min_a_to_b_drop_speed": -1,
+      "enable_messy_one_leg_filter": true,
+      "messy_one_leg_block_depth_bands": [
+        "shallow",
+        "mid"
+      ]
     }
   },
   "exit_policy": {

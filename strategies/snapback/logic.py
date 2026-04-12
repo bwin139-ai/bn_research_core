@@ -1,7 +1,9 @@
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+EPS = 1e-9
 
 
 class WashoutSnapbackStrategy:
@@ -58,6 +60,10 @@ class WashoutSnapbackStrategy:
         self.enable_min_bc_rebound_speed = self.min_bc_rebound_speed >= 0
         self.enable_min_speed_ratio_bc_over_ab = self.min_speed_ratio_bc_over_ab >= 0
         self.enable_min_a_to_b_drop_speed = self.min_a_to_b_drop_speed >= 0
+        self.enable_messy_one_leg_filter = bool(joint_filters.get("enable_messy_one_leg_filter", False))
+        self.messy_one_leg_block_depth_bands = {
+            str(x).strip() for x in (joint_filters.get("messy_one_leg_block_depth_bands") or []) if str(x).strip()
+        }
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -69,6 +75,177 @@ class WashoutSnapbackStrategy:
         self.time_stop_min_profit = time_stop["min_profit_pct"]
 
         self.cooldown_until: Dict[str, int] = {}
+
+    def _build_anchor_close_seq(self, ab_df: pd.DataFrame, a_high_price: float, b_contract_price: float) -> List[float]:
+        closes = [float(v) for v in ab_df["close"].tolist()] if not ab_df.empty else []
+        seq = [float(a_high_price)] + closes + [float(b_contract_price)]
+        out: List[float] = []
+        for x in seq:
+            if not out or abs(out[-1] - x) > EPS:
+                out.append(x)
+        return out
+
+    def _path_length(self, seq: List[float]) -> Optional[float]:
+        if len(seq) < 2:
+            return None
+        return sum(abs(seq[i] - seq[i - 1]) for i in range(1, len(seq)))
+
+    def _ab_path_efficiency(self, a_high_price: float, b_contract_price: float, seq: List[float]) -> Optional[float]:
+        path_len = self._path_length(seq)
+        if path_len is None or path_len <= EPS:
+            return None
+        net_displacement = abs(float(a_high_price) - float(b_contract_price))
+        return net_displacement / path_len
+
+    def _zigzag_pivots(self, seq: List[float], pivot_abs: float) -> List[float]:
+        if not seq:
+            return []
+        pts = [float(x) for x in seq]
+        if len(pts) == 1 or pivot_abs <= EPS:
+            return pts[:]
+
+        pivots: List[float] = [pts[0]]
+        candidate = pts[0]
+        direction = 0
+
+        for p in pts[1:]:
+            p = float(p)
+            if direction >= 0:
+                if p >= candidate:
+                    candidate = p
+                    pivots[-1] = p
+                elif (candidate - p) >= pivot_abs:
+                    direction = -1
+                    candidate = p
+                    pivots.append(p)
+            if direction <= 0:
+                if p <= candidate:
+                    candidate = p
+                    pivots[-1] = p
+                elif (p - candidate) >= pivot_abs:
+                    direction = 1
+                    candidate = p
+                    pivots.append(p)
+
+        out: List[float] = []
+        for x in pivots:
+            if not out or abs(out[-1] - x) > EPS:
+                out.append(x)
+        return out
+
+    def _ab_step_drop_count(self, a_high_price: float, b_contract_price: float, seq: List[float]) -> Optional[int]:
+        if len(seq) < 2:
+            return None
+        total_drop = max(0.0, float(a_high_price) - float(b_contract_price))
+        if total_drop <= EPS:
+            return 0
+
+        pivot_abs = max(total_drop * 0.055, float(a_high_price) * 0.0007)
+        leg_min_abs = max(total_drop * 0.16, float(a_high_price) * 0.0013)
+        recover_min_abs = max(total_drop * 0.11, float(a_high_price) * 0.0011)
+        rebreak_min_abs = max(total_drop * 0.035, float(a_high_price) * 0.0006)
+
+        pivots = self._zigzag_pivots(seq, pivot_abs)
+        if len(pivots) < 2:
+            return 0
+
+        steps = 0
+        last_leg_low: Optional[float] = None
+
+        for prev, curr in zip(pivots[:-1], pivots[1:]):
+            prev = float(prev)
+            curr = float(curr)
+            if prev <= curr:
+                continue
+            leg_drop_abs = prev - curr
+            if leg_drop_abs < leg_min_abs:
+                if last_leg_low is None or curr < last_leg_low:
+                    last_leg_low = curr
+                continue
+            if steps == 0:
+                steps = 1
+                last_leg_low = curr
+                continue
+
+            recovery_abs = (prev - last_leg_low) if last_leg_low is not None else 0.0
+            rebreak_abs = (last_leg_low - curr) if last_leg_low is not None else 0.0
+            if recovery_abs >= recover_min_abs and rebreak_abs >= rebreak_min_abs:
+                steps += 1
+                last_leg_low = curr
+            else:
+                if last_leg_low is None or curr < last_leg_low:
+                    last_leg_low = curr
+
+        return int(steps)
+
+    def _ab_pullback_stats(self, pivots: List[float], total_drop: float) -> tuple[int, Optional[float]]:
+        if len(pivots) < 2 or total_drop <= EPS:
+            return 0, None
+        pullback_count = 0
+        pullback_sum = 0.0
+        for prev, curr in zip(pivots[:-1], pivots[1:]):
+            prev = float(prev)
+            curr = float(curr)
+            if curr > prev:
+                pullback_count += 1
+                pullback_sum += (curr - prev)
+        return int(pullback_count), (pullback_sum / total_drop) if total_drop > EPS else None
+
+    def _ab_path_type(
+        self,
+        ab_path_efficiency: Optional[float],
+        ab_step_drop_count: Optional[int],
+        ab_pullback_count: int,
+        ab_pullback_share: Optional[float],
+        ab_vs_sa_amp_ratio: Optional[float],
+    ) -> Optional[str]:
+        if ab_path_efficiency is None:
+            return None
+        step = int(ab_step_drop_count or 0)
+        pullback_share = 0.0 if ab_pullback_share is None else float(ab_pullback_share)
+        amp_ratio = -1.0 if ab_vs_sa_amp_ratio is None else float(ab_vs_sa_amp_ratio)
+
+        if step >= 2:
+            if ab_path_efficiency >= 0.78 and pullback_share <= 0.18:
+                return "clean_two_leg"
+            return "staircase_two_leg"
+
+        if ab_path_efficiency < 0.55:
+            return "messy_one_leg"
+        if ab_path_efficiency >= 0.90 and ab_pullback_count <= 1 and pullback_share <= 0.12:
+            return "flush_one_leg"
+        if ab_path_efficiency >= 0.72:
+            return "clean_one_leg"
+        if pullback_share <= 0.22:
+            if ab_pullback_count <= 1:
+                if amp_ratio >= 18.0:
+                    return "structured_one_leg_sparse_high_ratio"
+                return "structured_one_leg_sparse_low_ratio"
+            return "structured_one_leg_choppy_pullback"
+        return "structured_one_leg_high_pullback"
+
+    def _depth_band(self, ab_drop_pct_index: Optional[float]) -> Optional[str]:
+        if ab_drop_pct_index is None:
+            return None
+        v = float(ab_drop_pct_index)
+        if v < 0.08:
+            return "shallow"
+        if v < 0.12:
+            return "mid"
+        if v < 0.18:
+            return "deep"
+        return "extreme"
+
+    def _apply_sab_negative_filter(
+        self,
+        *,
+        ab_path_type: Optional[str],
+        depth_band: Optional[str],
+    ) -> Optional[str]:
+        if self.enable_messy_one_leg_filter:
+            if ab_path_type == "messy_one_leg" and depth_band in self.messy_one_leg_block_depth_bands:
+                return "messy_one_leg_depth_blocked"
+        return None
 
     def audit_symbols_at_kline_close(
         self,
@@ -338,6 +515,36 @@ class WashoutSnapbackStrategy:
                     audits[sym] = record
                     continue
 
+            seq = self._build_anchor_close_seq(ac_df, recent_high_price, b_contract_price)
+            total_drop = max(0.0, float(recent_high_price) - float(b_contract_price))
+            pivots = self._zigzag_pivots(seq, max(total_drop * 0.055, float(recent_high_price) * 0.0007)) if total_drop > EPS else seq[:]
+            ab_path_efficiency = self._ab_path_efficiency(recent_high_price, b_contract_price, seq)
+            ab_step_drop_count = self._ab_step_drop_count(recent_high_price, b_contract_price, seq)
+            ab_pullback_count, ab_pullback_share = self._ab_pullback_stats(pivots, total_drop)
+            ab_path_type = self._ab_path_type(
+                ab_path_efficiency,
+                ab_step_drop_count,
+                ab_pullback_count,
+                ab_pullback_share,
+                record["ab_drop_pct_index"] / abs(((recent_high_price - s_close) / s_close)) if s_close > 0 and ((recent_high_price - s_close) / s_close) not in (None, 0) else None,
+            )
+            depth_band = self._depth_band(record["ab_drop_pct_index"])
+            record["ab_path_efficiency"] = ab_path_efficiency
+            record["ab_step_drop_count_sab"] = ab_step_drop_count
+            record["ab_pullback_count"] = ab_pullback_count
+            record["ab_pullback_share"] = ab_pullback_share
+            record["ab_path_type"] = ab_path_type
+            record["depth_band"] = depth_band
+
+            sab_fail_reason = self._apply_sab_negative_filter(
+                ab_path_type=ab_path_type,
+                depth_band=depth_band,
+            )
+            if sab_fail_reason:
+                record["fail_reason"] = sab_fail_reason
+                audits[sym] = record
+                continue
+
             trigger_name = "ABC_BINDEX"
             selected_tp_pct = self.base_tp_pct
             tp_tier = "BASE"
@@ -555,6 +762,27 @@ class WashoutSnapbackStrategy:
                 if speed_ratio_bc_over_ab is None or speed_ratio_bc_over_ab < self.min_speed_ratio_bc_over_ab:
                     continue
 
+            seq = self._build_anchor_close_seq(ac_df, recent_high_price, b_contract_price)
+            total_drop = max(0.0, float(recent_high_price) - float(b_contract_price))
+            pivots = self._zigzag_pivots(seq, max(total_drop * 0.055, float(recent_high_price) * 0.0007)) if total_drop > EPS else seq[:]
+            ab_path_efficiency = self._ab_path_efficiency(recent_high_price, b_contract_price, seq)
+            ab_step_drop_count = self._ab_step_drop_count(recent_high_price, b_contract_price, seq)
+            ab_pullback_count, ab_pullback_share = self._ab_pullback_stats(pivots, total_drop)
+            ab_path_type = self._ab_path_type(
+                ab_path_efficiency,
+                ab_step_drop_count,
+                ab_pullback_count,
+                ab_pullback_share,
+                ab_drop_pct_index / abs(((recent_high_price - s_close) / s_close)) if s_close > 0 and ((recent_high_price - s_close) / s_close) not in (None, 0) else None,
+            )
+            depth_band = self._depth_band(ab_drop_pct_index)
+            sab_fail_reason = self._apply_sab_negative_filter(
+                ab_path_type=ab_path_type,
+                depth_band=depth_band,
+            )
+            if sab_fail_reason:
+                continue
+
             trigger_name = "ABC_BINDEX"
 
             selected_tp_pct = self.base_tp_pct
@@ -597,6 +825,12 @@ class WashoutSnapbackStrategy:
                     "bc_rebound_pct_index": bc_rebound_pct_index,
                     "bc_rebound_speed": bc_rebound_speed,
                     "speed_ratio_bc_over_ab": speed_ratio_bc_over_ab,
+                    "ab_path_efficiency": ab_path_efficiency,
+                    "ab_step_drop_count_sab": ab_step_drop_count,
+                    "ab_pullback_count": ab_pullback_count,
+                    "ab_pullback_share": ab_pullback_share,
+                    "ab_path_type": ab_path_type,
+                    "depth_band": depth_band,
                     "trigger_name": trigger_name,
                     "selected_tp_pct": selected_tp_pct,
                     "tp_tier": tp_tier,
@@ -687,6 +921,12 @@ class WashoutSnapbackStrategy:
                 "bc_rebound_pct_index": target["bc_rebound_pct_index"],
                 "bc_rebound_speed": target["bc_rebound_speed"],
                 "speed_ratio_bc_over_ab": target["speed_ratio_bc_over_ab"],
+                "ab_path_efficiency": target["ab_path_efficiency"],
+                "ab_step_drop_count_sab": target["ab_step_drop_count_sab"],
+                "ab_pullback_count": target["ab_pullback_count"],
+                "ab_pullback_share": target["ab_pullback_share"],
+                "ab_path_type": target["ab_path_type"],
+                "depth_band": target["depth_band"],
                 "trigger_name": target["trigger_name"],
                 "selected_tp_pct": target["selected_tp_pct"],
                 "tp_tier": target["tp_tier"],

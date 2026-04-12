@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -48,6 +49,7 @@ _MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
 _MARKET_DATA_LOG_DIR = Path('output/logs')
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
 _CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 1
+EPS = 1e-9
 
 
 def setup_logging() -> None:
@@ -711,6 +713,154 @@ def _finalize_candidate_payload(
     )
 
 
+def _sab_build_anchor_close_seq(ab_df: Any, a_high_price: float, b_contract_price: float) -> list[float]:
+    closes = [float(v) for v in ab_df["close"].tolist()] if ab_df is not None and not getattr(ab_df, "empty", True) else []
+    seq = [float(a_high_price)] + closes + [float(b_contract_price)]
+    out: list[float] = []
+    for x in seq:
+        if not out or abs(out[-1] - x) > EPS:
+            out.append(x)
+    return out
+
+
+def _sab_path_length(seq: list[float]) -> float | None:
+    if len(seq) < 2:
+        return None
+    return sum(abs(seq[i] - seq[i - 1]) for i in range(1, len(seq)))
+
+
+def _sab_ab_path_efficiency(a_high_price: float, b_contract_price: float, seq: list[float]) -> float | None:
+    path_len = _sab_path_length(seq)
+    if path_len is None or path_len <= EPS:
+        return None
+    net_displacement = abs(float(a_high_price) - float(b_contract_price))
+    return net_displacement / path_len
+
+
+def _sab_zigzag_pivots(seq: list[float], pivot_abs: float) -> list[float]:
+    if not seq:
+        return []
+    pts = [float(x) for x in seq]
+    if len(pts) == 1 or pivot_abs <= EPS:
+        return pts[:]
+    pivots: list[float] = [pts[0]]
+    candidate = pts[0]
+    direction = 0
+    for p in pts[1:]:
+        p = float(p)
+        if direction >= 0:
+            if p >= candidate:
+                candidate = p
+                pivots[-1] = p
+            elif (candidate - p) >= pivot_abs:
+                direction = -1
+                candidate = p
+                pivots.append(p)
+        if direction <= 0:
+            if p <= candidate:
+                candidate = p
+                pivots[-1] = p
+            elif (p - candidate) >= pivot_abs:
+                direction = 1
+                candidate = p
+                pivots.append(p)
+    out: list[float] = []
+    for x in pivots:
+        if not out or abs(out[-1] - x) > EPS:
+            out.append(x)
+    return out
+
+
+def _sab_ab_step_drop_count(a_high_price: float, b_contract_price: float, seq: list[float]) -> int | None:
+    if len(seq) < 2:
+        return None
+    total_drop = max(0.0, float(a_high_price) - float(b_contract_price))
+    if total_drop <= EPS:
+        return 0
+    pivot_abs = max(total_drop * 0.055, float(a_high_price) * 0.0007)
+    leg_min_abs = max(total_drop * 0.16, float(a_high_price) * 0.0013)
+    recover_min_abs = max(total_drop * 0.11, float(a_high_price) * 0.0011)
+    rebreak_min_abs = max(total_drop * 0.035, float(a_high_price) * 0.0006)
+    pivots = _sab_zigzag_pivots(seq, pivot_abs)
+    if len(pivots) < 2:
+        return 0
+    steps = 0
+    last_leg_low: float | None = None
+    for prev, curr in zip(pivots[:-1], pivots[1:]):
+        prev = float(prev); curr = float(curr)
+        if prev <= curr:
+            continue
+        leg_drop_abs = prev - curr
+        if leg_drop_abs < leg_min_abs:
+            if last_leg_low is None or curr < last_leg_low:
+                last_leg_low = curr
+            continue
+        if steps == 0:
+            steps = 1
+            last_leg_low = curr
+            continue
+        recovery_abs = (prev - last_leg_low) if last_leg_low is not None else 0.0
+        rebreak_abs = (last_leg_low - curr) if last_leg_low is not None else 0.0
+        if recovery_abs >= recover_min_abs and rebreak_abs >= rebreak_min_abs:
+            steps += 1
+            last_leg_low = curr
+        else:
+            if last_leg_low is None or curr < last_leg_low:
+                last_leg_low = curr
+    return int(steps)
+
+
+def _sab_ab_pullback_stats(pivots: list[float], total_drop: float) -> tuple[int, float | None]:
+    if len(pivots) < 2 or total_drop <= EPS:
+        return 0, None
+    pullback_count = 0
+    pullback_sum = 0.0
+    for prev, curr in zip(pivots[:-1], pivots[1:]):
+        prev = float(prev); curr = float(curr)
+        if curr > prev:
+            pullback_count += 1
+            pullback_sum += (curr - prev)
+    return int(pullback_count), (pullback_sum / total_drop) if total_drop > EPS else None
+
+
+def _sab_path_type(ab_path_efficiency: float | None, ab_step_drop_count: int | None, ab_pullback_count: int, ab_pullback_share: float | None, ab_vs_sa_amp_ratio: float | None) -> str | None:
+    if ab_path_efficiency is None:
+        return None
+    step = int(ab_step_drop_count or 0)
+    pullback_share = 0.0 if ab_pullback_share is None else float(ab_pullback_share)
+    amp_ratio = -1.0 if ab_vs_sa_amp_ratio is None else float(ab_vs_sa_amp_ratio)
+    if step >= 2:
+        if ab_path_efficiency >= 0.78 and pullback_share <= 0.18:
+            return "clean_two_leg"
+        return "staircase_two_leg"
+    if ab_path_efficiency < 0.55:
+        return "messy_one_leg"
+    if ab_path_efficiency >= 0.90 and ab_pullback_count <= 1 and pullback_share <= 0.12:
+        return "flush_one_leg"
+    if ab_path_efficiency >= 0.72:
+        return "clean_one_leg"
+    if pullback_share <= 0.22:
+        if ab_pullback_count <= 1:
+            if amp_ratio >= 18.0:
+                return "structured_one_leg_sparse_high_ratio"
+            return "structured_one_leg_sparse_low_ratio"
+        return "structured_one_leg_choppy_pullback"
+    return "structured_one_leg_high_pullback"
+
+
+def _sab_depth_band(ab_drop_pct_index: float | None) -> str | None:
+    if ab_drop_pct_index is None:
+        return None
+    v = float(ab_drop_pct_index)
+    if v < 0.08:
+        return "shallow"
+    if v < 0.12:
+        return "mid"
+    if v < 0.18:
+        return "deep"
+    return "extreme"
+
+
 def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
     import pandas as pd  # type: ignore
 
@@ -758,6 +908,10 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     enable_min_bc_rebound_speed = min_bc_rebound_speed >= 0
     enable_min_speed_ratio_bc_over_ab = min_speed_ratio_bc_over_ab >= 0
     enable_min_a_to_b_drop_speed = min_a_to_b_drop_speed >= 0
+    enable_messy_one_leg_filter = bool(joint_filters.get('enable_messy_one_leg_filter', False))
+    messy_one_leg_block_depth_bands = {
+        str(x).strip() for x in (joint_filters.get('messy_one_leg_block_depth_bands') or []) if str(x).strip()
+    }
 
     base_tp_pct = float(take_profit.get('base_pct', 0.0))
     strong_tp_pct = float(take_profit.get('strong_pct', 0.0))
@@ -1038,6 +1192,27 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
                 base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'speed_ratio_bc_over_ab_below_min'})
                 audit_rows.append(base)
                 continue
+
+        sa_chg_pct = ((recent_high_price - s_close) / s_close) if s_close > 0 else None
+        ab_vs_sa_amp_ratio = (ab_drop_pct_index / abs(sa_chg_pct)) if (ab_drop_pct_index is not None and sa_chg_pct not in (None, 0)) else None
+        seq = _sab_build_anchor_close_seq(ac_df, recent_high_price, b_contract_price)
+        total_drop = max(0.0, float(recent_high_price) - float(b_contract_price))
+        pivots = _sab_zigzag_pivots(seq, max(total_drop * 0.055, float(recent_high_price) * 0.0007)) if total_drop > EPS else seq[:]
+        ab_path_efficiency = _sab_ab_path_efficiency(recent_high_price, b_contract_price, seq)
+        ab_step_drop_count = _sab_ab_step_drop_count(recent_high_price, b_contract_price, seq)
+        ab_pullback_count, ab_pullback_share = _sab_ab_pullback_stats(pivots, total_drop)
+        ab_path_type = _sab_path_type(ab_path_efficiency, ab_step_drop_count, ab_pullback_count, ab_pullback_share, ab_vs_sa_amp_ratio)
+        depth_band = _sab_depth_band(ab_drop_pct_index)
+        base['ab_path_efficiency'] = _normalize_scalar(ab_path_efficiency)
+        base['ab_step_drop_count_sab'] = _normalize_scalar(ab_step_drop_count)
+        base['ab_pullback_count'] = _normalize_scalar(ab_pullback_count)
+        base['ab_pullback_share'] = _normalize_scalar(ab_pullback_share)
+        base['ab_path_type'] = ab_path_type
+        base['depth_band'] = depth_band
+        if enable_messy_one_leg_filter and ab_path_type == 'messy_one_leg' and depth_band in messy_one_leg_block_depth_bands:
+            base.update({'stage5_pass': False, 'is_candidate': False, 'fail_reason': 'messy_one_leg_depth_blocked'})
+            audit_rows.append(base)
+            continue
 
         selected_tp_pct = base_tp_pct
         tp_tier = 'BASE'
