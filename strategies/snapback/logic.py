@@ -613,68 +613,6 @@ class WashoutSnapbackStrategy:
         return audits
 
 
-
-def _append_candidate_pool_audit(
-    self,
-    *,
-    current_time_ms: int,
-    current_time_bj: str,
-    candidates: List[Dict[str, Any]],
-) -> None:
-    if not candidates:
-        return
-    try:
-        import json
-        from pathlib import Path
-
-        out_path = Path("output/state/snapback_candidate_pool_audit.jsonl")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda x: x["drop_pct"],
-            reverse=True,
-        )
-        payload = {
-            "bar_ts": int(current_time_ms),
-            "bar_bj": current_time_bj,
-            "candidate_count": int(len(sorted_candidates)),
-            "candidates_sorted_by_drop_pct": [],
-        }
-        for idx, item in enumerate(sorted_candidates, start=1):
-            payload["candidates_sorted_by_drop_pct"].append(
-                {
-                    "rank_by_drop_pct": int(idx),
-                    "symbol": item["symbol"],
-                    "drop_pct": item["drop_pct"],
-                    "drop_window_chg": item["drop_window_chg"],
-                    "vol_ratio": item["vol_ratio"],
-                    "ab_bars": item["ab_bars"],
-                    "bc_bars": item["bc_bars"],
-                    "ab_drop_pct_index": item["ab_drop_pct_index"],
-                    "a_to_b_drop_speed": item["a_to_b_drop_speed"],
-                    "rebound_ratio": item["rebound_ratio"],
-                    "bc_rebound_speed": item["bc_rebound_speed"],
-                    "speed_ratio_bc_over_ab": item["speed_ratio_bc_over_ab"],
-                    "ab_path_efficiency": item.get("ab_path_efficiency"),
-                    "ab_step_drop_count_sab": item.get("ab_step_drop_count_sab"),
-                    "ab_pullback_count": item.get("ab_pullback_count"),
-                    "ab_pullback_share": item.get("ab_pullback_share"),
-                    "ab_path_type": item.get("ab_path_type"),
-                    "depth_band": item.get("depth_band"),
-                    "a_peak_sharpness": item.get("a_peak_sharpness"),
-                    "a_peak_sharpness_band": item.get("a_peak_sharpness_band"),
-                    "trigger_name": item.get("trigger_name"),
-                    "selected_tp_pct": item.get("selected_tp_pct"),
-                    "tp_tier": item.get("tp_tier"),
-                }
-            )
-
-        with out_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logging.warning("append candidate pool audit failed: %s", e)
-
     def on_kline_close(
         self,
         current_time_ms: int,
@@ -960,12 +898,6 @@ def _append_candidate_pool_audit(
 
         if not candidates:
             return None
-
-        self._append_candidate_pool_audit(
-            current_time_ms=current_time_ms,
-            current_time_bj=time_bj_str,
-            candidates=candidates,
-        )
 
         # 3. 如果同时有多个币暴跌并发出反转信号，选跌得最惨的那个去救
         candidates.sort(key=lambda x: x["drop_pct"], reverse=True)

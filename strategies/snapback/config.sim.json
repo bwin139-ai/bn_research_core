@@ -61,7 +61,7 @@
         "shallow",
         "mid"
       ],
-      "enable_clean_one_leg_sharp_top_filter": false
+      "enable_clean_one_leg_sharp_top_filter": true
     }
   },
   "exit_policy": {
