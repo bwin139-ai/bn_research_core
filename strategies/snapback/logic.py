@@ -1,4 +1,6 @@
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -613,6 +615,47 @@ class WashoutSnapbackStrategy:
         return audits
 
 
+    def _append_candidate_pool_audit(self, current_time_ms: int, candidates: List[Dict[str, Any]]) -> None:
+        audit_path = Path("output/state/snapback_candidate_pool_audit.jsonl")
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _to_jsonable(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {str(k): _to_jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_jsonable(v) for v in value]
+            if isinstance(value, pd.Timestamp):
+                return int(value.value // 10**6)
+            if value is None:
+                return None
+            if pd.isna(value):
+                return None
+            if hasattr(value, "item"):
+                try:
+                    return value.item()
+                except Exception:
+                    pass
+            return value
+
+        sorted_candidates = sorted(candidates, key=lambda x: x["drop_pct"], reverse=True)
+        payload_candidates: List[Dict[str, Any]] = []
+        for rank, candidate in enumerate(sorted_candidates, start=1):
+            item = _to_jsonable(candidate)
+            item["rank_by_drop_pct"] = rank
+            payload_candidates.append(item)
+
+        bar_bj = (pd.to_datetime(current_time_ms, unit="ms") + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+        payload = {
+            "bar_ts": int(current_time_ms),
+            "bar_bj": bar_bj,
+            "candidate_count": len(payload_candidates),
+            "candidates_sorted_by_drop_pct": payload_candidates,
+        }
+
+        with audit_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
     def on_kline_close(
         self,
         current_time_ms: int,
@@ -898,6 +941,8 @@ class WashoutSnapbackStrategy:
 
         if not candidates:
             return None
+
+        self._append_candidate_pool_audit(current_time_ms, candidates)
 
         # 3. 如果同时有多个币暴跌并发出反转信号，选跌得最惨的那个去救
         candidates.sort(key=lambda x: x["drop_pct"], reverse=True)
