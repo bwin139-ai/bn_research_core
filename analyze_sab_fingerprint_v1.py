@@ -26,7 +26,7 @@ FEATURES = [
 CROSS_PAIRS = [
     ("ab_path_type", "ab_step_drop_count"),
     ("ab_vs_sa_amp_ratio", "ab_path_type"),
-    ("ab_pullback_share", "ab_path_type"),
+    ("ab_pullback_count", "ab_path_type"),
 ]
 
 
@@ -120,7 +120,7 @@ def main() -> None:
 
     summary = {
         "feature_scope": "hb_sab_only",
-        "fingerprint_version": "sab_v1_step_v6",
+        "fingerprint_version": "sab_v1_step_v7",
         "rows_total": int(len(df)),
         "rows_ok": int(len(df_ok)),
         "tp_count": int((df_ok["outcome"] == "TP").sum()),
