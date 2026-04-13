@@ -55,8 +55,16 @@
     "joint_filters": {
       "min_bc_rebound_speed": -1,
       "min_speed_ratio_bc_over_ab": -1,
-      "min_a_to_b_drop_speed": -1
-    }
+      "min_a_to_b_drop_speed": -1,
+      "enable_messy_one_leg_filter": false,
+      "messy_one_leg_block_depth_bands": [
+        "shallow",
+        "mid"
+      ],
+      "enable_clean_one_leg_sharp_top_filter": false
+    },
+    "market_total_24h_vol_min": 40000000000,
+    "election_rule": "drop_pct_plus_vol_ratio_plus_24h_vol_top1"
   },
   "exit_policy": {
     "take_profit": {
