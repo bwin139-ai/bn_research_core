@@ -893,6 +893,42 @@ def _sab_a_peak_sharpness_band(a_peak_sharpness: float | None) -> str | None:
     return "sharp_top"
 
 
+def _decorate_stage5_candidate_election_ranks(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = [dict(x) for x in candidates]
+    by_drop = sorted(out, key=lambda x: (-float(x["drop_pct"]), -float(x["vol_ratio"]), -float(x.get("cross_vol_24h") or x.get("vol_24h") or 0.0), str(x["symbol"])))
+    for i, c in enumerate(by_drop, 1):
+        c["rank_drop_pct"] = i
+    by_vol_ratio = sorted(out, key=lambda x: (-float(x["vol_ratio"]), -float(x["drop_pct"]), -float(x.get("cross_vol_24h") or x.get("vol_24h") or 0.0), str(x["symbol"])))
+    for i, c in enumerate(by_vol_ratio, 1):
+        c["rank_vol_ratio"] = i
+    by_vol_24h = sorted(out, key=lambda x: (-float(x.get("cross_vol_24h") or x.get("vol_24h") or 0.0), -float(x["drop_pct"]), -float(x["vol_ratio"]), str(x["symbol"])))
+    for i, c in enumerate(by_vol_24h, 1):
+        c["rank_vol_24h"] = i
+    for c in out:
+        c["score_drop_pct_plus_vol_ratio"] = int(c["rank_drop_pct"]) + int(c["rank_vol_ratio"])
+        c["score_drop_pct_plus_vol_ratio_plus_24h_vol"] = (
+            int(c["rank_drop_pct"]) + int(c["rank_vol_ratio"]) + int(c["rank_vol_24h"])
+        )
+    return out
+
+
+def _select_stage5_candidate_symbol(candidates: list[dict[str, Any]], election_rule: str) -> str | None:
+    if not candidates:
+        return None
+    ranked = _decorate_stage5_candidate_election_ranks(candidates)
+    if election_rule == 'drop_pct_top1':
+        ranked.sort(key=lambda x: (-float(x['drop_pct']), -float(x['vol_ratio']), -float(x.get('cross_vol_24h') or x.get('vol_24h') or 0.0), str(x['symbol'])))
+    elif election_rule == 'vol_ratio_top1':
+        ranked.sort(key=lambda x: (-float(x['vol_ratio']), -float(x['drop_pct']), -float(x.get('cross_vol_24h') or x.get('vol_24h') or 0.0), str(x['symbol'])))
+    elif election_rule == 'drop_pct_plus_vol_ratio_top1':
+        ranked.sort(key=lambda x: (int(x['score_drop_pct_plus_vol_ratio']), -float(x['drop_pct']), -float(x['vol_ratio']), -float(x.get('cross_vol_24h') or x.get('vol_24h') or 0.0), str(x['symbol'])))
+    elif election_rule == 'drop_pct_plus_vol_ratio_plus_24h_vol_top1':
+        ranked.sort(key=lambda x: (int(x['score_drop_pct_plus_vol_ratio_plus_24h_vol']), -float(x['drop_pct']), -float(x['vol_ratio']), -float(x.get('cross_vol_24h') or x.get('vol_24h') or 0.0), str(x['symbol'])))
+    else:
+        raise ValueError(f'unsupported election_rule: {election_rule}')
+    return str(ranked[0]['symbol']).upper().strip()
+
+
 def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
     import pandas as pd  # type: ignore
 
@@ -904,6 +940,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     selloff = (structure.get('selloff') or {})
     rebound = (structure.get('rebound') or {})
     basis = (structure.get('basis') or {})
+    election_rule = str(structure.get('election_rule') or 'drop_pct_top1').strip()
     joint_filters = (structure.get('joint_filters') or {})
     s_to_c_window = (structure.get('s_to_c_window') or {})
     exit_policy = (strategy_cfg or {}).get('exit_policy') or {}
@@ -989,6 +1026,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             'min_a_to_b_drop_speed': min_a_to_b_drop_speed,
             'min_24h_chg_pct': min_24h_chg,
             'max_24h_chg_pct': max_24h_chg,
+            'election_rule': election_rule,
         }
         if symbol not in cs.index:
             base.update({
@@ -1272,13 +1310,21 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
         audit_rows.append(base)
         candidates.append(base)
 
-    candidates_sorted = sorted(candidates, key=lambda x: x['drop_pct'], reverse=True)
-    audit_selected_symbol = candidates_sorted[0]['symbol'] if candidates_sorted else None
-    candidate_rank_map = {row['symbol']: i + 1 for i, row in enumerate(candidates_sorted)}
+    candidates_ranked = _decorate_stage5_candidate_election_ranks(candidates)
+    audit_selected_symbol = _select_stage5_candidate_symbol(candidates_ranked, election_rule)
+    candidate_rank_map = {row['symbol']: i + 1 for i, row in enumerate(sorted(candidates_ranked, key=lambda x: -float(x['drop_pct'])))}
     for row in audit_rows:
         row['audit_selected_symbol'] = audit_selected_symbol
         row['audit_selected'] = bool(audit_selected_symbol == row['symbol'])
         row['candidate_rank'] = candidate_rank_map.get(row['symbol'])
+        if row.get('is_candidate'):
+            ranked_row = next((x for x in candidates_ranked if x['symbol'] == row['symbol']), None)
+            if ranked_row is not None:
+                row['rank_drop_pct'] = ranked_row.get('rank_drop_pct')
+                row['rank_vol_ratio'] = ranked_row.get('rank_vol_ratio')
+                row['rank_vol_24h'] = ranked_row.get('rank_vol_24h')
+                row['score_drop_pct_plus_vol_ratio'] = ranked_row.get('score_drop_pct_plus_vol_ratio')
+                row['score_drop_pct_plus_vol_ratio_plus_24h_vol'] = ranked_row.get('score_drop_pct_plus_vol_ratio_plus_24h_vol')
     return audit_rows
 
 

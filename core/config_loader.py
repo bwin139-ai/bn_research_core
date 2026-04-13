@@ -56,6 +56,7 @@ class StrategyConfig:
         ("structure", "basis", "b_pct", "max"),
         ("structure", "basis", "c_pct", "min"),
         ("structure", "basis", "c_pct", "max"),
+        ("structure", "election_rule"),
         ("structure", "joint_filters", "min_bc_rebound_speed"),
         ("structure", "joint_filters", "min_speed_ratio_bc_over_ab"),
         ("structure", "joint_filters", "min_a_to_b_drop_speed"),
@@ -109,6 +110,17 @@ class StrategyConfig:
             a_high_source = raw_data["structure"]["a_high_source"]
             if a_high_source not in ("contract", "idx"):
                 raise ValueError('【铁律违背】structure.a_high_source 只允许 "contract" 或 "idx"')
+            election_rule = str(raw_data["structure"].get("election_rule") or "").strip()
+            allowed_election_rules = {
+                "drop_pct_top1",
+                "vol_ratio_top1",
+                "drop_pct_plus_vol_ratio_top1",
+                "drop_pct_plus_vol_ratio_plus_24h_vol_top1",
+            }
+            if election_rule not in allowed_election_rules:
+                raise ValueError(
+                    "【铁律违背】structure.election_rule 只允许 " + str(sorted(allowed_election_rules))
+                )
             joint_filters = raw_data["structure"]["joint_filters"]
             if not isinstance(joint_filters.get("enable_messy_one_leg_filter"), bool):
                 raise ValueError('【铁律违背】structure.joint_filters.enable_messy_one_leg_filter 必须是 bool')

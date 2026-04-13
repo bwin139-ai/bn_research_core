@@ -69,6 +69,7 @@ class WashoutSnapbackStrategy:
         self.enable_clean_one_leg_sharp_top_filter = bool(
             joint_filters.get("enable_clean_one_leg_sharp_top_filter", False)
         )
+        self.election_rule = str(structure.get("election_rule", "drop_pct_top1")).strip()
 
         # 游击战交易参数
         self.base_tp_pct = take_profit["base_pct"]
@@ -290,6 +291,60 @@ class WashoutSnapbackStrategy:
             if ab_path_type == "clean_one_leg" and a_peak_sharpness_band == "sharp_top":
                 return "clean_one_leg_sharp_top_blocked"
         return None
+
+    def _decorate_candidate_election_ranks(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        out = [dict(x) for x in candidates]
+        by_drop = sorted(out, key=lambda x: (-float(x["drop_pct"]), -float(x["vol_ratio"]), -float(x.get("vol_24h", 0.0)), str(x["symbol"])))
+        for i, c in enumerate(by_drop, 1):
+            c["rank_drop_pct"] = i
+        by_vol_ratio = sorted(out, key=lambda x: (-float(x["vol_ratio"]), -float(x["drop_pct"]), -float(x.get("vol_24h", 0.0)), str(x["symbol"])))
+        for i, c in enumerate(by_vol_ratio, 1):
+            c["rank_vol_ratio"] = i
+        by_vol_24h = sorted(out, key=lambda x: (-float(x.get("vol_24h", 0.0)), -float(x["drop_pct"]), -float(x["vol_ratio"]), str(x["symbol"])))
+        for i, c in enumerate(by_vol_24h, 1):
+            c["rank_vol_24h"] = i
+        for c in out:
+            c["score_drop_pct_plus_vol_ratio"] = int(c["rank_drop_pct"]) + int(c["rank_vol_ratio"])
+            c["score_drop_pct_plus_vol_ratio_plus_24h_vol"] = (
+                int(c["rank_drop_pct"]) + int(c["rank_vol_ratio"]) + int(c["rank_vol_24h"])
+            )
+        return out
+
+    def _select_target_candidate(self, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        ranked = self._decorate_candidate_election_ranks(candidates)
+        if self.election_rule == "drop_pct_top1":
+            ranked.sort(
+                key=lambda x: (-float(x["drop_pct"]), -float(x["vol_ratio"]), -float(x.get("vol_24h", 0.0)), str(x["symbol"]))
+            )
+        elif self.election_rule == "vol_ratio_top1":
+            ranked.sort(
+                key=lambda x: (-float(x["vol_ratio"]), -float(x["drop_pct"]), -float(x.get("vol_24h", 0.0)), str(x["symbol"]))
+            )
+        elif self.election_rule == "drop_pct_plus_vol_ratio_top1":
+            ranked.sort(
+                key=lambda x: (
+                    int(x["score_drop_pct_plus_vol_ratio"]),
+                    -float(x["drop_pct"]),
+                    -float(x["vol_ratio"]),
+                    -float(x.get("vol_24h", 0.0)),
+                    str(x["symbol"]),
+                )
+            )
+        elif self.election_rule == "drop_pct_plus_vol_ratio_plus_24h_vol_top1":
+            ranked.sort(
+                key=lambda x: (
+                    int(x["score_drop_pct_plus_vol_ratio_plus_24h_vol"]),
+                    -float(x["drop_pct"]),
+                    -float(x["vol_ratio"]),
+                    -float(x.get("vol_24h", 0.0)),
+                    str(x["symbol"]),
+                )
+            )
+        else:
+            raise ValueError(f"unsupported election_rule: {self.election_rule}")
+        target = dict(ranked[0])
+        target["election_rule"] = self.election_rule
+        return target
 
     def audit_symbols_at_kline_close(
         self,
@@ -944,9 +999,8 @@ class WashoutSnapbackStrategy:
 
         self._append_candidate_pool_audit(current_time_ms, candidates)
 
-        # 3. 如果同时有多个币暴跌并发出反转信号，选跌得最惨的那个去救
-        candidates.sort(key=lambda x: x["drop_pct"], reverse=True)
-        target = candidates[0]
+        # 3. 如果同时有多个币暴跌并发出反转信号，按 election_rule 选出 top1
+        target = self._select_target_candidate(candidates)
 
         top1_symbol = target["symbol"]
         current_price = target["current_price"]
@@ -993,6 +1047,7 @@ class WashoutSnapbackStrategy:
                 "min_speed_ratio_bc_over_ab": self.min_speed_ratio_bc_over_ab,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
+                "election_rule": self.election_rule,
             },
             "context": {
                 "chg_24h": target["chg_24h"],
@@ -1033,6 +1088,12 @@ class WashoutSnapbackStrategy:
                 "trigger_name": target["trigger_name"],
                 "selected_tp_pct": target["selected_tp_pct"],
                 "tp_tier": target["tp_tier"],
+                "election_rule": target["election_rule"],
+                "rank_drop_pct": target.get("rank_drop_pct"),
+                "rank_vol_ratio": target.get("rank_vol_ratio"),
+                "rank_vol_24h": target.get("rank_vol_24h"),
+                "score_drop_pct_plus_vol_ratio": target.get("score_drop_pct_plus_vol_ratio"),
+                "score_drop_pct_plus_vol_ratio_plus_24h_vol": target.get("score_drop_pct_plus_vol_ratio_plus_24h_vol"),
             },
         }
 
