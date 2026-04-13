@@ -64,7 +64,7 @@
       "enable_clean_one_leg_sharp_top_filter": false
     },
     "market_total_24h_vol_min": 40000000000,
-    "election_rule": "vol_ratio_top1"
+    "election_rule": "drop_pct_top1"
   },
   "exit_policy": {
     "take_profit": {
