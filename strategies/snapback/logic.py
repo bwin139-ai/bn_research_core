@@ -691,13 +691,6 @@ class WashoutSnapbackStrategy:
         return audits
 
 
-    def _candidate_pool_audit_path(self) -> Path:
-        runtime = self.config.get("runtime") or {}
-        run_id = str(runtime.get("run_id") or "").strip()
-        if run_id:
-            return Path(f"output/state/snapback_candidate_pool_audit.{run_id}.jsonl")
-        return Path("output/state/snapback_candidate_pool_audit.jsonl")
-
     def _append_candidate_pool_audit(
         self,
         current_time_ms: int,
@@ -705,7 +698,7 @@ class WashoutSnapbackStrategy:
         *,
         market_total_24h_vol: float,
     ) -> None:
-        audit_path = self._candidate_pool_audit_path()
+        audit_path = Path("output/state/snapback_candidate_pool_audit.jsonl")
         audit_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _to_jsonable(value: Any) -> Any:
