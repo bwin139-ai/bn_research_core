@@ -205,10 +205,12 @@ def run_post_processing(
 
     trade_paths = [state_dir / f'sim_trades.{t.run_id}.jsonl' for t in tasks]
     signal_paths = [state_dir / f'sim_signals.{t.run_id}.jsonl' for t in tasks]
+    candidate_audit_paths = [state_dir / f'snapback_candidate_pool_audit.{t.run_id}.jsonl' for t in tasks]
     viz_dirs = [state_dir / f'sim_viz_{t.run_id}' for t in tasks]
 
     merged_trades = state_dir / f'sim_trades.{runset}_ALL.jsonl'
     merged_signals = state_dir / f'sim_signals.{runset}_ALL.jsonl'
+    merged_candidate_audit = state_dir / f'snapback_candidate_pool_audit.{runset}_ALL.jsonl'
     merged_viz_dir = state_dir / f'sim_viz_{runset}_ALL'
     merged_merge_meta = state_dir / f'sim_merge_meta.{runset}_ALL.json'
     merged_summary = state_dir / f'sim_summary.{runset}_ALL.json'
@@ -218,6 +220,8 @@ def run_post_processing(
         artifacts['merged_trades'] = str(merged_trades)
         signals_count = merge_jsonl_files(signal_paths, merged_signals)
         artifacts['merged_signals'] = str(merged_signals)
+        candidate_audit_count = merge_jsonl_files(candidate_audit_paths, merged_candidate_audit)
+        artifacts['merged_candidate_audit'] = str(merged_candidate_audit)
         viz_count = merge_viz_dirs(viz_dirs, merged_viz_dir)
         artifacts['merged_viz_dir'] = str(merged_viz_dir)
 
@@ -231,6 +235,7 @@ def run_post_processing(
         merge_meta.update({
             'trades_count': trades_count,
             'signals_count': signals_count,
+            'candidate_audit_count': candidate_audit_count,
             'viz_png_count': viz_count,
         })
         with merged_merge_meta.open('w', encoding='utf-8') as f:
@@ -239,12 +244,12 @@ def run_post_processing(
 
         append_line(
             scheduler_log,
-            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
+            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
         )
-        print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} viz_pngs={viz_count}')
+        print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} viz_pngs={viz_count}')
         notify_message(
             notify_label,
-            f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜图表：{viz_count}',
+            f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜候选池：{candidate_audit_count}｜图表：{viz_count}',
         )
     except Exception as e:
         msg = f'post-merge failed: {e}'

@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+import types
 
 from copy import deepcopy
 
@@ -1365,6 +1366,67 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
 
 
 
+
+
+def _build_live_candidate_audit_run_id(account: str) -> str:
+    ts_utc = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    account_key = str(account).upper().strip()
+    return f'SNAPBACKLIVEAUDIT_{account_key}_{ts_utc}'
+
+
+def _candidate_audit_path(output_dir: str, run_id: str | None) -> Path:
+    rid = str(run_id or '').strip()
+    if rid:
+        return Path(output_dir) / f'snapback_candidate_pool_audit.{rid}.jsonl'
+    return Path(output_dir) / 'snapback_candidate_pool_audit.jsonl'
+
+
+def _patch_candidate_pool_audit_writer(strategy: Any, audit_path: Path) -> None:
+    target_path = Path(audit_path)
+
+    def _patched_append_candidate_pool_audit(self, current_time_ms: int, candidates: list[dict[str, Any]], *, market_total_24h_vol: float) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _to_jsonable(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {str(k): _to_jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_jsonable(v) for v in value]
+            if isinstance(value, pd.Timestamp):
+                return int(value.value // 10**6)
+            if value is None:
+                return None
+            if pd.isna(value):
+                return None
+            if hasattr(value, 'item'):
+                try:
+                    return value.item()
+                except Exception:
+                    pass
+            return value
+
+        sorted_candidates = sorted(candidates, key=lambda x: x['drop_pct'], reverse=True)
+        payload_candidates: list[dict[str, Any]] = []
+        for rank, candidate in enumerate(sorted_candidates, start=1):
+            item = _to_jsonable(candidate)
+            item['rank_by_drop_pct'] = rank
+            payload_candidates.append(item)
+
+        bar_bj = (pd.to_datetime(current_time_ms, unit='ms') + pd.Timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+        payload = {
+            'bar_ts': int(current_time_ms),
+            'bar_bj': bar_bj,
+            'market_total_24h_vol': float(market_total_24h_vol),
+            'market_total_24h_vol_min': float(getattr(self, 'market_total_24h_vol_min', 0.0)),
+            'candidate_count': len(payload_candidates),
+            'candidates_sorted_by_drop_pct': payload_candidates,
+        }
+
+        with target_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + '\n')
+
+    strategy._append_candidate_pool_audit = types.MethodType(_patched_append_candidate_pool_audit, strategy)
+
 def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
@@ -1826,6 +1888,10 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     cross_section = candidate_cross_section
     full_df = candidate_full_df
     strategy = WashoutSnapbackStrategy(strategy_cfg)
+    _patch_candidate_pool_audit_writer(
+        strategy,
+        _candidate_audit_path('output/state', live_cfg.get('_candidate_audit_run_id')),
+    )
     _hydrate_strategy_cooldowns(strategy, account, current_time_ms)
     pre_signal_cooldown_map = dict(getattr(strategy, 'cooldown_until', {}) or {})
 
@@ -1967,6 +2033,7 @@ def main() -> None:
         raise SystemExit('live_config account 不能为空')
 
     live_cfg['_projection_run_id'] = _build_live_projection_run_id(account)
+    live_cfg['_candidate_audit_run_id'] = _build_live_candidate_audit_run_id(account)
     live_cfg['_projection_output_dir'] = 'output/live_projection'
     live_cfg['_projection_schema_version'] = _live_projection_schema_version()
     live_cfg['_projection_strategy_name'] = 'snapback'
@@ -1983,6 +2050,8 @@ def main() -> None:
         'strategy_config_file_sha256': snapshot_meta['strategy_config_file_sha256'],
         'live_config_file_sha256': snapshot_meta['live_config_file_sha256'],
         'projection_run_id': live_cfg.get('_projection_run_id'),
+        'candidate_audit_run_id': live_cfg.get('_candidate_audit_run_id'),
+        'candidate_audit_path': str(_candidate_audit_path('output/state', live_cfg.get('_candidate_audit_run_id'))),
         'projection_output_dir': live_cfg.get('_projection_output_dir'),
         'projection_schema_version': live_cfg.get('_projection_schema_version'),
         'projection_strategy_name': live_cfg.get('_projection_strategy_name'),

@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
+import types
 from pathlib import Path
 
 import numpy as np
@@ -221,6 +222,65 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
     return out
 
 
+
+
+def _build_candidate_audit_run_id(run_id: str) -> str:
+    return str(run_id or '').strip()
+
+
+def _candidate_audit_path(base_dir: str, run_id: str) -> str:
+    rid = _build_candidate_audit_run_id(run_id)
+    if rid:
+        return os.path.join(base_dir, f"snapback_candidate_pool_audit.{rid}.jsonl")
+    return os.path.join(base_dir, 'snapback_candidate_pool_audit.jsonl')
+
+
+def _patch_candidate_pool_audit_writer(strategy: Any, audit_path: str) -> None:
+    target_path = Path(audit_path)
+
+    def _patched_append_candidate_pool_audit(self, current_time_ms: int, candidates: List[Dict[str, Any]], *, market_total_24h_vol: float) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _to_jsonable(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {str(k): _to_jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_jsonable(v) for v in value]
+            if isinstance(value, pd.Timestamp):
+                return int(value.value // 10**6)
+            if value is None:
+                return None
+            if pd.isna(value):
+                return None
+            if hasattr(value, 'item'):
+                try:
+                    return value.item()
+                except Exception:
+                    pass
+            return value
+
+        sorted_candidates = sorted(candidates, key=lambda x: x['drop_pct'], reverse=True)
+        payload_candidates: List[Dict[str, Any]] = []
+        for rank, candidate in enumerate(sorted_candidates, start=1):
+            item = _to_jsonable(candidate)
+            item['rank_by_drop_pct'] = rank
+            payload_candidates.append(item)
+
+        bar_bj = (pd.to_datetime(current_time_ms, unit='ms') + pd.Timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+        payload = {
+            'bar_ts': int(current_time_ms),
+            'bar_bj': bar_bj,
+            'market_total_24h_vol': float(market_total_24h_vol),
+            'market_total_24h_vol_min': float(getattr(self, 'market_total_24h_vol_min', 0.0)),
+            'candidate_count': len(payload_candidates),
+            'candidates_sorted_by_drop_pct': payload_candidates,
+        }
+
+        with target_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + '\n')
+
+    strategy._append_candidate_pool_audit = types.MethodType(_patched_append_candidate_pool_audit, strategy)
+
 def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side: float, initial_equity: float = EQUITY_INITIAL) -> Dict[str, Any]:
     rows = _prepare_trade_rows(trade_history, fee_side)
     times_ms = [rows[0]["exit_time_ms"] if rows else 0] + [r["exit_time_ms"] for r in rows]
@@ -435,6 +495,10 @@ def main():
         from strategies.snapback.logic import WashoutSnapbackStrategy
 
         strategy = WashoutSnapbackStrategy(config=config)
+        _patch_candidate_pool_audit_writer(
+            strategy,
+            _candidate_audit_path(out_dir, args.run_id),
+        )
     else:
         logging.error(f"❌ 不支持的策略类型: {args.strategy}")
         sys.exit(1)
