@@ -56,6 +56,7 @@ class StrategyConfig:
         ("structure", "basis", "b_pct", "max"),
         ("structure", "basis", "c_pct", "min"),
         ("structure", "basis", "c_pct", "max"),
+        ("structure", "market_total_24h_vol_min"),
         ("structure", "election_rule"),
         ("structure", "joint_filters", "min_bc_rebound_speed"),
         ("structure", "joint_filters", "min_speed_ratio_bc_over_ab"),
@@ -110,6 +111,11 @@ class StrategyConfig:
             a_high_source = raw_data["structure"]["a_high_source"]
             if a_high_source not in ("contract", "idx"):
                 raise ValueError('【铁律违背】structure.a_high_source 只允许 "contract" 或 "idx"')
+            market_total_24h_vol_min = raw_data["structure"].get("market_total_24h_vol_min")
+            if not isinstance(market_total_24h_vol_min, (int, float)):
+                raise ValueError('【铁律违背】structure.market_total_24h_vol_min 必须是 number')
+            if float(market_total_24h_vol_min) < 0:
+                raise ValueError('【铁律违背】structure.market_total_24h_vol_min 必须 >= 0')
             election_rule = str(raw_data["structure"].get("election_rule") or "").strip()
             allowed_election_rules = {
                 "drop_pct_top1",

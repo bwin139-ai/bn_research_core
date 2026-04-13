@@ -69,6 +69,7 @@ class WashoutSnapbackStrategy:
         self.enable_clean_one_leg_sharp_top_filter = bool(
             joint_filters.get("enable_clean_one_leg_sharp_top_filter", False)
         )
+        self.market_total_24h_vol_min = float(structure.get("market_total_24h_vol_min", 0.0))
         self.election_rule = str(structure.get("election_rule", "drop_pct_top1")).strip()
 
         # 游击战交易参数
@@ -292,6 +293,12 @@ class WashoutSnapbackStrategy:
                 return "clean_one_leg_sharp_top_blocked"
         return None
 
+    def _calc_market_total_24h_vol(self, cross_section: pd.DataFrame) -> float:
+        if cross_section is None or cross_section.empty or "vol_24h" not in cross_section.columns:
+            return 0.0
+        vol_series = pd.to_numeric(cross_section["vol_24h"], errors="coerce")
+        return float(vol_series.dropna().sum())
+
     def _decorate_candidate_election_ranks(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out = [dict(x) for x in candidates]
         by_drop = sorted(out, key=lambda x: (-float(x["drop_pct"]), -float(x["vol_ratio"]), -float(x.get("vol_24h", 0.0)), str(x["symbol"])))
@@ -366,11 +373,25 @@ class WashoutSnapbackStrategy:
                 }
             return audits
 
+        market_total_24h_vol = self._calc_market_total_24h_vol(cross_section)
+        if market_total_24h_vol < self.market_total_24h_vol_min:
+            for sym in target_set:
+                audits[sym] = {
+                    "symbol": sym,
+                    "stage5_pass": False,
+                    "fail_reason": "market_total_24h_vol_below_min",
+                    "market_total_24h_vol": market_total_24h_vol,
+                    "market_total_24h_vol_min": self.market_total_24h_vol_min,
+                }
+            return audits
+
         for sym in target_set:
             record: Dict[str, Any] = {
                 "symbol": sym,
                 "stage5_pass": False,
                 "fail_reason": "",
+                "market_total_24h_vol": market_total_24h_vol,
+                "market_total_24h_vol_min": self.market_total_24h_vol_min,
             }
             row = cross_section.loc[sym] if sym in cross_section.index else None
             if row is not None:
@@ -670,7 +691,13 @@ class WashoutSnapbackStrategy:
         return audits
 
 
-    def _append_candidate_pool_audit(self, current_time_ms: int, candidates: List[Dict[str, Any]]) -> None:
+    def _append_candidate_pool_audit(
+        self,
+        current_time_ms: int,
+        candidates: List[Dict[str, Any]],
+        *,
+        market_total_24h_vol: float,
+    ) -> None:
         audit_path = Path("output/state/snapback_candidate_pool_audit.jsonl")
         audit_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -703,6 +730,8 @@ class WashoutSnapbackStrategy:
         payload = {
             "bar_ts": int(current_time_ms),
             "bar_bj": bar_bj,
+            "market_total_24h_vol": float(market_total_24h_vol),
+            "market_total_24h_vol_min": float(self.market_total_24h_vol_min),
             "candidate_count": len(payload_candidates),
             "candidates_sorted_by_drop_pct": payload_candidates,
         }
@@ -720,6 +749,10 @@ class WashoutSnapbackStrategy:
     ) -> dict:
 
         if cross_section.empty or full_df is None:
+            return None
+
+        market_total_24h_vol = self._calc_market_total_24h_vol(cross_section)
+        if market_total_24h_vol < self.market_total_24h_vol_min:
             return None
 
         # 1. 过滤垃圾币种，保证流动性底线
@@ -997,7 +1030,11 @@ class WashoutSnapbackStrategy:
         if not candidates:
             return None
 
-        self._append_candidate_pool_audit(current_time_ms, candidates)
+        self._append_candidate_pool_audit(
+            current_time_ms,
+            candidates,
+            market_total_24h_vol=market_total_24h_vol,
+        )
 
         # 3. 如果同时有多个币暴跌并发出反转信号，按 election_rule 选出 top1
         target = self._select_target_candidate(candidates)
@@ -1047,11 +1084,14 @@ class WashoutSnapbackStrategy:
                 "min_speed_ratio_bc_over_ab": self.min_speed_ratio_bc_over_ab,
                 "min_24h_chg": self.min_24h_chg,
                 "max_24h_chg": self.max_24h_chg,
+                "market_total_24h_vol_min": self.market_total_24h_vol_min,
                 "election_rule": self.election_rule,
             },
             "context": {
                 "chg_24h": target["chg_24h"],
                 "vol_24h": target["vol_24h"],
+                "market_total_24h_vol": market_total_24h_vol,
+                "market_total_24h_vol_min": self.market_total_24h_vol_min,
                 "drop_pct": target["drop_pct"],
                 "drop_window_chg": target["drop_window_chg"],
                 "vol_ratio": target["vol_ratio"],

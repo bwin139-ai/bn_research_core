@@ -940,6 +940,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     selloff = (structure.get('selloff') or {})
     rebound = (structure.get('rebound') or {})
     basis = (structure.get('basis') or {})
+    market_total_24h_vol_min = float(structure.get('market_total_24h_vol_min') or 0.0)
     election_rule = str(structure.get('election_rule') or 'drop_pct_top1').strip()
     joint_filters = (structure.get('joint_filters') or {})
     s_to_c_window = (structure.get('s_to_c_window') or {})
@@ -994,6 +995,38 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     if cross_section is None or getattr(cross_section, 'empty', True):
         return audit_rows
 
+    market_total_24h_vol = float(pd.to_numeric(cross_section['vol_24h'], errors='coerce').dropna().sum()) if 'vol_24h' in cross_section.columns else 0.0
+    if market_total_24h_vol < market_total_24h_vol_min:
+        for sym, row in cross_section.iterrows():
+            symbol = str(sym).upper().strip()
+            audit_rows.append({
+                'symbol': symbol,
+                'bar_ts': signal_time_ms,
+                'bar_bj': signal_time_bj,
+                'signal_time_ts': signal_time_ms,
+                'signal_time_bj': signal_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': _fmt_bj_from_ms(c_bar_ts),
+                'active_symbols_contains': bool(symbol in active_symbols),
+                'logic_selected_symbol': logic_selected_symbol,
+                'logic_selected': bool(logic_selected_symbol == symbol),
+                'signal_digest': signal_digest,
+                'cross_close': _series_value(row, 'close'),
+                'cross_quote_asset_volume': _series_value(row, 'quote_asset_volume'),
+                'cross_chg_24h': _series_value(row, 'chg_24h'),
+                'cross_vol_24h': _series_value(row, 'vol_24h'),
+                'cross_high_idx': _series_value(row, 'high_idx'),
+                'cross_low_idx': _series_value(row, 'low_idx'),
+                'cross_close_idx': _series_value(row, 'close_idx'),
+                'market_total_24h_vol': market_total_24h_vol,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'election_rule': election_rule,
+                'stage5_pass': False,
+                'is_candidate': False,
+                'fail_reason': 'market_total_24h_vol_below_min',
+            })
+        return audit_rows
+
     cs = cross_section.dropna(subset=['vol_24h', 'chg_24h']).copy()
     for sym, row in cross_section.iterrows():
         symbol = str(sym).upper().strip()
@@ -1016,6 +1049,8 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
             'cross_high_idx': _series_value(row, 'high_idx'),
             'cross_low_idx': _series_value(row, 'low_idx'),
             'cross_close_idx': _series_value(row, 'close_idx'),
+            'market_total_24h_vol': market_total_24h_vol,
+            'market_total_24h_vol_min': market_total_24h_vol_min,
             'min_24h_vol': min_24h_vol,
             'min_basis_b_pct': min_basis_b_pct,
             'max_basis_b_pct': max_basis_b_pct,
