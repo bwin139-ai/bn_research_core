@@ -69,7 +69,7 @@ class WashoutSnapbackStrategy:
         self.enable_clean_one_leg_sharp_top_filter = bool(
             joint_filters.get("enable_clean_one_leg_sharp_top_filter", False)
         )
-        self.market_total_24h_vol_min = float(structure.get("market_total_24h_vol_min", 0.0))
+        self.market_total_24h_vol_min = float(universe.get("market_total_24h_vol_min", 0.0))
         self.election_rule = str(structure.get("election_rule", "drop_pct_top1")).strip()
 
         # 游击战交易参数

@@ -401,6 +401,8 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 
 def build_market_snapshot(account: str) -> dict[str, Any]:
     latest_closed_bar_snapshot = _load_or_refresh_latest_closed_bar_snapshot(account)
+    ticker_map = _ticker_map(account)
+    market_total_24h_payload = _market_total_24h_vol_from_ticker_map(account, ticker_map)
     return {
         'latest_closed_bar_ts': int(latest_closed_bar_snapshot['latest_closed_bar_ts']),
         'latest_closed_bar_bj': latest_closed_bar_snapshot['latest_closed_bar_bj'],
@@ -408,7 +410,9 @@ def build_market_snapshot(account: str) -> dict[str, Any]:
         'signal_time_bj': latest_closed_bar_snapshot['signal_time_bj'],
         'market_snapshot_fetched_utc_ms': int(latest_closed_bar_snapshot['fetched_utc_ms']),
         'market_snapshot_fetched_bj': latest_closed_bar_snapshot['fetched_bj'],
-        'ticker_map': _ticker_map(account),
+        'ticker_map': ticker_map,
+        'market_total_24h_vol': float(market_total_24h_payload['market_total_24h_vol']),
+        'market_total_24h_symbol_count': int(market_total_24h_payload['market_total_24h_symbol_count']),
     }
 
 
@@ -466,6 +470,31 @@ def _ticker_map(account: str) -> dict[str, dict[str, Any]]:
         if symbol:
             out[symbol] = row
     return out
+
+
+def _market_total_24h_vol_from_ticker_map(account: str, ticker_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    info_snapshot = _load_or_refresh_exchange_info(account)
+    total = 0.0
+    symbol_count = 0
+    for item in info_snapshot['data'].get('symbols', []):
+        if str(item.get('status')) != 'TRADING':
+            continue
+        if str(item.get('contractType')) != 'PERPETUAL':
+            continue
+        if str(item.get('quoteAsset')) != 'USDT':
+            continue
+        symbol = str(item.get('symbol', '')).upper().strip()
+        if not symbol:
+            continue
+        ticker = ticker_map.get(symbol)
+        if not ticker:
+            continue
+        total += _to_float(ticker.get('quoteVolume'))
+        symbol_count += 1
+    return {
+        'market_total_24h_vol': float(total),
+        'market_total_24h_symbol_count': int(symbol_count),
+    }
 
 
 def _require_universe_cfg(strategy_cfg: dict[str, Any] | None) -> tuple[float, float, float]:

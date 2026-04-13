@@ -941,7 +941,7 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     selloff = (structure.get('selloff') or {})
     rebound = (structure.get('rebound') or {})
     basis = (structure.get('basis') or {})
-    market_total_24h_vol_min = float(structure.get('market_total_24h_vol_min') or 0.0)
+    market_total_24h_vol_min = float(universe.get('market_total_24h_vol_min') or 0.0)
     election_rule = str(structure.get('election_rule') or 'drop_pct_top1').strip()
     joint_filters = (structure.get('joint_filters') or {})
     s_to_c_window = (structure.get('s_to_c_window') or {})
@@ -1525,6 +1525,9 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'outcome': outcome,
             'scheduled_signal_check_bj': scheduled_signal_check_bj,
             'market_snapshot_fetched_bj': market_snapshot_fetched_bj if 'market_snapshot_fetched_bj' in locals() else None,
+            'market_total_24h_vol': market_total_24h_vol_snapshot if 'market_total_24h_vol_snapshot' in locals() else None,
+            'market_total_24h_vol_min': market_total_24h_vol_min if 'market_total_24h_vol_min' in locals() else None,
+            'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot if 'market_total_24h_symbol_count_snapshot' in locals() else None,
             'shared_symbol_bars_cache_enabled': True,
             'history_window_mins': history_window_mins,
             'candidate_contract_cache_hits': (candidate_cache_stats or {}).get('contract_hits') if 'candidate_cache_stats' in locals() else None,
@@ -1603,6 +1606,37 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         if audit_enabled:
             _write_stage_record(account, 'stage0_run_once_perf', payload)
 
+    universe_cfg = (strategy_cfg or {}).get('universe') or {}
+    if 'market_total_24h_vol_min' not in universe_cfg:
+        raise KeyError('strategy_cfg.universe.market_total_24h_vol_min missing')
+    market_total_24h_vol_min = float(universe_cfg['market_total_24h_vol_min'])
+
+    market_snapshot = build_market_snapshot(account)
+    latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
+    ticker_map_snapshot = dict(market_snapshot['ticker_map'])
+    market_snapshot_fetched_utc_ms = int(market_snapshot['market_snapshot_fetched_utc_ms'])
+    market_snapshot_fetched_bj = str(market_snapshot['market_snapshot_fetched_bj'])
+    market_total_24h_vol_snapshot = float(market_snapshot.get('market_total_24h_vol') or 0.0)
+    market_total_24h_symbol_count_snapshot = int(market_snapshot.get('market_total_24h_symbol_count') or 0)
+    c_bar_ts = latest_closed_bar_ts_snapshot
+    c_bar_bj = str(market_snapshot['latest_closed_bar_bj'])
+    current_time_ms = int(market_snapshot.get('signal_time_ts') or (c_bar_ts + 60000))
+    current_time_bj = str(market_snapshot.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
+
+    if market_total_24h_vol_snapshot < market_total_24h_vol_min:
+        if audit_enabled:
+            write_event(account, 'market_total_24h_vol_below_min_skip', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'market_total_24h_vol': market_total_24h_vol_snapshot,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
+            })
+        _emit_run_once_perf('market_total_24h_vol_below_min')
+        return
+
     candidate_plan_perf_started = time.perf_counter()
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
     reconcile_plan = build_consumer_reconcile_plan(account, candidate_symbols)
@@ -1616,12 +1650,6 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     extra_reconcile_symbols_count = len(extra_reconcile_symbols)
     exchange_activity_symbols_count = len(exchange_activity_symbols)
     local_activity_symbols_count = len(local_activity_symbols)
-
-    market_snapshot = build_market_snapshot(account)
-    latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
-    ticker_map_snapshot = dict(market_snapshot['ticker_map'])
-    market_snapshot_fetched_utc_ms = int(market_snapshot['market_snapshot_fetched_utc_ms'])
-    market_snapshot_fetched_bj = str(market_snapshot['market_snapshot_fetched_bj'])
 
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
