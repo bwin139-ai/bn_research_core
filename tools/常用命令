@@ -172,6 +172,19 @@ scp -r \
   aliyun-bn:/root/bn_research_core/output/state/sab_fingerprint_analysis.${RUNID} \
   "$DEST"
 
+DEST=~/ai_projects/bn_research_core/output/m_gt_10_top5_combo_replay
+mkdir -p "$DEST"
+scp -r \
+  aliyun-bn:/root/bn_research_core/output/state/m_gt_10_top5_combo_replay \
+  "$DEST"
+
+DEST=~/ai_projects/bn_research_core/output/24h_vol_vs_trade_outcomes_audit
+mkdir -p "$DEST"
+scp -r \
+  aliyun-bn:/root/bn_research_core/output/state/market_total_24h_vol_vs_trade_outcomes_audit \
+  "$DEST"
+
+
 # ========= 找 run-id =========
 ls -ldht output/logs | head -n 3
 ls -ldht output/state/*ALL* | head -n 3
@@ -791,3 +804,11 @@ state/live_audit/snapback_mybwin139.jsonl
 锁当前现场
 
 这三份的职责是清晰分层的，不冲突，而且正好互补。
+
+
+| election_rule                               |     中文理解                  | 排序依据                             | 具体规则                                                                       |
+| ------------------------------------------- | ---------------------------- | -------------------------------- | -------------------------------------------------------------------------- |
+| `drop_pct_top1`                             | 跌幅优先                      | `drop_pct`                       | 按 `drop_pct` **降序**，取第 1 名                                                 |
+| `vol_ratio_top1`                            | 放量优先                      | `vol_ratio`                      | 按 `vol_ratio` **降序**，取第 1 名                                                |
+| `drop_pct_plus_vol_ratio_top1`              | 跌幅 + 放量 综合优先            | `drop_pct`、`vol_ratio`           | 先分别对 `drop_pct`、`vol_ratio` 做**降序排名**，再把两个名次相加，**总分越小越优**，取第 1 名           |
+| `drop_pct_plus_vol_ratio_plus_24h_vol_top1` | 跌幅 + 放量 + 24h成交额 综合优先 | `drop_pct`、`vol_ratio`、`vol_24h` | 先分别对 `drop_pct`、`vol_ratio`、`vol_24h` 做**降序排名**，再把三个名次相加，**总分越小越优**，取第 1 名 |
