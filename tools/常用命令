@@ -32,7 +32,7 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
   --kline-window 60 \
   --config snapback/config.sim.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Snapback_SmokeTest_V10.2"
+  --run-id "Snapback_SmokeTest_V10.3"
 
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
