@@ -8,7 +8,8 @@
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
-    }
+    },
+    "market_total_24h_vol_min": 20000000000
   },
   "structure": {
     "a_high_source": "contract",
@@ -63,7 +64,6 @@
       ],
       "enable_clean_one_leg_sharp_top_filter": false
     },
-    "market_total_24h_vol_min": 40000000000,
     "election_rule": "drop_pct_plus_vol_ratio_plus_24h_vol_top1"
   },
   "exit_policy": {

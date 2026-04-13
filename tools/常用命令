@@ -1,6 +1,6 @@
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
-输出patch方案、patch脚本附件、patch运行命令、预期新指纹、以及git add 和 git commit命令，对齐指纹和副本：
+按照《标准化 Patch 协作框架》输出patch，特别注意必须在容器中实际运行patch脚本拿到预期新指纹，对齐以下指纹和副本：
 # ============== 项目根目录 ===============
  cd ~/ai_projects/bn_research_core
  cd /root/bn_research_core
