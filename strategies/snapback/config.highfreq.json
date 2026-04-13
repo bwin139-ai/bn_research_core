@@ -64,7 +64,7 @@
       ],
       "enable_clean_one_leg_sharp_top_filter": false
     },
-    "election_rule": "drop_pct_plus_vol_ratio_plus_24h_vol_top1"
+    "election_rule": "drop_pct_top1"
   },
   "exit_policy": {
     "take_profit": {
