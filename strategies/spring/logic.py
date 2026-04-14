@@ -1,19 +1,19 @@
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
 
 class SpringSABCStrategy:
-    """spring-sabc strategy skeleton with universe election only.
+    """spring-sabc strategy with universe + structure detection.
 
-    Patch 2 implements only the universe layer:
-    - exclude_symbols
-    - min_24h_chg_pct
-    - min_24h_quote_volume
-    - score = rank(chg_24h) + rank(vol_24h)
-    - select score_top_n for later structure checks
+    Patch 3 implements only the structure layer on top of the existing universe layer:
+    - A -> B consecutive down bars
+    - AB drop pct minimum
+    - AB volume climax vs fixed baseline window
+    - B -> C fast rebound
+    - C fixed at HBs[0]
 
-    Structure detection / entry / exit are intentionally not implemented yet.
+    Entry / exit execution are intentionally not implemented yet.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -36,10 +36,19 @@ class SpringSABCStrategy:
         self.score_top_n = int(universe["score_top_n"])
 
         self.pattern_window_mins = int(structure["pattern_window_mins"])
+        self.ab_chg_pct_min = float(structure["ab"]["chg_pct_min"])
+        self.ab_consecutive_down_bars_min = int(structure["ab"]["consecutive_down_bars_min"])
+        self.vol_baseline_window_mins = int(structure["vol_climax"]["baseline_window_mins"])
+        self.vol_ratio_min = float(structure["vol_climax"]["ratio_min"])
+        self.rebound_ratio_min = float(structure["rebound"]["ratio_min"])
+        self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
+
         self.stop_loss_anchor = str(exit_policy["stop_loss_anchor"])
 
         self._last_universe_candidates: List[Dict[str, Any]] = []
         self._last_universe_audits: Dict[str, Dict[str, Any]] = {}
+        self._last_structure_candidates: List[Dict[str, Any]] = []
+        self._last_structure_audits: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _norm_symbol(value: Any) -> str:
@@ -59,6 +68,7 @@ class SpringSABCStrategy:
     def _empty_audit(self, fail_reason: str) -> Dict[str, Any]:
         return {
             "universe_pass": False,
+            "structure_pass": False,
             "fail_reason": fail_reason,
             "score_top_n": self.score_top_n,
         }
@@ -67,7 +77,7 @@ class SpringSABCStrategy:
         self,
         cross_section: pd.DataFrame,
         active_symbols: Set[str],
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
         audits: Dict[str, Dict[str, Any]] = {}
         normalized_active = {self._norm_symbol(s) for s in (active_symbols or set()) if self._norm_symbol(s)}
 
@@ -85,6 +95,7 @@ class SpringSABCStrategy:
             record: Dict[str, Any] = {
                 "symbol": symbol,
                 "universe_pass": False,
+                "structure_pass": False,
                 "fail_reason": "",
                 "chg_24h": self._safe_float(row.get("chg_24h_num")),
                 "vol_24h": self._safe_float(row.get("vol_24h_num")),
@@ -110,10 +121,7 @@ class SpringSABCStrategy:
                 continue
             audits[symbol] = record
 
-        eligible_symbols = [
-            sym for sym, rec in audits.items()
-            if not rec["fail_reason"]
-        ]
+        eligible_symbols = [sym for sym, rec in audits.items() if not rec["fail_reason"]]
         if not eligible_symbols:
             return [], audits
 
@@ -160,6 +168,228 @@ class SpringSABCStrategy:
 
         return candidates, audits
 
+    @staticmethod
+    def _pick_volume_column(df: pd.DataFrame) -> Optional[str]:
+        for col in ("quote_asset_volume", "volume"):
+            if col in df.columns:
+                return col
+        return None
+
+    def _extract_symbol_history(self, full_df: Any, symbol: str) -> Optional[pd.DataFrame]:
+        if full_df is None:
+            return None
+        if isinstance(full_df, dict):
+            df = full_df.get(symbol)
+            return df if isinstance(df, pd.DataFrame) else None
+        return None
+
+    def _prepare_history(self, df: pd.DataFrame, current_time_ms: int) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return None
+        hist = df.copy()
+        try:
+            hist = hist.sort_index()
+        except Exception:
+            pass
+        try:
+            hist.index = pd.Index([int(x) for x in hist.index])
+        except Exception:
+            return None
+        hist = hist[hist.index < int(current_time_ms)]
+        if hist.empty:
+            return None
+        return hist.tail(self.max_history_window_mins)
+
+    def _evaluate_structure_for_symbol(
+        self,
+        symbol: str,
+        current_time_ms: int,
+        universe_rec: Dict[str, Any],
+        *,
+        full_df: Any,
+    ) -> Dict[str, Any]:
+        rec = dict(universe_rec)
+        rec["structure_pass"] = False
+        rec["a_time_ms"] = None
+        rec["b_time_ms"] = None
+        rec["c_time_ms"] = None
+
+        sym_df = self._extract_symbol_history(full_df, symbol)
+        if sym_df is None:
+            rec["fail_reason"] = "missing_symbol_history"
+            return rec
+
+        hist = self._prepare_history(sym_df, current_time_ms)
+        if hist is None or hist.empty:
+            rec["fail_reason"] = "empty_symbol_history"
+            return rec
+
+        if "close" not in hist.columns:
+            rec["fail_reason"] = "missing_close_column"
+            return rec
+
+        vol_col = self._pick_volume_column(hist)
+        if vol_col is None:
+            rec["fail_reason"] = "missing_volume_column"
+            return rec
+
+        pattern_df = hist.tail(self.pattern_window_mins).copy()
+        baseline_df = hist.tail(self.vol_baseline_window_mins).copy()
+
+        if len(pattern_df) < self.ab_consecutive_down_bars_min + 2:
+            rec["fail_reason"] = "pattern_window_insufficient_bars"
+            rec["pattern_window_bars"] = int(len(pattern_df))
+            return rec
+        if len(baseline_df) < self.vol_baseline_window_mins:
+            rec["fail_reason"] = "baseline_window_insufficient_bars"
+            rec["baseline_window_bars"] = int(len(baseline_df))
+            return rec
+
+        closes = pd.to_numeric(pattern_df["close"], errors="coerce")
+        vols = pd.to_numeric(pattern_df[vol_col], errors="coerce")
+        baseline_vols = pd.to_numeric(baseline_df[vol_col], errors="coerce")
+
+        if closes.isna().any():
+            rec["fail_reason"] = "pattern_close_nan"
+            return rec
+        if vols.isna().any() or baseline_vols.isna().any():
+            rec["fail_reason"] = "pattern_volume_nan"
+            return rec
+
+        baseline_avg_vol = float(baseline_vols.mean())
+        if baseline_avg_vol <= 0:
+            rec["fail_reason"] = "baseline_avg_volume_nonpositive"
+            return rec
+
+        c_idx = len(pattern_df) - 1
+        c_close = float(closes.iloc[c_idx])
+        c_time_ms = int(pattern_df.index[c_idx])
+
+        valid_candidates: List[Dict[str, Any]] = []
+        for b_idx in range(1, c_idx):
+            bc_bars = c_idx - b_idx
+            if bc_bars <= 0:
+                continue
+            b_close = float(closes.iloc[b_idx])
+            if b_close <= 0:
+                continue
+            for a_idx in range(0, b_idx):
+                ab_bars = b_idx - a_idx
+                if ab_bars < self.ab_consecutive_down_bars_min:
+                    continue
+                is_consecutive_down = True
+                for j in range(a_idx + 1, b_idx + 1):
+                    if not float(closes.iloc[j]) < float(closes.iloc[j - 1]):
+                        is_consecutive_down = False
+                        break
+                if not is_consecutive_down:
+                    continue
+
+                a_close = float(closes.iloc[a_idx])
+                if a_close <= 0 or a_close <= b_close:
+                    continue
+
+                ab_chg_pct = (a_close - b_close) / a_close
+                if ab_chg_pct < self.ab_chg_pct_min:
+                    continue
+
+                ab_drop_abs = a_close - b_close
+                if ab_drop_abs <= 0:
+                    continue
+
+                rebound_ratio = (c_close - b_close) / ab_drop_abs
+                if rebound_ratio < self.rebound_ratio_min:
+                    continue
+
+                bc_over_ab = float(bc_bars) / float(ab_bars)
+                if bc_over_ab > self.bc_over_ab_bars_max:
+                    continue
+
+                ab_avg_vol = float(vols.iloc[a_idx + 1:b_idx + 1].mean())
+                if ab_avg_vol <= 0:
+                    continue
+                vol_ratio = ab_avg_vol / baseline_avg_vol
+                if vol_ratio < self.vol_ratio_min:
+                    continue
+
+                valid_candidates.append(
+                    {
+                        "a_idx": a_idx,
+                        "b_idx": b_idx,
+                        "c_idx": c_idx,
+                        "a_time_ms": int(pattern_df.index[a_idx]),
+                        "b_time_ms": int(pattern_df.index[b_idx]),
+                        "c_time_ms": c_time_ms,
+                        "a_close": a_close,
+                        "b_close": b_close,
+                        "c_close": c_close,
+                        "ab_bars": int(ab_bars),
+                        "bc_bars": int(bc_bars),
+                        "ab_chg_pct": float(ab_chg_pct),
+                        "rebound_ratio": float(rebound_ratio),
+                        "bc_over_ab_bars": float(bc_over_ab),
+                        "ab_avg_vol": float(ab_avg_vol),
+                        "baseline_avg_vol": float(baseline_avg_vol),
+                        "vol_ratio": float(vol_ratio),
+                    }
+                )
+
+        if not valid_candidates:
+            rec["fail_reason"] = "spring_structure_not_found"
+            rec["pattern_window_bars"] = int(len(pattern_df))
+            rec["baseline_window_bars"] = int(len(baseline_df))
+            rec["c_time_ms"] = c_time_ms
+            rec["c_close"] = c_close
+            rec["volume_column"] = vol_col
+            return rec
+
+        valid_candidates.sort(
+            key=lambda x: (
+                x["bc_bars"],
+                -x["ab_chg_pct"],
+                -x["rebound_ratio"],
+                -x["vol_ratio"],
+                -x["ab_bars"],
+            )
+        )
+        best = valid_candidates[0]
+
+        rec.update(best)
+        rec["structure_pass"] = True
+        rec["fail_reason"] = "structure_pass"
+        rec["selected_for_structure"] = True
+        rec["pattern_window_bars"] = int(len(pattern_df))
+        rec["baseline_window_bars"] = int(len(baseline_df))
+        rec["volume_column"] = vol_col
+        rec["stop_loss_price"] = float(best["b_close"])
+        return rec
+
+    def _build_structure_state(
+        self,
+        current_time_ms: int,
+        universe_candidates: List[Dict[str, Any]],
+        universe_audits: Dict[str, Dict[str, Any]],
+        *,
+        full_df: Any,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+        structure_candidates: List[Dict[str, Any]] = []
+        structure_audits: Dict[str, Dict[str, Any]] = {sym: dict(rec) for sym, rec in universe_audits.items()}
+
+        for candidate in universe_candidates:
+            symbol = candidate["symbol"]
+            universe_rec = structure_audits.get(symbol, dict(candidate))
+            structure_rec = self._evaluate_structure_for_symbol(
+                symbol,
+                current_time_ms,
+                universe_rec,
+                full_df=full_df,
+            )
+            structure_audits[symbol] = structure_rec
+            if structure_rec.get("structure_pass"):
+                structure_candidates.append(structure_rec)
+
+        return structure_candidates, structure_audits
+
     def on_kline_close(
         self,
         current_time_ms: int,
@@ -168,9 +398,18 @@ class SpringSABCStrategy:
         *,
         full_df,
     ) -> Optional[Dict[str, Any]]:
-        candidates, audits = self._build_universe_state(cross_section, active_symbols)
-        self._last_universe_candidates = candidates
-        self._last_universe_audits = audits
+        universe_candidates, universe_audits = self._build_universe_state(cross_section, active_symbols)
+        self._last_universe_candidates = universe_candidates
+        self._last_universe_audits = universe_audits
+
+        structure_candidates, structure_audits = self._build_structure_state(
+            current_time_ms,
+            universe_candidates,
+            universe_audits,
+            full_df=full_df,
+        )
+        self._last_structure_candidates = structure_candidates
+        self._last_structure_audits = structure_audits
         return None
 
     def audit_symbols_at_kline_close(
@@ -182,25 +421,30 @@ class SpringSABCStrategy:
         full_df,
         target_symbols,
     ) -> Dict[str, Any]:
-        target_set = {
-            self._norm_symbol(s) for s in (target_symbols or set()) if self._norm_symbol(s)
-        }
+        target_set = {self._norm_symbol(s) for s in (target_symbols or set()) if self._norm_symbol(s)}
         if not target_set:
             return {}
 
-        candidates, audits = self._build_universe_state(cross_section, active_symbols)
-        selected_symbols = {c["symbol"] for c in candidates}
+        universe_candidates, universe_audits = self._build_universe_state(cross_section, active_symbols)
+        structure_candidates, structure_audits = self._build_structure_state(
+            current_time_ms,
+            universe_candidates,
+            universe_audits,
+            full_df=full_df,
+        )
+
+        selected_symbols = {c["symbol"] for c in universe_candidates}
+        structure_pass_symbols = {c["symbol"] for c in structure_candidates}
         result: Dict[str, Dict[str, Any]] = {}
         cross_index_obj = getattr(cross_section, "index", [])
-        cross_index = {
-            self._norm_symbol(sym) for sym in list(cross_index_obj)
-        }
+        cross_index = {self._norm_symbol(sym) for sym in list(cross_index_obj)}
         for sym in sorted(target_set):
-            if sym in audits:
-                result[sym] = audits[sym]
+            if sym in structure_audits:
+                result[sym] = structure_audits[sym]
             elif sym not in cross_index:
                 result[sym] = {**self._empty_audit("symbol_not_in_cross_section"), "symbol": sym}
             else:
                 result[sym] = {**self._empty_audit("universe_state_missing"), "symbol": sym}
             result[sym]["selected_for_structure"] = sym in selected_symbols
+            result[sym]["structure_pass"] = sym in structure_pass_symbols
         return result
