@@ -306,7 +306,7 @@ def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Top1 Hunter 回测引擎")
+    parser = argparse.ArgumentParser(description="结构策略回测引擎")
     parser.add_argument(
         "--start", required=True, help="ISO格式开始时间，如 2025-04-18T00:00:00+00:00"
     )
@@ -323,9 +323,9 @@ def main():
     )
     parser.add_argument(
         "--strategy",
-        choices=["top1", "snapback"],
-        default="top1",
-        help="选择要运行的策略大脑 (默认: top1)",
+        choices=["spring-sabc", "snapback"],
+        default="snapback",
+        help="选择要运行的策略大脑 (默认: snapback)",
     )
     parser.add_argument("--audit-start-bj", default="", help="取证开始时间，北京时间，格式: YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--audit-end-bj", default="", help="取证结束时间，北京时间，格式: YYYY-MM-DD HH:MM:SS")
@@ -457,9 +457,14 @@ def main():
     # 3. 初始化基础设施
     data_dir = os.path.join(PROJECT_ROOT, "data", "klines_1m")
     try:
-        if args.strategy == "top1":
-            feeder_ndays_lowest = config["ndays_lowest"]
-        elif args.strategy == "snapback":
+        if args.strategy == "snapback":
+            feeder_ndays_lowest = max(
+                1,
+                math.ceil(
+                    config["runtime"]["max_history_window_mins"] / (24 * 60)
+                ),
+            )
+        elif args.strategy == "spring-sabc":
             feeder_ndays_lowest = max(
                 1,
                 math.ceil(
@@ -487,11 +492,7 @@ def main():
     broker = VirtualBroker(config=config)
 
     # 🧠 动态挂载策略大脑
-    if args.strategy == "top1":
-        from strategies.top1_hunter.logic import Top1HunterStrategy
-
-        strategy = Top1HunterStrategy(config=config)
-    elif args.strategy == "snapback":
+    if args.strategy == "snapback":
         from strategies.snapback.logic import WashoutSnapbackStrategy
 
         strategy = WashoutSnapbackStrategy(config=config)
@@ -499,6 +500,10 @@ def main():
             strategy,
             _candidate_audit_path(out_dir, args.run_id),
         )
+    elif args.strategy == "spring-sabc":
+        from strategies.spring.logic import SpringSABCStrategy
+
+        strategy = SpringSABCStrategy(config=config)
     else:
         logging.error(f"❌ 不支持的策略类型: {args.strategy}")
         sys.exit(1)
