@@ -4,16 +4,16 @@ import pandas as pd
 
 
 class SpringSABCStrategy:
-    """spring-sabc strategy with universe + structure detection.
+    """spring-sabc strategy with universe + structure + signal generation.
 
-    Patch 3 implements only the structure layer on top of the existing universe layer:
-    - A -> B consecutive down bars
-    - AB drop pct minimum
-    - AB volume climax vs fixed baseline window
-    - B -> C fast rebound
-    - C fixed at HBs[0]
+    Patch 4 closes the sim-side decision loop:
+    - universe election
+    - structure detection
+    - emit one BUY signal on CB for the best structure-pass candidate
+    - stop_loss_price fixed at b_close
+    - take_profit / time_stop fields wired from exit_policy
 
-    Entry / exit execution are intentionally not implemented yet.
+    Live integration is intentionally not implemented yet.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -44,11 +44,16 @@ class SpringSABCStrategy:
         self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
 
         self.stop_loss_anchor = str(exit_policy["stop_loss_anchor"])
+        self.take_profit_pct = float(exit_policy["take_profit_pct"])
+        self.max_hold_mins = int(exit_policy["max_hold_mins"])
+        self.time_stop_min_profit_pct = float(exit_policy["time_stop_min_profit_pct"])
 
         self._last_universe_candidates: List[Dict[str, Any]] = []
         self._last_universe_audits: Dict[str, Dict[str, Any]] = {}
         self._last_structure_candidates: List[Dict[str, Any]] = []
         self._last_structure_audits: Dict[str, Dict[str, Any]] = {}
+        self._last_signal: Optional[Dict[str, Any]] = None
+        self._last_signal_audits: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _norm_symbol(value: Any) -> str:
@@ -65,10 +70,15 @@ class SpringSABCStrategy:
         except Exception:
             return None
 
+    @staticmethod
+    def _bj_from_ms(value: int) -> str:
+        return (pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
     def _empty_audit(self, fail_reason: str) -> Dict[str, Any]:
         return {
             "universe_pass": False,
             "structure_pass": False,
+            "signal_emit": False,
             "fail_reason": fail_reason,
             "score_top_n": self.score_top_n,
         }
@@ -96,6 +106,7 @@ class SpringSABCStrategy:
                 "symbol": symbol,
                 "universe_pass": False,
                 "structure_pass": False,
+                "signal_emit": False,
                 "fail_reason": "",
                 "chg_24h": self._safe_float(row.get("chg_24h_num")),
                 "vol_24h": self._safe_float(row.get("vol_24h_num")),
@@ -390,6 +401,103 @@ class SpringSABCStrategy:
 
         return structure_candidates, structure_audits
 
+    def _build_signal_from_candidates(
+        self,
+        current_time_ms: int,
+        cross_section: pd.DataFrame,
+        active_symbols: Set[str],
+        structure_candidates: List[Dict[str, Any]],
+        structure_audits: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        normalized_active = {self._norm_symbol(s) for s in (active_symbols or set()) if self._norm_symbol(s)}
+        cs = cross_section.copy() if isinstance(cross_section, pd.DataFrame) else pd.DataFrame()
+        if not cs.empty:
+            cs.index = [self._norm_symbol(sym) for sym in cs.index]
+
+        ordered = sorted(
+            structure_candidates,
+            key=lambda x: (int(x.get("score_order", 10**9)), float(x.get("score", 10**9))),
+        )
+
+        for candidate in ordered:
+            symbol = self._norm_symbol(candidate["symbol"])
+            audit_rec = structure_audits.get(symbol)
+            if symbol in normalized_active:
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["signal_fail_reason"] = "symbol_in_active_symbols"
+                continue
+            if symbol not in cs.index:
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["signal_fail_reason"] = "signal_symbol_not_in_cross_section"
+                continue
+            row = cs.loc[symbol]
+            current_price = self._safe_float(row.get("close"))
+            if current_price is None or current_price <= 0:
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["signal_fail_reason"] = "signal_current_price_invalid"
+                continue
+
+            sl_price = float(candidate["stop_loss_price"])
+            tp_price = current_price * (1.0 + self.take_profit_pct)
+            signal_time_ms = int(current_time_ms) + 60000
+            signal = {
+                "signal_time": signal_time_ms,
+                "signal_time_bj": self._bj_from_ms(signal_time_ms),
+                "symbol": symbol,
+                "action": "BUY",
+                "current_price": float(current_price),
+                "tp_price": float(tp_price),
+                "sl_price": float(sl_price),
+                "params": {
+                    "take_profit_pct": self.take_profit_pct,
+                    "max_hold_mins": self.max_hold_mins,
+                    "time_stop_min_profit_pct": self.time_stop_min_profit_pct,
+                    "stop_loss_anchor": self.stop_loss_anchor,
+                },
+                "context": {
+                    "strategy_name": self.strategy_name,
+                    "score_order": int(candidate.get("score_order", 0)),
+                    "score": int(candidate.get("score", 0)),
+                    "chg_24h": float(candidate.get("chg_24h", 0.0)),
+                    "vol_24h": float(candidate.get("vol_24h", 0.0)),
+                    "a_time_ms": int(candidate["a_time_ms"]),
+                    "b_time_ms": int(candidate["b_time_ms"]),
+                    "c_time_ms": int(candidate["c_time_ms"]),
+                    "a_close": float(candidate["a_close"]),
+                    "b_close": float(candidate["b_close"]),
+                    "c_close": float(candidate["c_close"]),
+                    "ab_bars": int(candidate["ab_bars"]),
+                    "bc_bars": int(candidate["bc_bars"]),
+                    "ab_chg_pct": float(candidate["ab_chg_pct"]),
+                    "rebound_ratio": float(candidate["rebound_ratio"]),
+                    "bc_over_ab_bars": float(candidate["bc_over_ab_bars"]),
+                    "vol_ratio": float(candidate["vol_ratio"]),
+                    "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
+                    "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
+                    "stop_loss_price": float(sl_price),
+                },
+            }
+            if audit_rec is not None:
+                audit_rec["signal_emit"] = True
+                audit_rec["signal_fail_reason"] = None
+                audit_rec["signal_time"] = signal_time_ms
+                audit_rec["signal_time_bj"] = signal["signal_time_bj"]
+                audit_rec["current_price"] = float(current_price)
+                audit_rec["tp_price"] = float(tp_price)
+                audit_rec["sl_price"] = float(sl_price)
+            return signal
+
+        for candidate in ordered:
+            symbol = self._norm_symbol(candidate["symbol"])
+            audit_rec = structure_audits.get(symbol)
+            if audit_rec is not None and "signal_fail_reason" not in audit_rec:
+                audit_rec["signal_emit"] = False
+                audit_rec["signal_fail_reason"] = "signal_not_selected"
+        return None
+
     def on_kline_close(
         self,
         current_time_ms: int,
@@ -408,9 +516,19 @@ class SpringSABCStrategy:
             universe_audits,
             full_df=full_df,
         )
+        signal = self._build_signal_from_candidates(
+            current_time_ms,
+            cross_section,
+            active_symbols,
+            structure_candidates,
+            structure_audits,
+        )
+
         self._last_structure_candidates = structure_candidates
         self._last_structure_audits = structure_audits
-        return None
+        self._last_signal = signal
+        self._last_signal_audits = structure_audits
+        return signal
 
     def audit_symbols_at_kline_close(
         self,
@@ -432,9 +550,17 @@ class SpringSABCStrategy:
             universe_audits,
             full_df=full_df,
         )
+        signal = self._build_signal_from_candidates(
+            current_time_ms,
+            cross_section,
+            active_symbols,
+            structure_candidates,
+            structure_audits,
+        )
 
         selected_symbols = {c["symbol"] for c in universe_candidates}
         structure_pass_symbols = {c["symbol"] for c in structure_candidates}
+        emitted_symbol = self._norm_symbol((signal or {}).get("symbol")) if signal else ""
         result: Dict[str, Dict[str, Any]] = {}
         cross_index_obj = getattr(cross_section, "index", [])
         cross_index = {self._norm_symbol(sym) for sym in list(cross_index_obj)}
@@ -447,4 +573,5 @@ class SpringSABCStrategy:
                 result[sym] = {**self._empty_audit("universe_state_missing"), "symbol": sym}
             result[sym]["selected_for_structure"] = sym in selected_symbols
             result[sym]["structure_pass"] = sym in structure_pass_symbols
+            result[sym]["signal_emit"] = sym == emitted_symbol
         return result

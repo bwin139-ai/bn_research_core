@@ -71,6 +71,9 @@ class StrategyConfig:
         ("structure", "rebound", "ratio_min"),
         ("structure", "rebound", "bc_over_ab_bars_max"),
         ("exit_policy", "stop_loss_anchor"),
+        ("exit_policy", "take_profit_pct"),
+        ("exit_policy", "max_hold_mins"),
+        ("exit_policy", "time_stop_min_profit_pct"),
         ("risk_controls",),
     ]
 
@@ -160,6 +163,17 @@ class StrategyConfig:
             raise ValueError(
                 '【铁律违背】runtime.max_history_window_mins 必须 >= max(structure.pattern_window_mins, structure.vol_climax.baseline_window_mins)'
             )
+        take_profit_pct = raw_data["exit_policy"]["take_profit_pct"]
+        max_hold_mins_cfg = raw_data["exit_policy"]["max_hold_mins"]
+        time_stop_min_profit_pct = raw_data["exit_policy"]["time_stop_min_profit_pct"]
+        if not isinstance(take_profit_pct, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.take_profit_pct 必须是 number')
+        if float(take_profit_pct) < 0:
+            raise ValueError('【铁律违背】exit_policy.take_profit_pct 必须 >= 0')
+        if not isinstance(max_hold_mins_cfg, int) or max_hold_mins_cfg < 0:
+            raise ValueError('【铁律违背】exit_policy.max_hold_mins 必须是非负整数')
+        if not isinstance(time_stop_min_profit_pct, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.time_stop_min_profit_pct 必须是 number')
         consecutive_down_bars_min = raw_data["structure"]["ab"]["consecutive_down_bars_min"]
         if not isinstance(consecutive_down_bars_min, int) or consecutive_down_bars_min <= 0:
             raise ValueError('【铁律违背】structure.ab.consecutive_down_bars_min 必须是正整数')
