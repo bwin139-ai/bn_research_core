@@ -9,12 +9,12 @@
       "min": -100.0,
       "max": 1000
     },
-    "market_total_24h_vol_min": 10
+    "market_total_24h_vol_min": 50000000000
   },
   "structure": {
     "a_high_source": "contract",
     "s_to_c_window": {
-      "mins": 21,
+      "mins": 60,
       "chg_pct": {
         "min": -100.0,
         "max": 1000
