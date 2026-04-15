@@ -47,9 +47,16 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
   --audit-symbols "RIVERUSDT,VVVUSDT" \
   --audit-out-dir "output/SmokeTest"
 
-  #最初--start 2026-03-25T17:00:00+00:00 \
-  #3月31日 22:00 BJ 超时参数调整为3分钟
-  
+# ============== Spring-SABC 冒烟测试  ===============
+/root/service_env/bin/python strategies/run_backtest.py \
+  --strategy spring-sabc \
+  --start 2026-04-01T12:00:00+08:00 \
+  --end   2026-04-03T11:00:00+08:00 \
+  --kline-window 60 \
+  --config strategies/spring/config.json \
+  --out-dir "output/SmokeTest" \
+  --run-id "Spring_SmokeTest_V1"
+    
 # *****审审审审审审***** live 提炼日志 *****审审审审审审*****
 python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
   --input output/live/snapback_live.console.log \

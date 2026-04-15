@@ -2,7 +2,7 @@
   "strategy_name": "spring-sabc",
   "runtime": {
     "bar_interval": "1m",
-    "max_history_window_mins": 240
+    "max_history_window_mins": 130
   },
   "universe": {
     "exclude_symbols": [
@@ -30,30 +30,30 @@
       "BCHUSDT",
       "TRXUSDT"
     ],
-    "min_24h_chg_pct": 0.0,
-    "min_24h_quote_volume": 0.0,
-    "score_top_n": 5
+    "min_24h_chg_pct": 30,
+    "min_24h_quote_volume": 50000000,
+    "score_top_n": 10
   },
   "structure": {
     "pattern_window_mins": 60,
     "ab": {
-      "chg_pct_min": 0.0,
+      "chg_pct_min": 0.06,
       "consecutive_down_bars_min": 2
     },
     "vol_climax": {
       "baseline_window_mins": 120,
-      "ratio_min": 0.0
+      "ratio_min": 3
     },
     "rebound": {
-      "ratio_min": 0.8,
+      "ratio_min": 0.75,
       "bc_over_ab_bars_max": 2.0
     }
   },
   "exit_policy": {
     "stop_loss_anchor": "b_close",
-    "take_profit_pct": 0.0,
-    "max_hold_mins": 0,
-    "time_stop_min_profit_pct": 0.0
+    "take_profit_pct": 5.0,
+    "max_hold_mins": 60,
+    "time_stop_min_profit_pct": 0.005
   },
   "risk_controls": {}
 }
