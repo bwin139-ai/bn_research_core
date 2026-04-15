@@ -80,6 +80,10 @@ class SpringSABCStrategy:
     def _bj_from_ms(value: int) -> str:
         return (pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
 
+    @staticmethod
+    def _bj_short_from_ms(value: int) -> str:
+        return (pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)).strftime("%m-%d %H:%M")
+
     def _cooldown_until_for(self, symbol: str) -> int:
         return int(self.cooldown_until.get(self._norm_symbol(symbol), 0) or 0)
 
@@ -98,16 +102,16 @@ class SpringSABCStrategy:
         safe = SpringSABCStrategy._safe_float(value)
         if safe is None:
             return "NA"
-        return f"{safe:.4f}"
+        return f"{safe:.6f}"
 
     def build_signal_lock_log(self, signal: Dict[str, Any]) -> str:
         context = dict(signal.get("context") or {})
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
             f"[{signal_time_bj} BJ] 🌱 Spring雷达锁定: {signal['symbol']} | 当前价: {self._price_text(signal.get('current_price'))}"
-            f" | A: {self._bj_from_ms(int(context['a_time_ms']))} high={self._price_text(context.get('a_high', context.get('a_close')))}"
-            f" | B: {self._bj_from_ms(int(context['b_time_ms']))} low={self._price_text(context.get('b_low', context.get('b_close')))}"
-            f" | C: {self._bj_from_ms(int(context['c_time_ms']))} close={self._price_text(context.get('c_close'))}"
+            f" | A: {self._bj_short_from_ms(int(context['a_time_ms']))} high={self._price_text(context.get('a_high', context.get('a_close')))}"
+            f" | B: {self._bj_short_from_ms(int(context['b_time_ms']))} low={self._price_text(context.get('b_low', context.get('b_close')))}"
+            f" | C: {self._bj_short_from_ms(int(context['c_time_ms']))} close={self._price_text(context.get('c_close'))}"
             f" | 24h涨幅: {self._pct_text(context.get('chg_24h'))}"
             f" | 24h成交额: {self._safe_float(context.get('vol_24h'), 0.0):.0f}"
             f" | AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}"
