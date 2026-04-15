@@ -51,7 +51,7 @@
   },
   "exit_policy": {
     "stop_loss_anchor": "b_close",
-    "take_profit_pct": -1,
+    "take_profit_pct": 0.05,
     "max_hold_mins": 60,
     "time_stop_min_profit_pct": 0.005
   },

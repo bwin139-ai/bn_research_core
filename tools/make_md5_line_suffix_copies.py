@@ -7,7 +7,7 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-    # "schedule_backtests.py",
+     "strategies/schedule_backtests.py",
     # "strategies/run_backtest.py",
     # "klines_1m_store.py",
     # "PROJECT_IRON_LAWS.md",
@@ -68,7 +68,7 @@ FILES = [
     #"audit_m_gt_10_top5_combo_replay_v1.py",
     # "============= spring-sabc 策略 ==============",        
     # "strategies/spring/config.json",
-     "strategies/spring/logic.py",
+    # "strategies/spring/logic.py",
 ]
 
 
