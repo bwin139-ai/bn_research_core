@@ -74,7 +74,7 @@ class StrategyConfig:
         ("exit_policy", "take_profit_pct"),
         ("exit_policy", "max_hold_mins"),
         ("exit_policy", "time_stop_min_profit_pct"),
-        ("risk_controls",),
+        ("risk_controls", "cooldown_hours"),
     ]
 
     @staticmethod
@@ -177,6 +177,11 @@ class StrategyConfig:
         consecutive_down_bars_min = raw_data["structure"]["ab"]["consecutive_down_bars_min"]
         if not isinstance(consecutive_down_bars_min, int) or consecutive_down_bars_min <= 0:
             raise ValueError('【铁律违背】structure.ab.consecutive_down_bars_min 必须是正整数')
+        cooldown_hours = raw_data["risk_controls"]["cooldown_hours"]
+        if not isinstance(cooldown_hours, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须是 number')
+        if float(cooldown_hours) < 0:
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须 >= 0')
 
     @staticmethod
     def load(config_path: str) -> Dict[str, Any]:

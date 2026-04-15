@@ -25,6 +25,7 @@ class SpringSABCStrategy:
         universe = config["universe"]
         structure = config["structure"]
         exit_policy = config["exit_policy"]
+        risk_controls = config.get("risk_controls", {})
 
         self.bar_interval = str(runtime["bar_interval"])
         self.max_history_window_mins = int(runtime["max_history_window_mins"])
@@ -48,6 +49,9 @@ class SpringSABCStrategy:
         self.take_profit_pct = float(exit_policy["take_profit_pct"])
         self.max_hold_mins = int(exit_policy["max_hold_mins"])
         self.time_stop_min_profit_pct = float(exit_policy["time_stop_min_profit_pct"])
+        self.cooldown_hours = float(risk_controls["cooldown_hours"])
+        self.cooldown_ms = int(round(self.cooldown_hours * 3600_000))
+        self.cooldown_until: Dict[str, int] = {}
 
         self._last_universe_candidates: List[Dict[str, Any]] = []
         self._last_universe_audits: Dict[str, Dict[str, Any]] = {}
@@ -75,6 +79,12 @@ class SpringSABCStrategy:
     @staticmethod
     def _bj_from_ms(value: int) -> str:
         return (pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+    def _cooldown_until_for(self, symbol: str) -> int:
+        return int(self.cooldown_until.get(self._norm_symbol(symbol), 0) or 0)
+
+    def _is_cooldown_active(self, symbol: str, current_time_ms: int) -> bool:
+        return self._cooldown_until_for(symbol) > int(current_time_ms)
 
     @staticmethod
     def _pct_text(value: Any) -> str:
@@ -496,6 +506,8 @@ class SpringSABCStrategy:
         active_symbols: Set[str],
         structure_candidates: List[Dict[str, Any]],
         structure_audits: Dict[str, Dict[str, Any]],
+        *,
+        commit_cooldown: bool = True,
     ) -> Optional[Dict[str, Any]]:
         normalized_active = {self._norm_symbol(s) for s in (active_symbols or set()) if self._norm_symbol(s)}
         cs = cross_section.copy() if isinstance(cross_section, pd.DataFrame) else pd.DataFrame()
@@ -510,6 +522,19 @@ class SpringSABCStrategy:
         for candidate in ordered:
             symbol = self._norm_symbol(candidate["symbol"])
             audit_rec = structure_audits.get(symbol)
+            cooldown_until = self._cooldown_until_for(symbol)
+            if cooldown_until > int(current_time_ms):
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["cooldown_active"] = True
+                    audit_rec["cooldown_until"] = cooldown_until
+                    audit_rec["cooldown_until_bj"] = self._bj_from_ms(cooldown_until)
+                    audit_rec["signal_fail_reason"] = "cooldown_active"
+                continue
+            if audit_rec is not None:
+                audit_rec["cooldown_active"] = False
+                audit_rec["cooldown_until"] = cooldown_until if cooldown_until > 0 else None
+                audit_rec["cooldown_until_bj"] = self._bj_from_ms(cooldown_until) if cooldown_until > 0 else None
             if symbol in normalized_active:
                 if audit_rec is not None:
                     audit_rec["signal_emit"] = False
@@ -544,6 +569,7 @@ class SpringSABCStrategy:
                     "max_hold_mins": self.max_hold_mins,
                     "time_stop_min_profit_pct": self.time_stop_min_profit_pct,
                     "stop_loss_anchor": self.stop_loss_anchor,
+                    "cooldown_hours": self.cooldown_hours,
                 },
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -568,6 +594,9 @@ class SpringSABCStrategy:
                     "stop_loss_price": float(sl_price),
                 },
             }
+            cooldown_until_after_signal = signal_time_ms + self.cooldown_ms if self.cooldown_ms > 0 else 0
+            if commit_cooldown and cooldown_until_after_signal > 0:
+                self.cooldown_until[symbol] = cooldown_until_after_signal
             if audit_rec is not None:
                 audit_rec["signal_emit"] = True
                 audit_rec["signal_fail_reason"] = None
@@ -576,6 +605,9 @@ class SpringSABCStrategy:
                 audit_rec["current_price"] = float(current_price)
                 audit_rec["tp_price"] = float(tp_price)
                 audit_rec["sl_price"] = float(sl_price)
+                audit_rec["cooldown_active"] = False
+                audit_rec["cooldown_until_after_signal"] = cooldown_until_after_signal if cooldown_until_after_signal > 0 else None
+                audit_rec["cooldown_until_after_signal_bj"] = self._bj_from_ms(cooldown_until_after_signal) if cooldown_until_after_signal > 0 else None
             return signal
 
         for candidate in ordered:
@@ -646,6 +678,7 @@ class SpringSABCStrategy:
             active_symbols,
             structure_candidates,
             structure_audits,
+            commit_cooldown=False,
         )
 
         selected_symbols = {c["symbol"] for c in universe_candidates}

@@ -88,12 +88,13 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/logs/snapback_live.console.highfreq.log" \
   "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260408T122422Z.*" \
   "$DEST"
+
+  sim_log.Spring_SmokeTest_V1_0415T1224.txt
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
-RUNID="Spring_SmokeTest_V1"
-DEST=~/ai_projects/bn_research_core/output/sim_smoke3
+RUNID="Spring_SmokeTest_V1_0415T1224"
+DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp -r \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_viz_${RUNID}" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.${RUNID}.jsonl" \
