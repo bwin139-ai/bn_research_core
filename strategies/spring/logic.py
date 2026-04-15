@@ -493,7 +493,7 @@ class SpringSABCStrategy:
                     audit_rec["signal_fail_reason"] = "signal_symbol_not_in_cross_section"
                 continue
             row = cs.loc[symbol]
-            current_price = self._safe_float(row.get("close"))
+            current_price = self._safe_float(row.get("open"), self._safe_float(row.get("close")))
             if current_price is None or current_price <= 0:
                 if audit_rec is not None:
                     audit_rec["signal_emit"] = False
@@ -502,7 +502,7 @@ class SpringSABCStrategy:
 
             sl_price = float(candidate["stop_loss_price"])
             tp_price = current_price * (1.0 + self.take_profit_pct)
-            signal_time_ms = int(current_time_ms) + 60000
+            signal_time_ms = int(current_time_ms)
             signal = {
                 "signal_time": signal_time_ms,
                 "signal_time_bj": self._bj_from_ms(signal_time_ms),

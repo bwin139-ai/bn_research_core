@@ -554,8 +554,9 @@ def main():
     for i, ts in enumerate(timestamps):
         cross_section = feeder.get_cross_section(ts)
 
-        # 4.1 驱动撮合引擎 (先处理已有订单的成交/撤销)
-        broker.on_kline_close(ts, cross_section)
+        # 4.1 驱动撮合引擎：snapback 保持原有顺序；spring-sabc 需要先在 CB 发单，再在同一 CB 撮合。
+        if args.strategy != "spring-sabc":
+            broker.on_kline_close(ts, cross_section)
 
         # 4.2 获取当前活动标的，传给大脑做环境感知
         active_symbols = set(broker.active_orders.keys()) | set(
@@ -626,6 +627,9 @@ def main():
             order.tp_price = signal["tp_price"]
             order.sl_price = signal["sl_price"]
             broker.active_orders[signal["symbol"]] = order
+
+        if args.strategy == "spring-sabc":
+            broker.on_kline_close(ts, cross_section)
 
     # 5. 盘后结算与落盘
     trade_history = broker.trade_history
