@@ -48,14 +48,15 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
   --audit-out-dir "output/SmokeTest"
 
 # ============== Spring-SABC 冒烟测试  ===============
+RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy spring-sabc \
   --start 2026-04-05T12:00:00+08:00 \
-  --end   2026-04-12T20:00:00+08:00 \
+  --end   2026-04-15T08:00:00+08:00 \
   --kline-window 60 \
   --config spring/config.json \
   --out-dir "output/SmokeTest" \
-  --run-id "Spring_SmokeTest_V1"
+  --run-id "${RUNSET}"
     
 # *****审审审审审审***** live 提炼日志 *****审审审审审审*****
 python3 audit_tools/live_audit/extract_snapback_live_log_v1.py \
