@@ -380,8 +380,9 @@ class SpringSABCStrategy:
         c_close = close_values[c_idx]
         c_time_ms = time_values[c_idx]
 
-        # PERF_ONLY: precompute consecutive-down run lengths and volume prefix sums.
-        # Semantics remain unchanged: A->B must be strictly down on every bar from A+1 through B.
+        # A is the earliest start of the same strict consecutive-down run ending at B.
+        # This preserves the no-local-high requirement while preventing late-A truncation.
+        # PERF_ONLY: down_run and vol_prefix keep this scan efficient.
         down_run = [0] * len(close_values)
         for idx_pos in range(1, len(close_values)):
             if close_values[idx_pos] < close_values[idx_pos - 1]:
@@ -399,64 +400,60 @@ class SpringSABCStrategy:
             b_close = close_values[b_idx]
             if b_close <= 0:
                 continue
-            min_a_idx = max(0, b_idx - down_run[b_idx])
-            max_a_idx = b_idx - self.ab_consecutive_down_bars_min
-            if max_a_idx < min_a_idx:
+            a_idx = min_a_idx
+            ab_bars = b_idx - a_idx
+
+            a_close = close_values[a_idx]
+            if a_close <= 0 or a_close <= b_close:
                 continue
-            for a_idx in range(min_a_idx, max_a_idx + 1):
-                ab_bars = b_idx - a_idx
 
-                a_close = close_values[a_idx]
-                if a_close <= 0 or a_close <= b_close:
-                    continue
+            ab_chg_pct = (a_close - b_close) / a_close
+            if ab_chg_pct < self.ab_chg_pct_min:
+                continue
 
-                ab_chg_pct = (a_close - b_close) / a_close
-                if ab_chg_pct < self.ab_chg_pct_min:
-                    continue
+            ab_drop_abs = a_close - b_close
+            if ab_drop_abs <= 0:
+                continue
 
-                ab_drop_abs = a_close - b_close
-                if ab_drop_abs <= 0:
-                    continue
+            rebound_ratio = (c_close - b_close) / ab_drop_abs
+            if rebound_ratio < self.rebound_ratio_min:
+                continue
 
-                rebound_ratio = (c_close - b_close) / ab_drop_abs
-                if rebound_ratio < self.rebound_ratio_min:
-                    continue
+            bc_over_ab = float(bc_bars) / float(ab_bars)
+            if bc_over_ab > self.bc_over_ab_bars_max:
+                continue
 
-                bc_over_ab = float(bc_bars) / float(ab_bars)
-                if bc_over_ab > self.bc_over_ab_bars_max:
-                    continue
+            ab_vol_sum = vol_prefix[b_idx + 1] - vol_prefix[a_idx + 1]
+            ab_avg_vol = float(ab_vol_sum / float(ab_bars))
+            if ab_avg_vol <= 0:
+                continue
+            vol_ratio = ab_avg_vol / baseline_avg_vol
+            if vol_ratio < self.vol_ratio_min:
+                continue
 
-                ab_vol_sum = vol_prefix[b_idx + 1] - vol_prefix[a_idx + 1]
-                ab_avg_vol = float(ab_vol_sum / float(ab_bars))
-                if ab_avg_vol <= 0:
-                    continue
-                vol_ratio = ab_avg_vol / baseline_avg_vol
-                if vol_ratio < self.vol_ratio_min:
-                    continue
-
-                valid_candidates.append(
-                    {
-                        "a_idx": a_idx,
-                        "b_idx": b_idx,
-                        "c_idx": c_idx,
-                        "a_time_ms": time_values[a_idx],
-                        "b_time_ms": time_values[b_idx],
-                        "c_time_ms": c_time_ms,
-                        "a_close": a_close,
-                        "a_high": high_values[a_idx],
-                        "b_close": b_close,
-                        "b_low": low_values[b_idx],
-                        "c_close": c_close,
-                        "ab_bars": int(ab_bars),
-                        "bc_bars": int(bc_bars),
-                        "ab_chg_pct": float(ab_chg_pct),
-                        "rebound_ratio": float(rebound_ratio),
-                        "bc_over_ab_bars": float(bc_over_ab),
-                        "ab_avg_vol": float(ab_avg_vol),
-                        "baseline_avg_vol": float(baseline_avg_vol),
-                        "vol_ratio": float(vol_ratio),
-                    }
-                )
+            valid_candidates.append(
+                {
+                    "a_idx": a_idx,
+                    "b_idx": b_idx,
+                    "c_idx": c_idx,
+                    "a_time_ms": time_values[a_idx],
+                    "b_time_ms": time_values[b_idx],
+                    "c_time_ms": c_time_ms,
+                    "a_close": a_close,
+                    "a_high": high_values[a_idx],
+                    "b_close": b_close,
+                    "b_low": low_values[b_idx],
+                    "c_close": c_close,
+                    "ab_bars": int(ab_bars),
+                    "bc_bars": int(bc_bars),
+                    "ab_chg_pct": float(ab_chg_pct),
+                    "rebound_ratio": float(rebound_ratio),
+                    "bc_over_ab_bars": float(bc_over_ab),
+                    "ab_avg_vol": float(ab_avg_vol),
+                    "baseline_avg_vol": float(baseline_avg_vol),
+                    "vol_ratio": float(vol_ratio),
+                }
+            )
 
         if not valid_candidates:
             rec["fail_reason"] = "spring_structure_not_found"
