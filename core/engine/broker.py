@@ -55,8 +55,16 @@ class VirtualBroker:
         self.cooldown_until: Dict[str, int] = {}
 
         self.config = config if config is not None else {}
-        self.max_hold_mins = self.config["exit_policy"]["time_stop"]["max_hold_mins"]
-        self.time_stop_min_profit = self.config["exit_policy"]["time_stop"]["min_profit_pct"]
+        strategy_name = str(self.config.get("strategy_name") or "").strip()
+
+        if strategy_name == "spring-sabc":
+            exit_policy = self.config["exit_policy"]
+            self.max_hold_mins = int(exit_policy["max_hold_mins"])
+            self.time_stop_min_profit = float(exit_policy["time_stop_min_profit_pct"])
+        else:
+            time_stop_cfg = self.config["exit_policy"]["time_stop"]
+            self.max_hold_mins = int(time_stop_cfg["max_hold_mins"])
+            self.time_stop_min_profit = float(time_stop_cfg["min_profit_pct"])
 
     def on_kline_close(self, current_time_ms: int, cross_section: pd.DataFrame):
         # 1. 先处理上一根 bar 收盘后产生的入场意图：
