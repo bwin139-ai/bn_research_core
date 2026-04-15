@@ -554,7 +554,18 @@ class SpringSABCStrategy:
                 continue
 
             sl_price = float(candidate["stop_loss_price"])
-            tp_price = current_price * (1.0 + self.take_profit_pct)
+            if self.take_profit_pct == -1.0:
+                risk_distance = float(current_price) - float(sl_price)
+                if risk_distance <= 0:
+                    if audit_rec is not None:
+                        audit_rec["signal_emit"] = False
+                        audit_rec["signal_fail_reason"] = "signal_risk_distance_nonpositive"
+                    continue
+                tp_price = float(current_price) + risk_distance
+                take_profit_mode = "risk_reward_1r"
+            else:
+                tp_price = float(current_price) * (1.0 + self.take_profit_pct)
+                take_profit_mode = "fixed_pct"
             signal_time_ms = int(current_time_ms)
             signal = {
                 "signal_time": signal_time_ms,
@@ -566,6 +577,7 @@ class SpringSABCStrategy:
                 "sl_price": float(sl_price),
                 "params": {
                     "take_profit_pct": self.take_profit_pct,
+                    "take_profit_mode": take_profit_mode,
                     "max_hold_mins": self.max_hold_mins,
                     "time_stop_min_profit_pct": self.time_stop_min_profit_pct,
                     "stop_loss_anchor": self.stop_loss_anchor,
@@ -592,6 +604,7 @@ class SpringSABCStrategy:
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),
+                    "take_profit_mode": take_profit_mode,
                 },
             }
             cooldown_until_after_signal = signal_time_ms + self.cooldown_ms if self.cooldown_ms > 0 else 0

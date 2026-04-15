@@ -168,8 +168,9 @@ class StrategyConfig:
         time_stop_min_profit_pct = raw_data["exit_policy"]["time_stop_min_profit_pct"]
         if not isinstance(take_profit_pct, (int, float)):
             raise ValueError('【铁律违背】exit_policy.take_profit_pct 必须是 number')
-        if float(take_profit_pct) < 0:
-            raise ValueError('【铁律违背】exit_policy.take_profit_pct 必须 >= 0')
+        take_profit_pct_value = float(take_profit_pct)
+        if not (take_profit_pct_value == -1.0 or take_profit_pct_value > 0):
+            raise ValueError('【铁律违背】exit_policy.take_profit_pct 只允许 > 0，或 -1 表示止盈距离=止损距离')
         if not isinstance(max_hold_mins_cfg, int) or max_hold_mins_cfg < 0:
             raise ValueError('【铁律违背】exit_policy.max_hold_mins 必须是非负整数')
         if not isinstance(time_stop_min_profit_pct, (int, float)):
