@@ -67,8 +67,8 @@ FILES = [
     #"extract_sab_fingerprint_v1.py",
     #"audit_m_gt_10_top5_combo_replay_v1.py",
     # "============= spring-sabc 策略 ==============",        
-    "strategies/spring/config.json",
-    "strategies/spring/logic.py",
+     "strategies/spring/config.json",
+     "strategies/spring/logic.py",
 ]
 
 
