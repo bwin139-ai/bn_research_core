@@ -105,6 +105,9 @@ class SpringSABCStrategy:
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
             f"[{signal_time_bj} BJ] 🌱 Spring雷达锁定: {signal['symbol']} | 当前价: {self._price_text(signal.get('current_price'))}"
+            f" | A: {self._bj_from_ms(int(context['a_time_ms']))} high={self._price_text(context.get('a_high', context.get('a_close')))}"
+            f" | B: {self._bj_from_ms(int(context['b_time_ms']))} low={self._price_text(context.get('b_low', context.get('b_close')))}"
+            f" | C: {self._bj_from_ms(int(context['c_time_ms']))} close={self._price_text(context.get('c_close'))}"
             f" | 24h涨幅: {self._pct_text(context.get('chg_24h'))}"
             f" | 24h成交额: {self._safe_float(context.get('vol_24h'), 0.0):.0f}"
             f" | AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}"
@@ -138,10 +141,6 @@ class SpringSABCStrategy:
         ]
         if str(trade.get("reason") or "") == "TIME_STOP":
             parts.append(f"保本阈值: {self._pct_text(self.time_stop_min_profit_pct)}")
-        if context:
-            parts.append(f"AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}")
-            parts.append(f"反弹比例: {self._pct_text(context.get('rebound_ratio'))}")
-            parts.append(f"爆量倍数: {self._safe_float(context.get('vol_ratio'), 0.0):.2f}")
         return " | ".join(parts)
 
 
@@ -362,6 +361,16 @@ class SpringSABCStrategy:
 
         c_idx = len(pattern_df) - 1
         close_values = [float(x) for x in closes.tolist()]
+        high_values = (
+            [float(x) for x in pd.to_numeric(pattern_df["high"], errors="coerce").tolist()]
+            if "high" in pattern_df.columns
+            else list(close_values)
+        )
+        low_values = (
+            [float(x) for x in pd.to_numeric(pattern_df["low"], errors="coerce").tolist()]
+            if "low" in pattern_df.columns
+            else list(close_values)
+        )
         vol_values = [float(x) for x in vols.tolist()]
         time_values = [int(x) for x in pattern_df.index.tolist()]
         c_close = close_values[c_idx]
@@ -430,7 +439,9 @@ class SpringSABCStrategy:
                         "b_time_ms": time_values[b_idx],
                         "c_time_ms": c_time_ms,
                         "a_close": a_close,
+                        "a_high": high_values[a_idx],
                         "b_close": b_close,
+                        "b_low": low_values[b_idx],
                         "c_close": c_close,
                         "ab_bars": int(ab_bars),
                         "bc_bars": int(bc_bars),
@@ -593,7 +604,9 @@ class SpringSABCStrategy:
                     "b_time_ms": int(candidate["b_time_ms"]),
                     "c_time_ms": int(candidate["c_time_ms"]),
                     "a_close": float(candidate["a_close"]),
+                    "a_high": float(candidate.get("a_high", candidate["a_close"])),
                     "b_close": float(candidate["b_close"]),
+                    "b_low": float(candidate.get("b_low", candidate["b_close"])),
                     "c_close": float(candidate["c_close"]),
                     "ab_bars": int(candidate["ab_bars"]),
                     "bc_bars": int(candidate["bc_bars"]),

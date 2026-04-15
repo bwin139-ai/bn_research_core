@@ -286,7 +286,12 @@ def _apply_spring_logging_hooks(strategy: Any, broker: VirtualBroker) -> None:
 
     def _patched_on_kline_close(current_time_ms: int, cross_section) -> None:
         prev_trade_count = len(broker.trade_history)
-        original_on_kline_close(current_time_ms, cross_section)
+        prev_disable_level = logging.root.manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            original_on_kline_close(current_time_ms, cross_section)
+        finally:
+            logging.disable(prev_disable_level)
         new_trades = broker.trade_history[prev_trade_count:]
         for trade in new_trades:
             if "signal_time" in trade and trade["signal_time"]:
