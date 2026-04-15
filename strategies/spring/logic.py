@@ -61,15 +61,15 @@ class SpringSABCStrategy:
         return str(value).upper().strip() if value is not None else ""
 
     @staticmethod
-    def _safe_float(value: Any) -> Optional[float]:
+    def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
         try:
             if value is None:
-                return None
+                return default
             if pd.isna(value):
-                return None
+                return default
             return float(value)
         except Exception:
-            return None
+            return default
 
     @staticmethod
     def _bj_from_ms(value: int) -> str:
