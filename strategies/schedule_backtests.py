@@ -153,6 +153,22 @@ def resolve_config_path(config_arg: str) -> Path:
     return raw
 
 
+def normalize_run_backtest_config_arg(config_arg: str) -> str:
+    # strategies/run_backtest.py resolves --config relative to the strategies/ directory.
+    # Accept both spring/config.json and strategies/spring/config.json at scheduler level.
+    path = Path(config_arg)
+    parts = path.parts
+    if parts and parts[0] == 'strategies':
+        if len(parts) == 1:
+            raise ValueError('--config cannot be just "strategies"')
+        return str(Path(*parts[1:]))
+    return config_arg
+
+
+def supports_candidate_audit(strategy: str) -> bool:
+    return str(strategy or '').strip() == 'snapback'
+
+
 def build_merge_meta(
     args: argparse.Namespace,
     runset: str,
@@ -205,12 +221,13 @@ def run_post_processing(
 
     trade_paths = [state_dir / f'sim_trades.{t.run_id}.jsonl' for t in tasks]
     signal_paths = [state_dir / f'sim_signals.{t.run_id}.jsonl' for t in tasks]
-    candidate_audit_paths = [state_dir / f'snapback_candidate_pool_audit.{t.run_id}.jsonl' for t in tasks]
+    candidate_audit_enabled = supports_candidate_audit(args.strategy)
+    candidate_audit_paths = [state_dir / f'snapback_candidate_pool_audit.{t.run_id}.jsonl' for t in tasks] if candidate_audit_enabled else []
     viz_dirs = [state_dir / f'sim_viz_{t.run_id}' for t in tasks]
 
     merged_trades = state_dir / f'sim_trades.{runset}_ALL.jsonl'
     merged_signals = state_dir / f'sim_signals.{runset}_ALL.jsonl'
-    merged_candidate_audit = state_dir / f'snapback_candidate_pool_audit.{runset}_ALL.jsonl'
+    merged_candidate_audit = state_dir / f'snapback_candidate_pool_audit.{runset}_ALL.jsonl' if candidate_audit_enabled else None
     merged_viz_dir = state_dir / f'sim_viz_{runset}_ALL'
     merged_merge_meta = state_dir / f'sim_merge_meta.{runset}_ALL.json'
     merged_summary = state_dir / f'sim_summary.{runset}_ALL.json'
@@ -220,8 +237,10 @@ def run_post_processing(
         artifacts['merged_trades'] = str(merged_trades)
         signals_count = merge_jsonl_files(signal_paths, merged_signals)
         artifacts['merged_signals'] = str(merged_signals)
-        candidate_audit_count = merge_jsonl_files(candidate_audit_paths, merged_candidate_audit)
-        artifacts['merged_candidate_audit'] = str(merged_candidate_audit)
+        candidate_audit_count = 0
+        if candidate_audit_enabled and merged_candidate_audit is not None:
+            candidate_audit_count = merge_jsonl_files(candidate_audit_paths, merged_candidate_audit)
+            artifacts['merged_candidate_audit'] = str(merged_candidate_audit)
         viz_count = merge_viz_dirs(viz_dirs, merged_viz_dir)
         artifacts['merged_viz_dir'] = str(merged_viz_dir)
 
@@ -247,10 +266,11 @@ def run_post_processing(
             f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
         )
         print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} viz_pngs={viz_count}')
-        notify_message(
-            notify_label,
-            f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜候选池：{candidate_audit_count}｜图表：{viz_count}',
-        )
+        if candidate_audit_enabled:
+            merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜候选池：{candidate_audit_count}｜图表：{viz_count}'
+        else:
+            merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜图表：{viz_count}'
+        notify_message(notify_label, merge_notify)
     except Exception as e:
         msg = f'post-merge failed: {e}'
         errors.append(msg)
@@ -341,6 +361,8 @@ def build_tasks(args: argparse.Namespace) -> List[Task]:
     logs_dir = Path(args.logs_dir)
     ensure_dir(logs_dir)
 
+    backtest_config = normalize_run_backtest_config_arg(args.config)
+
     tasks: List[Task] = []
     for i, (b_start, b_end) in enumerate(batches, start=1):
         run_id = f"{args.run_prefix or args.strategy.upper()}_{short_mmdd(fmt_dt(b_start))}_{short_mmdd(fmt_dt(b_end))}_B{i:02d}"
@@ -353,7 +375,7 @@ def build_tasks(args: argparse.Namespace) -> List[Task]:
             "--end", fmt_dt(b_end),
             "--kline-window", str(args.kline_window),
             "--run-id", run_id,
-            "--config", args.config,
+            "--config", backtest_config,
             "--out-dir", args.out_dir,
         ]
         tasks.append(
@@ -449,7 +471,7 @@ def make_summary(args: argparse.Namespace, tasks: List[Task], finished: List[dic
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description='Minimal backtest batch scheduler with dynamic refill.')
-    ap.add_argument('--strategy', required=True)
+    ap.add_argument('--strategy', required=True, choices=['snapback', 'spring-sabc'])
     ap.add_argument('--start', required=True, help='ISO8601 with timezone, e.g. 2025-04-18T00:00:00+00:00')
     ap.add_argument('--end', required=True, help='ISO8601 with timezone, e.g. 2026-04-18T00:00:00+00:00')
     ap.add_argument('--batch-days', type=int, required=True)
