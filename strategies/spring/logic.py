@@ -55,6 +55,7 @@ class SpringSABCStrategy:
         self._last_structure_audits: Dict[str, Dict[str, Any]] = {}
         self._last_signal: Optional[Dict[str, Any]] = None
         self._last_signal_audits: Dict[str, Dict[str, Any]] = {}
+        self._prepared_history_cache: Dict[str, Tuple[int, pd.DataFrame]] = {}
 
     @staticmethod
     def _norm_symbol(value: Any) -> str:
@@ -254,22 +255,39 @@ class SpringSABCStrategy:
             return df if isinstance(df, pd.DataFrame) else None
         return None
 
-    def _prepare_history(self, df: pd.DataFrame, current_time_ms: int) -> Optional[pd.DataFrame]:
+    def _prepare_history(self, symbol: str, df: pd.DataFrame, current_time_ms: int) -> Optional[pd.DataFrame]:
         if df is None or df.empty:
             return None
-        hist = df.copy()
+
+        cache_key = self._norm_symbol(symbol)
+        source_id = id(df)
+        cached = self._prepared_history_cache.get(cache_key)
+        if cached is not None and cached[0] == source_id:
+            prepared = cached[1]
+        else:
+            prepared = df.copy()
+            try:
+                prepared = prepared.sort_index()
+            except Exception:
+                pass
+            try:
+                prepared.index = pd.Index([int(x) for x in prepared.index])
+            except Exception:
+                return None
+            self._prepared_history_cache[cache_key] = (source_id, prepared)
+
+        idx = prepared.index
         try:
-            hist = hist.sort_index()
+            end_pos = idx.searchsorted(int(current_time_ms), side="left")
         except Exception:
-            pass
-        try:
-            hist.index = pd.Index([int(x) for x in hist.index])
-        except Exception:
-            return None
-        hist = hist[hist.index < int(current_time_ms)]
+            hist = prepared[prepared.index < int(current_time_ms)]
+        else:
+            start_pos = max(0, int(end_pos) - self.max_history_window_mins)
+            hist = prepared.iloc[start_pos:int(end_pos)]
+
         if hist.empty:
             return None
-        return hist.tail(self.max_history_window_mins)
+        return hist
 
     def _evaluate_structure_for_symbol(
         self,
@@ -290,7 +308,7 @@ class SpringSABCStrategy:
             rec["fail_reason"] = "missing_symbol_history"
             return rec
 
-        hist = self._prepare_history(sym_df, current_time_ms)
+        hist = self._prepare_history(symbol, sym_df, current_time_ms)
         if hist is None or hist.empty:
             rec["fail_reason"] = "empty_symbol_history"
             return rec
@@ -333,30 +351,39 @@ class SpringSABCStrategy:
             return rec
 
         c_idx = len(pattern_df) - 1
-        c_close = float(closes.iloc[c_idx])
-        c_time_ms = int(pattern_df.index[c_idx])
+        close_values = [float(x) for x in closes.tolist()]
+        vol_values = [float(x) for x in vols.tolist()]
+        time_values = [int(x) for x in pattern_df.index.tolist()]
+        c_close = close_values[c_idx]
+        c_time_ms = time_values[c_idx]
+
+        # PERF_ONLY: precompute consecutive-down run lengths and volume prefix sums.
+        # Semantics remain unchanged: A->B must be strictly down on every bar from A+1 through B.
+        down_run = [0] * len(close_values)
+        for idx_pos in range(1, len(close_values)):
+            if close_values[idx_pos] < close_values[idx_pos - 1]:
+                down_run[idx_pos] = down_run[idx_pos - 1] + 1
+
+        vol_prefix = [0.0]
+        for value in vol_values:
+            vol_prefix.append(vol_prefix[-1] + value)
 
         valid_candidates: List[Dict[str, Any]] = []
         for b_idx in range(1, c_idx):
             bc_bars = c_idx - b_idx
             if bc_bars <= 0:
                 continue
-            b_close = float(closes.iloc[b_idx])
+            b_close = close_values[b_idx]
             if b_close <= 0:
                 continue
-            for a_idx in range(0, b_idx):
+            min_a_idx = max(0, b_idx - down_run[b_idx])
+            max_a_idx = b_idx - self.ab_consecutive_down_bars_min
+            if max_a_idx < min_a_idx:
+                continue
+            for a_idx in range(min_a_idx, max_a_idx + 1):
                 ab_bars = b_idx - a_idx
-                if ab_bars < self.ab_consecutive_down_bars_min:
-                    continue
-                is_consecutive_down = True
-                for j in range(a_idx + 1, b_idx + 1):
-                    if not float(closes.iloc[j]) < float(closes.iloc[j - 1]):
-                        is_consecutive_down = False
-                        break
-                if not is_consecutive_down:
-                    continue
 
-                a_close = float(closes.iloc[a_idx])
+                a_close = close_values[a_idx]
                 if a_close <= 0 or a_close <= b_close:
                     continue
 
@@ -376,7 +403,8 @@ class SpringSABCStrategy:
                 if bc_over_ab > self.bc_over_ab_bars_max:
                     continue
 
-                ab_avg_vol = float(vols.iloc[a_idx + 1:b_idx + 1].mean())
+                ab_vol_sum = vol_prefix[b_idx + 1] - vol_prefix[a_idx + 1]
+                ab_avg_vol = float(ab_vol_sum / float(ab_bars))
                 if ab_avg_vol <= 0:
                     continue
                 vol_ratio = ab_avg_vol / baseline_avg_vol
@@ -388,8 +416,8 @@ class SpringSABCStrategy:
                         "a_idx": a_idx,
                         "b_idx": b_idx,
                         "c_idx": c_idx,
-                        "a_time_ms": int(pattern_df.index[a_idx]),
-                        "b_time_ms": int(pattern_df.index[b_idx]),
+                        "a_time_ms": time_values[a_idx],
+                        "b_time_ms": time_values[b_idx],
                         "c_time_ms": c_time_ms,
                         "a_close": a_close,
                         "b_close": b_close,
