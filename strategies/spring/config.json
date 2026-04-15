@@ -32,7 +32,7 @@
     ],
     "min_24h_chg_pct": 30,
     "min_24h_quote_volume": 50000000,
-    "score_top_n": 6
+    "score_top_n": 10
   },
   "structure": {
     "pattern_window_mins": 60,
@@ -42,7 +42,7 @@
     },
     "vol_climax": {
       "baseline_window_mins": 120,
-      "ratio_min": 3
+      "ratio_min": 2
     },
     "rebound": {
       "ratio_min": 0.75,
