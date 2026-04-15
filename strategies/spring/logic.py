@@ -380,9 +380,12 @@ class SpringSABCStrategy:
         c_close = close_values[c_idx]
         c_time_ms = time_values[c_idx]
 
-        # A is the earliest start of the same strict consecutive-down run ending at B.
-        # This preserves the no-local-high requirement while preventing late-A truncation.
-        # PERF_ONLY: down_run and vol_prefix keep this scan efficient.
+        # Spring-SABC constitution:
+        # - C is fixed as HBs[0].
+        # - Scan B from nearest to farthest.
+        # - B initial filter only requires C_close > B_close.
+        # - A is the earliest start of B's strict consecutive close-down run.
+        # - B_low must be the lowest low in the whole A-B interval.
         down_run = [0] * len(close_values)
         for idx_pos in range(1, len(close_values)):
             if close_values[idx_pos] < close_values[idx_pos - 1]:
@@ -392,19 +395,40 @@ class SpringSABCStrategy:
         for value in vol_values:
             vol_prefix.append(vol_prefix[-1] + value)
 
-        valid_candidates: List[Dict[str, Any]] = []
-        for b_idx in range(1, c_idx):
+        best: Optional[Dict[str, Any]] = None
+        for b_search_rank_from_c, b_idx in enumerate(range(c_idx - 1, 0, -1), start=1):
             bc_bars = c_idx - b_idx
             if bc_bars <= 0:
                 continue
             b_close = close_values[b_idx]
             if b_close <= 0:
                 continue
-            a_idx = min_a_idx
+            if c_close <= b_close:
+                continue
+
+            ab_down_run_bars = int(down_run[b_idx])
+            if ab_down_run_bars <= 0:
+                continue
+            a_idx = b_idx - ab_down_run_bars
             ab_bars = b_idx - a_idx
+            if ab_bars <= 0:
+                continue
+
+            ab_required_bars_min = max(
+                int(self.ab_consecutive_down_bars_min),
+                int((float(bc_bars) / float(self.bc_over_ab_bars_max)) + 0.999999999),
+            )
+            if ab_bars < ab_required_bars_min:
+                continue
 
             a_close = close_values[a_idx]
             if a_close <= 0 or a_close <= b_close:
+                continue
+
+            b_low = low_values[b_idx]
+            ab_low_min = min(low_values[a_idx : b_idx + 1])
+            b_low_is_ab_low = abs(float(b_low) - float(ab_low_min)) <= 1e-12
+            if not b_low_is_ab_low:
                 continue
 
             ab_chg_pct = (a_close - b_close) / a_close
@@ -431,49 +455,51 @@ class SpringSABCStrategy:
             if vol_ratio < self.vol_ratio_min:
                 continue
 
-            valid_candidates.append(
-                {
-                    "a_idx": a_idx,
-                    "b_idx": b_idx,
-                    "c_idx": c_idx,
-                    "a_time_ms": time_values[a_idx],
-                    "b_time_ms": time_values[b_idx],
-                    "c_time_ms": c_time_ms,
-                    "a_close": a_close,
-                    "a_high": high_values[a_idx],
-                    "b_close": b_close,
-                    "b_low": low_values[b_idx],
-                    "c_close": c_close,
-                    "ab_bars": int(ab_bars),
-                    "bc_bars": int(bc_bars),
-                    "ab_chg_pct": float(ab_chg_pct),
-                    "rebound_ratio": float(rebound_ratio),
-                    "bc_over_ab_bars": float(bc_over_ab),
-                    "ab_avg_vol": float(ab_avg_vol),
-                    "baseline_avg_vol": float(baseline_avg_vol),
-                    "vol_ratio": float(vol_ratio),
-                }
-            )
+            best = {
+                "a_idx": a_idx,
+                "b_idx": b_idx,
+                "c_idx": c_idx,
+                "a_time_ms": time_values[a_idx],
+                "b_time_ms": time_values[b_idx],
+                "c_time_ms": c_time_ms,
+                "a_close": a_close,
+                "a_high": high_values[a_idx],
+                "b_close": b_close,
+                "b_low": b_low,
+                "c_close": c_close,
+                "ab_bars": int(ab_bars),
+                "bc_bars": int(bc_bars),
+                "ab_chg_pct": float(ab_chg_pct),
+                "rebound_ratio": float(rebound_ratio),
+                "bc_over_ab_bars": float(bc_over_ab),
+                "ab_avg_vol": float(ab_avg_vol),
+                "baseline_avg_vol": float(baseline_avg_vol),
+                "vol_ratio": float(vol_ratio),
+                "abc_selection_mode": "nearest_valid_b",
+                "b_scan_direction": "from_c_leftward",
+                "b_initial_filter": "c_close_gt_b_close",
+                "c_close_gt_b_close": True,
+                "ab_down_rule": "strict_close_down",
+                "ab_down_run_bars": int(ab_down_run_bars),
+                "ab_required_bars_min": int(ab_required_bars_min),
+                "ab_low_min": float(ab_low_min),
+                "b_low_is_ab_low": bool(b_low_is_ab_low),
+                "b_search_rank_from_c": int(b_search_rank_from_c),
+            }
+            break
 
-        if not valid_candidates:
+        if best is None:
             rec["fail_reason"] = "spring_structure_not_found"
             rec["pattern_window_bars"] = int(len(pattern_df))
             rec["baseline_window_bars"] = int(len(baseline_df))
             rec["c_time_ms"] = c_time_ms
             rec["c_close"] = c_close
+            rec["abc_selection_mode"] = "nearest_valid_b"
+            rec["b_scan_direction"] = "from_c_leftward"
+            rec["b_initial_filter"] = "c_close_gt_b_close"
+            rec["ab_down_rule"] = "strict_close_down"
             rec["volume_column"] = vol_col
             return rec
-
-        valid_candidates.sort(
-            key=lambda x: (
-                x["bc_bars"],
-                -x["ab_chg_pct"],
-                -x["rebound_ratio"],
-                -x["vol_ratio"],
-                -x["ab_bars"],
-            )
-        )
-        best = valid_candidates[0]
 
         rec.update(best)
         rec["structure_pass"] = True
@@ -619,6 +645,16 @@ class SpringSABCStrategy:
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),
                     "take_profit_mode": take_profit_mode,
+                    "abc_selection_mode": str(candidate.get("abc_selection_mode", "nearest_valid_b")),
+                    "b_scan_direction": str(candidate.get("b_scan_direction", "from_c_leftward")),
+                    "b_initial_filter": str(candidate.get("b_initial_filter", "c_close_gt_b_close")),
+                    "c_close_gt_b_close": bool(candidate.get("c_close_gt_b_close", False)),
+                    "ab_down_rule": str(candidate.get("ab_down_rule", "strict_close_down")),
+                    "ab_down_run_bars": int(candidate.get("ab_down_run_bars", candidate.get("ab_bars", 0))),
+                    "ab_required_bars_min": int(candidate.get("ab_required_bars_min", 0)),
+                    "ab_low_min": float(candidate.get("ab_low_min", candidate.get("b_low", candidate["b_close"]))),
+                    "b_low_is_ab_low": bool(candidate.get("b_low_is_ab_low", False)),
+                    "b_search_rank_from_c": int(candidate.get("b_search_rank_from_c", 0)),
                 },
             }
             cooldown_until_after_signal = signal_time_ms + self.cooldown_ms if self.cooldown_ms > 0 else 0
