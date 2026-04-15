@@ -50,6 +50,7 @@ class SpringSABCStrategy:
         self.max_hold_mins = int(exit_policy["max_hold_mins"])
         self.time_stop_min_profit_pct = float(exit_policy["time_stop_min_profit_pct"])
         self.cooldown_hours = float(risk_controls["cooldown_hours"])
+        self.max_risk_pct = float(risk_controls["max_risk_pct"])
         self.cooldown_ms = int(round(self.cooldown_hours * 3600_000))
         self.cooldown_until: Dict[str, int] = {}
 
@@ -592,6 +593,21 @@ class SpringSABCStrategy:
                 continue
 
             sl_price = float(candidate["stop_loss_price"])
+            risk_pct = (float(current_price) - float(sl_price)) / float(current_price)
+            if risk_pct <= 0:
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["risk_pct"] = float(risk_pct)
+                    audit_rec["max_risk_pct"] = self.max_risk_pct
+                    audit_rec["signal_fail_reason"] = "signal_risk_distance_nonpositive"
+                continue
+            if risk_pct > self.max_risk_pct:
+                if audit_rec is not None:
+                    audit_rec["signal_emit"] = False
+                    audit_rec["risk_pct"] = float(risk_pct)
+                    audit_rec["max_risk_pct"] = self.max_risk_pct
+                    audit_rec["signal_fail_reason"] = "signal_risk_pct_above_max"
+                continue
             if self.take_profit_pct == -1.0:
                 risk_distance = float(current_price) - float(sl_price)
                 if risk_distance <= 0:
@@ -620,6 +636,7 @@ class SpringSABCStrategy:
                     "time_stop_min_profit_pct": self.time_stop_min_profit_pct,
                     "stop_loss_anchor": self.stop_loss_anchor,
                     "cooldown_hours": self.cooldown_hours,
+                    "max_risk_pct": self.max_risk_pct,
                 },
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -644,6 +661,8 @@ class SpringSABCStrategy:
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),
+                    "risk_pct": float(risk_pct),
+                    "max_risk_pct": self.max_risk_pct,
                     "take_profit_mode": take_profit_mode,
                     "abc_selection_mode": str(candidate.get("abc_selection_mode", "nearest_valid_b")),
                     "b_scan_direction": str(candidate.get("b_scan_direction", "from_c_leftward")),
@@ -668,6 +687,8 @@ class SpringSABCStrategy:
                 audit_rec["current_price"] = float(current_price)
                 audit_rec["tp_price"] = float(tp_price)
                 audit_rec["sl_price"] = float(sl_price)
+                audit_rec["risk_pct"] = float(risk_pct)
+                audit_rec["max_risk_pct"] = self.max_risk_pct
                 audit_rec["cooldown_active"] = False
                 audit_rec["cooldown_until_after_signal"] = cooldown_until_after_signal if cooldown_until_after_signal > 0 else None
                 audit_rec["cooldown_until_after_signal_bj"] = self._bj_from_ms(cooldown_until_after_signal) if cooldown_until_after_signal > 0 else None

@@ -75,6 +75,7 @@ class StrategyConfig:
         ("exit_policy", "max_hold_mins"),
         ("exit_policy", "time_stop_min_profit_pct"),
         ("risk_controls", "cooldown_hours"),
+        ("risk_controls", "max_risk_pct"),
     ]
 
     @staticmethod
@@ -183,6 +184,11 @@ class StrategyConfig:
             raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须是 number')
         if float(cooldown_hours) < 0:
             raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须 >= 0')
+        max_risk_pct = raw_data["risk_controls"]["max_risk_pct"]
+        if not isinstance(max_risk_pct, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须是 number')
+        if float(max_risk_pct) <= 0:
+            raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须 > 0')
 
     @staticmethod
     def load(config_path: str) -> Dict[str, Any]:
