@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
@@ -73,6 +74,65 @@ class SpringSABCStrategy:
     @staticmethod
     def _bj_from_ms(value: int) -> str:
         return (pd.to_datetime(int(value), unit="ms") + pd.Timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+
+    @staticmethod
+    def _pct_text(value: Any) -> str:
+        safe = SpringSABCStrategy._safe_float(value)
+        if safe is None:
+            return "NA"
+        return f"{safe * 100.0:.2f}%"
+
+    @staticmethod
+    def _price_text(value: Any) -> str:
+        safe = SpringSABCStrategy._safe_float(value)
+        if safe is None:
+            return "NA"
+        return f"{safe:.4f}"
+
+    def build_signal_lock_log(self, signal: Dict[str, Any]) -> str:
+        context = dict(signal.get("context") or {})
+        signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
+        return (
+            f"[{signal_time_bj} BJ] 🌱 Spring雷达锁定: {signal['symbol']} | 当前价: {self._price_text(signal.get('current_price'))}"
+            f" | 24h涨幅: {self._pct_text(context.get('chg_24h'))}"
+            f" | 24h成交额: {self._safe_float(context.get('vol_24h'), 0.0):.0f}"
+            f" | AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}"
+            f" | 爆量倍数: {self._safe_float(context.get('vol_ratio'), 0.0):.2f}"
+            f" | 反弹比例: {self._pct_text(context.get('rebound_ratio'))}"
+            f" | AB/BC: {int(context.get('ab_bars', 0))}/{int(context.get('bc_bars', 0))}"
+            f" | 评分: {int(context.get('score', 0))} (#{int(context.get('score_order', 0))})"
+        )
+
+    def build_entry_log(self, signal: Dict[str, Any]) -> str:
+        signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
+        return (
+            f"[{signal_time_bj} BJ] 市价开仓成交: {signal['symbol']} 进场多单 @ {self._price_text(signal.get('current_price'))}"
+            f" | 止盈: {self._price_text(signal.get('tp_price'))}"
+            f" | 止损: {self._price_text(signal.get('sl_price'))}"
+        )
+
+    def build_exit_log(self, trade: Dict[str, Any]) -> str:
+        context = dict(trade.get("context") or {})
+        exit_time_bj = trade.get("exit_time_bj") or self._bj_from_ms(int(trade["exit_time"]))
+        entry_time = self._safe_float(trade.get("entry_time"))
+        exit_time = self._safe_float(trade.get("exit_time"))
+        hold_mins = 0
+        if entry_time is not None and exit_time is not None and exit_time >= entry_time:
+            hold_mins = int(round((exit_time - entry_time) / 60000.0))
+        parts = [
+            f"[{exit_time_bj} BJ] 平仓离场: {trade['symbol']} @ {self._price_text(trade.get('exit_price'))}",
+            f"原因: {trade.get('reason', 'UNKNOWN')}",
+            f"盈亏: {self._pct_text(trade.get('pnl_pct'))}",
+            f"持仓: {hold_mins}m",
+        ]
+        if str(trade.get("reason") or "") == "TIME_STOP":
+            parts.append(f"保本阈值: {self._pct_text(self.time_stop_min_profit_pct)}")
+        if context:
+            parts.append(f"AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}")
+            parts.append(f"反弹比例: {self._pct_text(context.get('rebound_ratio'))}")
+            parts.append(f"爆量倍数: {self._safe_float(context.get('vol_ratio'), 0.0):.2f}")
+        return " | ".join(parts)
+
 
     def _empty_audit(self, fail_reason: str) -> Dict[str, Any]:
         return {
@@ -528,6 +588,8 @@ class SpringSABCStrategy:
         self._last_structure_audits = structure_audits
         self._last_signal = signal
         self._last_signal_audits = structure_audits
+        if signal:
+            logging.info(self.build_signal_lock_log(signal))
         return signal
 
     def audit_symbols_at_kline_close(

@@ -50,10 +50,10 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
 # ============== Spring-SABC 冒烟测试  ===============
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy spring-sabc \
-  --start 2026-04-01T12:00:00+08:00 \
-  --end   2026-04-03T11:00:00+08:00 \
+  --start 2026-04-05T12:00:00+08:00 \
+  --end   2026-04-12T20:00:00+08:00 \
   --kline-window 60 \
-  --config strategies/spring/config.json \
+  --config spring/config.json \
   --out-dir "output/SmokeTest" \
   --run-id "Spring_SmokeTest_V1"
     
@@ -88,12 +88,14 @@ scp \
   "aliyun-bn:/root/bn_research_core/output/live_projection/*.SNAPBACKLIVE_MYBWIN139_20260408T122422Z.*" \
   "$DEST"
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
-DEST=~/ai_projects/bn_research_core/output/sim_smoke2
+RUNID="Spring_SmokeTest_V1"
+DEST=~/ai_projects/bn_research_core/output/sim_smoke3
 mkdir -p "$DEST"
-scp \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.Snapback_V7_SmokeTest7.2.jsonl" \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.Snapback_V7_SmokeTest7.2.jsonl" \
-  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.Snapback_V7_SmokeTest7.2.jsonl" \
+scp -r \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_viz_${RUNID}" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.${RUNID}.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.${RUNID}.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.${RUNID}.jsonl" \
   "$DEST"
 # *****download*****  拉 sim/live一致性审计数据 *****download***** 
 DEST=~/ai_projects/bn_research_core/output/sim_live_audit
@@ -231,16 +233,6 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python visual_audit_buck
   --run-id SNAP_V4.6_30D_P6_0319T2304_ALL \
   --copy-mode copy
 
-# ========= 前端冒烟测试 Top1  =========
-/root/service_env/bin/python strategies/run_backtest.py \
-  --strategy top1 \
-  --start 2025-04-15T00:00:00+00:00 \
-  --end   2025-04-23T00:12:00+00:00 \
-  --kline-window 240 \
-  --config strategies/top1_hunter/config.json \
-  --out-dir "output/state" \
-  --run-id "Top1_V4_SmokeTest"
-
 # =========  k线落盘 =========
 # *** 合约价 backfill ***
 nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
@@ -252,7 +244,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
   >> logs/klines_1m_backfill_XAUUSDT.log 2>&1 &
 
 # *** 1. 先运行 合约价 sync ***
-nohup /root/service_env/bin/python -u klines_1m_store.py \
+nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1500 \
   --sleep-ms 1000 \
@@ -260,8 +252,8 @@ nohup /root/service_env/bin/python -u klines_1m_store.py \
   >> logs/klines_1m_sync.log 2>&1 &
 
 # *** 2.再运行 补 idx 列 ***
-nohup /root/service_env/bin/python -u klines_1m_store.py \
-  --days 1 \
+nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
+  --days 4 \
   --limit 1500 \
   --sleep-ms 1000 \
   augment-idx \

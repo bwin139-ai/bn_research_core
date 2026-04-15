@@ -281,6 +281,31 @@ def _patch_candidate_pool_audit_writer(strategy: Any, audit_path: str) -> None:
 
     strategy._append_candidate_pool_audit = types.MethodType(_patched_append_candidate_pool_audit, strategy)
 
+def _apply_spring_logging_hooks(strategy: Any, broker: VirtualBroker) -> None:
+    original_on_kline_close = broker.on_kline_close
+
+    def _patched_on_kline_close(current_time_ms: int, cross_section) -> None:
+        prev_trade_count = len(broker.trade_history)
+        original_on_kline_close(current_time_ms, cross_section)
+        new_trades = broker.trade_history[prev_trade_count:]
+        for trade in new_trades:
+            if "signal_time" in trade and trade["signal_time"]:
+                trade["signal_time_bj"] = (
+                    pd.to_datetime(trade["signal_time"], unit="ms") + pd.Timedelta(hours=8)
+                ).strftime("%Y-%m-%d %H:%M")
+            if "entry_time" in trade and trade["entry_time"]:
+                trade["entry_time_bj"] = (
+                    pd.to_datetime(trade["entry_time"], unit="ms") + pd.Timedelta(hours=8)
+                ).strftime("%Y-%m-%d %H:%M")
+            if "exit_time" in trade and trade["exit_time"]:
+                trade["exit_time_bj"] = (
+                    pd.to_datetime(trade["exit_time"], unit="ms") + pd.Timedelta(hours=8)
+                ).strftime("%Y-%m-%d %H:%M")
+            logging.info(strategy.build_exit_log(trade))
+
+    broker.on_kline_close = _patched_on_kline_close
+
+
 def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side: float, initial_equity: float = EQUITY_INITIAL) -> Dict[str, Any]:
     rows = _prepare_trade_rows(trade_history, fee_side)
     times_ms = [rows[0]["exit_time_ms"] if rows else 0] + [r["exit_time_ms"] for r in rows]
@@ -504,6 +529,7 @@ def main():
         from strategies.spring.logic import SpringSABCStrategy
 
         strategy = SpringSABCStrategy(config=config)
+        _apply_spring_logging_hooks(strategy, broker)
     else:
         logging.error(f"❌ 不支持的策略类型: {args.strategy}")
         sys.exit(1)
@@ -585,6 +611,8 @@ def main():
 
         if signal:
             signals_history.append(signal)
+            if args.strategy == "spring-sabc":
+                logging.info(strategy.build_entry_log(signal))
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单
             # signal_time 已按策略语义记为 CB（观察/开仓发生时刻）
             signal_time_ms = int(signal["signal_time"])
