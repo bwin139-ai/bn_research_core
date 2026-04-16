@@ -214,6 +214,192 @@ spring-sabc
 
 因此二者只共享公共语法与代码骨架，不共享具体结构语义与判定逻辑。
 
+
+
+15. ABC 精确搜索算法
+
+本节为 spring-sabc 的唯一 ABC 结构定义，原 `Spring-SABC_ABC结构定义.md` 的内容已并入本文件。
+
+15.1 C 固定语义
+
+C 固定为 HBs[0]。
+
+15.2 B 搜索语义
+
+从 C 向左，在 `structure.pattern_window_mins` 覆盖的历史窗口内逐根搜索 B。
+
+B 初筛条件只有一个：
+
+C_close > B_close
+
+不使用 `C_low > B_low` 作为硬条件。
+
+15.3 A-B 连跌识别
+
+找到待定 B 后，向左识别 B 所属的 close 严格连续下跌段：
+
+A = 该连续下跌段的最早起点
+
+A 不要求是局部高点。
+
+AB 连跌只比较 close，不比较 low。
+
+15.4 AB bars 约束
+
+AB 必须满足：
+
+ab_bars >= max(
+    consecutive_down_bars_min,
+    ceil(bc_bars / bc_over_ab_bars_max)
+)
+
+15.5 B 低点确认
+
+B_low 必须等于 A-B 区间最低 low。
+
+即 B 必须是这段洗盘的真实最低点。
+
+该规则用于排除“前面已经砸出深坑，后面只是阴跌但没有再创新低”的伪洗盘结构。
+
+15.6 AB 跌幅
+
+(A_close - B_close) / A_close >= ab.chg_pct_min
+
+15.7 BC 收回
+
+(C_close - B_close) / (A_close - B_close) >= rebound.ratio_min
+
+15.8 AB 爆量
+
+AB 平均成交量 / baseline_window 平均成交量 >= vol_climax.ratio_min
+
+baseline_window 由 `structure.vol_climax.baseline_window_mins` 定义，不使用 S-A 作为量能基线。
+
+15.9 唯一结构选择
+
+B 从近到远扫描。
+
+第一组完整满足条件的 A-B-C 即为唯一结构。
+
+找到后立即停止，不再比较更远处结构。
+
+16. 1m 落盘数据结构
+
+本节记录 `bn_research_core` 当前 1m K线落盘结构。后续凡涉及 1m contract / idx 数据读取、审计脚本、复盘脚本，不应再猜路径，应以本节为准，或直接复用 `CrossSectionalFeeder`。
+
+16.1 contract 1m 数据
+
+根目录：
+
+```text
+data/klines_1m
+```
+
+目录结构：
+
+```text
+data/klines_1m/{SYMBOL}/{YYYY-MM}.parquet
+```
+
+示例：
+
+```text
+data/klines_1m/UMAUSDT/2025-05.parquet
+```
+
+单个 parquet 文件结构：
+
+```text
+index   : RangeIndex
+columns : open_time_ms, open, high, low, close, quote_asset_volume, high_idx, low_idx, close_idx
+```
+
+字段语义：
+
+```text
+open_time_ms        1m bar 开始时间，毫秒时间戳
+open/high/low/close contract OHLC
+quote_asset_volume  contract quote 成交额
+high_idx/low_idx/close_idx 同一 bar 对应的 index price 字段；仅供需要 idx 的策略或审计使用
+```
+
+spring-sabc 只使用 contract 字段：
+
+```text
+open/high/low/close/quote_asset_volume
+```
+
+不使用：
+
+```text
+high_idx/low_idx/close_idx
+```
+
+16.2 index 1m 数据
+
+根目录：
+
+```text
+data/index_klines_1m
+```
+
+目录结构：
+
+```text
+data/index_klines_1m/{SYMBOL}/{YYYY-MM}.parquet
+```
+
+示例：
+
+```text
+data/index_klines_1m/1000PEPEUSDT/2025-05.parquet
+```
+
+单个 parquet 文件结构：
+
+```text
+index   : RangeIndex
+columns : open_time_ms, open, high, low, close
+```
+
+字段语义：
+
+```text
+open_time_ms        1m index bar 开始时间，毫秒时间戳
+open/high/low/close index OHLC
+```
+
+16.3 读取纪律
+
+独立审计脚本若要读取 1m 数据，优先复用：
+
+```text
+core.engine.data_feeder.CrossSectionalFeeder
+```
+
+若必须直接读 parquet，则必须按本节目录结构读取：
+
+```text
+data/klines_1m/{SYMBOL}/{YYYY-MM}.parquet
+data/index_klines_1m/{SYMBOL}/{YYYY-MM}.parquet
+```
+
+禁止继续假设以下旧路径：
+
+```text
+data/klines_1m/{SYMBOL}.parquet
+data/klines_1m/{SYMBOL}/1m.parquet
+data/klines_1m/{SYMBOL}/{SYMBOL}.parquet
+```
+
+16.4 与 Spring-SABC 的关系
+
+spring-sabc 的价格语义是 contract-only。
+
+因此 spring-sabc 的 sim / audit / visualizer / pre-A 审计默认只读取 contract 1m 数据。
+
+index 数据结构记录在本文件中，是为了避免后续其他策略或历史审计再次重复确认落盘格式，不代表 spring-sabc 使用 idx。
+
 一句话总定义
 
 spring-sabc 是一套在强势候选池中，基于 1m contract bars 识别“连续洗盘 AB + 放量 + 快速收回 BC”，并在 C = HBs[0]、CB 时刻入场的顺势延续型 LONG-only 结构策略。
