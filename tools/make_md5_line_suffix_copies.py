@@ -7,8 +7,8 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-     "strategies/schedule_backtests.py",
-     "strategies/run_backtest.py",
+    # "strategies/schedule_backtests.py",
+    # "strategies/run_backtest.py",
     # "klines_1m_store.py",
     # "PROJECT_IRON_LAWS.md",
     # "audit_24hchg_vs_drop_window.py",
@@ -62,6 +62,8 @@ FILES = [
     #"docs/PROJECT_BASELINE.md",
     #"docs/STANDARD_PATCH_FRAMEWORK.md",
     #"docs/新聊天开场白.md",
+    #"docs/Spring-SABC_ABC结构定义.md",
+    #"docs/Spring-SABC项目语义基线.md",
     # "============= SAB 指纹提取和分析工具 ==============",
     #"analyze_sab_fingerprint_v1.py",
     #"extract_sab_fingerprint_v1.py",
@@ -69,6 +71,7 @@ FILES = [
     # "============= spring-sabc 策略 ==============",        
     # "strategies/spring/config.json",
     # "strategies/spring/logic.py",
+    "audit_spring_pre_a_profile.py",
 ]
 
 
