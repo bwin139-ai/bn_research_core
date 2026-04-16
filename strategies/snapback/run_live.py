@@ -50,6 +50,8 @@ _MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
 _MARKET_DATA_LOG_DIR = Path('output/logs')
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
 _CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 1
+_MARKET_TOTAL_24H_VOL_STATS_WINDOW = 30
+_MARKET_TOTAL_24H_VOL_ROLLING: dict[str, list[dict[str, Any]]] = {}
 EPS = 1e-9
 
 
@@ -253,6 +255,76 @@ def _json_default(v: Any) -> Any:
 
 def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
     return append_stage_record(account, stage, payload)
+
+
+def _record_market_total_24h_vol_sample(
+    account: str,
+    *,
+    notify_enabled: bool,
+    audit_enabled: bool,
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    market_total_24h_vol: float,
+    market_total_24h_vol_min: float,
+    market_total_24h_symbol_count: int,
+) -> None:
+    account_key = str(account).strip() or 'unknown'
+    sample = {
+        'bar_ts': int(current_time_ms),
+        'bar_bj': str(current_time_bj),
+        'c_bar_ts': int(c_bar_ts),
+        'c_bar_bj': str(c_bar_bj),
+        'market_total_24h_vol': float(market_total_24h_vol),
+        'market_total_24h_vol_min': float(market_total_24h_vol_min),
+        'market_total_24h_symbol_count': int(market_total_24h_symbol_count),
+    }
+    bucket = _MARKET_TOTAL_24H_VOL_ROLLING.setdefault(account_key, [])
+    bucket.append(sample)
+    if len(bucket) < _MARKET_TOTAL_24H_VOL_STATS_WINDOW:
+        return
+
+    window = bucket[:_MARKET_TOTAL_24H_VOL_STATS_WINDOW]
+    del bucket[:_MARKET_TOTAL_24H_VOL_STATS_WINDOW]
+
+    values = [float(x['market_total_24h_vol']) for x in window]
+    min_value = min(values)
+    max_value = max(values)
+    avg_value = sum(values) / float(len(values))
+    payload = {
+        'account': account_key,
+        'window_rounds': int(len(window)),
+        'first_bar_ts': int(window[0]['bar_ts']),
+        'first_bar_bj': str(window[0]['bar_bj']),
+        'last_bar_ts': int(window[-1]['bar_ts']),
+        'last_bar_bj': str(window[-1]['bar_bj']),
+        'first_c_bar_ts': int(window[0]['c_bar_ts']),
+        'first_c_bar_bj': str(window[0]['c_bar_bj']),
+        'last_c_bar_ts': int(window[-1]['c_bar_ts']),
+        'last_c_bar_bj': str(window[-1]['c_bar_bj']),
+        'market_total_24h_vol_min_observed': float(min_value),
+        'market_total_24h_vol_max_observed': float(max_value),
+        'market_total_24h_vol_avg_observed': float(avg_value),
+        'market_total_24h_vol_min_config': float(market_total_24h_vol_min),
+        'market_total_24h_symbol_count_min_observed': int(min(int(x['market_total_24h_symbol_count']) for x in window)),
+        'market_total_24h_symbol_count_max_observed': int(max(int(x['market_total_24h_symbol_count']) for x in window)),
+    }
+
+    if audit_enabled:
+        _write_stage_record(account_key, 'market_total_24h_vol_stats', payload)
+
+    body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
+    logging.info('[market_total_24h_vol_stats] %s', body)
+    _log_market_data_event(account_key, logging.INFO, '[market_total_24h_vol_stats] %s', body)
+
+    msg = (
+        f'[Snapback-Live] market_total_24h_vol 30轮统计 | account={account_key} | '
+        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
+        f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f} | '
+        f'config_min={float(market_total_24h_vol_min):.2f}'
+    )
+    _notify(bool(notify_enabled), msg)
 
 
 def _series_value(row: Any, key: str) -> Any:
@@ -1622,6 +1694,22 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     c_bar_bj = str(market_snapshot['latest_closed_bar_bj'])
     current_time_ms = int(market_snapshot.get('signal_time_ts') or (c_bar_ts + 60000))
     current_time_bj = str(market_snapshot.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
+
+    try:
+        _record_market_total_24h_vol_sample(
+            account,
+            notify_enabled=notify_enabled,
+            audit_enabled=audit_enabled,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            c_bar_ts=c_bar_ts,
+            c_bar_bj=c_bar_bj,
+            market_total_24h_vol=market_total_24h_vol_snapshot,
+            market_total_24h_vol_min=market_total_24h_vol_min,
+            market_total_24h_symbol_count=market_total_24h_symbol_count_snapshot,
+        )
+    except Exception as e:
+        logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
 
     if market_total_24h_vol_snapshot < market_total_24h_vol_min:
         if audit_enabled:
