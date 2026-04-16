@@ -7,21 +7,36 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_spring_pre_
   --out-dir output/state/spring_pre_a_profile.${RUNID}
 
 RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
-DEST=~/ai_projects/bn_research_core/output/audit_spring_pre_a
+DEST=~/ai_projects/bn_research_core/output/audit_spring
 mkdir -p "$DEST"
 scp -r \
   "aliyun-bn:/root/bn_research_core/output/state/spring_pre_a_profile.${RUNID}" \
   "$DEST"
 
 # ========= spring γ - A — C 审计 =========
+RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_spring_gamma_volume_profile.py \
-  --trades output/state/sim_trades.SPRING_V1_30D_P6_0416T1629_ALL.jsonl \
+  --trades output/state/sim_trades.${RUNID}.jsonl \
   --kline-root data/klines_1m \
-  --out-dir output/state/spring_gamma_volume_profile.SPRING_V1_30D_P6_0416T1629_ALL
+  --out-dir output/state/spring_gamma_volume_profile.${RUNID}
 
 RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
-DEST=~/ai_projects/bn_research_core/output/audit_spring_pre_a
+DEST=~/ai_projects/bn_research_core/output/audit_spring
 mkdir -p "$DEST"
 scp -r \
   "aliyun-bn:/root/bn_research_core/output/state/spring_gamma_volume_profile.${RUNID}" \
+  "$DEST"
+
+# ========= spring 离场审计 =========
+RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_spring_exit_behavior.py \
+  --trades output/state/sim_trades.${RUNID}.jsonl \
+  --kline-root data/klines_1m \
+  --out-dir output/state/spring_exit_behavior.${RUNID}
+
+RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
+DEST=~/ai_projects/bn_research_core/output/audit_spring
+mkdir -p "$DEST"
+scp -r \
+  "aliyun-bn:/root/bn_research_core/output/state/spring_exit_behavior.${RUNID}" \
   "$DEST"

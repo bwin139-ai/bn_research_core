@@ -75,6 +75,9 @@ class StrategyConfig:
         ("exit_policy", "take_profit_pct"),
         ("exit_policy", "max_hold_mins"),
         ("exit_policy", "time_stop_min_profit_pct"),
+        ("exit_policy", "breakeven_guard", "enabled"),
+        ("exit_policy", "breakeven_guard", "trigger_r"),
+        ("exit_policy", "breakeven_guard", "floor_r"),
         ("risk_controls", "cooldown_hours"),
         ("risk_controls", "max_risk_pct"),
     ]
@@ -177,6 +180,21 @@ class StrategyConfig:
             raise ValueError('【铁律违背】exit_policy.max_hold_mins 必须是非负整数')
         if not isinstance(time_stop_min_profit_pct, (int, float)):
             raise ValueError('【铁律违背】exit_policy.time_stop_min_profit_pct 必须是 number')
+        breakeven_guard = raw_data["exit_policy"]["breakeven_guard"]
+        if not isinstance(breakeven_guard.get("enabled"), bool):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.enabled 必须是 bool')
+        trigger_r = breakeven_guard.get("trigger_r")
+        floor_r = breakeven_guard.get("floor_r")
+        if not isinstance(trigger_r, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.trigger_r 必须是 number')
+        if not isinstance(floor_r, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须是 number')
+        if float(trigger_r) <= 0:
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.trigger_r 必须 > 0')
+        if float(floor_r) < 0:
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须 >= 0')
+        if float(floor_r) >= float(trigger_r):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须 < trigger_r')
         consecutive_down_bars_min = raw_data["structure"]["ab"]["consecutive_down_bars_min"]
         if not isinstance(consecutive_down_bars_min, int) or consecutive_down_bars_min <= 0:
             raise ValueError('【铁律违背】structure.ab.consecutive_down_bars_min 必须是正整数')

@@ -11,46 +11,6 @@ ps aux | grep '[s]trategies/snapback/run_live.py'
 ```bash
 
 ```
-
-pwd
-find data/klines_1m -maxdepth 3 -type f | head -5
-find data/klines_1m -maxdepth 3 -type d | head -10
-
-find data/index_klines_1m -maxdepth 3 -type f | head -5
-find data/index_klines_1m -maxdepth 3 -type d | head -10
-
-/root/service_env/bin/python - <<'PY'
-import pandas as pd
-from pathlib import Path
-
-files = list(Path("data/klines_1m").rglob("*.parquet"))
-print("parquet_count:", len(files))
-for p in files[:5]:
-    print("\nFILE:", p)
-    df = pd.read_parquet(p)
-    print("shape:", df.shape)
-    print("index:", type(df.index), df.index.names)
-    print("columns:", list(df.columns))
-    print(df.head(2))
-    break
-PY
-
-/root/service_env/bin/python - <<'PY'
-import pandas as pd
-from pathlib import Path
-
-files = list(Path("data/index_klines_1m").rglob("*.parquet"))
-print("parquet_count:", len(files))
-for p in files[:5]:
-    print("\nFILE:", p)
-    df = pd.read_parquet(p)
-    print("shape:", df.shape)
-    print("index:", type(df.index), df.index.names)
-    print("columns:", list(df.columns))
-    print(df.head(2))
-    break
-PY
-
 # ============== Spring-SABC 冒烟测试  ===============
 RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
 /root/service_env/bin/python strategies/run_backtest.py \
@@ -98,7 +58,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0416T1739_ALL"
+RUNID="SPRING_V1_30D_P6_0416T1924_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \

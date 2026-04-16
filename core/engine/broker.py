@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -45,6 +45,13 @@ class Position:
         self.signal_time_ms = signal_time_ms
         self.signal_price = signal_price
         self.context = context if context is not None else {}
+        self.breakeven_guard_enabled = False
+        self.breakeven_guard_armed = False
+        self.breakeven_guard_trigger_r = 0.0
+        self.breakeven_guard_floor_r = 0.0
+        self.breakeven_trigger_price = 0.0
+        self.breakeven_sl_price = 0.0
+        self.breakeven_armed_time_ms: Optional[int] = None
 
 
 class VirtualBroker:
@@ -61,6 +68,10 @@ class VirtualBroker:
             exit_policy = self.config["exit_policy"]
             self.max_hold_mins = int(exit_policy["max_hold_mins"])
             self.time_stop_min_profit = float(exit_policy["time_stop_min_profit_pct"])
+            breakeven_guard = exit_policy["breakeven_guard"]
+            self.breakeven_guard_enabled = bool(breakeven_guard["enabled"])
+            self.breakeven_guard_trigger_r = float(breakeven_guard["trigger_r"])
+            self.breakeven_guard_floor_r = float(breakeven_guard["floor_r"])
         else:
             time_stop_cfg = self.config["exit_policy"]["time_stop"]
             self.max_hold_mins = int(time_stop_cfg["max_hold_mins"])
@@ -111,6 +122,22 @@ class VirtualBroker:
                     closed_symbols.append(sym)
                     continue
 
+            if pos.breakeven_guard_enabled and not pos.breakeven_guard_armed:
+                if high >= pos.breakeven_trigger_price:
+                    pos.breakeven_guard_armed = True
+                    pos.breakeven_armed_time_ms = current_time_ms
+
+            if pos.breakeven_guard_armed and low <= pos.breakeven_sl_price:
+                self._close_position(
+                    sym,
+                    pos.breakeven_sl_price,
+                    current_time_ms,
+                    "BREAKEVEN_GUARD",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
+                closed_symbols.append(sym)
+                continue
+
             # 原有 TP/SL 逻辑（保持 STOP_LOSS 优先于 TAKE_PROFIT）
             if low <= pos.sl_price:
                 self._close_position(
@@ -151,6 +178,15 @@ class VirtualBroker:
             signal_price=order.signal_price,
             context=order.context,
         )
+
+        risk_distance = float(exec_price) - float(order.sl_price)
+        if self.breakeven_guard_enabled and risk_distance > 0:
+            pos.breakeven_guard_enabled = True
+            pos.breakeven_guard_trigger_r = self.breakeven_guard_trigger_r
+            pos.breakeven_guard_floor_r = self.breakeven_guard_floor_r
+            pos.breakeven_trigger_price = float(exec_price) + risk_distance * self.breakeven_guard_trigger_r
+            pos.breakeven_sl_price = float(exec_price) + risk_distance * self.breakeven_guard_floor_r
+
         self.active_positions[symbol] = pos
         time_str = pd.to_datetime(time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
         logging.info(
@@ -169,6 +205,10 @@ class VirtualBroker:
         pos = self.active_positions[symbol]
         pct_pnl = (price / pos.entry_price) - 1.0
 
+        breakeven_armed_time_bj = None
+        if pos.breakeven_armed_time_ms is not None:
+            breakeven_armed_time_bj = pd.to_datetime(pos.breakeven_armed_time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
+
         self.trade_history.append(
             {
                 "symbol": symbol,
@@ -181,6 +221,14 @@ class VirtualBroker:
                 "pnl_pct": pct_pnl,
                 "reason": reason,
                 "exit_bar_tp_sl_both_hit": bool(exit_bar_tp_sl_both_hit),
+                "breakeven_guard_enabled": bool(pos.breakeven_guard_enabled),
+                "breakeven_guard_armed": bool(pos.breakeven_guard_armed),
+                "breakeven_guard_trigger_r": float(pos.breakeven_guard_trigger_r),
+                "breakeven_guard_floor_r": float(pos.breakeven_guard_floor_r),
+                "breakeven_trigger_price": float(pos.breakeven_trigger_price),
+                "breakeven_sl_price": float(pos.breakeven_sl_price),
+                "breakeven_armed_time": pos.breakeven_armed_time_ms,
+                "breakeven_armed_time_bj": breakeven_armed_time_bj,
                 "context": pos.context,
             }
         )

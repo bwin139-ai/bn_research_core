@@ -50,6 +50,10 @@ class SpringSABCStrategy:
         self.take_profit_pct = float(exit_policy["take_profit_pct"])
         self.max_hold_mins = int(exit_policy["max_hold_mins"])
         self.time_stop_min_profit_pct = float(exit_policy["time_stop_min_profit_pct"])
+        breakeven_guard = exit_policy["breakeven_guard"]
+        self.breakeven_guard_enabled = bool(breakeven_guard["enabled"])
+        self.breakeven_guard_trigger_r = float(breakeven_guard["trigger_r"])
+        self.breakeven_guard_floor_r = float(breakeven_guard["floor_r"])
         self.cooldown_hours = float(risk_controls["cooldown_hours"])
         self.max_risk_pct = float(risk_controls["max_risk_pct"])
         self.cooldown_ms = int(round(self.cooldown_hours * 3600_000))
@@ -663,6 +667,9 @@ class SpringSABCStrategy:
                     "max_hold_mins": self.max_hold_mins,
                     "time_stop_min_profit_pct": self.time_stop_min_profit_pct,
                     "stop_loss_anchor": self.stop_loss_anchor,
+                    "breakeven_guard_enabled": self.breakeven_guard_enabled,
+                    "breakeven_guard_trigger_r": self.breakeven_guard_trigger_r,
+                    "breakeven_guard_floor_r": self.breakeven_guard_floor_r,
                     "cooldown_hours": self.cooldown_hours,
                     "max_risk_pct": self.max_risk_pct,
                     "gamma_ac_vol_ratio_min": self.gamma_ac_vol_ratio_min,
@@ -699,6 +706,9 @@ class SpringSABCStrategy:
                     "risk_pct": float(risk_pct),
                     "max_risk_pct": self.max_risk_pct,
                     "take_profit_mode": take_profit_mode,
+                    "breakeven_guard_enabled": self.breakeven_guard_enabled,
+                    "breakeven_guard_trigger_r": self.breakeven_guard_trigger_r,
+                    "breakeven_guard_floor_r": self.breakeven_guard_floor_r,
                     "abc_selection_mode": str(candidate.get("abc_selection_mode", "nearest_valid_b")),
                     "b_scan_direction": str(candidate.get("b_scan_direction", "from_c_leftward")),
                     "b_initial_filter": str(candidate.get("b_initial_filter", "c_close_gt_b_close")),
