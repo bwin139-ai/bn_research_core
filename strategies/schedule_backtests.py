@@ -121,6 +121,9 @@ def merge_jsonl_files(paths: List[Path], out_path: Path) -> int:
 
 
 def merge_viz_dirs(paths: List[Path], out_dir: Path) -> int:
+    # Rebuild merged viz directory from scratch to avoid stale PNGs from previous runs.
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     ensure_dir(out_dir)
     copied = 0
     for path in paths:

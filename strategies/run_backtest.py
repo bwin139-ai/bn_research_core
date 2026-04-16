@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import sys
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
@@ -333,6 +334,246 @@ def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side
         },
         "monthly_stats": _build_monthly_stats(rows, initial_equity),
     }
+
+
+
+def _spring_reason_short(reason: Any) -> str:
+    value = str(reason or "UNKNOWN").upper()
+    if value == "TAKE_PROFIT":
+        return "TP"
+    if value == "STOP_LOSS":
+        return "SL"
+    if value == "TIME_STOP":
+        return "TS"
+    return value
+
+
+def _spring_bj_from_ms(ts_ms: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    try:
+        return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).astimezone(BJ_TZ).strftime(fmt)
+    except Exception:
+        return "NA"
+
+
+def _spring_price_text(value: Any) -> str:
+    fv = _safe_float(value, None)
+    if fv is None:
+        return "NA"
+    afv = abs(fv)
+    if afv >= 100:
+        s = f"{fv:.2f}"
+    elif afv >= 1:
+        s = f"{fv:.4f}"
+    elif afv >= 0.01:
+        s = f"{fv:.6f}"
+    else:
+        s = f"{fv:.8f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def _spring_pct_text(value: Any) -> str:
+    fv = _safe_float(value, None)
+    if fv is None:
+        return "NA"
+    return f"{fv * 100.0:.2f}%"
+
+
+def _spring_compact_volume(value: Any) -> str:
+    fv = _safe_float(value, None)
+    if fv is None:
+        return "NA"
+    if abs(fv) >= 1_000_000_000:
+        return f"{fv / 1_000_000_000:.2f}B"
+    if abs(fv) >= 1_000_000:
+        return f"{fv / 1_000_000:.1f}M"
+    if abs(fv) >= 1_000:
+        return f"{fv / 1_000:.1f}K"
+    return f"{fv:.0f}"
+
+
+def _spring_symbol_df(feeder_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if not isinstance(feeder_df, pd.DataFrame) or feeder_df.empty:
+        return pd.DataFrame()
+    if isinstance(feeder_df.index, pd.MultiIndex):
+        if "symbol" in feeder_df.index.names:
+            try:
+                out = feeder_df.xs(symbol, level="symbol").copy()
+            except Exception:
+                return pd.DataFrame()
+        else:
+            try:
+                out = feeder_df.xs(symbol, level=-1).copy()
+            except Exception:
+                return pd.DataFrame()
+    else:
+        out = feeder_df.copy()
+    try:
+        out.index = pd.Index([int(x) for x in out.index])
+    except Exception:
+        return pd.DataFrame()
+    return out.sort_index()
+
+
+def _spring_row_at_or_before(df: pd.DataFrame, ts_ms: int) -> Optional[pd.Series]:
+    if df.empty:
+        return None
+    idx = df.index
+    try:
+        pos = idx.searchsorted(int(ts_ms), side="right") - 1
+    except Exception:
+        return None
+    if pos < 0 or pos >= len(df):
+        return None
+    return df.iloc[int(pos)]
+
+
+def _spring_candle_window(feeder_df: pd.DataFrame, trade: Dict[str, Any]) -> pd.DataFrame:
+    symbol = str(trade.get("symbol") or "")
+    context = dict(trade.get("context") or {})
+    df = _spring_symbol_df(feeder_df, symbol)
+    if df.empty:
+        return df
+    c_time = int(context.get("c_time_ms") or trade.get("signal_time") or trade.get("entry_time"))
+    pattern_bars = int(context.get("pattern_window_bars") or 60)
+    s_time = c_time - max(0, pattern_bars - 1) * 60_000
+    exit_time = int(trade.get("exit_time") or trade.get("entry_time") or c_time)
+    start_ms = s_time - 60 * 60_000
+    end_ms = exit_time + 15 * 60_000
+    return df[(df.index >= start_ms) & (df.index <= end_ms)].copy()
+
+
+def _spring_marker_points(trade: Dict[str, Any], window_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    context = dict(trade.get("context") or {})
+    c_time = int(context.get("c_time_ms") or trade.get("signal_time") or trade.get("entry_time"))
+    pattern_bars = int(context.get("pattern_window_bars") or 60)
+    s_time = c_time - max(0, pattern_bars - 1) * 60_000
+    s_row = _spring_row_at_or_before(window_df, s_time)
+    s_price = _safe_float(s_row.get("close") if s_row is not None else None, None)
+    return [
+        {"label": "S", "time": s_time, "price": s_price},
+        {"label": "A", "time": int(context.get("a_time_ms")), "price": _safe_float(context.get("a_close"), None)},
+        {"label": "B", "time": int(context.get("b_time_ms")), "price": _safe_float(context.get("b_close"), None)},
+        {"label": "C", "time": int(context.get("c_time_ms")), "price": _safe_float(context.get("c_close"), None)},
+        {"label": "E", "time": int(trade.get("exit_time")), "price": _safe_float(trade.get("exit_price"), None)},
+    ]
+
+
+def _plot_spring_trade_kline_mpl(trade: Dict[str, Any], feeder_df: pd.DataFrame, output_dir: str) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    symbol = str(trade.get("symbol") or "UNKNOWN")
+    context = dict(trade.get("context") or {})
+    window_df = _spring_candle_window(feeder_df, trade)
+    if window_df.empty:
+        logging.warning(f"Spring复盘图跳过：{symbol} 没有可用K线窗口")
+        return
+
+    required_cols = {"open", "high", "low", "close"}
+    if not required_cols.issubset(set(window_df.columns)):
+        logging.warning(f"Spring复盘图跳过：{symbol} 缺少OHLC字段")
+        return
+
+    vol_col = "quote_asset_volume" if "quote_asset_volume" in window_df.columns else ("volume" if "volume" in window_df.columns else None)
+    xs = np.arange(len(window_df))
+    ts_to_x = {int(ts): i for i, ts in enumerate(window_df.index.tolist())}
+
+    fig, (ax_price, ax_vol) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.2, 1.0]},
+    )
+
+    width = 0.6
+    for i, (_, row) in enumerate(window_df.iterrows()):
+        o = float(row["open"])
+        h = float(row["high"])
+        l = float(row["low"])
+        c = float(row["close"])
+        color = "#15803d" if c >= o else "#dc2626"
+        ax_price.vlines(i, l, h, color=color, linewidth=0.8, alpha=0.85)
+        body_low = min(o, c)
+        body_h = max(abs(c - o), max(abs(h - l) * 0.015, 1e-12))
+        ax_price.add_patch(Rectangle((i - width / 2.0, body_low), width, body_h, facecolor=color, edgecolor=color, linewidth=0.6, alpha=0.85))
+        if vol_col:
+            ax_vol.bar(i, float(row[vol_col]), width=0.75, color="#6b7280", alpha=0.85)
+
+    markers = _spring_marker_points(trade, window_df)
+    price_span = max(float(window_df["high"].max()) - float(window_df["low"].min()), 1e-12)
+    for point in markers:
+        ts = int(point["time"])
+        if ts not in ts_to_x:
+            continue
+        price = _safe_float(point.get("price"), None)
+        if price is None:
+            continue
+        x = ts_to_x[ts]
+        ax_price.scatter([x], [price], s=30, zorder=5)
+        ax_price.text(x, price + price_span * 0.025, point["label"], fontsize=9, fontweight="bold", ha="center", va="bottom")
+
+    pnl = _safe_float(trade.get("pnl_pct"), 0.0) or 0.0
+    hold_mins = 0
+    entry_time = _safe_float(trade.get("entry_time"), None)
+    exit_time = _safe_float(trade.get("exit_time"), None)
+    if entry_time is not None and exit_time is not None and exit_time >= entry_time:
+        hold_mins = int(round((exit_time - entry_time) / 60000.0))
+    reason = _spring_reason_short(trade.get("reason"))
+    signal_time_bj = str(trade.get("signal_time_bj") or _spring_bj_from_ms(trade.get("signal_time")))
+    ax_price.set_title(f"{signal_time_bj} | {symbol} | PnL: {pnl * 100.0:.2f}% | {reason}({hold_mins}m)", fontsize=14, fontweight="bold")
+    ax_price.set_ylabel("Price")
+    ax_vol.set_ylabel("Quote Vol" if vol_col == "quote_asset_volume" else "Volume")
+    ax_price.grid(True, linestyle="--", alpha=0.35)
+    ax_vol.grid(True, linestyle="--", alpha=0.25)
+    ax_price.tick_params(axis="x", labelbottom=False)
+    ax_vol.tick_params(axis="x", labelbottom=False)
+    ax_vol.set_xticklabels([])
+
+    def _pt(label: str) -> Dict[str, Any]:
+        return next((p for p in markers if p["label"] == label), {})
+
+    s = _pt("S")
+    a = _pt("A")
+    b = _pt("B")
+    c = _pt("C")
+    e = _pt("E")
+    line1 = (
+        f"S {_spring_bj_from_ms(s.get('time'), '%H:%M')} @ {_spring_price_text(s.get('price'))} | "
+        f"A {_spring_bj_from_ms(a.get('time'), '%H:%M')} @ {_spring_price_text(a.get('price'))} | "
+        f"B {_spring_bj_from_ms(b.get('time'), '%H:%M')} @ {_spring_price_text(b.get('price'))} | "
+        f"C {_spring_bj_from_ms(c.get('time'), '%H:%M')} @ {_spring_price_text(c.get('price'))} | "
+        f"E {_spring_bj_from_ms(e.get('time'), '%H:%M')} @ {_spring_price_text(e.get('price'))}"
+    )
+    line2 = (
+        f"abBars {int(context.get('ab_bars', 0))} | bcBars {int(context.get('bc_bars', 0))} | "
+        f"bc/ab {_safe_float(context.get('bc_over_ab_bars'), 0.0):.2f} | "
+        f"abChg {_spring_pct_text(context.get('ab_chg_pct'))} | "
+        f"rebound {_spring_pct_text(context.get('rebound_ratio'))} | "
+        f"volR {_safe_float(context.get('vol_ratio'), 0.0):.2f}"
+    )
+    line3 = (
+        f"A close/high {_spring_price_text(context.get('a_close'))}/{_spring_price_text(context.get('a_high'))} | "
+        f"B close/low {_spring_price_text(context.get('b_close'))}/{_spring_price_text(context.get('b_low'))} | "
+        f"C close {_spring_price_text(context.get('c_close'))}"
+    )
+    line4 = (
+        f"24hChg {_spring_pct_text(context.get('chg_24h'))} | "
+        f"24hVol {_spring_compact_volume(context.get('vol_24h'))} | "
+        f"score_order {int(context.get('score_order', 0))} | score {int(context.get('score', 0))}"
+    )
+    fig.text(0.5, 0.075, line1, ha="center", va="center", fontsize=10, family="monospace")
+    fig.text(0.5, 0.050, line2, ha="center", va="center", fontsize=10, family="monospace")
+    fig.text(0.5, 0.025, line3, ha="center", va="center", fontsize=10, family="monospace")
+    fig.text(0.5, 0.005, line4, ha="center", va="center", fontsize=10, family="monospace")
+    plt.tight_layout(rect=[0.03, 0.10, 0.98, 0.94])
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    sig_bj = _spring_bj_from_ms(trade.get("signal_time"), "%Y%m%d_%H%M")
+    filename = f"SPRING_{sig_bj}_{symbol}_{reason}.png"
+    fig.savefig(out_path / filename, dpi=150)
+    plt.close(fig)
 
 
 def main():
@@ -688,11 +929,18 @@ def main():
         json.dump(safe_report, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
     # 6. 可视化导出
     viz_dir = os.path.join(out_dir, f"sim_viz_{args.run_id}")
-    visualizer = StrategyVisualizerMatplotlib(output_dir=viz_dir)
-    for trade in trade_history:
-        visualizer.plot_trade_kline_mpl(
-            trade=trade, feeder_df=feeder.df, window_mins_1m=args.kline_window
-        )
+    if os.path.exists(viz_dir):
+        shutil.rmtree(viz_dir)
+    os.makedirs(viz_dir, exist_ok=True)
+    if args.strategy == "spring-sabc":
+        for trade in trade_history:
+            _plot_spring_trade_kline_mpl(trade=trade, feeder_df=feeder.df, output_dir=viz_dir)
+    else:
+        visualizer = StrategyVisualizerMatplotlib(output_dir=viz_dir)
+        for trade in trade_history:
+            visualizer.plot_trade_kline_mpl(
+                trade=trade, feeder_df=feeder.df, window_mins_1m=args.kline_window
+            )
 
     logging.info("=" * 60)
     logging.info("回测完成！")
