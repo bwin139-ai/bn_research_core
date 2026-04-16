@@ -107,6 +107,57 @@ class VirtualBroker:
                 low <= pos.sl_price and high >= pos.tp_price
             )
 
+            # 持仓检查优先级按 Spring-SABC 语义基线执行：
+            # 1) 原始 STOP_LOSS
+            # 2) TAKE_PROFIT
+            # 3) BREAKEVEN_GUARD（armed 后下一根 bar 才允许触发）
+            # 4) TIME_STOP
+            #
+            # live 侧 SL/TP 是 entry 后已在交易所存在的条件单，实时触发；
+            # BREAKEVEN_GUARD 只能在 on_kline_close(...) 观察最近闭合 bar 后，于 CB 执行撤旧 SL / 挂新 SL。
+            # 因此 sim 禁止同一根 bar 内先 armed 再 BREAKEVEN_GUARD exit。
+            if low <= pos.sl_price:
+                self._close_position(
+                    sym,
+                    pos.sl_price,
+                    current_time_ms,
+                    "STOP_LOSS",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
+                closed_symbols.append(sym)
+                continue
+            if high >= pos.tp_price:
+                self._close_position(
+                    sym,
+                    pos.tp_price,
+                    current_time_ms,
+                    "TAKE_PROFIT",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
+                closed_symbols.append(sym)
+                continue
+
+            breakeven_active_from_prior_bar = (
+                pos.breakeven_guard_armed
+                and pos.breakeven_armed_time_ms is not None
+                and int(current_time_ms) > int(pos.breakeven_armed_time_ms)
+            )
+            if breakeven_active_from_prior_bar and low <= pos.breakeven_sl_price:
+                self._close_position(
+                    sym,
+                    pos.breakeven_sl_price,
+                    current_time_ms,
+                    "BREAKEVEN_GUARD",
+                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
+                )
+                closed_symbols.append(sym)
+                continue
+
+            if pos.breakeven_guard_enabled and not pos.breakeven_guard_armed:
+                if high >= pos.breakeven_trigger_price:
+                    pos.breakeven_guard_armed = True
+                    pos.breakeven_armed_time_ms = current_time_ms
+
             # ⏱️ 模块二：时间熔断 (Time Stop)
             held_mins = int((current_time_ms - pos.entry_time_ms) / 60000)
             if held_mins >= self.max_hold_mins:
@@ -121,42 +172,6 @@ class VirtualBroker:
                     )
                     closed_symbols.append(sym)
                     continue
-
-            if pos.breakeven_guard_enabled and not pos.breakeven_guard_armed:
-                if high >= pos.breakeven_trigger_price:
-                    pos.breakeven_guard_armed = True
-                    pos.breakeven_armed_time_ms = current_time_ms
-
-            if pos.breakeven_guard_armed and low <= pos.breakeven_sl_price:
-                self._close_position(
-                    sym,
-                    pos.breakeven_sl_price,
-                    current_time_ms,
-                    "BREAKEVEN_GUARD",
-                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
-                )
-                closed_symbols.append(sym)
-                continue
-
-            # 原有 TP/SL 逻辑（保持 STOP_LOSS 优先于 TAKE_PROFIT）
-            if low <= pos.sl_price:
-                self._close_position(
-                    sym,
-                    pos.sl_price,
-                    current_time_ms,
-                    "STOP_LOSS",
-                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
-                )
-                closed_symbols.append(sym)
-            elif high >= pos.tp_price:
-                self._close_position(
-                    sym,
-                    pos.tp_price,
-                    current_time_ms,
-                    "TAKE_PROFIT",
-                    exit_bar_tp_sl_both_hit=exit_bar_tp_sl_both_hit,
-                )
-                closed_symbols.append(sym)
 
         for sym in closed_symbols:
             if sym in self.active_positions:
