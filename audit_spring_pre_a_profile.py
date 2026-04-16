@@ -61,20 +61,9 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def _load_symbol_df(kline_root: Path, symbol: str) -> pd.DataFrame:
-    candidates = [
-        kline_root / f"{symbol}.parquet",
-        kline_root / symbol / "1m.parquet",
-        kline_root / symbol / f"{symbol}.parquet",
-    ]
-    path = next((p for p in candidates if p.exists()), None)
-    if path is None:
-        matches = list(kline_root.rglob(f"{symbol}*.parquet"))
-        path = matches[0] if matches else None
-    if path is None:
+def _normalize_symbol_df(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if df.empty:
         return pd.DataFrame()
-
-    df = pd.read_parquet(path)
     if isinstance(df.index, pd.MultiIndex):
         if "symbol" in df.index.names:
             try:
@@ -84,7 +73,8 @@ def _load_symbol_df(kline_root: Path, symbol: str) -> pd.DataFrame:
         if isinstance(df.index, pd.MultiIndex):
             df = df.reset_index()
     else:
-        df = df.reset_index() if "open_time" not in df.columns and "open_time_ms" not in df.columns and "timestamp" not in df.columns else df.copy()
+        has_ts_col = any(c in df.columns for c in ["open_time_ms", "open_time", "timestamp", "ts", "time"])
+        df = df.copy() if has_ts_col else df.reset_index()
 
     ts_col = None
     for c in ["open_time_ms", "open_time", "timestamp", "ts", "time"]:
@@ -92,7 +82,6 @@ def _load_symbol_df(kline_root: Path, symbol: str) -> pd.DataFrame:
             ts_col = c
             break
     if ts_col is None:
-        # reset_index commonly creates an index column with millisecond timestamps
         for c in df.columns:
             if str(c).lower() in {"index", "datetime"}:
                 ts_col = c
@@ -107,8 +96,41 @@ def _load_symbol_df(kline_root: Path, symbol: str) -> pd.DataFrame:
         out["open_time_ms"] = pd.to_numeric(out[ts_col], errors="coerce").astype("Int64")
     out = out.dropna(subset=["open_time_ms"]).copy()
     out["open_time_ms"] = out["open_time_ms"].astype("int64")
-    out = out.drop_duplicates("open_time_ms").sort_values("open_time_ms").set_index("open_time_ms")
-    return out
+    return out.drop_duplicates("open_time_ms").sort_values("open_time_ms").set_index("open_time_ms")
+
+
+def _load_symbol_df(kline_root: Path, symbol: str) -> pd.DataFrame:
+    # Current project layout:
+    #   data/klines_1m/{SYMBOL}/{YYYY-MM}.parquet
+    symbol_dir = kline_root / symbol
+    if symbol_dir.exists() and symbol_dir.is_dir():
+        monthly_paths = sorted(symbol_dir.glob("*.parquet"))
+        if monthly_paths:
+            frames = []
+            for path in monthly_paths:
+                try:
+                    frames.append(pd.read_parquet(path))
+                except Exception:
+                    continue
+            if frames:
+                return _normalize_symbol_df(pd.concat(frames, ignore_index=True), symbol)
+
+    # Defensive compatibility for one-file layouts used by ad-hoc exports.
+    candidates = [
+        kline_root / f"{symbol}.parquet",
+        kline_root / symbol / "1m.parquet",
+        kline_root / symbol / f"{symbol}.parquet",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        matches = list(kline_root.rglob(f"{symbol}*.parquet"))
+        path = matches[0] if matches else None
+    if path is None:
+        return pd.DataFrame()
+    try:
+        return _normalize_symbol_df(pd.read_parquet(path), symbol)
+    except Exception:
+        return pd.DataFrame()
 
 
 def _sum_col(df: pd.DataFrame, preferred: List[str]) -> float:
