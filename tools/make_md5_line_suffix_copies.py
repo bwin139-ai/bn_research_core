@@ -7,8 +7,8 @@ import shutil
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
-    # "strategies/schedule_backtests.py",
-    # "strategies/run_backtest.py",
+     "strategies/schedule_backtests.py",
+     "strategies/run_backtest.py",
     # "klines_1m_store.py",
     # "PROJECT_IRON_LAWS.md",
     # "audit_24hchg_vs_drop_window.py",
@@ -26,7 +26,7 @@ FILES = [
     # "core/analysis/sim_equity_curves.py",
     # "=============== core ==================",
     # "core/message_bridge.py",
-     "core/config_loader.py",
+    # "core/config_loader.py",
     # "core/runtime_state.py",
     # "core/analysis/analyzer.py",
     # "core/analysis/top1_equity_curve.py",
@@ -67,8 +67,8 @@ FILES = [
     #"extract_sab_fingerprint_v1.py",
     #"audit_m_gt_10_top5_combo_replay_v1.py",
     # "============= spring-sabc 策略 ==============",        
-     "strategies/spring/config.json",
-     "strategies/spring/logic.py",
+    # "strategies/spring/config.json",
+    # "strategies/spring/logic.py",
 ]
 
 

@@ -91,12 +91,13 @@ scp \
 
   sim_log.Spring_SmokeTest_V1_0415T1224.txt
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
-RUNID="Spring_SmokeTest_V1_0415T1632"
+RUNID="Spring_SmokeTest_V1_0416T1309"
 DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp -r \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_signals.${RUNID}.jsonl" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_trades.${RUNID}.jsonl" \
+  "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_viz_${RUNID}" \
   "aliyun-bn:/root/bn_research_core/output/SmokeTest/sim_forensic.${RUNID}.jsonl" \
   "$DEST"
 # *****download*****  拉 sim/live一致性审计数据 *****download***** 
@@ -221,7 +222,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0416T0057_ALL"
+RUNID="SPRING_V1_30D_P6_0416T1120_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \
@@ -244,7 +245,7 @@ scp -r \
   "$DEST"
 
 # *****download*****  拉复盘k线图表 *****download***** 
-RUNID="SNAP_V10.1_30D_P6_0413T2000_ALL"
+RUNID="SPRING_V1_30D_P6_0416T0057_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_viz_60m_40B
 mkdir -p "$DEST"
 scp -r \

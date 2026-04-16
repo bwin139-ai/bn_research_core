@@ -36,7 +36,6 @@
       "MUSDT",
       "1000SHIBUSDT",
       "TONUSDT",
-      "RAVEUSDT",
       "TAOUSDT",
       "WLFIUSDT",
       "PAXGUSDT",
@@ -54,7 +53,7 @@
   "structure": {
     "pattern_window_mins": 60,
     "ab": {
-      "chg_pct_min": 0.06,
+      "chg_pct_min": 0.05,
       "consecutive_down_bars_min": 2
     },
     "vol_climax": {
