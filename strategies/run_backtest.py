@@ -511,7 +511,7 @@ def _plot_spring_trade_kline_mpl(trade: Dict[str, Any], feeder_df: pd.DataFrame,
             continue
         x = ts_to_x[ts]
         ax_price.scatter([x], [price], s=30, zorder=5)
-        ax_price.text(x, price + price_span * 0.025, point["label"], fontsize=9, fontweight="bold", ha="center", va="bottom")
+        ax_price.text(x, price + price_span * 0.025, point["label"], fontsize=10, fontweight="bold", ha="center", va="bottom")
 
     pnl = _safe_float(trade.get("pnl_pct"), 0.0) or 0.0
     hold_mins = 0
@@ -521,7 +521,13 @@ def _plot_spring_trade_kline_mpl(trade: Dict[str, Any], feeder_df: pd.DataFrame,
         hold_mins = int(round((exit_time - entry_time) / 60000.0))
     reason = _spring_reason_short(trade.get("reason"))
     signal_time_bj = str(trade.get("signal_time_bj") or _spring_bj_from_ms(trade.get("signal_time")))
-    ax_price.set_title(f"{signal_time_bj} | {symbol} | PnL: {pnl * 100.0:.2f}% | {reason}({hold_mins}m)", fontsize=14, fontweight="bold")
+    title_color = "#15803d" if pnl >= 0 else "#dc2626"
+    ax_price.set_title(
+        f"{signal_time_bj} | {symbol} | PnL: {pnl * 100.0:.2f}% | {reason}({hold_mins}m)",
+        fontsize=14,
+        fontweight="bold",
+        color=title_color,
+    )
     ax_price.set_ylabel("Price")
     ax_vol.set_ylabel("Quote Vol" if vol_col == "quote_asset_volume" else "Volume")
     ax_price.grid(True, linestyle="--", alpha=0.35)
@@ -539,11 +545,11 @@ def _plot_spring_trade_kline_mpl(trade: Dict[str, Any], feeder_df: pd.DataFrame,
     c = _pt("C")
     e = _pt("E")
     line1 = (
-        f"S {_spring_bj_from_ms(s.get('time'), '%H:%M')} @ {_spring_price_text(s.get('price'))} | "
-        f"A {_spring_bj_from_ms(a.get('time'), '%H:%M')} @ {_spring_price_text(a.get('price'))} | "
-        f"B {_spring_bj_from_ms(b.get('time'), '%H:%M')} @ {_spring_price_text(b.get('price'))} | "
-        f"C {_spring_bj_from_ms(c.get('time'), '%H:%M')} @ {_spring_price_text(c.get('price'))} | "
-        f"E {_spring_bj_from_ms(e.get('time'), '%H:%M')} @ {_spring_price_text(e.get('price'))}"
+        f"S {_spring_bj_from_ms(s.get('time'), '%H:%M')}@{_spring_price_text(s.get('price'))} | "
+        f"A {_spring_bj_from_ms(a.get('time'), '%H:%M')}@{_spring_price_text(a.get('price'))} | "
+        f"B {_spring_bj_from_ms(b.get('time'), '%H:%M')}@{_spring_price_text(b.get('price'))} | "
+        f"C {_spring_bj_from_ms(c.get('time'), '%H:%M')}@{_spring_price_text(c.get('price'))} | "
+        f"E {_spring_bj_from_ms(e.get('time'), '%H:%M')}@{_spring_price_text(e.get('price'))}"
     )
     line2 = (
         f"abBars {int(context.get('ab_bars', 0))} | bcBars {int(context.get('bc_bars', 0))} | "
@@ -562,10 +568,10 @@ def _plot_spring_trade_kline_mpl(trade: Dict[str, Any], feeder_df: pd.DataFrame,
         f"24hVol {_spring_compact_volume(context.get('vol_24h'))} | "
         f"score_order {int(context.get('score_order', 0))} | score {int(context.get('score', 0))}"
     )
-    fig.text(0.5, 0.075, line1, ha="center", va="center", fontsize=10, family="monospace")
-    fig.text(0.5, 0.050, line2, ha="center", va="center", fontsize=10, family="monospace")
-    fig.text(0.5, 0.025, line3, ha="center", va="center", fontsize=10, family="monospace")
-    fig.text(0.5, 0.005, line4, ha="center", va="center", fontsize=10, family="monospace")
+    fig.text(0.5, 0.075, line1, ha="center", va="center", fontsize=11, family="monospace")
+    fig.text(0.5, 0.050, line2, ha="center", va="center", fontsize=11, family="monospace")
+    fig.text(0.5, 0.025, line3, ha="center", va="center", fontsize=11, family="monospace")
+    fig.text(0.5, 0.005, line4, ha="center", va="center", fontsize=11, family="monospace")
     plt.tight_layout(rect=[0.03, 0.10, 0.98, 0.94])
 
     out_path = Path(output_dir)
