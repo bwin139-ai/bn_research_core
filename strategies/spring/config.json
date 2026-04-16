@@ -98,7 +98,7 @@
     "time_stop_min_profit_pct": 0.005,
     "breakeven_guard": {
       "enabled": true,
-      "trigger_r": 0.5,
+      "trigger_r": 0.8,
       "floor_r": 0.0
     }
   },

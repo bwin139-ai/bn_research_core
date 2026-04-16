@@ -58,7 +58,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0416T2020_ALL"
+RUNID="SPRING_V1_30D_P6_0416T2223_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \
@@ -202,3 +202,6 @@ pkill -f "strategies/run_backtest.py|schedule_backtests.py"
 如果还没干净，再用 -9：
 pkill -9 -f 'strategies/run_backtest.py --strategy snapback'
 pkill -9 -f 'schedule_backtests.py --strategy snapback'
+
+
+/root/service_env/bin/python tools/cleanup_expired_stage3_run.py
