@@ -42,6 +42,7 @@ class SpringSABCStrategy:
         self.ab_consecutive_down_bars_min = int(structure["ab"]["consecutive_down_bars_min"])
         self.vol_baseline_window_mins = int(structure["vol_climax"]["baseline_window_mins"])
         self.vol_ratio_min = float(structure["vol_climax"]["ratio_min"])
+        self.gamma_ac_vol_ratio_min = float(structure["vol_climax"]["gamma_ac_vol_ratio_min"])
         self.rebound_ratio_min = float(structure["rebound"]["ratio_min"])
         self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
 
@@ -117,6 +118,7 @@ class SpringSABCStrategy:
             f" | 24h成交额: {self._safe_float(context.get('vol_24h'), 0.0):.0f}"
             f" | AB跌幅: {self._pct_text(context.get('ab_chg_pct'))}"
             f" | 爆量倍数: {self._safe_float(context.get('vol_ratio'), 0.0):.2f}"
+            f" | AC/γA量比: {self._safe_float(context.get('gamma_ac_vol_ratio'), 0.0):.2f}"
             f" | 反弹比例: {self._pct_text(context.get('rebound_ratio'))}"
             f" | AB/BC: {int(context.get('ab_bars', 0))}/{int(context.get('bc_bars', 0))}"
             f" | 评分: {int(context.get('score', 0))} (#{int(context.get('score_order', 0))})"
@@ -456,10 +458,31 @@ class SpringSABCStrategy:
             if vol_ratio < self.vol_ratio_min:
                 continue
 
+            hist_len = len(hist)
+            pattern_start_pos = hist_len - len(pattern_df)
+            hist_a_pos = pattern_start_pos + a_idx
+            hist_c_pos = pattern_start_pos + c_idx
+            bars_ac = hist_c_pos - hist_a_pos
+            gamma_pos = hist_a_pos - bars_ac
+            if bars_ac <= 0 or gamma_pos < 0:
+                continue
+            hist_vol_values = [float(x) for x in pd.to_numeric(hist[vol_col], errors="coerce").tolist()]
+            if any(pd.isna(x) for x in hist_vol_values):
+                continue
+            hist_time_values = [int(x) for x in hist.index.tolist()]
+            vol_gamma_a = float(sum(hist_vol_values[gamma_pos + 1 : hist_a_pos + 1]))
+            vol_ac = float(sum(hist_vol_values[hist_a_pos + 1 : hist_c_pos + 1]))
+            if vol_gamma_a <= 0:
+                continue
+            gamma_ac_vol_ratio = vol_ac / vol_gamma_a
+            if gamma_ac_vol_ratio < self.gamma_ac_vol_ratio_min:
+                continue
+
             best = {
                 "a_idx": a_idx,
                 "b_idx": b_idx,
                 "c_idx": c_idx,
+                "gamma_time_ms": hist_time_values[gamma_pos],
                 "a_time_ms": time_values[a_idx],
                 "b_time_ms": time_values[b_idx],
                 "c_time_ms": c_time_ms,
@@ -472,10 +495,15 @@ class SpringSABCStrategy:
                 "bc_bars": int(bc_bars),
                 "ab_chg_pct": float(ab_chg_pct),
                 "rebound_ratio": float(rebound_ratio),
+                "bars_ac": int(bars_ac),
                 "bc_over_ab_bars": float(bc_over_ab),
                 "ab_avg_vol": float(ab_avg_vol),
                 "baseline_avg_vol": float(baseline_avg_vol),
                 "vol_ratio": float(vol_ratio),
+                "vol_gamma_a": float(vol_gamma_a),
+                "vol_ac": float(vol_ac),
+                "gamma_ac_vol_ratio": float(gamma_ac_vol_ratio),
+                "gamma_ac_vol_ratio_min": float(self.gamma_ac_vol_ratio_min),
                 "abc_selection_mode": "nearest_valid_b",
                 "b_scan_direction": "from_c_leftward",
                 "b_initial_filter": "c_close_gt_b_close",
@@ -637,6 +665,7 @@ class SpringSABCStrategy:
                     "stop_loss_anchor": self.stop_loss_anchor,
                     "cooldown_hours": self.cooldown_hours,
                     "max_risk_pct": self.max_risk_pct,
+                    "gamma_ac_vol_ratio_min": self.gamma_ac_vol_ratio_min,
                 },
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -646,6 +675,7 @@ class SpringSABCStrategy:
                     "vol_24h": float(candidate.get("vol_24h", 0.0)),
                     "a_time_ms": int(candidate["a_time_ms"]),
                     "b_time_ms": int(candidate["b_time_ms"]),
+                    "gamma_time_ms": int(candidate["gamma_time_ms"]),
                     "c_time_ms": int(candidate["c_time_ms"]),
                     "a_close": float(candidate["a_close"]),
                     "a_high": float(candidate.get("a_high", candidate["a_close"])),
@@ -656,8 +686,13 @@ class SpringSABCStrategy:
                     "bc_bars": int(candidate["bc_bars"]),
                     "ab_chg_pct": float(candidate["ab_chg_pct"]),
                     "rebound_ratio": float(candidate["rebound_ratio"]),
+                    "bars_ac": int(candidate["bars_ac"]),
                     "bc_over_ab_bars": float(candidate["bc_over_ab_bars"]),
                     "vol_ratio": float(candidate["vol_ratio"]),
+                    "vol_gamma_a": float(candidate["vol_gamma_a"]),
+                    "vol_ac": float(candidate["vol_ac"]),
+                    "gamma_ac_vol_ratio": float(candidate["gamma_ac_vol_ratio"]),
+                    "gamma_ac_vol_ratio_min": float(candidate["gamma_ac_vol_ratio_min"]),
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),

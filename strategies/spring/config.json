@@ -58,7 +58,8 @@
     },
     "vol_climax": {
       "baseline_window_mins": 120,
-      "ratio_min": 2
+      "ratio_min": 2,
+      "gamma_ac_vol_ratio_min": 1.0
     },
     "rebound": {
       "ratio_min": 0.75,

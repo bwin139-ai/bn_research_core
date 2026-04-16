@@ -68,6 +68,7 @@ class StrategyConfig:
         ("structure", "ab", "consecutive_down_bars_min"),
         ("structure", "vol_climax", "baseline_window_mins"),
         ("structure", "vol_climax", "ratio_min"),
+        ("structure", "vol_climax", "gamma_ac_vol_ratio_min"),
         ("structure", "rebound", "ratio_min"),
         ("structure", "rebound", "bc_over_ab_bars_max"),
         ("exit_policy", "stop_loss_anchor"),
@@ -189,6 +190,11 @@ class StrategyConfig:
             raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须是 number')
         if float(max_risk_pct) <= 0:
             raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须 > 0')
+        gamma_ac_vol_ratio_min = raw_data["structure"]["vol_climax"]["gamma_ac_vol_ratio_min"]
+        if not isinstance(gamma_ac_vol_ratio_min, (int, float)):
+            raise ValueError('【铁律违背】structure.vol_climax.gamma_ac_vol_ratio_min 必须是 number')
+        if float(gamma_ac_vol_ratio_min) <= 0:
+            raise ValueError('【铁律违背】structure.vol_climax.gamma_ac_vol_ratio_min 必须 > 0')
 
     @staticmethod
     def load(config_path: str) -> Dict[str, Any]:
