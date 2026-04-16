@@ -91,7 +91,7 @@ scp \
 
   sim_log.Spring_SmokeTest_V1_0415T1224.txt
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
-RUNID="Spring_SmokeTest_V1_0416T1309"
+RUNID="Spring_SmokeTest_V1_0416T1329"
 DEST=~/ai_projects/bn_research_core/output/sim_smoke
 mkdir -p "$DEST"
 scp -r \
