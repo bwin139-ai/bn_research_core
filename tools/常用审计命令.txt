@@ -1,12 +1,12 @@
 
 # ========= spring pre-A 审计 =========
-RUNID="SPRING_V1_30D_P6_0416T0057_ALL"
+RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_spring_pre_a_profile.py \
   --trades output/state/sim_trades.${RUNID}.jsonl \
   --kline-root data/klines_1m \
   --out-dir output/state/spring_pre_a_profile.${RUNID}
 
-RUNID="SPRING_V1_30D_P6_0416T0057_ALL"
+RUNID="SPRING_V1_30D_P6_0416T1629_ALL"
 DEST=~/ai_projects/bn_research_core/output/audit_spring_pre_a
 mkdir -p "$DEST"
 scp -r \
