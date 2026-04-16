@@ -22,4 +22,5 @@ docs/Spring-SABC项目语义基线.md
 8. AB 跌幅必须满足：`(A_close - B_close) / A_close >= ab.chg_pct_min`。
 9. BC 收回必须满足：`(C_close - B_close) / (A_close - B_close) >= rebound.ratio_min`。
 10. AB 爆量使用固定 baseline_window，不使用 S-A 作为量能基线。
-11. B 从近到远扫描，第一组完整满足条件的 A-B-C 即为唯一结构，找到后立即停止。
+11. A-C 收回量能必须满足：`gamma_ac_vol_ratio = vol_AC / vol_gamma_A >= vol_climax.gamma_ac_vol_ratio_min`。
+12. B 从近到远扫描，第一组完整满足条件的 A-B-C 即为唯一结构，找到后立即停止。
