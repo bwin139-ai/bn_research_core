@@ -218,6 +218,97 @@ stop_loss_price = b_close
 B close 是洗盘结构是否仍被守住的关键价格
 若连 b_close 都守不住，则该次 spring 结构大概率失效
 b_low 更容易受到瞬时插针噪音影响，不适合作为该策略的主止损锚点
+
+13.1 BREAKEVEN_GUARD 与持仓检查优先级
+
+BREAKEVEN_GUARD 是 Spring-SABC 的保护性离场类型。
+
+其用途不是替代原始 STOP_LOSS，也不是替代 TAKE_PROFIT，而是在交易已经走对一段距离后，将有效止损上移到保本或锁盈位置。
+
+定义：
+
+```text
+risk_distance = entry_price - original_sl_price
+breakeven_trigger_price = entry_price + risk_distance * trigger_r
+breakeven_sl_price = entry_price + risk_distance * floor_r
+```
+
+默认语义：
+
+```text
+trigger_r = 0.5
+floor_r = 0.0
+```
+
+即：当持仓曾经达到 +0.5R 后，保护止损上移到 entry_price。若后续触发该保护止损，则离场类型记为：
+
+```text
+BREAKEVEN_GUARD
+```
+
+13.1.1 live 侧语义
+
+live 主入口是：
+
+```text
+on_kline_close(...)
+```
+
+因此持仓阶段与信号阶段一致，都是在 CB 时刻观察已经闭合的 HBs。
+
+在 live 场景中，原始 SL / TP 在 signal_time 入场后即已创建为交易所条件单，后续由交易所实时自动触发。
+
+BREAKEVEN_GUARD 则不同：它是在 `on_kline_close(...)` 中，于 CB 时刻观察最近闭合的 HBs[1] 后才执行的保护动作。
+
+若 HBs[1].high >= breakeven_trigger_price，则在当前 CB 执行：
+
+```text
+1. 撤销原 STOP_MARKET SL
+2. 新建保护性 STOP_MARKET SL
+3. 标记 breakeven_guard_armed = true
+```
+
+新保护 SL 不允许倒回作用于刚刚用于 armed 判断的 HBs[1]。
+
+13.1.2 sim 侧持仓检查优先级
+
+sim 必须按 live 可执行时序模拟持仓检查。
+
+持仓检查优先级固定为：
+
+```text
+第一优先：STOP_LOSS
+第二优先：TAKE_PROFIT
+第三优先：BREAKEVEN_GUARD armed / BREAKEVEN_GUARD exit
+第四优先：TIME_STOP
+```
+
+若同一根 bar 同时命中 SL 与 TP，sim 固定采用 STOP_LOSS 优先，作为保守口径。
+
+若同一根 bar 同时满足 SL / TP / BREAKEVEN_GUARD armed 条件，则必须先处理 SL / TP。
+
+原因是：在 live 中，SL / TP 已经真实挂在交易所并可能实时触发；BREAKEVEN_GUARD 的撤旧 SL / 挂新 SL 动作只能等 bar 闭合后的 CB 才发生。若 SL / TP 已经触发，到了 CB 时这笔持仓已经不存在，BREAKEVEN_GUARD 没有执行对象。
+
+13.1.3 禁止同 bar arm + exit
+
+BREAKEVEN_GUARD 不允许在同一根 bar 内先 armed 再触发离场。
+
+某一根 bar 若满足：
+
+```text
+high >= breakeven_trigger_price
+```
+
+则该 bar 只能将：
+
+```text
+breakeven_guard_armed = true
+```
+
+从下一根 bar 开始，`breakeven_sl_price` 才能参与 BREAKEVEN_GUARD 离场判断。
+
+这条规则用于保证 sim 与 live 的执行时序一致，避免把“未来在 CB 才会创建的新保护 SL”倒灌到已经闭合的同一根 HBs 中。
+
 14. Runtime 与 Structure 的关系
 
 runtime.max_history_window_mins 的职责是：
