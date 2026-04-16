@@ -45,7 +45,7 @@
       "ASTERUSDT",
       "ICPUSDT",
       "ETCUSDT",
-      "ONDOUSDT",
+      "ONDOUSDT"
     ],
     "min_24h_chg_pct": 30,
     "min_24h_quote_volume": 50000000,
