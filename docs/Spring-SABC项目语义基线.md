@@ -309,6 +309,19 @@ breakeven_guard_armed = true
 
 这条规则用于保证 sim 与 live 的执行时序一致，避免把“未来在 CB 才会创建的新保护 SL”倒灌到已经闭合的同一根 HBs 中。
 
+13.1.4 当前阶段性结论
+
+截至当前版本，BREAKEVEN_GUARD 的代码语义已经理顺，但阶段性实验结论是：
+
+```text
+1. trigger_r = 0.5 明显过早，伤害收益
+2. trigger_r = 0.8 较 0.5 明显改善，但整体仍弱于完全关闭 BREAKEVEN_GUARD 的主基线
+3. 当前 Spring-SABC 主基线应保持：gamma_ac_vol_ratio_min = 1.0，BREAKEVEN_GUARD disabled
+4. 暂停 BREAKEVEN_GUARD 的含义是：保留代码，配置关闭；不要求回退代码实现
+```
+
+后续若重新启用 BREAKEVEN_GUARD，只能在本文件已定义的 sim/live 时序语义上继续实验，禁止退回到旧的同 bar arm + exit 错误语义。
+
 14. Runtime 与 Structure 的关系
 
 runtime.max_history_window_mins 的职责是：
