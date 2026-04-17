@@ -1693,6 +1693,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     market_total_24h_vol_snapshot = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_snapshot = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '').strip()
+    market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '').strip()
     c_bar_ts = latest_closed_bar_ts_snapshot
     c_bar_bj = str(market_snapshot['latest_closed_bar_bj'])
     current_time_ms = int(market_snapshot.get('signal_time_ts') or (c_bar_ts + 60000))
@@ -1727,6 +1728,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'market_total_24h_vol_status': market_total_24h_vol_status,
                 'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
                 'market_total_24h_symbol_count_api': market_snapshot.get('market_total_24h_symbol_count_api'),
+                'market_total_24h_vol_source': market_total_24h_vol_source,
             })
         _emit_run_once_perf('market_total_24h_vol_not_ready')
         return
@@ -1743,6 +1745,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
                 'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
                 'market_total_24h_vol_status': market_total_24h_vol_status,
+                'market_total_24h_vol_source': market_total_24h_vol_source,
             })
         _emit_run_once_perf('market_total_24h_vol_below_min')
         return

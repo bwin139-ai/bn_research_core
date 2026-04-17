@@ -92,6 +92,7 @@ def _write_empty_hub_inputs_snapshot(
         'min_24h_quote_volume': float(min_24h_quote_volume),
         'market_total_24h_vol_1m_rollsum': float(market_total_24h_vol_1m_rollsum),
         'market_total_24h_symbol_count_1m_rollsum': int(market_total_24h_symbol_count_1m_rollsum),
+        'market_total_24h_vol_source': str(market_total_24h_vol_source),
     }
     write_current_snapshot(account, snapshot_name, payload)
     write_current_pickle(account, snapshot_name, dict(payload))
@@ -140,6 +141,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     signal_time_bj = str(market_snapshot['signal_time_bj'])
     market_total_24h_vol_1m_rollsum = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
+    market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     candidate_symbols = list_candidate_symbols(account)
     symbol_24h_quote_volume_1m = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
     finalize_symbols = [
@@ -160,6 +162,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'min_24h_quote_volume': min_24h_quote_volume,
             'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
             'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
+            'market_total_24h_vol_source': market_total_24h_vol_source,
         })
         _write_empty_hub_inputs_snapshot(
             account,
