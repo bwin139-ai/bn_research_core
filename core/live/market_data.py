@@ -12,6 +12,8 @@ import pandas as pd
 from core.live.audit_log import append_stage_record, get_stage_audit_dir
 from core.live.binance_client import get_client, get_index_price_klines
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 _BJ = timezone(timedelta(hours=8))
 _INTERVAL = '1m'
 _STAGE_AUDIT_DIRNAME = 'stage_audit'
