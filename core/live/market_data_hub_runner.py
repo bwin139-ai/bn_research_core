@@ -14,9 +14,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from core.config_loader import StrategyConfig
 from core.live.audit_log import write_event
 from core.live.market_data import list_candidate_symbols
+from core.live.market_data_hub_store import write_current_snapshot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
     build_market_snapshot_via_hub,
@@ -42,14 +42,15 @@ def _load_json(path: str) -> dict[str, Any]:
         return json.load(f)
 
 
-def _load_live_config(path: str) -> dict[str, Any]:
+def _load_hub_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
     if 'account' not in data:
-        raise KeyError(f'live_config 缺少必要字段: account | {path}')
-    if 'exclude_symbols' not in data or not isinstance(data.get('exclude_symbols'), list):
-        raise KeyError(f'live_config 缺少必要字段: exclude_symbols(list) | {path}')
+        raise KeyError(f'hub_config 缺少必要字段: account | {path}')
+    if 'history_window_mins' not in data:
+        raise KeyError(f'hub_config 缺少必要字段: history_window_mins | {path}')
     data.setdefault('audit_enabled', True)
     data.setdefault('enabled', True)
+    data.setdefault('publish_config_snapshot', True)
     return data
 
 
@@ -89,11 +90,10 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
     return target_epoch
 
 
-def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) -> None:
-    account = str(live_cfg['account']).strip()
-    audit_enabled = bool(live_cfg.get('audit_enabled', True))
-    runtime_cfg = (strategy_cfg or {}).get('runtime') or {}
-    history_window_mins = int(runtime_cfg['max_history_window_mins'])
+def _run_account_once(hub_cfg: dict[str, Any]) -> None:
+    account = str(hub_cfg['account']).strip()
+    audit_enabled = bool(hub_cfg.get('audit_enabled', True))
+    history_window_mins = int(hub_cfg['history_window_mins'])
 
     market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
     latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
@@ -105,7 +105,7 @@ def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) ->
         account,
         candidate_symbols,
         history_window_mins,
-        strategy_cfg,
+        None,
         audit_label='candidate',
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=dict(market_snapshot['ticker_map']),
@@ -124,7 +124,6 @@ def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) ->
 
     finalize_candidate_payload_via_hub(
         account,
-        strategy_cfg,
         candidate_payload,
         history_window_mins=history_window_mins,
         c_bar_ts=int(candidate_payload['latest_closed_bar_ts']),
@@ -140,21 +139,32 @@ def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Market data hub runner')
-    parser.add_argument('--config', required=True)
-    parser.add_argument('--live-config', action='append', required=True, dest='live_configs')
+    parser.add_argument('--hub-config', action='append', required=True, dest='hub_configs')
     args = parser.parse_args()
 
     setup_logging()
-    strategy_cfg = StrategyConfig.load(args.config)
-    live_cfgs = [_load_live_config(path) for path in args.live_configs]
+    hub_cfgs = [_load_hub_config(path) for path in args.hub_configs]
+    for hub_cfg in hub_cfgs:
+        if bool(hub_cfg.get('publish_config_snapshot', True)):
+            account = str(hub_cfg['account']).strip()
+            write_current_snapshot(account, 'hub_config', {
+                'schema_version': 1,
+                'account': account,
+                'snapshot_name': 'hub_config',
+                'published_utc_ms': int(time.time() * 1000),
+                'published_bj': _fmt_bj_from_ms(int(time.time() * 1000)),
+                'hub_config': dict(hub_cfg),
+            })
 
     next_signal_check_epoch: float | None = None
     while True:
         next_signal_check_epoch = _sleep_until_next_signal_check(next_signal_check_epoch)
-        for live_cfg in live_cfgs:
-            account = str(live_cfg['account']).strip()
+        for hub_cfg in hub_cfgs:
+            account = str(hub_cfg['account']).strip()
+            if not bool(hub_cfg.get('enabled', True)):
+                continue
             try:
-                _run_account_once(strategy_cfg, live_cfg)
+                _run_account_once(hub_cfg)
             except KeyboardInterrupt:
                 raise
             except Exception as e:

@@ -112,3 +112,7 @@ def read_current_pickle(account: str, name: str) -> Any:
 
 def has_current_pickle(account: str, name: str) -> bool:
     return _current_pickle_path(account, name).exists()
+
+
+def has_current_snapshot(account: str, name: str) -> bool:
+    return _current_json_path(account, name).exists()
