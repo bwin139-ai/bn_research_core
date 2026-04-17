@@ -64,6 +64,10 @@ class VirtualBroker:
         self.config = config if config is not None else {}
         strategy_name = str(self.config.get("strategy_name") or "").strip()
 
+        self.breakeven_guard_enabled = False
+        self.breakeven_guard_trigger_r = 0.0
+        self.breakeven_guard_floor_r = 0.0
+
         if strategy_name == "spring-sabc":
             exit_policy = self.config["exit_policy"]
             self.max_hold_mins = int(exit_policy["max_hold_mins"])
