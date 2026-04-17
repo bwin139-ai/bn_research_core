@@ -146,23 +146,58 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_status') or '')
+    if market_total_24h_vol_status != 'ready_hub_owned_1m':
+        reason = 'hub_owned_1m_rollsum_not_ready'
+        write_event(account, reason, {
+            'bar_ts': signal_time_ts,
+            'bar_bj': signal_time_bj,
+            'latest_closed_bar_ts': latest_closed_bar_ts,
+            'latest_closed_bar_bj': latest_closed_bar_bj,
+            'min_24h_quote_volume': min_24h_quote_volume,
+            'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
+            'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
+            'market_total_24h_vol_source': market_total_24h_vol_source,
+            'market_total_24h_vol_status': market_total_24h_vol_status,
+        })
+        _write_empty_hub_inputs_snapshot(
+            account,
+            'candidate_inputs',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            latest_closed_bar_bj=latest_closed_bar_bj,
+            signal_time_ts=signal_time_ts,
+            signal_time_bj=signal_time_bj,
+            reason=reason,
+            min_24h_quote_volume=min_24h_quote_volume,
+            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
+            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+            market_total_24h_vol_source=market_total_24h_vol_source,
+            market_total_24h_vol_status=market_total_24h_vol_status,
+        )
+        _write_empty_hub_inputs_snapshot(
+            account,
+            'finalized_candidate_inputs',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            latest_closed_bar_bj=latest_closed_bar_bj,
+            signal_time_ts=signal_time_ts,
+            signal_time_bj=signal_time_bj,
+            reason=reason,
+            min_24h_quote_volume=min_24h_quote_volume,
+            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
+            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+            market_total_24h_vol_source=market_total_24h_vol_source,
+            market_total_24h_vol_status=market_total_24h_vol_status,
+        )
+        return
+
     candidate_symbols = list_candidate_symbols(account)
-    if market_total_24h_vol_status == 'ready_hub_owned_1m':
-        prefilter_source = 'hub_owned_1m_rollsum'
-        symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
-    else:
-        prefilter_source = 'futures_ticker_warmup'
-        symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_api') or {})
+    prefilter_source = 'hub_owned_1m_rollsum'
+    symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
     finalize_symbols = [
         symbol for symbol in candidate_symbols
         if float(symbol_24h_quote_volume_map.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
     ]
     if not finalize_symbols:
-        reason = (
-            'hub_owned_1m_rollsum_warming_up'
-            if market_total_24h_vol_status != 'ready_hub_owned_1m'
-            else 'hub_candidate_prefilter_empty'
-        )
+        reason = 'hub_candidate_prefilter_empty'
         write_event(account, reason, {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
