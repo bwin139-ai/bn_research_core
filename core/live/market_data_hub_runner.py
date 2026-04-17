@@ -51,7 +51,7 @@ def _load_hub_config(path: str) -> dict[str, Any]:
     data.setdefault('audit_enabled', True)
     data.setdefault('enabled', True)
     data.setdefault('publish_config_snapshot', True)
-    data.setdefault('min_24h_quote_volume', 30000000)
+    data.setdefault('min_24h_quote_volume', 50000000)
     return data
 
 
