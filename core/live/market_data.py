@@ -56,6 +56,9 @@ _SHARED_TICKER_TTL_SECS = 55
 _SHARED_EXCHANGE_INFO_TTL_SECS = 300
 _SHARED_LATEST_CLOSED_BAR_TTL_SECS = 2
 _SHARED_SYMBOL_BARS_TTL_SECS = 2
+_KLINES_1M_DIR = Path('data/klines_1m')
+_MARKET_24H_ROLLSUM_WINDOW_BARS = 1440
+_SYMBOL_24H_QUOTE_VOLUME_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _shared_market_dir() -> Path:
@@ -399,20 +402,115 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 
 
 
+def _symbol_kline_parquet_path(symbol: str) -> Path:
+    return _KLINES_1M_DIR / f'{_safe_symbol_key(symbol)}.parquet'
+
+
+def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts: int) -> dict[str, Any] | None:
+    symbol_key = _safe_symbol_key(symbol)
+    path = _symbol_kline_parquet_path(symbol_key)
+    if not path.exists():
+        return None
+    cache = _SYMBOL_24H_QUOTE_VOLUME_CACHE.get(symbol_key)
+    try:
+        file_mtime_ns = path.stat().st_mtime_ns
+    except Exception:
+        file_mtime_ns = None
+    if isinstance(cache, dict):
+        if cache.get('latest_closed_bar_ts') == int(latest_closed_bar_ts) and cache.get('file_mtime_ns') == file_mtime_ns:
+            return dict(cache)
+    try:
+        df = pd.read_parquet(path, columns=['open_time_ms', 'quote_asset_volume'])
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+    df = df.dropna(subset=['open_time_ms']).copy()
+    df['open_time_ms'] = pd.to_numeric(df['open_time_ms'], errors='coerce')
+    df['quote_asset_volume'] = pd.to_numeric(df['quote_asset_volume'], errors='coerce').fillna(0.0)
+    df = df.dropna(subset=['open_time_ms'])
+    if df.empty:
+        return None
+    df['open_time_ms'] = df['open_time_ms'].astype('int64')
+    df = df[df['open_time_ms'] <= int(latest_closed_bar_ts)]
+    if df.empty:
+        return None
+    df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').tail(_MARKET_24H_ROLLSUM_WINDOW_BARS)
+    if df.empty:
+        return None
+    rows = [
+        (int(row.open_time_ms), float(row.quote_asset_volume))
+        for row in df[['open_time_ms', 'quote_asset_volume']].itertuples(index=False)
+    ]
+    total = float(sum(v for _, v in rows))
+    out = {
+        'symbol': symbol_key,
+        'latest_closed_bar_ts': int(latest_closed_bar_ts),
+        'latest_bar_ts': int(rows[-1][0]),
+        'rows': rows,
+        'window_size': int(len(rows)),
+        'quote_volume_24h': float(total),
+        'file_mtime_ns': file_mtime_ns,
+    }
+    _SYMBOL_24H_QUOTE_VOLUME_CACHE[symbol_key] = dict(out)
+    return out
+
+
+def _market_total_24h_vol_from_1m_bars(account: str, symbols: list[str], latest_closed_bar_ts: int) -> dict[str, Any]:
+    total = 0.0
+    symbol_count = 0
+    symbol_map: dict[str, float] = {}
+    missing_symbols: list[str] = []
+    partial_symbols: list[str] = []
+    for symbol in symbols:
+        item = _load_symbol_24h_quote_volume_from_parquet(symbol, latest_closed_bar_ts)
+        if not isinstance(item, dict):
+            missing_symbols.append(_safe_symbol_key(symbol))
+            continue
+        vol_24h = float(item.get('quote_volume_24h') or 0.0)
+        symbol_key = _safe_symbol_key(symbol)
+        symbol_map[symbol_key] = vol_24h
+        total += vol_24h
+        symbol_count += 1
+        if int(item.get('window_size') or 0) < int(_MARKET_24H_ROLLSUM_WINDOW_BARS):
+            partial_symbols.append(symbol_key)
+    return {
+        'market_total_24h_vol_1m_rollsum': float(total),
+        'market_total_24h_symbol_count_1m_rollsum': int(symbol_count),
+        'symbol_24h_quote_volume_1m': symbol_map,
+        'missing_symbol_count_1m_rollsum': int(len(missing_symbols)),
+        'missing_symbols_1m_rollsum': missing_symbols,
+        'partial_symbol_count_1m_rollsum': int(len(partial_symbols)),
+        'partial_symbols_1m_rollsum': partial_symbols,
+    }
+
+
 def build_market_snapshot(account: str) -> dict[str, Any]:
     latest_closed_bar_snapshot = _load_or_refresh_latest_closed_bar_snapshot(account)
+    latest_closed_bar_ts = int(latest_closed_bar_snapshot['latest_closed_bar_ts'])
     ticker_map = _ticker_map(account)
-    market_total_24h_payload = _market_total_24h_vol_from_ticker_map(account, ticker_map)
+    market_total_24h_payload_api = _market_total_24h_vol_from_ticker_map(account, ticker_map)
+    market_symbols = list_candidate_symbols(account)
+    market_total_24h_payload_1m = _market_total_24h_vol_from_1m_bars(account, market_symbols, latest_closed_bar_ts)
+    market_total_24h_vol_1m_rollsum = float(market_total_24h_payload_1m.get('market_total_24h_vol_1m_rollsum') or 0.0)
     return {
-        'latest_closed_bar_ts': int(latest_closed_bar_snapshot['latest_closed_bar_ts']),
+        'latest_closed_bar_ts': latest_closed_bar_ts,
         'latest_closed_bar_bj': latest_closed_bar_snapshot['latest_closed_bar_bj'],
         'signal_time_ts': int(latest_closed_bar_snapshot['signal_time_ts']),
         'signal_time_bj': latest_closed_bar_snapshot['signal_time_bj'],
         'market_snapshot_fetched_utc_ms': int(latest_closed_bar_snapshot['fetched_utc_ms']),
         'market_snapshot_fetched_bj': latest_closed_bar_snapshot['fetched_bj'],
         'ticker_map': ticker_map,
-        'market_total_24h_vol': float(market_total_24h_payload['market_total_24h_vol']),
-        'market_total_24h_symbol_count': int(market_total_24h_payload['market_total_24h_symbol_count']),
+        'market_total_24h_vol': market_total_24h_vol_1m_rollsum,
+        'market_total_24h_vol_api': float(market_total_24h_payload_api['market_total_24h_vol']),
+        'market_total_24h_symbol_count_api': int(market_total_24h_payload_api['market_total_24h_symbol_count']),
+        'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
+        'market_total_24h_symbol_count_1m_rollsum': int(market_total_24h_payload_1m.get('market_total_24h_symbol_count_1m_rollsum') or 0),
+        'symbol_24h_quote_volume_1m': dict(market_total_24h_payload_1m.get('symbol_24h_quote_volume_1m') or {}),
+        'missing_symbol_count_1m_rollsum': int(market_total_24h_payload_1m.get('missing_symbol_count_1m_rollsum') or 0),
+        'missing_symbols_1m_rollsum': list(market_total_24h_payload_1m.get('missing_symbols_1m_rollsum') or []),
+        'partial_symbol_count_1m_rollsum': int(market_total_24h_payload_1m.get('partial_symbol_count_1m_rollsum') or 0),
+        'partial_symbols_1m_rollsum': list(market_total_24h_payload_1m.get('partial_symbols_1m_rollsum') or []),
     }
 
 

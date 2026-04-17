@@ -51,6 +51,7 @@ def _load_hub_config(path: str) -> dict[str, Any]:
     data.setdefault('audit_enabled', True)
     data.setdefault('enabled', True)
     data.setdefault('publish_config_snapshot', True)
+    data.setdefault('min_24h_quote_volume', 30000000)
     return data
 
 
@@ -94,16 +95,33 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     account = str(hub_cfg['account']).strip()
     audit_enabled = bool(hub_cfg.get('audit_enabled', True))
     history_window_mins = int(hub_cfg['history_window_mins'])
+    min_24h_quote_volume = float(hub_cfg.get('min_24h_quote_volume', 30000000) or 0.0)
 
     market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
     latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
     signal_time_ts = int(market_snapshot['signal_time_ts'])
     signal_time_bj = str(market_snapshot['signal_time_bj'])
     candidate_symbols = list_candidate_symbols(account)
+    symbol_24h_quote_volume_1m = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
+    finalize_symbols = [
+        symbol for symbol in candidate_symbols
+        if float(symbol_24h_quote_volume_1m.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
+    ]
+    if not finalize_symbols:
+        write_event(account, 'hub_candidate_prefilter_empty', {
+            'bar_ts': signal_time_ts,
+            'bar_bj': signal_time_bj,
+            'latest_closed_bar_ts': latest_closed_bar_ts,
+            'latest_closed_bar_bj': market_snapshot.get('latest_closed_bar_bj'),
+            'min_24h_quote_volume': min_24h_quote_volume,
+            'market_total_24h_vol_1m_rollsum': market_snapshot.get('market_total_24h_vol_1m_rollsum'),
+            'market_total_24h_symbol_count_1m_rollsum': market_snapshot.get('market_total_24h_symbol_count_1m_rollsum'),
+        })
+        return
 
     candidate_res = build_live_inputs_via_hub(
         account,
-        candidate_symbols,
+        finalize_symbols,
         history_window_mins,
         None,
         audit_label='candidate',
