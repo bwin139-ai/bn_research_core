@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -66,3 +67,44 @@ def append_daily_snapshot(account: str, name: str, payload: dict[str, Any], *, d
         os.fsync(f.fileno())
     return path
 
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    unique_suffix = f".{os.getpid()}.{time.time_ns()}.tmp"
+    tmp_path = path.with_name(path.name + unique_suffix)
+    tmp_path.write_bytes(data)
+    os.replace(tmp_path, path)
+
+
+def _current_json_path(account: str, name: str) -> Path:
+    return _current_dir(account) / f"{str(name).strip()}.json"
+
+
+def _current_pickle_path(account: str, name: str) -> Path:
+    return _current_dir(account) / f"{str(name).strip()}.pkl"
+
+
+def write_current_pickle(account: str, name: str, payload: Any) -> Path:
+    path = _current_pickle_path(account, name)
+    _atomic_write_bytes(path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    return path
+
+
+def read_current_snapshot(account: str, name: str) -> dict[str, Any] | None:
+    path = _current_json_path(account, name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def read_current_pickle(account: str, name: str) -> Any:
+    path = _current_pickle_path(account, name)
+    if not path.exists():
+        return None
+    try:
+        return pickle.loads(path.read_bytes())
+    except Exception:
+        return None

@@ -12,7 +12,7 @@ from core.live.market_data import (
     merge_shared_symbol_bars_cache_stats,
     new_shared_symbol_bars_cache_stats,
 )
-from core.live.market_data_hub_store import append_daily_snapshot, write_current_snapshot
+from core.live.market_data_hub_store import append_daily_snapshot, read_current_pickle, read_current_snapshot, write_current_pickle, write_current_snapshot
 
 BJ = timezone(timedelta(hours=8))
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
@@ -24,9 +24,69 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
 
+_HUB_SNAPSHOT_MAX_AGE_SECS = 75
+
+
+def _snapshot_age_secs(snapshot: dict[str, Any] | None, *, now_ms: int | None = None) -> float | None:
+    if not isinstance(snapshot, dict):
+        return None
+    fetched_utc_ms = snapshot.get('market_snapshot_fetched_utc_ms')
+    if fetched_utc_ms is None:
+        fetched_utc_ms = snapshot.get('published_utc_ms')
+    if fetched_utc_ms is None:
+        return None
+    try:
+        current_ms = int(now_ms) if now_ms is not None else int(time.time() * 1000)
+        return max(0.0, (current_ms - int(fetched_utc_ms)) / 1000.0)
+    except Exception:
+        return None
+
+
+def _raise_if_snapshot_stale(account: str, name: str, snapshot: dict[str, Any] | None, *, max_age_secs: int | None) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise RuntimeError(f'hub snapshot missing: account={account} name={name}')
+    if max_age_secs is None:
+        return snapshot
+    age_secs = _snapshot_age_secs(snapshot)
+    if age_secs is None:
+        raise RuntimeError(f'hub snapshot missing_age: account={account} name={name}')
+    if float(age_secs) > float(max_age_secs):
+        raise RuntimeError(
+            f'hub snapshot stale: account={account} name={name} age_secs={age_secs:.2f} max_age_secs={int(max_age_secs)}'
+        )
+    return snapshot
+
+
+def load_market_snapshot_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
+    meta = read_current_snapshot(account, 'market_snapshot')
+    _raise_if_snapshot_stale(account, 'market_snapshot', meta, max_age_secs=max_age_secs)
+    payload = read_current_pickle(account, 'market_snapshot')
+    if not isinstance(payload, dict):
+        raise RuntimeError(f'hub payload missing: account={account} name=market_snapshot')
+    return payload
+
+
+def load_finalized_candidate_inputs_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
+    meta = read_current_snapshot(account, 'finalized_candidate_inputs')
+    _raise_if_snapshot_stale(account, 'finalized_candidate_inputs', meta, max_age_secs=max_age_secs)
+    payload = read_current_pickle(account, 'finalized_candidate_inputs')
+    if not isinstance(payload, dict):
+        raise RuntimeError(f'hub payload missing: account={account} name=finalized_candidate_inputs')
+    return payload
+
+
+def load_candidate_inputs_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
+    meta = read_current_snapshot(account, 'candidate_inputs')
+    _raise_if_snapshot_stale(account, 'candidate_inputs', meta, max_age_secs=max_age_secs)
+    payload = read_current_pickle(account, 'candidate_inputs')
+    if not isinstance(payload, dict):
+        raise RuntimeError(f'hub payload missing: account={account} name=candidate_inputs')
+    return payload
+
 
 def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[str, Any]:
     snapshot = build_market_snapshot(account)
+    published_utc_ms = int(time.time() * 1000)
     payload = {
         'schema_version': 1,
         'account': str(account).strip(),
@@ -37,12 +97,15 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'signal_time_bj': snapshot['signal_time_bj'],
         'market_snapshot_fetched_utc_ms': int(snapshot['market_snapshot_fetched_utc_ms']),
         'market_snapshot_fetched_bj': snapshot['market_snapshot_fetched_bj'],
+        'published_utc_ms': published_utc_ms,
+        'published_bj': _fmt_bj_from_ms(published_utc_ms),
         'market_total_24h_vol_api': float(snapshot.get('market_total_24h_vol') or 0.0),
         'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count') or 0),
         'market_total_24h_vol_1m_rollsum': None,
         'market_total_24h_vol_1m_rollsum_status': 'pending_arch_only',
     }
     write_current_snapshot(account, 'market_snapshot', payload)
+    write_current_pickle(account, 'market_snapshot', snapshot)
     if audit_enabled:
         append_daily_snapshot(account, 'market_snapshot', payload, day_bj=str(snapshot.get('signal_time_bj') or '')[:10])
     return snapshot
@@ -68,6 +131,7 @@ def build_live_inputs_via_hub(
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=ticker_map,
     )
+    published_utc_ms = int(time.time() * 1000)
     payload = {
         'schema_version': 1,
         'account': str(account).strip(),
@@ -75,6 +139,8 @@ def build_live_inputs_via_hub(
         'audit_label': str(audit_label).strip(),
         'ok': bool(res.get('ok')),
         'reason': res.get('reason'),
+        'published_utc_ms': published_utc_ms,
+        'published_bj': _fmt_bj_from_ms(published_utc_ms),
         'latest_closed_bar_ts': int(((res.get('data') or {}).get('latest_closed_bar_ts') or 0)) if res.get('data') else int(latest_closed_bar_ts or 0),
         'latest_closed_bar_bj': ((res.get('data') or {}).get('latest_closed_bar_bj')) if res.get('data') else _fmt_bj_from_ms(latest_closed_bar_ts),
         'signal_time_ts': int(((res.get('data') or {}).get('signal_time_ts') or 0)) if res.get('data') else None,
@@ -87,6 +153,8 @@ def build_live_inputs_via_hub(
         'errors': res.get('errors'),
     }
     write_current_snapshot(account, f'{audit_label}_inputs', payload)
+    if bool(res.get('ok')) and isinstance(res.get('data'), dict):
+        write_current_pickle(account, f'{audit_label}_inputs', res.get('data'))
     if audit_enabled:
         append_daily_snapshot(account, f'{audit_label}_inputs', payload, day_bj=str(payload.get('signal_time_bj') or '')[:10])
     return res
@@ -455,10 +523,13 @@ def finalize_candidate_payload_via_hub(
 
 def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -> None:
     finalize_summary = dict(finalized_payload.get('finalize_summary') or {})
+    published_utc_ms = int(time.time() * 1000)
     payload = {
         'schema_version': 1,
         'account': str(account).strip(),
         'snapshot_name': 'finalized_candidate_inputs',
+        'published_utc_ms': published_utc_ms,
+        'published_bj': _fmt_bj_from_ms(published_utc_ms),
         'latest_closed_bar_ts': int(finalized_payload.get('latest_closed_bar_ts') or 0),
         'latest_closed_bar_bj': finalized_payload.get('latest_closed_bar_bj'),
         'signal_time_ts': int(finalized_payload.get('signal_time_ts') or 0),
@@ -470,5 +541,6 @@ def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -
         'finalize_shared_symbol_bars_cache': finalized_payload.get('finalize_shared_symbol_bars_cache'),
     }
     write_current_snapshot(account, 'finalized_candidate_inputs', payload)
+    write_current_pickle(account, 'finalized_candidate_inputs', finalized_payload)
     append_daily_snapshot(account, 'finalized_candidate_inputs', payload, day_bj=str(payload.get('signal_time_bj') or '')[:10])
 

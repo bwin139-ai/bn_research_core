@@ -31,8 +31,8 @@ from core.live.market_data import (
 )
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
-    build_market_snapshot_via_hub,
-    finalize_candidate_payload_via_hub,
+    load_finalized_candidate_inputs_from_hub,
+    load_market_snapshot_from_hub,
 )
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
@@ -1684,7 +1684,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         raise KeyError('strategy_cfg.universe.market_total_24h_vol_min missing')
     market_total_24h_vol_min = float(universe_cfg['market_total_24h_vol_min'])
 
-    market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
+    market_snapshot = load_market_snapshot_from_hub(account)
     latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
     ticker_map_snapshot = dict(market_snapshot['ticker_map'])
     market_snapshot_fetched_utc_ms = int(market_snapshot['market_snapshot_fetched_utc_ms'])
@@ -1742,16 +1742,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
-    candidate_md_res = build_live_inputs_via_hub(
-        account,
-        candidate_symbols,
-        history_window_mins,
-        strategy_cfg,
-        audit_label='candidate',
-        latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
-        ticker_map=ticker_map_snapshot,
-        audit_enabled=audit_enabled,
-    )
+    try:
+        candidate_payload_from_hub = load_finalized_candidate_inputs_from_hub(account)
+        candidate_md_res = {'ok': True, 'reason': '', 'errors': {}, 'data': candidate_payload_from_hub}
+    except Exception as e:
+        candidate_md_res = {'ok': False, 'reason': f'hub_candidate_payload_unavailable: {e}', 'errors': {}}
     candidate_md_elapsed_ms = _perf_elapsed_ms(candidate_md_perf_started)
     candidate_md_finished_utc_ms = _now_utc_ms()
     extra_md_res: dict[str, Any] | None = None
@@ -1798,22 +1793,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     if candidate_payload:
         candidate_symbol_count_before_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
-        finalize_perf_started = time.perf_counter()
-        candidate_payload = finalize_candidate_payload_via_hub(
-            account,
-            strategy_cfg,
-            candidate_payload,
-            history_window_mins=history_window_mins,
-            c_bar_ts=c_bar_ts,
-            c_bar_bj=c_bar_bj,
-            current_time_ms=current_time_ms,
-            current_time_bj=current_time_bj,
-            candidate_md_finished_utc_ms=candidate_md_finished_utc_ms,
-            audit_enabled=audit_enabled,
-            latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
-            ticker_map=ticker_map_snapshot,
-        )
-        finalize_elapsed_ms = _perf_elapsed_ms(finalize_perf_started)
+        finalize_elapsed_ms = 0
         candidate_symbol_count_after_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         finalize_removed_symbol_count = max(0, int(candidate_symbol_count_before_finalize or 0) - int(candidate_symbol_count_after_finalize or 0))
         finalize_removed_ratio_pct = round((float(finalize_removed_symbol_count) / float(candidate_symbol_count_before_finalize) * 100.0), 2) if int(candidate_symbol_count_before_finalize or 0) > 0 else None
