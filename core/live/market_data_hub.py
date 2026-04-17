@@ -105,7 +105,15 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'market_total_24h_vol_1m_rollsum': float(snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0),
         'market_total_24h_symbol_count_1m_rollsum': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
         'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
-        'market_total_24h_vol_1m_rollsum_status': 'ready',
+        'market_total_24h_vol_1m_rollsum_status': (
+            'missing_all_local_klines'
+            if int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0) <= 0
+            else 'degraded_missing_some_local_klines'
+            if int(snapshot.get('missing_symbol_count_1m_rollsum') or 0) > 0
+            else 'degraded_partial_window'
+            if int(snapshot.get('partial_symbol_count_1m_rollsum') or 0) > 0
+            else 'ready'
+        ),
         'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),
         'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
     }

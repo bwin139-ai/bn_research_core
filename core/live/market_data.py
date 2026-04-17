@@ -56,7 +56,7 @@ _SHARED_TICKER_TTL_SECS = 55
 _SHARED_EXCHANGE_INFO_TTL_SECS = 300
 _SHARED_LATEST_CLOSED_BAR_TTL_SECS = 2
 _SHARED_SYMBOL_BARS_TTL_SECS = 2
-_KLINES_1M_DIR = Path('data/klines_1m')
+_KLINES_1M_DIR = Path(PROJECT_ROOT) / 'data/klines_1m'
 _MARKET_24H_ROLLSUM_WINDOW_BARS = 1440
 _SYMBOL_24H_QUOTE_VOLUME_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -402,6 +402,79 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 
 
 
+
+def _symbol_kline_parquet_columns(path: Path) -> list[str]:
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+        return [str(x) for x in pq.ParquetFile(path).schema.names]
+    except Exception:
+        return []
+
+
+def _pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
+    lookup = {str(x).strip(): str(x).strip() for x in columns if str(x).strip()}
+    for name in candidates:
+        if name in lookup:
+            return lookup[name]
+    return None
+
+
+def _normalize_open_time_ms_series(series: pd.Series) -> pd.Series:
+    s = series
+    if str(getattr(s, 'dtype', '')).startswith('datetime64'):
+        return (s.view('int64') // 1_000_000).astype('int64')
+    numeric = pd.to_numeric(s, errors='coerce')
+    if numeric.notna().sum() == 0:
+        parsed = pd.to_datetime(s, errors='coerce', utc=True)
+        return (parsed.view('int64') // 1_000_000).astype('int64')
+    max_abs = float(numeric.abs().max() or 0.0)
+    if max_abs >= 1e18:
+        return (numeric // 1_000_000).astype('int64')
+    if max_abs >= 1e15:
+        return (numeric // 1_000).astype('int64')
+    if max_abs >= 1e12:
+        return numeric.astype('int64')
+    return (numeric * 1000).astype('int64')
+
+
+def _read_symbol_quote_volume_frame(path: Path) -> pd.DataFrame | None:
+    columns = _symbol_kline_parquet_columns(path)
+    time_col = _pick_first_existing_column(columns, ['open_time_ms', 'open_time', 'open_ts', 'timestamp', 'ts'])
+    volume_col = _pick_first_existing_column(columns, ['quote_asset_volume', 'quoteVolume', 'quote_volume', 'qav'])
+    if time_col is None or volume_col is None:
+        try:
+            df = pd.read_parquet(path)
+        except Exception:
+            return None
+        cols = [str(x) for x in df.columns]
+        time_col = _pick_first_existing_column(cols, ['open_time_ms', 'open_time', 'open_ts', 'timestamp', 'ts'])
+        volume_col = _pick_first_existing_column(cols, ['quote_asset_volume', 'quoteVolume', 'quote_volume', 'qav'])
+        if time_col is None or volume_col is None:
+            return None
+        data = df[[time_col, volume_col]].copy()
+    else:
+        try:
+            data = pd.read_parquet(path, columns=[time_col, volume_col]).copy()
+        except Exception:
+            try:
+                data = pd.read_parquet(path)[[time_col, volume_col]].copy()
+            except Exception:
+                return None
+    data.columns = ['open_time_ms', 'quote_asset_volume']
+    if data.empty:
+        return None
+    data = data.dropna(subset=['open_time_ms']).copy()
+    if data.empty:
+        return None
+    data['open_time_ms'] = _normalize_open_time_ms_series(data['open_time_ms'])
+    data['quote_asset_volume'] = pd.to_numeric(data['quote_asset_volume'], errors='coerce').fillna(0.0)
+    data = data.dropna(subset=['open_time_ms'])
+    if data.empty:
+        return None
+    data['open_time_ms'] = data['open_time_ms'].astype('int64')
+    return data
+
+
 def _symbol_kline_parquet_path(symbol: str) -> Path:
     return _KLINES_1M_DIR / f'{_safe_symbol_key(symbol)}.parquet'
 
@@ -419,28 +492,22 @@ def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts
     if isinstance(cache, dict):
         if cache.get('latest_closed_bar_ts') == int(latest_closed_bar_ts) and cache.get('file_mtime_ns') == file_mtime_ns:
             return dict(cache)
-    try:
-        df = pd.read_parquet(path, columns=['open_time_ms', 'quote_asset_volume'])
-    except Exception:
-        return None
+
+    df = _read_symbol_quote_volume_frame(path)
     if df is None or df.empty:
         return None
-    df = df.dropna(subset=['open_time_ms']).copy()
-    df['open_time_ms'] = pd.to_numeric(df['open_time_ms'], errors='coerce')
-    df['quote_asset_volume'] = pd.to_numeric(df['quote_asset_volume'], errors='coerce').fillna(0.0)
-    df = df.dropna(subset=['open_time_ms'])
-    if df.empty:
-        return None
-    df['open_time_ms'] = df['open_time_ms'].astype('int64')
+
     df = df[df['open_time_ms'] <= int(latest_closed_bar_ts)]
     if df.empty:
         return None
+
     df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').tail(_MARKET_24H_ROLLSUM_WINDOW_BARS)
     if df.empty:
         return None
+
     rows = [
-        (int(row.open_time_ms), float(row.quote_asset_volume))
-        for row in df[['open_time_ms', 'quote_asset_volume']].itertuples(index=False)
+        (int(open_time_ms), float(quote_asset_volume))
+        for open_time_ms, quote_asset_volume in df[['open_time_ms', 'quote_asset_volume']].itertuples(index=False, name=None)
     ]
     total = float(sum(v for _, v in rows))
     out = {
@@ -454,6 +521,7 @@ def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts
     }
     _SYMBOL_24H_QUOTE_VOLUME_CACHE[symbol_key] = dict(out)
     return out
+
 
 
 def _market_total_24h_vol_from_1m_bars(account: str, symbols: list[str], latest_closed_bar_ts: int) -> dict[str, Any]:

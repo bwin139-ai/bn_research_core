@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
 
 from core.live.audit_log import write_event
 from core.live.market_data import list_candidate_symbols
-from core.live.market_data_hub_store import write_current_snapshot
+from core.live.market_data_hub_store import write_current_pickle, write_current_snapshot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
     build_market_snapshot_via_hub,
@@ -61,6 +61,42 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _write_empty_hub_inputs_snapshot(
+    account: str,
+    snapshot_name: str,
+    *,
+    latest_closed_bar_ts: int,
+    latest_closed_bar_bj: str | None,
+    signal_time_ts: int,
+    signal_time_bj: str | None,
+    reason: str,
+    min_24h_quote_volume: float,
+    market_total_24h_vol_1m_rollsum: float,
+    market_total_24h_symbol_count_1m_rollsum: int,
+) -> None:
+    published_utc_ms = int(time.time() * 1000)
+    payload = {
+        'schema_version': 1,
+        'account': str(account).strip(),
+        'snapshot_name': snapshot_name,
+        'published_utc_ms': published_utc_ms,
+        'published_bj': _fmt_bj_from_ms(published_utc_ms),
+        'latest_closed_bar_ts': int(latest_closed_bar_ts),
+        'latest_closed_bar_bj': latest_closed_bar_bj,
+        'signal_time_ts': int(signal_time_ts),
+        'signal_time_bj': signal_time_bj,
+        'symbol_count': 0,
+        'bars_loaded_min': 0,
+        'bars_loaded_max': 0,
+        'reason': reason,
+        'min_24h_quote_volume': float(min_24h_quote_volume),
+        'market_total_24h_vol_1m_rollsum': float(market_total_24h_vol_1m_rollsum),
+        'market_total_24h_symbol_count_1m_rollsum': int(market_total_24h_symbol_count_1m_rollsum),
+    }
+    write_current_snapshot(account, snapshot_name, payload)
+    write_current_pickle(account, snapshot_name, dict(payload))
+
+
 def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
@@ -99,8 +135,11 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
 
     market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
     latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
+    latest_closed_bar_bj = str(market_snapshot.get('latest_closed_bar_bj') or _fmt_bj_from_ms(latest_closed_bar_ts))
     signal_time_ts = int(market_snapshot['signal_time_ts'])
     signal_time_bj = str(market_snapshot['signal_time_bj'])
+    market_total_24h_vol_1m_rollsum = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
+    market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     candidate_symbols = list_candidate_symbols(account)
     symbol_24h_quote_volume_1m = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
     finalize_symbols = [
@@ -108,15 +147,44 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         if float(symbol_24h_quote_volume_1m.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
     ]
     if not finalize_symbols:
-        write_event(account, 'hub_candidate_prefilter_empty', {
+        reason = (
+            'market_total_24h_vol_1m_rollsum_not_ready'
+            if market_total_24h_symbol_count_1m_rollsum <= 0
+            else 'hub_candidate_prefilter_empty'
+        )
+        write_event(account, reason, {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
             'latest_closed_bar_ts': latest_closed_bar_ts,
-            'latest_closed_bar_bj': market_snapshot.get('latest_closed_bar_bj'),
+            'latest_closed_bar_bj': latest_closed_bar_bj,
             'min_24h_quote_volume': min_24h_quote_volume,
-            'market_total_24h_vol_1m_rollsum': market_snapshot.get('market_total_24h_vol_1m_rollsum'),
-            'market_total_24h_symbol_count_1m_rollsum': market_snapshot.get('market_total_24h_symbol_count_1m_rollsum'),
+            'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
+            'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
         })
+        _write_empty_hub_inputs_snapshot(
+            account,
+            'candidate_inputs',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            latest_closed_bar_bj=latest_closed_bar_bj,
+            signal_time_ts=signal_time_ts,
+            signal_time_bj=signal_time_bj,
+            reason=reason,
+            min_24h_quote_volume=min_24h_quote_volume,
+            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
+            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+        )
+        _write_empty_hub_inputs_snapshot(
+            account,
+            'finalized_candidate_inputs',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            latest_closed_bar_bj=latest_closed_bar_bj,
+            signal_time_ts=signal_time_ts,
+            signal_time_bj=signal_time_bj,
+            reason=reason,
+            min_24h_quote_volume=min_24h_quote_volume,
+            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
+            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+        )
         return
 
     candidate_res = build_live_inputs_via_hub(

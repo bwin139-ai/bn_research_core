@@ -1692,6 +1692,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     market_snapshot_fetched_bj = str(market_snapshot['market_snapshot_fetched_bj'])
     market_total_24h_vol_snapshot = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_snapshot = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
+    market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '').strip()
     c_bar_ts = latest_closed_bar_ts_snapshot
     c_bar_bj = str(market_snapshot['latest_closed_bar_bj'])
     current_time_ms = int(market_snapshot.get('signal_time_ts') or (c_bar_ts + 60000))
@@ -1713,6 +1714,23 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     except Exception as e:
         logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
 
+    if market_total_24h_symbol_count_snapshot <= 0:
+        if audit_enabled:
+            write_event(account, 'market_total_24h_vol_not_ready_skip', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'market_total_24h_vol': market_total_24h_vol_snapshot,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
+                'market_total_24h_vol_status': market_total_24h_vol_status,
+                'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
+                'market_total_24h_symbol_count_api': market_snapshot.get('market_total_24h_symbol_count_api'),
+            })
+        _emit_run_once_perf('market_total_24h_vol_not_ready')
+        return
+
     if market_total_24h_vol_snapshot < market_total_24h_vol_min:
         if audit_enabled:
             write_event(account, 'market_total_24h_vol_below_min_skip', {
@@ -1724,6 +1742,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'market_total_24h_vol_min': market_total_24h_vol_min,
                 'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
                 'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
+                'market_total_24h_vol_status': market_total_24h_vol_status,
             })
         _emit_run_once_perf('market_total_24h_vol_below_min')
         return
