@@ -27,11 +27,12 @@ from core.live.live_state import (
     sync_cooldown_map,
 )
 from core.live.market_data import (
-    build_live_inputs,
-    build_market_snapshot,
     list_candidate_symbols,
-    merge_shared_symbol_bars_cache_stats,
-    new_shared_symbol_bars_cache_stats,
+)
+from core.live.market_data_hub import (
+    build_live_inputs_via_hub,
+    build_market_snapshot_via_hub,
+    finalize_candidate_payload_via_hub,
 )
 from core.message_bridge import send_to_bot
 from strategies.snapback.logic import WashoutSnapbackStrategy
@@ -1683,7 +1684,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         raise KeyError('strategy_cfg.universe.market_total_24h_vol_min missing')
     market_total_24h_vol_min = float(universe_cfg['market_total_24h_vol_min'])
 
-    market_snapshot = build_market_snapshot(account)
+    market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
     latest_closed_bar_ts_snapshot = int(market_snapshot['latest_closed_bar_ts'])
     ticker_map_snapshot = dict(market_snapshot['ticker_map'])
     market_snapshot_fetched_utc_ms = int(market_snapshot['market_snapshot_fetched_utc_ms'])
@@ -1741,7 +1742,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
-    candidate_md_res = build_live_inputs(
+    candidate_md_res = build_live_inputs_via_hub(
         account,
         candidate_symbols,
         history_window_mins,
@@ -1749,6 +1750,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         audit_label='candidate',
         latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
         ticker_map=ticker_map_snapshot,
+        audit_enabled=audit_enabled,
     )
     candidate_md_elapsed_ms = _perf_elapsed_ms(candidate_md_perf_started)
     candidate_md_finished_utc_ms = _now_utc_ms()
@@ -1758,7 +1760,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if extra_reconcile_symbols:
         extra_md_started_utc_ms = _now_utc_ms()
         extra_md_perf_started = time.perf_counter()
-        extra_md_res = build_live_inputs(
+        extra_md_res = build_live_inputs_via_hub(
             account,
             extra_reconcile_symbols,
             history_window_mins,
@@ -1766,6 +1768,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             audit_label='reconcile',
             latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
             ticker_map=ticker_map_snapshot,
+            audit_enabled=audit_enabled,
         )
         extra_md_elapsed_ms = _perf_elapsed_ms(extra_md_perf_started)
         extra_md_finished_utc_ms = _now_utc_ms()
@@ -1796,7 +1799,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     if candidate_payload:
         candidate_symbol_count_before_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
         finalize_perf_started = time.perf_counter()
-        candidate_payload = _finalize_candidate_payload(
+        candidate_payload = finalize_candidate_payload_via_hub(
             account,
             strategy_cfg,
             candidate_payload,
