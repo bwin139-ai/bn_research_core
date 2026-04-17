@@ -1715,7 +1715,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     except Exception as e:
         logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
 
-    if market_total_24h_symbol_count_snapshot <= 0:
+    if market_total_24h_vol_status != 'ready_hub_owned_1m':
         if audit_enabled:
             write_event(account, 'market_total_24h_vol_not_ready_skip', {
                 'bar_ts': current_time_ms,

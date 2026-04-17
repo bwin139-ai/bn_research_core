@@ -107,6 +107,8 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
         'market_total_24h_vol_source': str(snapshot.get('market_total_24h_vol_source') or ''),
         'market_total_24h_vol_1m_rollsum_status': str(snapshot.get('market_total_24h_vol_status') or ''),
+        'hub_owned_1m_rollsum_state_updated_utc_ms': snapshot.get('hub_owned_1m_rollsum_state_updated_utc_ms'),
+        'hub_owned_1m_rollsum_state_updated_bj': snapshot.get('hub_owned_1m_rollsum_state_updated_bj'),
         'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),
         'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
     }

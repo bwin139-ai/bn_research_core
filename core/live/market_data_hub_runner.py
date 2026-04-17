@@ -73,6 +73,8 @@ def _write_empty_hub_inputs_snapshot(
     min_24h_quote_volume: float,
     market_total_24h_vol_1m_rollsum: float,
     market_total_24h_symbol_count_1m_rollsum: int,
+    market_total_24h_vol_source: str,
+    market_total_24h_vol_status: str,
 ) -> None:
     published_utc_ms = int(time.time() * 1000)
     payload = {
@@ -93,6 +95,7 @@ def _write_empty_hub_inputs_snapshot(
         'market_total_24h_vol_1m_rollsum': float(market_total_24h_vol_1m_rollsum),
         'market_total_24h_symbol_count_1m_rollsum': int(market_total_24h_symbol_count_1m_rollsum),
         'market_total_24h_vol_source': str(market_total_24h_vol_source),
+        'market_total_24h_vol_status': str(market_total_24h_vol_status),
     }
     write_current_snapshot(account, snapshot_name, payload)
     write_current_pickle(account, snapshot_name, dict(payload))
@@ -142,16 +145,22 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_vol_1m_rollsum = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
+    market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_status') or '')
     candidate_symbols = list_candidate_symbols(account)
-    symbol_24h_quote_volume_1m = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
+    if market_total_24h_vol_status == 'ready_hub_owned_1m':
+        prefilter_source = 'hub_owned_1m_rollsum'
+        symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
+    else:
+        prefilter_source = 'futures_ticker_warmup'
+        symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_api') or {})
     finalize_symbols = [
         symbol for symbol in candidate_symbols
-        if float(symbol_24h_quote_volume_1m.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
+        if float(symbol_24h_quote_volume_map.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
     ]
     if not finalize_symbols:
         reason = (
-            'market_total_24h_vol_1m_rollsum_not_ready'
-            if market_total_24h_symbol_count_1m_rollsum <= 0
+            'hub_owned_1m_rollsum_warming_up'
+            if market_total_24h_vol_status != 'ready_hub_owned_1m'
             else 'hub_candidate_prefilter_empty'
         )
         write_event(account, reason, {
@@ -163,6 +172,8 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
             'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
             'market_total_24h_vol_source': market_total_24h_vol_source,
+            'market_total_24h_vol_status': market_total_24h_vol_status,
+            'prefilter_source': prefilter_source,
         })
         _write_empty_hub_inputs_snapshot(
             account,
@@ -175,6 +186,8 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             min_24h_quote_volume=min_24h_quote_volume,
             market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
             market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+            market_total_24h_vol_source=market_total_24h_vol_source,
+            market_total_24h_vol_status=market_total_24h_vol_status,
         )
         _write_empty_hub_inputs_snapshot(
             account,
@@ -187,6 +200,8 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             min_24h_quote_volume=min_24h_quote_volume,
             market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
             market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
+            market_total_24h_vol_source=market_total_24h_vol_source,
+            market_total_24h_vol_status=market_total_24h_vol_status,
         )
         return
 
