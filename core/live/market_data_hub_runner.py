@@ -146,19 +146,36 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_status') or '')
+    candidate_symbols = list_candidate_symbols(account)
+
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
-        reason = 'hub_owned_1m_rollsum_not_ready'
-        write_event(account, reason, {
+        warming_res = build_live_inputs_via_hub(
+            account,
+            candidate_symbols,
+            history_window_mins,
+            None,
+            audit_label='hub_warming',
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            ticker_map=dict(market_snapshot['ticker_map']),
+            audit_enabled=audit_enabled,
+            use_full_market_inputs=True,
+        )
+        warming_payload = warming_res.get('data') if warming_res.get('ok') else None
+        write_event(account, 'hub_owned_1m_rollsum_warming', {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
             'latest_closed_bar_ts': latest_closed_bar_ts,
             'latest_closed_bar_bj': latest_closed_bar_bj,
+            'warming_symbol_count': int((warming_payload or {}).get('symbol_count') or 0),
+            'warming_reason': warming_res.get('reason') or '',
+            'warming_errors': warming_res.get('errors') or {},
             'min_24h_quote_volume': min_24h_quote_volume,
             'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
             'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
             'market_total_24h_vol_source': market_total_24h_vol_source,
             'market_total_24h_vol_status': market_total_24h_vol_status,
         })
+        reason = 'hub_owned_1m_rollsum_not_ready'
         _write_empty_hub_inputs_snapshot(
             account,
             'candidate_inputs',
@@ -189,7 +206,6 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         )
         return
 
-    candidate_symbols = list_candidate_symbols(account)
     prefilter_source = 'hub_owned_1m_rollsum'
     symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
     finalize_symbols = [
