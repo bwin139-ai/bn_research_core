@@ -704,36 +704,16 @@ def _rows_to_index_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: 
     return df
 
 
-def build_live_inputs(
+def _build_live_inputs_for_symbols(
     account: str,
     symbols: list[str],
     history_window_mins: int,
-    strategy_cfg: dict[str, Any] | None = None,
     *,
-    audit_label: str = 'candidate',
-    latest_closed_bar_ts: int | None = None,
-    ticker_map: dict[str, dict[str, Any]] | None = None,
+    audit_label: str,
+    latest_closed_bar_ts: int,
+    ticker_map: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     errors: dict[str, str] = {}
-    history_window_mins = int(history_window_mins)
-    if history_window_mins <= 0:
-        raise ValueError('history_window_mins must be > 0')
-
-    latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
-    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
-    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
-    eligible_symbols, universe_errors = _filter_symbols_by_universe(
-        symbols,
-        ticker_map,
-        strategy_cfg,
-        account=account,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-        audit_label=audit_label,
-    )
-    errors.update(universe_errors)
-    if not eligible_symbols:
-        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': errors}
-
     keep = int(history_window_mins)
     shared_symbol_bars_cache = _new_shared_symbol_bars_cache_stats()
 
@@ -741,8 +721,9 @@ def build_live_inputs(
     stale_symbols: dict[str, str] = {}
     cross_rows: list[pd.Series] = []
     stage3_frames: list[pd.DataFrame] = []
+    signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
 
-    for symbol in eligible_symbols:
+    for symbol in symbols:
         try:
             rows = _fetch_symbol_klines(
                 account,
@@ -811,3 +792,145 @@ def build_live_inputs(
             'shared_symbol_bars_cache': shared_symbol_bars_cache,
         },
     }
+
+
+def build_live_inputs(
+    account: str,
+    symbols: list[str],
+    history_window_mins: int,
+    strategy_cfg: dict[str, Any] | None = None,
+    *,
+    audit_label: str = 'candidate',
+    latest_closed_bar_ts: int | None = None,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    history_window_mins = int(history_window_mins)
+    if history_window_mins <= 0:
+        raise ValueError('history_window_mins must be > 0')
+
+    latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
+    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
+    eligible_symbols, universe_errors = _filter_symbols_by_universe(
+        symbols,
+        ticker_map,
+        strategy_cfg,
+        account=account,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        audit_label=audit_label,
+    )
+    if not eligible_symbols:
+        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': universe_errors}
+
+    res = _build_live_inputs_for_symbols(
+        account,
+        eligible_symbols,
+        history_window_mins,
+        audit_label=audit_label,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        ticker_map=ticker_map,
+    )
+    merged_errors = dict(universe_errors)
+    merged_errors.update(res.get('errors') or {})
+    res['errors'] = merged_errors
+    return res
+
+
+def build_live_inputs_full_market(
+    account: str,
+    symbols: list[str],
+    history_window_mins: int,
+    *,
+    audit_label: str = 'hub_full_market',
+    latest_closed_bar_ts: int | None = None,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    history_window_mins = int(history_window_mins)
+    if history_window_mins <= 0:
+        raise ValueError('history_window_mins must be > 0')
+    latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
+    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
+    return _build_live_inputs_for_symbols(
+        account,
+        [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()],
+        history_window_mins,
+        audit_label=audit_label,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        ticker_map=ticker_map,
+    )
+
+
+def filter_loaded_payload_by_universe(
+    account: str,
+    loaded_payload: dict[str, Any],
+    strategy_cfg: dict[str, Any],
+    *,
+    symbols: list[str] | None = None,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
+    audit_label: str = 'candidate',
+) -> dict[str, Any]:
+    if not isinstance(loaded_payload, dict):
+        return {'ok': False, 'reason': 'loaded_payload_missing', 'data': None, 'errors': {}}
+    latest_closed_bar_ts = int(loaded_payload.get('latest_closed_bar_ts') or 0)
+    if latest_closed_bar_ts <= 0:
+        return {'ok': False, 'reason': 'loaded_payload_missing_latest_closed_bar_ts', 'data': None, 'errors': {}}
+    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
+    full_df = dict(loaded_payload.get('full_df') or {})
+    candidate_symbols = [str(x).upper().strip() for x in (symbols or list(full_df.keys())) if str(x).strip()]
+    eligible_symbols, universe_errors = _filter_symbols_by_universe(
+        candidate_symbols,
+        ticker_map,
+        strategy_cfg,
+        account=account,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        audit_label=audit_label,
+    )
+    if not eligible_symbols:
+        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': universe_errors}
+
+    cross_section = loaded_payload.get('cross_section')
+    filtered_full_df: dict[str, pd.DataFrame] = {}
+    filtered_rows: list[pd.Series] = []
+    errors = dict(universe_errors)
+    stale_symbols = dict(loaded_payload.get('stale_symbols') or {})
+
+    for symbol in eligible_symbols:
+        df = full_df.get(symbol)
+        if df is None:
+            errors[symbol] = 'symbol_missing_from_loaded_payload'
+            continue
+        filtered_full_df[symbol] = df
+        try:
+            if cross_section is not None and symbol in cross_section.index:
+                row = cross_section.loc[symbol].copy()
+                row.name = symbol
+                filtered_rows.append(row)
+            elif latest_closed_bar_ts in df.index:
+                row = df.loc[latest_closed_bar_ts].copy()
+                row.name = symbol
+                filtered_rows.append(row)
+            else:
+                stale_symbols[symbol] = 'latest_closed_bar_missing_after_hub_load'
+        except Exception as e:
+            errors[symbol] = str(e)
+
+    if not filtered_full_df or not filtered_rows:
+        return {'ok': False, 'reason': 'no eligible symbols left after hub universe filter', 'data': None, 'errors': errors | stale_symbols}
+
+    filtered_cross_section = pd.DataFrame(filtered_rows)
+    filtered_cross_section.index.name = 'symbol'
+    freshest_ts = latest_closed_bar_ts
+    data = {
+        **loaded_payload,
+        'freshest_bar_ts': freshest_ts,
+        'freshest_bar_bj': _fmt_bj_from_ms(freshest_ts),
+        'stale_cutoff_ts': freshest_ts,
+        'stale_cutoff_bj': _fmt_bj_from_ms(freshest_ts),
+        'stale_symbol_count': len(stale_symbols),
+        'stale_symbols': stale_symbols,
+        'cross_section': filtered_cross_section,
+        'full_df': filtered_full_df,
+        'symbol_count': len(filtered_full_df),
+        'bars_loaded_min': int(min(len(df) for df in filtered_full_df.values())),
+        'bars_loaded_max': int(max(len(df) for df in filtered_full_df.values())),
+    }
+    return {'ok': True, 'reason': '', 'data': data, 'errors': errors}

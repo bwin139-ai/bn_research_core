@@ -27,6 +27,7 @@ from core.live.live_state import (
     sync_cooldown_map,
 )
 from core.live.market_data import (
+    filter_loaded_payload_by_universe,
     list_candidate_symbols,
 )
 from core.live.market_data_hub import (
@@ -1769,6 +1770,31 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         extra_md_finished_utc_ms = _now_utc_ms()
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
+    if candidate_payload is not None:
+        candidate_filter_res = filter_loaded_payload_by_universe(
+            account,
+            candidate_payload,
+            strategy_cfg,
+            symbols=candidate_symbols,
+            ticker_map=ticker_map_snapshot,
+            audit_label='candidate',
+        )
+        if candidate_filter_res.get('ok'):
+            candidate_payload = candidate_filter_res.get('data')
+            candidate_md_res = {
+                'ok': True,
+                'reason': '',
+                'errors': dict(candidate_filter_res.get('errors') or {}),
+                'data': candidate_payload,
+            }
+        else:
+            candidate_payload = None
+            candidate_md_res = {
+                'ok': False,
+                'reason': candidate_filter_res.get('reason') or 'hub_candidate_payload_filtered_empty',
+                'errors': dict(candidate_filter_res.get('errors') or {}),
+                'data': None,
+            }
     extra_payload = extra_md_res.get('data') if extra_md_res and extra_md_res.get('ok') else None
     candidate_cache_stats = dict((candidate_payload or {}).get('shared_symbol_bars_cache') or {}) if candidate_payload else None
     extra_cache_stats = dict((extra_payload or {}).get('shared_symbol_bars_cache') or {}) if extra_payload else None

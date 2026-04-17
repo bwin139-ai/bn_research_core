@@ -8,6 +8,7 @@ from typing import Any
 from core.live.audit_log import write_event
 from core.live.market_data import (
     build_live_inputs,
+    build_live_inputs_full_market,
     build_market_snapshot,
     merge_shared_symbol_bars_cache_stats,
     new_shared_symbol_bars_cache_stats,
@@ -121,16 +122,27 @@ def build_live_inputs_via_hub(
     latest_closed_bar_ts: int | None = None,
     ticker_map: dict[str, dict[str, Any]] | None = None,
     audit_enabled: bool = False,
+    use_full_market_inputs: bool = False,
 ) -> dict[str, Any]:
-    res = build_live_inputs(
-        account,
-        symbols,
-        history_window_mins,
-        strategy_cfg,
-        audit_label=audit_label,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-        ticker_map=ticker_map,
-    )
+    if use_full_market_inputs:
+        res = build_live_inputs_full_market(
+            account,
+            symbols,
+            history_window_mins,
+            audit_label=audit_label,
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            ticker_map=ticker_map,
+        )
+    else:
+        res = build_live_inputs(
+            account,
+            symbols,
+            history_window_mins,
+            strategy_cfg,
+            audit_label=audit_label,
+            latest_closed_bar_ts=latest_closed_bar_ts,
+            ticker_map=ticker_map,
+        )
     published_utc_ms = int(time.time() * 1000)
     payload = {
         'schema_version': 1,

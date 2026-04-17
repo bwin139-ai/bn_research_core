@@ -99,7 +99,7 @@ def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) ->
     latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
     signal_time_ts = int(market_snapshot['signal_time_ts'])
     signal_time_bj = str(market_snapshot['signal_time_bj'])
-    candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
+    candidate_symbols = list_candidate_symbols(account)
 
     candidate_res = build_live_inputs_via_hub(
         account,
@@ -110,6 +110,7 @@ def _run_account_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any]) ->
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=dict(market_snapshot['ticker_map']),
         audit_enabled=audit_enabled,
+        use_full_market_inputs=True,
     )
     candidate_payload = candidate_res.get('data') if candidate_res.get('ok') else None
     if not candidate_payload:
