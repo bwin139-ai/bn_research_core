@@ -15,7 +15,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.live.audit_log import write_event
-from core.live.market_data import list_candidate_symbols, refresh_hub_owned_1m_rollsum_for_symbols
+from core.live.market_data import (
+    list_candidate_symbols,
+    read_hub_owned_1m_rollsum_market_view,
+    refresh_hub_owned_1m_rollsum_for_symbols,
+)
 from core.live.market_data_hub_store import write_current_pickle, write_current_snapshot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
@@ -211,15 +215,14 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         candidate_symbols,
         latest_closed_bar_ts=latest_closed_bar_ts,
     )
-    market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
-    latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
-    latest_closed_bar_bj = str(market_snapshot.get('latest_closed_bar_bj') or _fmt_bj_from_ms(latest_closed_bar_ts))
-    signal_time_ts = int(market_snapshot['signal_time_ts'])
-    signal_time_bj = str(market_snapshot['signal_time_bj'])
-    market_total_24h_vol_1m_rollsum = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
-    market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
-    market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
-    market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_status') or '')
+    rollsum_view = read_hub_owned_1m_rollsum_market_view(
+        account,
+        dict(market_snapshot['ticker_map']),
+    )
+    market_total_24h_vol_1m_rollsum = float(rollsum_view.get('market_total_24h_vol_1m_rollsum') or 0.0)
+    market_total_24h_symbol_count_1m_rollsum = int(rollsum_view.get('market_total_24h_symbol_count_1m_rollsum') or 0)
+    market_total_24h_vol_source = str(rollsum_view.get('market_total_24h_vol_source') or '')
+    market_total_24h_vol_status = str(rollsum_view.get('market_total_24h_vol_status') or '')
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
         reason = 'hub_owned_1m_rollsum_regressed_not_ready'
         write_event(account, reason, {
@@ -264,7 +267,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         return
 
     prefilter_source = 'hub_owned_1m_rollsum'
-    symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_1m') or {})
+    symbol_24h_quote_volume_map = dict(rollsum_view.get('symbol_24h_quote_volume_1m') or {})
     finalize_symbols = [
         symbol for symbol in candidate_symbols
         if float(symbol_24h_quote_volume_map.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume

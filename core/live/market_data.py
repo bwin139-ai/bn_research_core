@@ -408,6 +408,19 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
     return payload
 
 
+def _rollsum_refresh_limit_for_symbol(rec: dict[str, Any] | None, latest_closed_bar_ts: int) -> int:
+    if not isinstance(rec, dict):
+        return _MARKET_24H_ROLLSUM_WINDOW_BARS
+    last_bar_ts = _to_int(rec.get('latest_bar_ts'), default=0)
+    if last_bar_ts <= 0:
+        return _MARKET_24H_ROLLSUM_WINDOW_BARS
+    lag_bars = max(0, (int(latest_closed_bar_ts) - int(last_bar_ts)) // 60000)
+    if lag_bars <= 3:
+        return max(2, int(lag_bars) + 2)
+    if lag_bars <= 60:
+        return int(lag_bars) + 2
+    return _MARKET_24H_ROLLSUM_WINDOW_BARS
+
 
 
 def refresh_hub_owned_1m_rollsum_for_symbols(
@@ -420,13 +433,19 @@ def refresh_hub_owned_1m_rollsum_for_symbols(
     if not symbol_list:
         return _load_hub_owned_1m_rollsum_state()
 
+    existing_state = _load_hub_owned_1m_rollsum_state()
+    existing_symbols_state = dict(existing_state.get('symbols') or {})
     contract_frames: list[pd.DataFrame] = []
     for symbol in symbol_list:
         try:
+            refresh_limit = _rollsum_refresh_limit_for_symbol(
+                existing_symbols_state.get(symbol),
+                int(latest_closed_bar_ts),
+            )
             rows = _fetch_symbol_klines(
                 account,
                 symbol,
-                _MARKET_24H_ROLLSUM_WINDOW_BARS,
+                refresh_limit,
                 required_latest_closed_bar_ts=latest_closed_bar_ts,
             )
             raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
@@ -749,6 +768,13 @@ def _market_total_24h_vol_from_live_ticker_map(account: str, ticker_map: dict[st
         'market_total_24h_vol_source': 'futures_ticker_live',
         'market_total_24h_vol_status': 'ready_live_api',
     }
+
+
+def read_hub_owned_1m_rollsum_market_view(
+    account: str,
+    ticker_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    return _market_total_24h_vol_from_hub_owned_1m_state(account, ticker_map)
 
 
 def build_market_snapshot(account: str) -> dict[str, Any]:
