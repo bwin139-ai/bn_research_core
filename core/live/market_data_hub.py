@@ -376,6 +376,9 @@ def finalize_candidate_payload_via_hub(
 
         round_pending_symbols = sorted(pending_symbols)
         for symbol in round_pending_symbols:
+            if int(time.time() * 1000) > int(finalize_deadline_utc_ms):
+                finalize_summary['skipped_due_deadline'] = True
+                break
             refresh_res = build_live_inputs_via_hub(
                 account,
                 [symbol],

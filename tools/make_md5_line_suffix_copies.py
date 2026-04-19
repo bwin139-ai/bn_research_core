@@ -3,7 +3,8 @@ import hashlib
 import pathlib
 import shutil
 
-"""
+r"""
+find . -type f \( -name "*.py" -o -name "*.json" \) | grep -E '_[0-9a-f]{4}_[0-9]+(_v[0-9]+)?\.(py|json)$' | xargs -I {} sh -c 'echo rm "{}"; rm -f "{}"'
 python3 tools/make_md5_line_suffix_copies.py
 """
 FILES = [
@@ -36,12 +37,12 @@ FILES = [
     # "core/live/live_state.py",
     # "core/live/audit_log.py",
     # "core/live/custom_id.py",
-    "core/live/market_data.py",
+    #"core/live/market_data.py",
     "core/live/market_data_hub.py",
     #"core/live/market_data_hub_store.py",
-    "core/live/market_data_hub_runner.py",
+    #"core/live/market_data_hub_runner.py",
     # "=============== snapback 策略 ==================",
-     "strategies/snapback/run_live.py",
+    # "strategies/snapback/run_live.py",
     # "strategies/snapback/logic.py",
     # "strategies/snapback/config.sim.json",
     # "strategies/snapback/live_config.highfreq.json",
