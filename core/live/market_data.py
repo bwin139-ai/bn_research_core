@@ -410,6 +410,38 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 
 
 
+def refresh_hub_owned_1m_rollsum_for_symbols(
+    account: str,
+    symbols: list[str],
+    *,
+    latest_closed_bar_ts: int,
+) -> dict[str, Any]:
+    symbol_list = [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()]
+    if not symbol_list:
+        return _load_hub_owned_1m_rollsum_state()
+
+    contract_frames: list[pd.DataFrame] = []
+    for symbol in symbol_list:
+        try:
+            rows = _fetch_symbol_klines(
+                account,
+                symbol,
+                _MARKET_24H_ROLLSUM_WINDOW_BARS,
+                required_latest_closed_bar_ts=latest_closed_bar_ts,
+            )
+            raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
+            if raw_df.empty:
+                continue
+            contract_frames.append(raw_df[['symbol', 'open_time_ms', 'quote_asset_volume']].copy())
+        except Exception:
+            continue
+    return _merge_contract_frames_into_hub_owned_1m_rollsum_state(
+        contract_frames,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+    )
+
+
+
 
 def _empty_hub_owned_1m_rollsum_state() -> dict[str, Any]:
     return {
