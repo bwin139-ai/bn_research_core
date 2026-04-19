@@ -20,7 +20,7 @@ from core.live.market_data import (
     read_hub_owned_1m_rollsum_market_view,
     refresh_hub_owned_1m_rollsum_for_symbols,
 )
-from core.live.market_data_hub_store import write_current_pickle, write_current_snapshot
+from core.live.market_data_hub_store import read_current_snapshot, write_current_pickle, write_current_snapshot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
     build_market_snapshot_via_hub,
@@ -28,6 +28,66 @@ from core.live.market_data_hub import (
 )
 
 BJ = timezone(timedelta(hours=8))
+_HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT = 'rollsum_refresh_progress'
+
+
+def _load_rollsum_refresh_start_idx(account: str) -> int:
+    snapshot = read_current_snapshot(account, _HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT)
+    if not isinstance(snapshot, dict):
+        return 0
+    try:
+        return max(0, int(snapshot.get('next_start_idx') or 0))
+    except Exception:
+        return 0
+
+
+def _pick_round_robin_refresh_batch(symbols: list[str], start_idx: int, batch_size: int) -> tuple[list[str], int]:
+    ordered = [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()]
+    if not ordered:
+        return [], 0
+    size = max(1, min(int(batch_size), len(ordered)))
+    start = int(start_idx) % len(ordered)
+    batch = [ordered[(start + i) % len(ordered)] for i in range(size)]
+    next_start_idx = (start + size) % len(ordered)
+    return batch, next_start_idx
+
+
+def _write_rollsum_refresh_progress_snapshot(
+    account: str,
+    *,
+    latest_closed_bar_ts: int,
+    signal_time_ts: int,
+    batch_symbols: list[str],
+    batch_size: int,
+    total_symbol_count: int,
+    next_start_idx: int,
+    refresh_started_utc_ms: int,
+    refresh_finished_utc_ms: int,
+) -> None:
+    payload = {
+        'schema_version': 1,
+        'account': str(account).strip(),
+        'snapshot_name': _HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT,
+        'published_utc_ms': int(refresh_finished_utc_ms),
+        'published_bj': _fmt_bj_from_ms(int(refresh_finished_utc_ms)),
+        'latest_closed_bar_ts': int(latest_closed_bar_ts),
+        'latest_closed_bar_bj': _fmt_bj_from_ms(int(latest_closed_bar_ts)),
+        'signal_time_ts': int(signal_time_ts),
+        'signal_time_bj': _fmt_bj_from_ms(int(signal_time_ts)),
+        'total_symbol_count': int(total_symbol_count),
+        'batch_size': int(batch_size),
+        'batch_symbol_count': int(len(batch_symbols)),
+        'batch_symbols': list(batch_symbols),
+        'next_start_idx': int(next_start_idx),
+        'refresh_started_utc_ms': int(refresh_started_utc_ms),
+        'refresh_started_bj': _fmt_bj_from_ms(int(refresh_started_utc_ms)),
+        'refresh_finished_utc_ms': int(refresh_finished_utc_ms),
+        'refresh_finished_bj': _fmt_bj_from_ms(int(refresh_finished_utc_ms)),
+        'refresh_elapsed_ms': int(max(0, int(refresh_finished_utc_ms) - int(refresh_started_utc_ms))),
+    }
+    write_current_snapshot(account, _HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT, payload)
+    write_current_pickle(account, _HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT, dict(payload))
+
 
 
 def setup_logging() -> None:
@@ -56,6 +116,7 @@ def _load_hub_config(path: str) -> dict[str, Any]:
     data.setdefault('enabled', True)
     data.setdefault('publish_config_snapshot', True)
     data.setdefault('min_24h_quote_volume', 50000000)
+    data.setdefault('rollsum_refresh_batch_size', 80)
     return data
 
 
@@ -210,11 +271,6 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         )
         return
 
-    refresh_hub_owned_1m_rollsum_for_symbols(
-        account,
-        candidate_symbols,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-    )
     rollsum_view = read_hub_owned_1m_rollsum_market_view(
         account,
         dict(market_snapshot['ticker_map']),
@@ -349,6 +405,32 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         audit_enabled=audit_enabled,
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=dict(market_snapshot['ticker_map']),
+    )
+
+    refresh_batch_size = int(hub_cfg.get('rollsum_refresh_batch_size', 80) or 80)
+    refresh_start_idx = _load_rollsum_refresh_start_idx(account)
+    refresh_batch_symbols, next_refresh_start_idx = _pick_round_robin_refresh_batch(
+        candidate_symbols,
+        refresh_start_idx,
+        refresh_batch_size,
+    )
+    refresh_started_utc_ms = int(time.time() * 1000)
+    refresh_hub_owned_1m_rollsum_for_symbols(
+        account,
+        refresh_batch_symbols,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+    )
+    refresh_finished_utc_ms = int(time.time() * 1000)
+    _write_rollsum_refresh_progress_snapshot(
+        account,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        signal_time_ts=signal_time_ts,
+        batch_symbols=refresh_batch_symbols,
+        batch_size=refresh_batch_size,
+        total_symbol_count=len(candidate_symbols),
+        next_start_idx=next_refresh_start_idx,
+        refresh_started_utc_ms=refresh_started_utc_ms,
+        refresh_finished_utc_ms=refresh_finished_utc_ms,
     )
 
 

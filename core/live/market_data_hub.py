@@ -360,12 +360,17 @@ def finalize_candidate_payload_via_hub(
         'timeout_not_finalized_symbols': [],
         'last_valid_probe_utc_ms_by_symbol': dict(last_valid_probe_utc_ms_by_symbol),
         'last_valid_probe_bj_by_symbol': dict(last_valid_probe_bj_by_symbol),
+        'candidate_md_finished_after_deadline': bool(candidate_md_finished_utc_ms is not None and int(candidate_md_finished_utc_ms) > int(finalize_deadline_utc_ms)),
+        'candidate_md_finished_deadline_lag_ms': int(max(0, int(candidate_md_finished_utc_ms) - int(finalize_deadline_utc_ms))) if candidate_md_finished_utc_ms is not None else None,
     }
 
     if not pending_symbols:
         finalized_payload = _build_finalized_candidate_payload(candidate_payload, candidate_cross_section, candidate_full_df, finalize_cache_stats, finalize_summary)
         _write_finalize_snapshots(account, finalized_payload)
         return finalized_payload
+
+    if bool(finalize_summary.get('candidate_md_finished_after_deadline')):
+        finalize_summary['skipped_due_deadline'] = True
 
     next_probe_utc_ms = _next_finalize_probe_utc_ms(None, candidate_md_finished_utc_ms)
     while pending_symbols and next_probe_utc_ms is not None:
