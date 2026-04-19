@@ -9,6 +9,7 @@ from core.live.audit_log import write_event
 from core.live.market_data import (
     build_live_inputs,
     build_live_inputs_full_market,
+    build_live_inputs_full_market_light_refresh,
     build_market_snapshot,
     merge_shared_symbol_bars_cache_stats,
     new_shared_symbol_bars_cache_stats,
@@ -379,7 +380,7 @@ def finalize_candidate_payload_via_hub(
             if int(time.time() * 1000) > int(finalize_deadline_utc_ms):
                 finalize_summary['skipped_due_deadline'] = True
                 break
-            refresh_res = build_live_inputs_full_market(
+            refresh_res = build_live_inputs_full_market_light_refresh(
                 account,
                 [symbol],
                 history_window_mins,

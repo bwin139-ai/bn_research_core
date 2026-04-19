@@ -1048,6 +1048,8 @@ def _build_live_inputs_for_symbols(
     audit_label: str,
     latest_closed_bar_ts: int,
     ticker_map: dict[str, dict[str, Any]],
+    write_stage3: bool = True,
+    update_hub_owned_rollsum: bool = True,
 ) -> dict[str, Any]:
     errors: dict[str, str] = {}
     keep = int(history_window_mins)
@@ -1094,10 +1096,12 @@ def _build_live_inputs_for_symbols(
         except Exception as e:
             errors[symbol] = str(e)
 
-    if stage3_frames:
+    if stage3_frames and (write_stage3 or update_hub_owned_rollsum):
         stage3_df = pd.concat(stage3_frames, ignore_index=True)
-        _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, signal_time_ts, stage3_df)
-        _merge_contract_frames_into_hub_owned_1m_rollsum_state(stage3_frames, latest_closed_bar_ts=latest_closed_bar_ts)
+        if write_stage3:
+            _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, signal_time_ts, stage3_df)
+        if update_hub_owned_rollsum:
+            _merge_contract_frames_into_hub_owned_1m_rollsum_state(stage3_frames, latest_closed_bar_ts=latest_closed_bar_ts)
 
     if not histories or not cross_rows:
         return {'ok': False, 'reason': 'no live symbol history loaded from binance', 'data': None, 'errors': errors | stale_symbols}
@@ -1170,6 +1174,32 @@ def build_live_inputs(
     merged_errors.update(res.get('errors') or {})
     res['errors'] = merged_errors
     return res
+
+
+def build_live_inputs_full_market_light_refresh(
+    account: str,
+    symbols: list[str],
+    history_window_mins: int,
+    *,
+    audit_label: str = 'candidate_finalize',
+    latest_closed_bar_ts: int | None = None,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    history_window_mins = int(history_window_mins)
+    if history_window_mins <= 0:
+        raise ValueError('history_window_mins must be > 0')
+    latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
+    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
+    return _build_live_inputs_for_symbols(
+        account,
+        [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()],
+        history_window_mins,
+        audit_label=audit_label,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        ticker_map=ticker_map,
+        write_stage3=False,
+        update_hub_owned_rollsum=False,
+    )
 
 
 def build_live_inputs_full_market(
