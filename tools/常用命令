@@ -1,6 +1,5 @@
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
-按照《标准化 Patch 协作框架》输出patch，特别注意必须在容器中实际运行patch脚本拿到预期新指纹，对齐以下指纹和副本：
 
 # ============== 项目根目录 ===============
  cd ~/ai_projects/bn_research_core

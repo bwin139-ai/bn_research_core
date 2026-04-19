@@ -379,16 +379,13 @@ def finalize_candidate_payload_via_hub(
             if int(time.time() * 1000) > int(finalize_deadline_utc_ms):
                 finalize_summary['skipped_due_deadline'] = True
                 break
-            refresh_res = build_live_inputs_via_hub(
+            refresh_res = build_live_inputs_full_market(
                 account,
                 [symbol],
                 history_window_mins,
-                None,
                 audit_label='candidate_finalize',
                 latest_closed_bar_ts=latest_closed_bar_ts,
                 ticker_map=ticker_map,
-                audit_enabled=audit_enabled,
-                use_full_market_inputs=True,
             )
             refresh_payload = refresh_res.get('data') if refresh_res.get('ok') else None
             finalize_cache_stats = merge_shared_symbol_bars_cache_stats(
