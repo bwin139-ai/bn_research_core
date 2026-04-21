@@ -45,14 +45,20 @@ def parse_utc_date(s: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
+def stable_sync_end_ms(now_ms: Optional[int] = None, stable_lag_minutes: int = 3) -> int:
+    if now_ms is None:
+        now_ms = int(utc_now().timestamp() * 1000)
+    return floor_to_minute_ms(now_ms) - int(stable_lag_minutes) * INTERVAL_MS
+
+
 def date_range_to_ms(start_date: Optional[str], end_date: Optional[str], days: int) -> tuple[int, int]:
     if start_date and end_date:
         start_dt = parse_utc_date(start_date)
         end_dt = parse_utc_date(end_date) + timedelta(days=1)
         return floor_to_minute_ms(int(start_dt.timestamp() * 1000)), floor_to_minute_ms(int(end_dt.timestamp() * 1000))
-    now_ms = int(utc_now().timestamp() * 1000)
-    start_ms = floor_to_minute_ms(now_ms - int(days) * 24 * 60 * 60 * 1000)
-    return start_ms, now_ms
+    end_ms = stable_sync_end_ms()
+    start_ms = floor_to_minute_ms(end_ms - int(days) * 24 * 60 * 60 * 1000)
+    return start_ms, end_ms
 
 
 def floor_to_minute_ms(ts_ms: int) -> int:
@@ -563,7 +569,7 @@ def backfill_symbol(
     last_open = None
 
     while True:
-        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit, price_source=price_source)
+        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=end_ms, limit=limit, price_source=price_source)
         if not rows:
             break
 
@@ -574,7 +580,7 @@ def backfill_symbol(
         last_open = int(rows[-1][0])
         cur = last_open + INTERVAL_MS
 
-        if cur > now_ms - INTERVAL_MS:
+        if cur > end_ms:
             break
 
         if sleep_ms > 0:
@@ -613,16 +619,16 @@ def sync_symbol(
 
     last = int(per["last_open_time_ms"])
     cur = last + INTERVAL_MS
-    now_ms = int(utc_now().timestamp() * 1000)
+    end_ms = stable_sync_end_ms()
 
-    if cur > now_ms - INTERVAL_MS:
+    if cur > end_ms:
         return  # up to date
 
     buckets: Dict[str, List[List]] = {}
     last_open = None
 
     while True:
-        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=now_ms, limit=limit, price_source=price_source)
+        rows = fetch_klines(session, symbol, start_ms=cur, end_ms=end_ms, limit=limit, price_source=price_source)
         # Apply sleep after EVERY HTTP request. In sync mode, most symbols finish in a single request;
         # the old logic slept only between pages, causing burst requests across symbols
         # and triggering 429 / -1003 rate limits.
@@ -639,7 +645,7 @@ def sync_symbol(
         last_open = int(rows[-1][0])
         cur = last_open + INTERVAL_MS
 
-        if cur > now_ms - INTERVAL_MS:
+        if cur > end_ms:
             break
     if not buckets:
         return
