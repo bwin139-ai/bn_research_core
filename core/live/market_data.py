@@ -423,12 +423,24 @@ def _load_or_refresh_symbol_bar_rows(
             coverage_ok=coverage_ok,
         )
     now_ms = int(time.time() * 1000)
+    remote_limit = int(limit)
+    if required_latest_closed_bar_ts is not None:
+        # Binance latest-N queries often include the still-open 1m bar. Pull one extra
+        # and normalize back to the requested closed-bar window.
+        remote_limit = int(limit) + 1
     if kind == 'contract':
-        rows = _fetch_symbol_klines_remote(account, symbol, limit)
+        rows = _fetch_symbol_klines_remote(account, symbol, remote_limit)
     elif kind == 'index':
-        rows = _fetch_symbol_index_price_klines_remote(account, symbol, limit)
+        rows = _fetch_symbol_index_price_klines_remote(account, symbol, remote_limit)
     else:
         raise ValueError(f'unsupported bars kind: {kind}')
+    if required_latest_closed_bar_ts is not None:
+        rows = [
+            row for row in rows
+            if isinstance(row, (list, tuple)) and len(row) > 0 and _to_int(row[0], default=0) <= int(required_latest_closed_bar_ts)
+        ]
+        if len(rows) > int(limit):
+            rows = rows[-int(limit):]
     payload = {
         'fetched_utc_ms': now_ms,
         'fetched_bj': _fmt_bj_from_ms(now_ms),
