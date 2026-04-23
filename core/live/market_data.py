@@ -383,6 +383,21 @@ def _frame_recent_window_reason(
     return _format_recent_window_reason(kind, info)
 
 
+def _is_recent_prefix_continuous(
+    open_times: list[int],
+    latest_closed_bar_ts: int,
+) -> bool:
+    clean = sorted({int(ts) for ts in open_times if _to_int(ts, default=0) > 0 and _to_int(ts, default=0) <= int(latest_closed_bar_ts)})
+    if not clean:
+        return False
+    info = _recent_window_coverage_info(
+        clean,
+        latest_closed_bar_ts,
+        len(clean),
+    )
+    return bool(info.get('ok'))
+
+
 def _load_or_refresh_symbol_bar_rows(
     account: str,
     symbol: str,
@@ -655,6 +670,11 @@ def _merge_contract_frames_into_hub_owned_1m_rollsum_state(
             latest_closed_bar_ts,
             _MARKET_24H_ROLLSUM_WINDOW_BARS,
         )
+        open_times = [int(row[0]) for row in merged_rows if isinstance(row, (list, tuple)) and len(row) >= 2]
+        is_newly_listed_24h = bool(
+            window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS
+            and _is_recent_prefix_continuous(open_times, int(latest_closed_bar_ts))
+        )
         symbols_state[symbol] = {
             'latest_bar_ts': int(merged_rows[-1][0]),
             'rows': merged_rows,
@@ -662,6 +682,7 @@ def _merge_contract_frames_into_hub_owned_1m_rollsum_state(
             'quote_volume_24h': float(sum(float(row[1]) for row in merged_rows)),
             'is_continuous_24h': bool(coverage_info.get('ok')),
             'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
+            'is_newly_listed_24h': is_newly_listed_24h,
             'is_ready_24h': bool(coverage_info.get('ok')),
         }
 
@@ -682,6 +703,7 @@ def _market_total_24h_vol_from_hub_owned_1m_state(
     api_symbol_map: dict[str, float] = {}
     missing_symbols: list[str] = []
     partial_symbols: list[str] = []
+    newly_listed_symbols: list[str] = []
 
     for item in info_snapshot['data'].get('symbols', []):
         if str(item.get('status')) != 'TRADING':
@@ -702,6 +724,9 @@ def _market_total_24h_vol_from_hub_owned_1m_state(
             continue
         rows = list(rec.get('rows') or [])
         window_size = int(rec.get('window_size') or len(rows))
+        if bool(rec.get('is_newly_listed_24h')):
+            newly_listed_symbols.append(symbol)
+            continue
         if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(rec.get('is_ready_24h')):
             partial_symbols.append(symbol)
             continue
@@ -725,6 +750,8 @@ def _market_total_24h_vol_from_hub_owned_1m_state(
         'missing_symbols_1m_rollsum': missing_symbols,
         'partial_symbol_count_1m_rollsum': int(len(partial_symbols)),
         'partial_symbols_1m_rollsum': partial_symbols,
+        'newly_listed_symbol_count_1m_rollsum': int(len(newly_listed_symbols)),
+        'newly_listed_symbols_1m_rollsum': newly_listed_symbols,
         'market_total_24h_vol_source': 'hub_owned_1m_rollsum',
         'market_total_24h_vol_status': status,
         'hub_owned_1m_rollsum_state_updated_utc_ms': state.get('updated_utc_ms'),
@@ -853,6 +880,10 @@ def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts
         'quote_volume_24h': float(total),
         'is_continuous_24h': bool(coverage_info.get('ok')),
         'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
+        'is_newly_listed_24h': bool(
+            len(rows) < _MARKET_24H_ROLLSUM_WINDOW_BARS
+            and _is_recent_prefix_continuous([int(open_time_ms) for open_time_ms, _ in rows], int(latest_closed_bar_ts))
+        ),
         'file_mtime_ns': file_mtime_ns,
     }
     _SYMBOL_24H_QUOTE_VOLUME_CACHE[symbol_key] = dict(out)
@@ -890,6 +921,8 @@ def _market_total_24h_vol_from_live_ticker_map(account: str, ticker_map: dict[st
         'missing_symbols_1m_rollsum': [],
         'partial_symbol_count_1m_rollsum': 0,
         'partial_symbols_1m_rollsum': [],
+        'newly_listed_symbol_count_1m_rollsum': 0,
+        'newly_listed_symbols_1m_rollsum': [],
         'market_total_24h_vol_source': 'futures_ticker_live',
         'market_total_24h_vol_status': 'ready_live_api',
     }
@@ -928,6 +961,8 @@ def build_market_snapshot(account: str) -> dict[str, Any]:
         'missing_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('missing_symbols_1m_rollsum') or []),
         'partial_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('partial_symbol_count_1m_rollsum') or 0),
         'partial_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('partial_symbols_1m_rollsum') or []),
+        'newly_listed_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('newly_listed_symbol_count_1m_rollsum') or 0),
+        'newly_listed_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('newly_listed_symbols_1m_rollsum') or []),
         'market_total_24h_vol_source': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_source') or ''),
         'market_total_24h_vol_status': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_status') or ''),
         'hub_owned_1m_rollsum_state_updated_utc_ms': market_total_24h_payload_rollsum.get('hub_owned_1m_rollsum_state_updated_utc_ms'),

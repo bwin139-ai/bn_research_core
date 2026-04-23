@@ -112,6 +112,7 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'hub_owned_1m_rollsum_state_updated_bj': snapshot.get('hub_owned_1m_rollsum_state_updated_bj'),
         'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),
         'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
+        'newly_listed_symbol_count_1m_rollsum': int(snapshot.get('newly_listed_symbol_count_1m_rollsum') or 0),
     }
     write_current_snapshot(account, 'market_snapshot', payload)
     write_current_pickle(account, 'market_snapshot', snapshot)
@@ -568,4 +569,3 @@ def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -
     write_current_snapshot(account, 'finalized_candidate_inputs', payload)
     write_current_pickle(account, 'finalized_candidate_inputs', finalized_payload)
     append_daily_snapshot(account, 'finalized_candidate_inputs', payload, day_bj=str(payload.get('signal_time_bj') or '')[:10])
-
