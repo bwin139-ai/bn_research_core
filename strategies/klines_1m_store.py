@@ -412,9 +412,10 @@ def rows_to_table(rows: List[List], price_source: str) -> pa.Table:
         )
 
     quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
-    high_idx = [float(r[8]) if len(r) > 8 and r[8] is not None else None for r in rows]
-    low_idx = [float(r[9]) if len(r) > 9 and r[9] is not None else None for r in rows]
-    close_idx = [float(r[10]) if len(r) > 10 and r[10] is not None else None for r in rows]
+    # idx fields must only be populated by indexPriceKlines / augment-idx.
+    high_idx = [None for _ in rows]
+    low_idx = [None for _ in rows]
+    close_idx = [None for _ in rows]
     return pa.Table.from_arrays(
         [
             pa.array(open_time, type=pa.int64()),
