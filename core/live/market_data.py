@@ -519,6 +519,9 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
 def _rollsum_refresh_limit_for_symbol(rec: dict[str, Any] | None, latest_closed_bar_ts: int) -> int:
     if not isinstance(rec, dict):
         return _MARKET_24H_ROLLSUM_WINDOW_BARS
+    window_size = _to_int(rec.get('window_size'), default=len(list(rec.get('rows') or [])))
+    if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(rec.get('is_ready_24h')):
+        return _MARKET_24H_ROLLSUM_WINDOW_BARS
     last_bar_ts = _to_int(rec.get('latest_bar_ts'), default=0)
     if last_bar_ts <= 0:
         return _MARKET_24H_ROLLSUM_WINDOW_BARS
