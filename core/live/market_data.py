@@ -1074,12 +1074,14 @@ def _require_universe_cfg(strategy_cfg: dict[str, Any] | None) -> tuple[float, f
 
 def _filter_symbols_by_universe(
     symbols: list[str],
-    ticker_map: dict[str, dict[str, Any]],
+    metric_frames: dict[str, pd.DataFrame],
     strategy_cfg: dict[str, Any] | None,
     *,
     account: str,
     latest_closed_bar_ts: int,
     audit_label: str,
+    ticker_map: dict[str, dict[str, Any]] | None = None,
+    validate_metric_window: bool = True,
 ) -> tuple[list[str], dict[str, str]]:
     vol_min, chg_min, chg_max = _require_universe_cfg(strategy_cfg)
     eligible: list[str] = []
@@ -1088,9 +1090,17 @@ def _filter_symbols_by_universe(
     signal_time_ts = _signal_time_ms_from_latest_closed_bar(latest_closed_bar_ts)
     signal_time_bj = _fmt_bj_from_ms(signal_time_ts)
     for symbol in symbols:
-        ticker = ticker_map.get(symbol)
-        if not ticker:
-            reason = 'missing_24h_ticker'
+        metric_df = metric_frames.get(symbol)
+        metric_row, metric_reason = _latest_metric_row(
+            metric_df,
+            latest_closed_bar_ts,
+            validate_metric_window=validate_metric_window,
+        )
+        ticker = (ticker_map or {}).get(symbol)
+        ticker_quote_volume = _to_float(ticker.get('quoteVolume')) if isinstance(ticker, dict) else None
+        ticker_chg_pct = _to_float(ticker.get('priceChangePercent')) if isinstance(ticker, dict) else None
+        if metric_row is None:
+            reason = metric_reason or 'missing_24h_metric_frame'
             errors[symbol] = reason
             _append_stage_jsonl(account, 'stage2_universe', {
                 'audit_label': audit_label,
@@ -1101,16 +1111,21 @@ def _filter_symbols_by_universe(
                 'c_bar_ts': latest_closed_bar_ts,
                 'c_bar_bj': c_bar_bj,
                 'symbol': symbol,
-                'ticker_quote_volume': None,
-                'ticker_chg_pct': None,
+                'vol_24h': None,
+                'chg_24h': None,
+                'ticker_quote_volume': ticker_quote_volume,
+                'ticker_chg_pct': ticker_chg_pct,
                 'universe_pass': False,
                 'universe_fail_reason': reason,
             })
             continue
-        quote_vol = _to_float(ticker.get('quoteVolume'))
-        chg_pct = _to_float(ticker.get('priceChangePercent'))
+        quote_vol = _to_float(metric_row.get('vol_24h'))
+        chg_ratio = _to_float(metric_row.get('chg_24h'))
+        chg_pct = float(chg_ratio * 100.0)
         reason = ''
-        if quote_vol < vol_min:
+        if metric_reason:
+            reason = metric_reason
+        elif quote_vol < vol_min:
             reason = 'quote_volume_below_min'
         elif chg_pct < chg_min:
             reason = 'chg_pct_below_min'
@@ -1126,8 +1141,10 @@ def _filter_symbols_by_universe(
                 'c_bar_ts': latest_closed_bar_ts,
                 'c_bar_bj': c_bar_bj,
                 'symbol': symbol,
-                'ticker_quote_volume': quote_vol,
-                'ticker_chg_pct': chg_pct,
+                'vol_24h': quote_vol,
+                'chg_24h': chg_ratio,
+                'ticker_quote_volume': ticker_quote_volume,
+                'ticker_chg_pct': ticker_chg_pct,
                 'universe_pass': False,
                 'universe_fail_reason': reason,
             })
@@ -1142,8 +1159,10 @@ def _filter_symbols_by_universe(
             'c_bar_ts': latest_closed_bar_ts,
             'c_bar_bj': c_bar_bj,
             'symbol': symbol,
-            'ticker_quote_volume': quote_vol,
-            'ticker_chg_pct': chg_pct,
+            'vol_24h': quote_vol,
+            'chg_24h': chg_ratio,
+            'ticker_quote_volume': ticker_quote_volume,
+            'ticker_chg_pct': ticker_chg_pct,
             'universe_pass': True,
             'universe_fail_reason': '',
         })
@@ -1219,19 +1238,81 @@ def _rows_to_raw_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: in
     return df
 
 
-def _rows_to_df(raw_df: pd.DataFrame, ticker_24h: dict[str, Any]) -> pd.DataFrame:
+def _rows_to_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = raw_df.copy()
     df['high_idx'] = float('nan')
     df['low_idx'] = float('nan')
     df['close_idx'] = float('nan')
-    chg_ratio = _to_float(ticker_24h.get('priceChangePercent')) / 100.0
-    vol_24h = _to_float(ticker_24h.get('quoteVolume'))
-    df['chg_24h'] = chg_ratio
-    df['vol_24h'] = vol_24h
+    window_24h = _MARKET_24H_ROLLSUM_WINDOW_BARS
+    df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').reset_index(drop=True)
+    df['chg_24h'] = df['close'] / df['close'].shift(window_24h) - 1.0
+    df['vol_24h'] = df['quote_asset_volume'].rolling(window=window_24h, min_periods=1).sum()
     df.set_index('open_time_ms', inplace=True)
     df.index = df.index.astype('int64')
     df.sort_index(inplace=True)
     return df
+
+
+def _required_contract_metric_bars() -> int:
+    return int(_MARKET_24H_ROLLSUM_WINDOW_BARS) + 1
+
+
+def _metric_window_reason(df: pd.DataFrame, latest_closed_bar_ts: int) -> str | None:
+    info = _recent_window_coverage_info(
+        [int(x) for x in df.index.tolist()],
+        latest_closed_bar_ts,
+        _required_contract_metric_bars(),
+    )
+    if bool(info.get('ok')):
+        return None
+    if _is_recent_prefix_continuous([int(x) for x in df.index.tolist()], int(latest_closed_bar_ts)):
+        return 'chg_24h_insufficient_history'
+    return _format_recent_window_reason('contract_24h_metric', info)
+
+
+def _latest_metric_row(
+    df: pd.DataFrame,
+    latest_closed_bar_ts: int,
+    *,
+    validate_metric_window: bool = True,
+) -> tuple[pd.Series | None, str]:
+    if df is None or df.empty:
+        return None, 'contract_24h_metric_empty'
+    if int(latest_closed_bar_ts) not in df.index:
+        return None, 'latest_closed_bar_missing'
+    row = df.loc[int(latest_closed_bar_ts)].copy()
+    metric_reason = _metric_window_reason(df, int(latest_closed_bar_ts)) if validate_metric_window else ''
+    if pd.isna(row.get('chg_24h')):
+        return row, metric_reason or 'chg_24h_missing'
+    if pd.isna(row.get('vol_24h')):
+        return row, 'vol_24h_missing'
+    return row, ''
+
+
+def _prefetch_contract_metric_frames(
+    account: str,
+    symbols: list[str],
+    *,
+    latest_closed_bar_ts: int,
+    cache_stats: dict[str, Any] | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+    out: dict[str, pd.DataFrame] = {}
+    errors: dict[str, str] = {}
+    limit = _required_contract_metric_bars()
+    for symbol in symbols:
+        try:
+            rows = _fetch_symbol_klines(
+                account,
+                symbol,
+                limit,
+                cache_stats=cache_stats,
+                required_latest_closed_bar_ts=latest_closed_bar_ts,
+            )
+            raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
+            out[symbol] = _rows_to_df(raw_df)
+        except Exception as e:
+            errors[symbol] = str(e)
+    return out, errors
 
 
 def _rows_to_index_df(symbol: str, rows: list[list[Any]], latest_closed_bar_ts: int) -> pd.DataFrame:
@@ -1268,10 +1349,12 @@ def _build_live_inputs_for_symbols(
     ticker_map: dict[str, dict[str, Any]],
     write_stage3: bool = True,
     update_hub_owned_rollsum: bool = True,
+    shared_symbol_bars_cache: dict[str, Any] | None = None,
+    contract_metric_frames: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
     errors: dict[str, str] = {}
     keep = int(history_window_mins)
-    shared_symbol_bars_cache = _new_shared_symbol_bars_cache_stats()
+    shared_symbol_bars_cache = shared_symbol_bars_cache if shared_symbol_bars_cache is not None else _new_shared_symbol_bars_cache_stats()
 
     histories: dict[str, pd.DataFrame] = {}
     stale_symbols: dict[str, str] = {}
@@ -1281,16 +1364,22 @@ def _build_live_inputs_for_symbols(
 
     for symbol in symbols:
         try:
-            rows = _fetch_symbol_klines(
-                account,
-                symbol,
-                keep,
-                cache_stats=shared_symbol_bars_cache,
-                required_latest_closed_bar_ts=latest_closed_bar_ts,
-            )
-            raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
-            stage3_frames.append(raw_df)
-            df = _rows_to_df(raw_df, ticker_map.get(symbol) or {})
+            metric_df = (contract_metric_frames or {}).get(symbol)
+            if metric_df is None:
+                rows = _fetch_symbol_klines(
+                    account,
+                    symbol,
+                    max(keep, _required_contract_metric_bars()),
+                    cache_stats=shared_symbol_bars_cache,
+                    required_latest_closed_bar_ts=latest_closed_bar_ts,
+                )
+                raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
+                df = _rows_to_df(raw_df)
+            else:
+                df = metric_df.copy()
+                raw_df = df.reset_index()[['symbol', 'open_time_ms', 'open', 'high', 'low', 'close', 'quote_asset_volume']].copy()
+            stage3_frames.append(raw_df.tail(keep).reset_index(drop=True))
+            df = df.tail(keep).copy()
             contract_window_reason = _frame_recent_window_reason(
                 df,
                 kind='contract',
@@ -1384,16 +1473,24 @@ def build_live_inputs(
 
     latest_closed_bar_ts = int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else _last_closed_bar_open_time_ms(account)
     ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
+    shared_symbol_bars_cache = _new_shared_symbol_bars_cache_stats()
+    contract_metric_frames, prefetch_errors = _prefetch_contract_metric_frames(
+        account,
+        symbols,
+        latest_closed_bar_ts=latest_closed_bar_ts,
+        cache_stats=shared_symbol_bars_cache,
+    )
     eligible_symbols, universe_errors = _filter_symbols_by_universe(
         symbols,
-        ticker_map,
+        contract_metric_frames,
         strategy_cfg,
         account=account,
         latest_closed_bar_ts=latest_closed_bar_ts,
         audit_label=audit_label,
+        ticker_map=ticker_map,
     )
     if not eligible_symbols:
-        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': universe_errors}
+        return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': prefetch_errors | universe_errors}
 
     res = _build_live_inputs_for_symbols(
         account,
@@ -1402,8 +1499,11 @@ def build_live_inputs(
         audit_label=audit_label,
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=ticker_map,
+        shared_symbol_bars_cache=shared_symbol_bars_cache,
+        contract_metric_frames=contract_metric_frames,
     )
-    merged_errors = dict(universe_errors)
+    merged_errors = dict(prefetch_errors)
+    merged_errors.update(universe_errors)
     merged_errors.update(res.get('errors') or {})
     res['errors'] = merged_errors
     return res
@@ -1473,16 +1573,17 @@ def filter_loaded_payload_by_universe(
     latest_closed_bar_ts = int(loaded_payload.get('latest_closed_bar_ts') or 0)
     if latest_closed_bar_ts <= 0:
         return {'ok': False, 'reason': 'loaded_payload_missing_latest_closed_bar_ts', 'data': None, 'errors': {}}
-    ticker_map = ticker_map if ticker_map is not None else _ticker_map(account)
     full_df = dict(loaded_payload.get('full_df') or {})
     candidate_symbols = [str(x).upper().strip() for x in (symbols or list(full_df.keys())) if str(x).strip()]
     eligible_symbols, universe_errors = _filter_symbols_by_universe(
         candidate_symbols,
-        ticker_map,
+        full_df,
         strategy_cfg,
         account=account,
         latest_closed_bar_ts=latest_closed_bar_ts,
         audit_label=audit_label,
+        ticker_map=ticker_map,
+        validate_metric_window=False,
     )
     if not eligible_symbols:
         return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': universe_errors}
