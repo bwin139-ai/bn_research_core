@@ -1,15 +1,15 @@
 {
   "strategy_name": "snapback",
   "runtime": {
-    "max_history_window_mins": 180
+    "max_history_window_mins": 150
   },
   "universe": {
-    "24h_quote_volume_min": 30000000,
+    "24h_quote_volume_min": 40000000,
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
     },
-    "market_total_24h_vol_min": 20000000000
+    "market_total_24h_vol_min": 40000000000
   },
   "structure": {
     "a_high_source": "contract",
@@ -27,7 +27,7 @@
         "max": 999
       },
       "a_to_c_drop_pct": {
-        "min": 0.03,
+        "min": 0.04,
         "max": 0.25
       },
       "vol_climax": {
@@ -76,7 +76,7 @@
       }
     },
     "time_stop": {
-      "max_hold_mins": 3,
+      "max_hold_mins": 4,
       "min_profit_pct": 0.002
     }
   },

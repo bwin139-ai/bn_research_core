@@ -1,7 +1,7 @@
 {
   "strategy_name": "snapback",
   "runtime": {
-    "max_history_window_mins": 130
+    "max_history_window_mins": 150
   },
   "universe": {
     "24h_quote_volume_min": 50000000,
