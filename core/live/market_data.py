@@ -153,6 +153,7 @@ def _record_shared_symbol_bars_cache_diag(
     symbol: str,
     cache_hit: bool,
     required_latest_closed_bar_ts: int | None,
+    required_window_bars: int | None,
     cached_max_open_time_ms: int | None,
     coverage_ok: bool | None,
 ) -> None:
@@ -165,6 +166,7 @@ def _record_shared_symbol_bars_cache_diag(
         'cache_hit': bool(cache_hit),
         'required_latest_closed_bar_ts': int(required_latest_closed_bar_ts) if required_latest_closed_bar_ts is not None else None,
         'required_latest_closed_bar_bj': _fmt_bj_from_ms(int(required_latest_closed_bar_ts)) if required_latest_closed_bar_ts is not None else None,
+        'required_window_bars': int(required_window_bars) if required_window_bars is not None else None,
         'cached_max_open_time_ms': int(cached_max_open_time_ms) if cached_max_open_time_ms is not None else None,
         'cached_max_open_time_bj': _fmt_bj_from_ms(int(cached_max_open_time_ms)) if cached_max_open_time_ms is not None else None,
         'coverage_ok': coverage_ok,
@@ -283,11 +285,102 @@ def _cached_rows_max_open_time_ms(snapshot: dict[str, Any] | None) -> int | None
             max_open_time_ms = open_time_ms
     return max_open_time_ms
 
-def _cached_rows_cover_latest_closed_bar(snapshot: dict[str, Any] | None, required_latest_closed_bar_ts: int | None) -> bool:
+def _recent_window_coverage_info(
+    open_times: list[int],
+    latest_closed_bar_ts: int | None,
+    required_window_bars: int | None,
+) -> dict[str, Any]:
+    latest_ts = _to_int(latest_closed_bar_ts, default=0)
+    window_bars = _to_int(required_window_bars, default=0)
+    if latest_ts <= 0 or window_bars <= 0:
+        return {
+            'ok': True,
+            'latest_closed_bar_ts': latest_closed_bar_ts,
+            'required_window_bars': required_window_bars,
+            'latest_present': True,
+            'actual_count': int(len(open_times)),
+            'missing_count': 0,
+            'expected_start_ts': None,
+            'expected_start_bj': None,
+            'actual_start_ts': int(min(open_times)) if open_times else None,
+            'actual_start_bj': _fmt_bj_from_ms(int(min(open_times))) if open_times else None,
+            'actual_end_ts': int(max(open_times)) if open_times else None,
+            'actual_end_bj': _fmt_bj_from_ms(int(max(open_times))) if open_times else None,
+        }
+    expected_start_ts = int(latest_ts - (window_bars - 1) * 60000)
+    expected = set(range(expected_start_ts, latest_ts + 60000, 60000))
+    actual = {
+        int(ts)
+        for ts in open_times
+        if _to_int(ts, default=0) >= expected_start_ts and _to_int(ts, default=0) <= latest_ts
+    }
+    latest_present = int(latest_ts) in actual
+    missing_count = int(len(expected - actual))
+    actual_sorted = sorted(actual)
+    return {
+        'ok': bool(missing_count == 0 and len(actual) == window_bars and latest_present),
+        'latest_closed_bar_ts': int(latest_ts),
+        'required_window_bars': int(window_bars),
+        'latest_present': bool(latest_present),
+        'actual_count': int(len(actual)),
+        'missing_count': missing_count,
+        'expected_start_ts': int(expected_start_ts),
+        'expected_start_bj': _fmt_bj_from_ms(int(expected_start_ts)),
+        'actual_start_ts': int(actual_sorted[0]) if actual_sorted else None,
+        'actual_start_bj': _fmt_bj_from_ms(int(actual_sorted[0])) if actual_sorted else None,
+        'actual_end_ts': int(actual_sorted[-1]) if actual_sorted else None,
+        'actual_end_bj': _fmt_bj_from_ms(int(actual_sorted[-1])) if actual_sorted else None,
+    }
+
+
+def _cached_rows_cover_latest_closed_bar(
+    snapshot: dict[str, Any] | None,
+    required_latest_closed_bar_ts: int | None,
+    required_window_bars: int | None = None,
+) -> bool:
     if required_latest_closed_bar_ts is None:
         return True
-    max_open_time_ms = _cached_rows_max_open_time_ms(snapshot)
-    return max_open_time_ms is not None and int(max_open_time_ms) >= int(required_latest_closed_bar_ts)
+    if not isinstance(snapshot, dict):
+        return False
+    rows = snapshot.get('data')
+    if not isinstance(rows, list) or not rows:
+        return False
+    info = _recent_window_coverage_info(
+        [_to_int(row[0], default=0) for row in rows if isinstance(row, (list, tuple)) and len(row) > 0],
+        required_latest_closed_bar_ts,
+        required_window_bars,
+    )
+    return bool(info.get('ok'))
+
+
+def _format_recent_window_reason(kind: str, info: dict[str, Any]) -> str:
+    label = str(kind).strip() or 'window'
+    actual_count = int(info.get('actual_count') or 0)
+    required_window_bars = int(info.get('required_window_bars') or 0)
+    missing_count = int(info.get('missing_count') or 0)
+    return f'{label}_recent_window_not_continuous({actual_count}/{required_window_bars},missing={missing_count})'
+
+
+def _frame_recent_window_reason(
+    frame: pd.DataFrame,
+    *,
+    kind: str,
+    latest_closed_bar_ts: int,
+    required_window_bars: int,
+) -> str | None:
+    if frame is None or frame.empty:
+        return _format_recent_window_reason(
+            kind,
+            _recent_window_coverage_info([], latest_closed_bar_ts, required_window_bars),
+        )
+    info = _recent_window_coverage_info(
+        [int(x) for x in frame.index.tolist()],
+        latest_closed_bar_ts,
+        required_window_bars,
+    )
+    if bool(info.get('ok')):
+        return None
+    return _format_recent_window_reason(kind, info)
 
 
 def _load_or_refresh_symbol_bar_rows(
@@ -302,7 +395,7 @@ def _load_or_refresh_symbol_bar_rows(
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)
     cached_max_open_time_ms = _cached_rows_max_open_time_ms(cached)
-    coverage_ok = _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts)
+    coverage_ok = _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts, limit)
     if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and coverage_ok:
         rows = cached.get('data')
         if isinstance(rows, list):
@@ -313,6 +406,7 @@ def _load_or_refresh_symbol_bar_rows(
                 symbol=symbol,
                 cache_hit=True,
                 required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+                required_window_bars=limit,
                 cached_max_open_time_ms=cached_max_open_time_ms,
                 coverage_ok=coverage_ok,
             )
@@ -324,6 +418,7 @@ def _load_or_refresh_symbol_bar_rows(
             symbol=symbol,
             cache_hit=True,
             required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+            required_window_bars=limit,
             cached_max_open_time_ms=cached_max_open_time_ms,
             coverage_ok=coverage_ok,
         )
@@ -350,8 +445,9 @@ def _load_or_refresh_symbol_bar_rows(
         symbol=symbol,
         cache_hit=False,
         required_latest_closed_bar_ts=required_latest_closed_bar_ts,
+        required_window_bars=limit,
         cached_max_open_time_ms=_cached_rows_max_open_time_ms(payload),
-        coverage_ok=_cached_rows_cover_latest_closed_bar(payload, required_latest_closed_bar_ts),
+        coverage_ok=_cached_rows_cover_latest_closed_bar(payload, required_latest_closed_bar_ts, limit),
     )
     return rows
 
@@ -539,12 +635,19 @@ def _merge_contract_frames_into_hub_owned_1m_rollsum_state(
             continue
         changed = True
         window_size = int(len(merged_rows))
+        coverage_info = _recent_window_coverage_info(
+            [int(row[0]) for row in merged_rows if isinstance(row, (list, tuple)) and len(row) >= 2],
+            latest_closed_bar_ts,
+            _MARKET_24H_ROLLSUM_WINDOW_BARS,
+        )
         symbols_state[symbol] = {
             'latest_bar_ts': int(merged_rows[-1][0]),
             'rows': merged_rows,
             'window_size': window_size,
             'quote_volume_24h': float(sum(float(row[1]) for row in merged_rows)),
-            'is_ready_24h': bool(window_size >= _MARKET_24H_ROLLSUM_WINDOW_BARS),
+            'is_continuous_24h': bool(coverage_info.get('ok')),
+            'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
+            'is_ready_24h': bool(coverage_info.get('ok')),
         }
 
     state['symbols'] = symbols_state
@@ -584,7 +687,7 @@ def _market_total_24h_vol_from_hub_owned_1m_state(
             continue
         rows = list(rec.get('rows') or [])
         window_size = int(rec.get('window_size') or len(rows))
-        if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS:
+        if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(rec.get('is_ready_24h')):
             partial_symbols.append(symbol)
             continue
         ready_symbol_map[symbol] = _to_float(rec.get('quote_volume_24h'))
@@ -721,6 +824,11 @@ def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts
         for open_time_ms, quote_asset_volume in df[['open_time_ms', 'quote_asset_volume']].itertuples(index=False, name=None)
     ]
     total = float(sum(v for _, v in rows))
+    coverage_info = _recent_window_coverage_info(
+        [int(open_time_ms) for open_time_ms, _ in rows],
+        latest_closed_bar_ts,
+        _MARKET_24H_ROLLSUM_WINDOW_BARS,
+    )
     out = {
         'symbol': symbol_key,
         'latest_closed_bar_ts': int(latest_closed_bar_ts),
@@ -728,6 +836,8 @@ def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts
         'rows': rows,
         'window_size': int(len(rows)),
         'quote_volume_24h': float(total),
+        'is_continuous_24h': bool(coverage_info.get('ok')),
+        'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
         'file_mtime_ns': file_mtime_ns,
     }
     _SYMBOL_24H_QUOTE_VOLUME_CACHE[symbol_key] = dict(out)
@@ -1131,8 +1241,14 @@ def _build_live_inputs_for_symbols(
             raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
             stage3_frames.append(raw_df)
             df = _rows_to_df(raw_df, ticker_map.get(symbol) or {})
-            if latest_closed_bar_ts not in df.index:
-                stale_symbols[symbol] = _fmt_bj_from_ms(_to_int(df.index.max()))
+            contract_window_reason = _frame_recent_window_reason(
+                df,
+                kind='contract',
+                latest_closed_bar_ts=latest_closed_bar_ts,
+                required_window_bars=keep,
+            )
+            if contract_window_reason is not None:
+                stale_symbols[symbol] = contract_window_reason
                 continue
             index_rows = _fetch_symbol_index_price_klines(
                 account,
@@ -1142,6 +1258,15 @@ def _build_live_inputs_for_symbols(
                 required_latest_closed_bar_ts=latest_closed_bar_ts,
             )
             index_df = _rows_to_index_df(symbol, index_rows, latest_closed_bar_ts)
+            index_window_reason = _frame_recent_window_reason(
+                index_df,
+                kind='index',
+                latest_closed_bar_ts=latest_closed_bar_ts,
+                required_window_bars=keep,
+            )
+            if index_window_reason is not None:
+                stale_symbols[symbol] = index_window_reason
+                continue
             aligned_idx = index_df.reindex(df.index)
             if aligned_idx[['high_idx', 'low_idx', 'close_idx']].isna().any().any():
                 stale_symbols[symbol] = 'index_alignment_missing'
