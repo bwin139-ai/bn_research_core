@@ -73,7 +73,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SNAP_V10.1_30D_P6_0417T1114_ALL"
+RUNID="SNAP_V10.1_30D_P6_0423T1454_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_snapback
 mkdir -p "$DEST"
 scp \
