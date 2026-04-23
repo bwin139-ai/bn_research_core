@@ -5,11 +5,10 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import requests
 
@@ -120,6 +119,43 @@ def save_symbol_lines(path: str, symbols: List[str]) -> None:
     atomic_write_bytes(path, payload.encode("utf-8"))
 
 
+def load_confirmed_delisted_records(path: str) -> List[Dict[str, Any]]:
+    if not path or not os.path.exists(path):
+        return []
+    data = load_json(path, default=[])
+    if not isinstance(data, list):
+        raise SystemExit(f"confirmed_delisted file must be a JSON array: {path}")
+
+    out: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for raw in data:
+        if not isinstance(raw, dict):
+            raise SystemExit(f"confirmed_delisted record must be an object: {path}")
+        symbol = str(raw.get("symbol", "")).strip().upper()
+        if not symbol:
+            raise SystemExit(f"confirmed_delisted record missing symbol: {path}")
+        if symbol in seen:
+            raise SystemExit(f"duplicate confirmed_delisted symbol: {symbol}")
+        seen.add(symbol)
+        out.append(
+            {
+                "symbol": symbol,
+                "last_open_time_ms": int(raw["last_open_time_ms"]) if raw.get("last_open_time_ms") is not None else None,
+                "last_open_time_bj": raw.get("last_open_time_bj"),
+                "reason": raw.get("reason", ""),
+                "confirmed_utc": raw.get("confirmed_utc"),
+                "updated_utc": raw.get("updated_utc"),
+            }
+        )
+    return out
+
+
+def save_confirmed_delisted_records(path: str, records: List[Dict[str, Any]]) -> None:
+    ensure_dir(os.path.dirname(path) or ".")
+    normalized = sorted(records, key=lambda x: str(x["symbol"]).upper())
+    save_json(path, normalized)
+
+
 def list_local_symbol_dirs(data_dir: str) -> List[str]:
     if not os.path.isdir(data_dir):
         return []
@@ -137,19 +173,53 @@ def list_local_symbol_dirs(data_dir: str) -> List[str]:
     return out
 
 
+def resolve_last_open_time_ms(data_dir: str, state: Dict, symbol: str) -> Optional[int]:
+    per = (state.get("per_symbol") or {}).get(symbol) or {}
+    if per.get("last_open_time_ms") is not None:
+        return int(per["last_open_time_ms"])
+    return infer_last_open_from_local(data_dir, symbol)
+
+
+def build_delisted_record(
+    *,
+    symbol: str,
+    data_dir: str,
+    state: Dict,
+    reason: str,
+    confirmed_utc: Optional[str],
+) -> Dict[str, Any]:
+    last_open_time_ms = resolve_last_open_time_ms(data_dir, state, symbol)
+    now_utc = utc_iso()
+    return {
+        "symbol": symbol,
+        "last_open_time_ms": last_open_time_ms,
+        "last_open_time_bj": (
+            datetime.fromtimestamp(last_open_time_ms / 1000, tz=timezone.utc)
+            .astimezone(timezone(timedelta(hours=8)))
+            .strftime("%Y-%m-%d %H:%M:%S")
+            if last_open_time_ms is not None
+            else None
+        ),
+        "reason": reason,
+        "confirmed_utc": confirmed_utc or now_utc,
+        "updated_utc": now_utc,
+    }
+
+
 def refresh_confirmed_delisted(
     live_symbols: List[str],
     data_dir: str,
-    delisted_data_dir: str,
+    state: Dict,
     confirmed_delisted_path: str,
     force_include_path: str,
     delisted_status_path: str,
+    stale_hours: int,
 ) -> Dict:
     """
     Hard rules:
     1) --symbols has highest priority (handled in main).
-    2) symbols_force_include.txt has higher priority than symbols_confirmed_delisted.txt.
-    3) confirmed delisted maintenance and archive moves must exclude force-include symbols.
+    2) symbols_force_include.txt has higher priority than confirmed_delisted JSON.
+    3) confirmed delisted only affects symbol selection / audit scope; it must not move local parquet data.
     """
     live_set = {s.upper() for s in live_symbols}
     local_dirs = list_local_symbol_dirs(data_dir)
@@ -158,60 +228,77 @@ def refresh_confirmed_delisted(
     force_include = load_symbol_lines(force_include_path)
     force_set = set(force_include)
 
-    existing_confirmed_raw = load_symbol_lines(confirmed_delisted_path)
-    existing_confirmed_raw_set = set(existing_confirmed_raw)
+    existing_confirmed_raw = load_confirmed_delisted_records(confirmed_delisted_path)
+    existing_confirmed_raw_set = {str(row["symbol"]).upper() for row in existing_confirmed_raw}
+    existing_confirmed_by_symbol = {
+        str(row["symbol"]).upper(): row for row in existing_confirmed_raw
+    }
 
     conflict_force_vs_confirmed = sorted(existing_confirmed_raw_set & force_set)
-    effective_confirmed = sorted(existing_confirmed_raw_set - force_set)
-    effective_confirmed_set = set(effective_confirmed)
+    stale_threshold_ms = int(stale_hours) * 60 * 60 * 1000
+    latest_sync_end_ms = stable_sync_end_ms()
 
-    auto_suspected_delisted = sorted((local_set - live_set) - force_set)
+    auto_suspected_delisted: List[Dict[str, Any]] = []
+    auto_confirmed_symbols: Set[str] = set()
+    for sym in sorted((local_set - live_set) - force_set):
+        last_open_time_ms = resolve_last_open_time_ms(data_dir, state, sym)
+        lag_ms = None if last_open_time_ms is None else max(0, latest_sync_end_ms - last_open_time_ms)
+        record = {
+            "symbol": sym,
+            "last_open_time_ms": last_open_time_ms,
+            "last_open_time_bj": (
+                datetime.fromtimestamp(last_open_time_ms / 1000, tz=timezone.utc)
+                .astimezone(timezone(timedelta(hours=8)))
+                .strftime("%Y-%m-%d %H:%M:%S")
+                if last_open_time_ms is not None
+                else None
+            ),
+            "stale_hours": None if lag_ms is None else round(lag_ms / 3600000, 3),
+        }
+        auto_suspected_delisted.append(record)
+        if lag_ms is not None and lag_ms > stale_threshold_ms:
+            auto_confirmed_symbols.add(sym)
 
-    moved_this_run: List[str] = []
-    move_skipped_target_exists: List[str] = []
-    move_missing_source: List[str] = []
+    effective_confirmed_symbols = sorted(
+        (existing_confirmed_raw_set | auto_confirmed_symbols) - force_set - live_set
+    )
+    effective_confirmed_records = [
+        build_delisted_record(
+            symbol=sym,
+            data_dir=data_dir,
+            state=state,
+            reason="not_in_live_symbols_and_stale_over_threshold",
+            confirmed_utc=(existing_confirmed_by_symbol.get(sym) or {}).get("confirmed_utc"),
+        )
+        for sym in effective_confirmed_symbols
+    ]
 
-    ensure_dir(delisted_data_dir)
-    move_candidates = sorted(local_set & effective_confirmed_set)
-    for sym in move_candidates:
-        src = os.path.join(data_dir, sym)
-        dst = os.path.join(delisted_data_dir, sym)
-        if not os.path.isdir(src):
-            move_missing_source.append(sym)
-            continue
-        if os.path.exists(dst):
-            move_skipped_target_exists.append(sym)
-            continue
-        shutil.move(src, dst)
-        moved_this_run.append(sym)
-
-    # Persist the effective confirmed list, with force-include override applied.
-    save_symbol_lines(confirmed_delisted_path, effective_confirmed)
+    save_confirmed_delisted_records(confirmed_delisted_path, effective_confirmed_records)
 
     status = {
         "updated_utc": utc_iso(),
         "data_dir": data_dir,
-        "delisted_data_dir": delisted_data_dir,
         "confirmed_delisted_path": confirmed_delisted_path,
         "force_include_path": force_include_path,
+        "latest_sync_end_ms": latest_sync_end_ms,
+        "latest_sync_end_bj": datetime.fromtimestamp(latest_sync_end_ms / 1000, tz=timezone.utc)
+        .astimezone(timezone(timedelta(hours=8)))
+        .strftime("%Y-%m-%d %H:%M:%S"),
+        "stale_hours_threshold": int(stale_hours),
         "live_symbols_count": len(live_symbols),
-        "local_symbol_dirs_count_before_move": len(local_dirs),
+        "local_symbol_dirs_count": len(local_dirs),
         "force_include_count": len(force_include),
         "force_include_symbols": force_include,
         "confirmed_delisted_count_raw": len(existing_confirmed_raw),
         "confirmed_delisted_raw": existing_confirmed_raw,
-        "confirmed_delisted_count_effective": len(effective_confirmed),
-        "confirmed_delisted": effective_confirmed,
+        "confirmed_delisted_count_effective": len(effective_confirmed_records),
+        "confirmed_delisted": effective_confirmed_records,
         "conflict_force_vs_confirmed_count": len(conflict_force_vs_confirmed),
         "conflict_force_vs_confirmed": conflict_force_vs_confirmed,
         "auto_suspected_delisted_count": len(auto_suspected_delisted),
         "auto_suspected_delisted": auto_suspected_delisted,
-        "moved_this_run_count": len(moved_this_run),
-        "moved_this_run": moved_this_run,
-        "move_skipped_target_exists_count": len(move_skipped_target_exists),
-        "move_skipped_target_exists": move_skipped_target_exists,
-        "move_missing_source_count": len(move_missing_source),
-        "move_missing_source": move_missing_source,
+        "auto_confirmed_delisted_count": len(auto_confirmed_symbols),
+        "auto_confirmed_delisted_symbols": sorted(auto_confirmed_symbols),
     }
     save_json(delisted_status_path, status)
     return status
@@ -783,8 +870,8 @@ def main():
     )
     ap.add_argument(
         "--confirmed-delisted-path",
-        default="state/symbols_confirmed_delisted.txt",
-        help="confirmed delisted symbols text file (one symbol per line)",
+        default="state/confirmed_delisted_symbols.json",
+        help="confirmed delisted symbols JSON file with last kline time metadata",
     )
     ap.add_argument(
         "--force-include-path",
@@ -794,12 +881,18 @@ def main():
     ap.add_argument(
         "--delisted-data-dir",
         default="data/klines_1m_delisted",
-        help="archive dir for confirmed delisted symbol directories",
+        help="unused legacy option; confirmed delisted symbols are no longer moved on disk",
     )
     ap.add_argument(
         "--delisted-status-path",
         default="state/delisted_status.json",
         help="status json path for auto-confirmed delisted detection",
+    )
+    ap.add_argument(
+        "--confirmed-delisted-stale-hours",
+        type=int,
+        default=24,
+        help="auto-confirm a symbol as delisted when it is absent from live symbols and its last local kline is older than this many hours",
     )
     ap.add_argument(
         "--no-skip-existing",
@@ -850,7 +943,10 @@ def main():
         live_symbols = list_symbols_excluding_usdc(sess)
         force_include_symbols = load_symbol_lines(args.force_include_path)
         force_include_set = set(force_include_symbols)
-        confirmed_delisted_symbols = load_symbol_lines(args.confirmed_delisted_path)
+        confirmed_delisted_symbols = [
+            str(row["symbol"]).upper()
+            for row in load_confirmed_delisted_records(args.confirmed_delisted_path)
+        ]
         effective_confirmed_delisted = sorted(set(confirmed_delisted_symbols) - force_include_set)
 
         if args.symbols.strip():
@@ -863,28 +959,32 @@ def main():
                 delisted_status = refresh_confirmed_delisted(
                     live_symbols=live_symbols,
                     data_dir=args.data_dir,
-                    delisted_data_dir=args.delisted_data_dir,
+                    state=state,
                     confirmed_delisted_path=args.confirmed_delisted_path,
                     force_include_path=args.force_include_path,
                     delisted_status_path=args.delisted_status_path,
+                    stale_hours=int(args.confirmed_delisted_stale_hours),
                 )
                 force_include_symbols = delisted_status["force_include_symbols"]
                 force_include_set = set(force_include_symbols)
-                effective_confirmed_delisted = delisted_status["confirmed_delisted"]
+                effective_confirmed_delisted = [
+                    str(row["symbol"]).upper()
+                    for row in delisted_status["confirmed_delisted"]
+                ]
                 if not args.symbols.strip():
                     symbols = sorted((set(live_symbols) | force_include_set) - set(effective_confirmed_delisted))
                 logging.info(
-                    "[delisted] live=%s local_before=%s force=%s confirmed_raw=%s confirmed_effective=%s auto_suspected=%s moved=%s path=%s force_path=%s archive=%s",
+                    "[delisted] live=%s local=%s force=%s confirmed_raw=%s confirmed_effective=%s auto_suspected=%s auto_confirmed=%s path=%s force_path=%s stale_hours=%s",
                     delisted_status["live_symbols_count"],
-                    delisted_status["local_symbol_dirs_count_before_move"],
+                    delisted_status["local_symbol_dirs_count"],
                     delisted_status["force_include_count"],
                     delisted_status["confirmed_delisted_count_raw"],
                     delisted_status["confirmed_delisted_count_effective"],
                     delisted_status["auto_suspected_delisted_count"],
-                    delisted_status["moved_this_run_count"],
+                    delisted_status["auto_confirmed_delisted_count"],
                     args.confirmed_delisted_path,
                     args.force_include_path,
-                    args.delisted_data_dir,
+                    args.confirmed_delisted_stale_hours,
                 )
                 if delisted_status["conflict_force_vs_confirmed"]:
                     logging.warning(
@@ -894,17 +994,7 @@ def main():
                 if delisted_status["auto_suspected_delisted"]:
                     logging.info(
                         "[delisted] auto_suspected=%s",
-                        ",".join(delisted_status["auto_suspected_delisted"]),
-                    )
-                if delisted_status["moved_this_run"]:
-                    logging.info(
-                        "[delisted] moved_to_archive=%s",
-                        ",".join(delisted_status["moved_this_run"]),
-                    )
-                if delisted_status["move_skipped_target_exists"]:
-                    logging.warning(
-                        "[delisted] archive_target_exists=%s",
-                        ",".join(delisted_status["move_skipped_target_exists"]),
+                        ",".join(row["symbol"] for row in delisted_status["auto_suspected_delisted"]),
                     )
             except Exception as e:
                 logging.error("[delisted] refresh failed: %s", e)

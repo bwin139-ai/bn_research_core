@@ -48,6 +48,23 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_confirmed_delisted_symbols(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise SystemExit(f"confirmed_delisted file must be a JSON array: {path}")
+    out: set[str] = set()
+    for raw in data:
+        if not isinstance(raw, dict):
+            raise SystemExit(f"confirmed_delisted record must be an object: {path}")
+        symbol = normalize_symbol(raw.get("symbol", ""))
+        if not symbol:
+            raise SystemExit(f"confirmed_delisted record missing symbol: {path}")
+        out.add(symbol)
+    return out
+
+
 def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -348,6 +365,16 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--index-limit", type=int, default=180, help="hub shared index cache limit")
     ap.add_argument("--tolerance-price", type=float, default=1e-9)
     ap.add_argument("--tolerance-volume", type=float, default=1e-6)
+    ap.add_argument(
+        "--confirmed-delisted-path",
+        default="state/confirmed_delisted_symbols.json",
+        help="confirmed delisted symbols JSON file; these symbols are skipped by default",
+    )
+    ap.add_argument(
+        "--include-confirmed-delisted",
+        action="store_true",
+        help="include confirmed delisted symbols in the audit set",
+    )
     ap.add_argument("--out-dir", default="output/hub_vs_klines_1m_audit")
     ap.add_argument("--run-id", default="")
     return ap.parse_args()
@@ -375,6 +402,9 @@ def main() -> None:
     latest_closed_bar_ts = int(latest_closed["latest_closed_bar_ts"])
 
     symbols = resolve_symbols(args, project_root)
+    if not args.include_confirmed_delisted:
+        confirmed_delisted = load_confirmed_delisted_symbols(project_root / args.confirmed_delisted_path)
+        symbols = [symbol for symbol in symbols if symbol not in confirmed_delisted]
     run_id = args.run_id or pd.Timestamp.utcnow().strftime("RUN_%Y%m%dT%H%M%SZ")
     out_dir = project_root / args.out_dir / run_id
     data_dir = project_root / "data/klines_1m"
