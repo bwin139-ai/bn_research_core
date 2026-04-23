@@ -5,12 +5,19 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 
 import requests
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+from core.live.rate_limit_guard import record_binance_rest_ban
 
 try:
     import pyarrow as pa
@@ -26,6 +33,23 @@ INTERVAL = "1m"
 INTERVAL_MS = 60_000
 PRICE_SOURCE_CONTRACT = "contract"
 PRICE_SOURCE_INDEX = "index"
+HTTP_429_GLOBAL_COOLDOWN_SECS = 180.0
+HTTP_429_GLOBAL_COOLDOWN_WINDOW_SECS = 180.0
+_HTTP_429_SEEN_AT: List[float] = []
+
+
+class BinanceRestIpBan(RuntimeError):
+    pass
+
+
+def _record_http_429_seen(now_epoch: float | None = None) -> int:
+    if now_epoch is None:
+        now_epoch = time.time()
+    cutoff = float(now_epoch) - HTTP_429_GLOBAL_COOLDOWN_WINDOW_SECS
+    recent = [ts for ts in _HTTP_429_SEEN_AT if ts >= cutoff]
+    _HTTP_429_SEEN_AT[:] = recent
+    _HTTP_429_SEEN_AT.append(float(now_epoch))
+    return len(_HTTP_429_SEEN_AT)
 
 
 # ----------------------------
@@ -347,12 +371,36 @@ def http_get_json(
     for attempt in range(1, max_retry + 1):
         try:
             r = session.get(url, params=params, timeout=timeout)
-            if r.status_code in (429, 418):
+            if r.status_code == 418:
+                retry_after = r.headers.get("Retry-After")
+                sleep_s = float(retry_after) if retry_after else 600.0
+                ban_until_utc_ms = int(time.time() * 1000 + sleep_s * 1000)
+                record_binance_rest_ban(
+                    ban_until_utc_ms=ban_until_utc_ms,
+                    source="klines_1m_store",
+                    status_code=r.status_code,
+                    reason="binance_rest_ip_ban",
+                    url=url,
+                    params=params,
+                )
+                logging.error(
+                    "rate limited (%s). stop task and record ban until %s. url=%s params=%s",
+                    r.status_code,
+                    datetime.fromtimestamp(ban_until_utc_ms / 1000.0, tz=timezone.utc).isoformat(),
+                    url,
+                    params,
+                )
+                raise BinanceRestIpBan(f"binance REST IP banned until {ban_until_utc_ms}")
+            if r.status_code == 429:
+                recent_429_count = _record_http_429_seen()
                 retry_after = r.headers.get("Retry-After")
                 sleep_s = float(retry_after) if retry_after else backoff
+                if recent_429_count >= 2:
+                    sleep_s = max(sleep_s, HTTP_429_GLOBAL_COOLDOWN_SECS)
                 logging.warning(
-                    "rate limited (%s). sleep %.1fs. url=%s params=%s",
+                    "rate limited (%s). recent_429_count=%s sleep %.1fs. url=%s params=%s",
                     r.status_code,
+                    recent_429_count,
                     sleep_s,
                     url,
                     params,
@@ -373,6 +421,8 @@ def http_get_json(
             r.raise_for_status()
             return r.json()
         except Exception as e:
+            if isinstance(e, BinanceRestIpBan):
+                raise
             if attempt == max_retry:
                 raise
             logging.warning(
@@ -1075,6 +1125,8 @@ def main():
                     )
                     save_json(args.state_path, state)
                 except Exception as e:
+                    if isinstance(e, BinanceRestIpBan):
+                        raise
                     logging.error("[backfill] %s failed: %s", sym, e)
         elif args.cmd == "augment-idx":
             # 将 index 价格按日期段补写进单目录 contract 主表（9 字段 schema）
@@ -1091,6 +1143,8 @@ def main():
                         args.days,
                     )
                 except Exception as e:
+                    if isinstance(e, BinanceRestIpBan):
+                        raise
                     logging.error("[augment-idx] %s failed: %s", sym, e)
         else:
             # sync：优先依赖 state；若 state 缺失但本地已有 shards，则先从本地恢复 last_open_time_ms。
@@ -1143,6 +1197,8 @@ def main():
                         )
                     save_json(args.state_path, state)
                 except Exception as e:
+                    if isinstance(e, BinanceRestIpBan):
+                        raise
                     logging.error("[sync] %s failed: %s", sym, e)
 
     logging.info("[done] price_source=%s state=%s", args.price_source, args.state_path)

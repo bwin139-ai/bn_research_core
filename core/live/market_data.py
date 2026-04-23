@@ -11,6 +11,7 @@ import pandas as pd
 
 from core.live.audit_log import append_stage_record, get_stage_audit_dir
 from core.live.binance_client import get_client, get_index_price_klines
+from core.live.rate_limit_guard import sleep_if_binance_rest_banned
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,6 +41,7 @@ def _to_int(v: Any, default: int = 0) -> int:
 
 
 def _exchange_server_time_ms(account: str) -> int:
+    sleep_if_binance_rest_banned(source='market_data.futures_time')
     client = get_client(account)
     return int(client.futures_time()['serverTime'])
 
@@ -504,6 +506,7 @@ def _load_or_refresh_exchange_info(account: str) -> dict[str, Any]:
     cached = _read_json_file(path)
     if _cache_is_fresh(cached, _SHARED_EXCHANGE_INFO_TTL_SECS):
         return cached
+    sleep_if_binance_rest_banned(source='market_data.exchange_info')
     client = get_client(account)
     now_ms = int(time.time() * 1000)
     payload = {
@@ -520,6 +523,7 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
     cached = _read_json_file(path)
     if _cache_is_fresh(cached, _SHARED_TICKER_TTL_SECS):
         return cached
+    sleep_if_binance_rest_banned(source='market_data.futures_ticker')
     client = get_client(account)
     now_ms = int(time.time() * 1000)
     payload = {
@@ -1170,11 +1174,13 @@ def _filter_symbols_by_universe(
 
 
 def _fetch_symbol_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    sleep_if_binance_rest_banned(source='market_data.futures_klines')
     client = get_client(account)
     return client.futures_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
 
 
 def _fetch_symbol_index_price_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
+    sleep_if_binance_rest_banned(source='market_data.index_price_klines')
     return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
 
 
