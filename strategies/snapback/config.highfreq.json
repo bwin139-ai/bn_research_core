@@ -9,7 +9,7 @@
       "min": -100.0,
       "max": 1000
     },
-    "market_total_24h_vol_min": 40000000000
+    "market_total_24h_vol_min": 35000000000
   },
   "structure": {
     "a_high_source": "contract",
@@ -27,7 +27,7 @@
         "max": 999
       },
       "a_to_c_drop_pct": {
-        "min": 0.04,
+        "min": 0.045,
         "max": 0.25
       },
       "vol_climax": {
