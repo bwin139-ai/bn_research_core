@@ -11,7 +11,11 @@ Hub source:
 Local source:
 - data/klines_1m/{SYMBOL}/{YYYY-MM}.parquet
 
-Only closed bars (open_time_ms <= latest_closed_bar_ts) are compared.
+Only closed bars are loaded from hub snapshots.
+
+Audit semantics:
+- overlap consistency uses the shared window between hub cache and local sim bars
+- hub-only leading tail after local latest bar is recorded as lag info, not mismatch
 """
 from __future__ import annotations
 
@@ -176,10 +180,10 @@ def compare_symbol(
         hub_idx = load_hub_index_rows(index_path, latest_closed_bar_ts)
         if not hub_idx.empty:
             hub = hub.merge(hub_idx, on="open_time_ms", how="left")
-    min_ts = int(hub["open_time_ms"].min())
-    max_ts = int(hub["open_time_ms"].max())
+    hub_min_ts = int(hub["open_time_ms"].min())
+    hub_max_ts = int(hub["open_time_ms"].max())
 
-    local, missing_months = load_local_rows(data_dir, symbol, min_ts, max_ts)
+    local, missing_months = load_local_rows(data_dir, symbol, hub_min_ts, hub_max_ts)
     if local.empty:
         return CompareResult(
             summary={
@@ -189,12 +193,53 @@ def compare_symbol(
                 "latest_closed_bar_bj": fmt_bj(latest_closed_bar_ts),
                 "hub_bar_count": int(len(hub)),
                 "local_bar_count": 0,
+                "hub_latest_bar_ts": hub_max_ts,
+                "hub_latest_bar_bj": fmt_bj(hub_max_ts),
                 "missing_months": missing_months,
             },
             diffs=[],
         )
 
-    merged = hub.merge(local, on="open_time_ms", how="outer", suffixes=("_hub", "_local"), indicator=True)
+    local_latest_bar_ts = int(local["open_time_ms"].max())
+    compare_max_ts = min(hub_max_ts, local_latest_bar_ts)
+    hub_leading_mask = hub["open_time_ms"] > compare_max_ts
+    hub_leading = hub.loc[hub_leading_mask, "open_time_ms"].tolist()
+
+    if compare_max_ts < hub_min_ts:
+        return CompareResult(
+            summary={
+                "symbol": symbol,
+                "status": "no_overlap",
+                "latest_closed_bar_ts": latest_closed_bar_ts,
+                "latest_closed_bar_bj": fmt_bj(latest_closed_bar_ts),
+                "hub_bar_count": int(len(hub)),
+                "local_bar_count": int(len(local)),
+                "hub_latest_bar_ts": hub_max_ts,
+                "hub_latest_bar_bj": fmt_bj(hub_max_ts),
+                "local_latest_bar_ts": local_latest_bar_ts,
+                "local_latest_bar_bj": fmt_bj(local_latest_bar_ts),
+                "compare_max_ts": compare_max_ts,
+                "compare_max_bj": fmt_bj(compare_max_ts),
+                "hub_leading_bar_count": int(len(hub_leading)),
+                "hub_leading_first_ts": int(hub_leading[0]) if hub_leading else None,
+                "hub_leading_first_bj": fmt_bj(int(hub_leading[0])) if hub_leading else None,
+                "hub_leading_last_ts": int(hub_leading[-1]) if hub_leading else None,
+                "hub_leading_last_bj": fmt_bj(int(hub_leading[-1])) if hub_leading else None,
+                "missing_months": missing_months,
+            },
+            diffs=[],
+        )
+
+    hub_overlap = hub.loc[~hub_leading_mask].copy()
+    local_overlap = local.loc[local["open_time_ms"] <= compare_max_ts].copy()
+
+    merged = hub_overlap.merge(
+        local_overlap,
+        on="open_time_ms",
+        how="outer",
+        suffixes=("_hub", "_local"),
+        indicator=True,
+    )
     diffs: list[dict[str, Any]] = []
 
     missing_in_local = merged[merged["_merge"] == "left_only"]["open_time_ms"].tolist()
@@ -271,7 +316,20 @@ def compare_symbol(
         "latest_closed_bar_bj": fmt_bj(latest_closed_bar_ts),
         "hub_bar_count": int(len(hub)),
         "local_bar_count": int(len(local)),
+        "hub_overlap_bar_count": int(len(hub_overlap)),
+        "local_overlap_bar_count": int(len(local_overlap)),
         "compared_bar_count": int(compared_bar_count),
+        "hub_latest_bar_ts": hub_max_ts,
+        "hub_latest_bar_bj": fmt_bj(hub_max_ts),
+        "local_latest_bar_ts": local_latest_bar_ts,
+        "local_latest_bar_bj": fmt_bj(local_latest_bar_ts),
+        "compare_max_ts": compare_max_ts,
+        "compare_max_bj": fmt_bj(compare_max_ts),
+        "hub_leading_bar_count": int(len(hub_leading)),
+        "hub_leading_first_ts": int(hub_leading[0]) if hub_leading else None,
+        "hub_leading_first_bj": fmt_bj(int(hub_leading[0])) if hub_leading else None,
+        "hub_leading_last_ts": int(hub_leading[-1]) if hub_leading else None,
+        "hub_leading_last_bj": fmt_bj(int(hub_leading[-1])) if hub_leading else None,
         "missing_in_local_count": int(len(missing_in_local)),
         "missing_in_hub_count": int(len(missing_in_hub)),
         "missing_months": missing_months,
@@ -355,10 +413,20 @@ def main() -> None:
     total = len(summaries)
     mismatch = sum(1 for row in summaries if row.get("status") == "mismatch")
     ok = sum(1 for row in summaries if row.get("status") == "ok")
+    no_overlap = sum(1 for row in summaries if row.get("status") == "no_overlap")
+    hub_snapshot_missing = sum(1 for row in summaries if row.get("status") == "hub_contract_snapshot_missing")
+    local_missing = sum(1 for row in summaries if row.get("status") == "local_missing")
+    hub_leading_symbols = sum(1 for row in summaries if int(row.get("hub_leading_bar_count") or 0) > 0)
+    hub_leading_rows = sum(int(row.get("hub_leading_bar_count") or 0) for row in summaries)
     print("=== audit_hub_vs_klines_1m_v1 完成 ===")
     print(f"symbols_total          : {total}")
     print(f"symbols_ok             : {ok}")
     print(f"symbols_mismatch       : {mismatch}")
+    print(f"symbols_no_overlap     : {no_overlap}")
+    print(f"symbols_local_missing  : {local_missing}")
+    print(f"symbols_hub_missing    : {hub_snapshot_missing}")
+    print(f"symbols_hub_leading    : {hub_leading_symbols}")
+    print(f"hub_leading_rows       : {hub_leading_rows}")
     print(f"diff_rows              : {len(diffs)}")
     print(f"latest_closed_bar_bj   : {fmt_bj(latest_closed_bar_ts)}")
     print(f"out_dir                : {out_dir}")
