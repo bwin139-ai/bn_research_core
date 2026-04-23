@@ -562,7 +562,7 @@ def backfill_symbol(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> None:
-    start_ms, now_ms = date_range_to_ms(start_date, end_date, days)
+    start_ms, end_ms = date_range_to_ms(start_date, end_date, days)
 
     buckets: Dict[str, List[List]] = {}
     cur = start_ms
