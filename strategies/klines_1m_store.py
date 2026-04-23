@@ -412,10 +412,9 @@ def rows_to_table(rows: List[List], price_source: str) -> pa.Table:
         )
 
     quote_vol = [float(r[7]) if len(r) > 7 else 0.0 for r in rows]
-    # idx fields must only be populated by indexPriceKlines / augment-idx.
-    high_idx = [None for _ in rows]
-    low_idx = [None for _ in rows]
-    close_idx = [None for _ in rows]
+    high_idx = [float(r[8]) if len(r) > 8 and r[8] is not None else None for r in rows]
+    low_idx = [float(r[9]) if len(r) > 9 and r[9] is not None else None for r in rows]
+    close_idx = [float(r[10]) if len(r) > 10 and r[10] is not None else None for r in rows]
     return pa.Table.from_arrays(
         [
             pa.array(open_time, type=pa.int64()),
@@ -446,9 +445,28 @@ def merge_write_month(
     ensure_dir(os.path.join(data_dir, symbol))
     fpath = month_file(data_dir, symbol, month_key)
 
-    # Keep a Binance-like sparse row shape so rows_to_table can consume both
-    # fresh API rows and locally reconstructed rows with the same field indices.
-    merged: Dict[int, List] = {int(r[0]): r for r in new_rows}
+    if price_source == PRICE_SOURCE_CONTRACT:
+        # Fresh contract klines must not pollute idx columns with non-index fields.
+        merged: Dict[int, List] = {
+            int(r[0]): [
+                int(r[0]),
+                float(r[1]),
+                float(r[2]),
+                float(r[3]),
+                float(r[4]),
+                0.0,
+                0,
+                float(r[7]) if len(r) > 7 else 0.0,
+                None,
+                None,
+                None,
+            ]
+            for r in new_rows
+        }
+    else:
+        # Keep a Binance-like sparse row shape so rows_to_table can consume both
+        # fresh API rows and locally reconstructed rows with the same field indices.
+        merged = {int(r[0]): r for r in new_rows}
 
     if os.path.exists(fpath):
         if price_source == PRICE_SOURCE_INDEX:
