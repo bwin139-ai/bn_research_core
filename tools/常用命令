@@ -1,5 +1,7 @@
+ssh aliyun-bn
 ps aux | grep python
 ps aux | grep '[s]trategies/snapback/run_live.py'
+ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 
 # ============== 项目根目录 ===============
  cd ~/ai_projects/bn_research_core
@@ -119,15 +121,15 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1500 \
-  --sleep-ms 1000 \
+  --sleep-ms 2000 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 
-# *** 2.再运行 补 idx 列 ***
+# *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
-  --days 3 \
+  --days 5 \
   --limit 1500 \
-  --sleep-ms 1000 \
+  --sleep-ms 2000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 
