@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -97,6 +98,14 @@ def _is_static_index_price_400(url: str, body_text: str) -> bool:
         "pre market",
     ]
     return any(marker in text for marker in static_markers)
+
+
+def _is_present_number(v: Any) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, float) and math.isnan(v):
+        return False
+    return True
 
 
 # ----------------------------
@@ -769,6 +778,64 @@ def infer_last_open_from_local(data_dir: str, symbol: str) -> Optional[int]:
 
     return int(max(col.to_pylist()))
 
+
+def infer_last_idx_open_from_local(data_dir: str, symbol: str) -> Optional[int]:
+    sym_dir = os.path.join(data_dir, symbol)
+    if not os.path.isdir(sym_dir):
+        return None
+
+    parquet_files = sorted(fn for fn in os.listdir(sym_dir) if fn.endswith(".parquet"))
+    if not parquet_files:
+        return None
+
+    for fn in reversed(parquet_files):
+        fp = os.path.join(sym_dir, fn)
+        schema_names = pq.read_schema(fp).names
+        idx_cols = ["high_idx", "low_idx", "close_idx"]
+        if any(col not in schema_names for col in idx_cols):
+            continue
+
+        tbl = pq.read_table(fp, columns=["open_time_ms"] + idx_cols)
+        ot = tbl.column("open_time_ms").to_pylist()
+        hi = tbl.column("high_idx").to_pylist()
+        lo = tbl.column("low_idx").to_pylist()
+        cl = tbl.column("close_idx").to_pylist()
+
+        for i in range(len(ot) - 1, -1, -1):
+            if (
+                _is_present_number(hi[i])
+                and _is_present_number(lo[i])
+                and _is_present_number(cl[i])
+            ):
+                return int(ot[i])
+    return None
+
+
+def infer_auto_augment_idx_window(
+    data_dir: str,
+    symbol: str,
+    limit: int,
+) -> Optional[tuple[int, int, int, Optional[int]]]:
+    contract_last_open = infer_last_open_from_local(data_dir, symbol)
+    if contract_last_open is None:
+        return None
+
+    end_ms = min(contract_last_open, stable_sync_end_ms())
+    if end_ms <= 0:
+        return None
+
+    idx_last_open = infer_last_idx_open_from_local(data_dir, symbol)
+    if idx_last_open is not None:
+        start_ms = idx_last_open + INTERVAL_MS
+    else:
+        # Bootstrap only the recent tail when no local idx cursor exists.
+        tail_span_ms = max(1, int(limit)) * INTERVAL_MS
+        start_ms = max(0, end_ms - tail_span_ms + INTERVAL_MS)
+
+    if start_ms > end_ms:
+        return None
+    return start_ms, end_ms, contract_last_open, idx_last_open
+
 # ----------------------------
 # backfill / sync
 # ----------------------------
@@ -931,12 +998,41 @@ def augment_idx_symbol(
     start_date: Optional[str],
     end_date: Optional[str],
     days: int,
+    days_explicit: bool,
 ) -> None:
-    start_ms, end_ms = date_range_to_ms(start_date, end_date, days)
+    if start_date or end_date or days_explicit:
+        start_ms, end_ms = date_range_to_ms(start_date, end_date, days)
+        logging.info(
+            "[augment-idx] %s: explicit_window start=%s end=%s",
+            symbol,
+            start_ms,
+            end_ms,
+        )
+    else:
+        auto_window = infer_auto_augment_idx_window(data_dir, symbol, limit)
+        if auto_window is None:
+            logging.info("[augment-idx] %s: no local contract tail to augment", symbol)
+            return
+        start_ms, end_ms, contract_last_open, idx_last_open = auto_window
+        logging.info(
+            "[augment-idx] %s: auto_window start=%s end=%s contract_last=%s idx_last=%s",
+            symbol,
+            start_ms,
+            end_ms,
+            contract_last_open,
+            idx_last_open,
+        )
+
+    if start_ms > end_ms:
+        logging.info("[augment-idx] %s: up to date", symbol)
+        return
+
     buckets: Dict[str, List[List]] = {}
     cur = start_ms
     while True:
         rows = fetch_klines(session, symbol, start_ms=cur, end_ms=end_ms, limit=limit, price_source=PRICE_SOURCE_INDEX)
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
         if not rows:
             break
         for r in rows:
@@ -946,8 +1042,6 @@ def augment_idx_symbol(
         cur = last_open + INTERVAL_MS
         if cur > end_ms - INTERVAL_MS:
             break
-        if sleep_ms > 0:
-            time.sleep(sleep_ms / 1000.0)
 
     touched = 0
     for mk in sorted(buckets.keys()):
@@ -1027,6 +1121,9 @@ def main():
         help="backfill=init store; sync=incremental update",
     )
     args = ap.parse_args()
+    args.days_explicit = any(
+        raw == "--days" or str(raw).startswith("--days=") for raw in sys.argv[1:]
+    )
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1207,6 +1304,7 @@ def main():
                         args.start_date or None,
                         args.end_date or None,
                         args.days,
+                        args.days_explicit,
                     )
                 except Exception as e:
                     if isinstance(e, BinanceRestIpBan):
