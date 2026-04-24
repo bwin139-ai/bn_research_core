@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import pandas as pd  # type: ignore
 import sys
 import time
 from datetime import datetime, timedelta, timezone
