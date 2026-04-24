@@ -23,7 +23,7 @@ FILES = [
     # "tools/run_full_backtest.sh",
     # "tools/audit_extreme_mae.py",
     # "tools/analyze_snap_env_buckets.py",
-    # "audit_tools/audit_1m_data_quality_v2.py",
+    # "audit_tools/data_quality/audit_1m_data_quality_v2.py",
     # "core/analysis/postprocess_backtests.py",
     # "core/analysis/sim_equity_curves.py",
     # "=============== core ==================",

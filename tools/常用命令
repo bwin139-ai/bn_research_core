@@ -127,11 +127,11 @@ nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
 
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
-  --days 2 \
   --limit 1000 \
-  --sleep-ms 10000 \
+  --sleep-ms 5000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
+
 
 # *** 单独运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
@@ -142,7 +142,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
   >> logs/klines_1m_augment_idx_20260311_20260317.log 2>&1 &
 
 # *** 1m 数据质量审计 ***
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/audit_1m_data_quality_v2.py \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/data_quality/audit_1m_data_quality_v2.py \
   --data-dir data/klines_1m \
   --out-dir output/state/1m_data_quality_audit \
   --tail-target-bjt "2026-03-26 11:00"
