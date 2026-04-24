@@ -271,6 +271,8 @@ def _record_market_total_24h_vol_sample(
     market_total_24h_vol: float,
     market_total_24h_vol_min: float,
     market_total_24h_symbol_count: int,
+    market_total_24h_vol_api: float | None,
+    market_total_24h_symbol_count_api: int | None,
 ) -> None:
     account_key = str(account).strip() or 'unknown'
     sample = {
@@ -281,6 +283,8 @@ def _record_market_total_24h_vol_sample(
         'market_total_24h_vol': float(market_total_24h_vol),
         'market_total_24h_vol_min': float(market_total_24h_vol_min),
         'market_total_24h_symbol_count': int(market_total_24h_symbol_count),
+        'market_total_24h_vol_api': float(market_total_24h_vol_api) if market_total_24h_vol_api is not None else None,
+        'market_total_24h_symbol_count_api': int(market_total_24h_symbol_count_api) if market_total_24h_symbol_count_api is not None else None,
     }
     bucket = _MARKET_TOTAL_24H_VOL_ROLLING.setdefault(account_key, [])
     bucket.append(sample)
@@ -294,6 +298,10 @@ def _record_market_total_24h_vol_sample(
     min_value = min(values)
     max_value = max(values)
     avg_value = sum(values) / float(len(values))
+    api_values = [float(x['market_total_24h_vol_api']) for x in window if x.get('market_total_24h_vol_api') is not None]
+    min_value_api = min(api_values) if api_values else None
+    max_value_api = max(api_values) if api_values else None
+    avg_value_api = (sum(api_values) / float(len(api_values))) if api_values else None
     payload = {
         'account': account_key,
         'window_rounds': int(len(window)),
@@ -308,9 +316,14 @@ def _record_market_total_24h_vol_sample(
         'market_total_24h_vol_min_observed': float(min_value),
         'market_total_24h_vol_max_observed': float(max_value),
         'market_total_24h_vol_avg_observed': float(avg_value),
+        'market_total_24h_vol_min_api_observed': float(min_value_api) if min_value_api is not None else None,
+        'market_total_24h_vol_max_api_observed': float(max_value_api) if max_value_api is not None else None,
+        'market_total_24h_vol_avg_api_observed': float(avg_value_api) if avg_value_api is not None else None,
         'market_total_24h_vol_min_config': float(market_total_24h_vol_min),
         'market_total_24h_symbol_count_min_observed': int(min(int(x['market_total_24h_symbol_count']) for x in window)),
         'market_total_24h_symbol_count_max_observed': int(max(int(x['market_total_24h_symbol_count']) for x in window)),
+        'market_total_24h_symbol_count_min_api_observed': int(min(int(x['market_total_24h_symbol_count_api']) for x in window if x.get('market_total_24h_symbol_count_api') is not None)) if any(x.get('market_total_24h_symbol_count_api') is not None for x in window) else None,
+        'market_total_24h_symbol_count_max_api_observed': int(max(int(x['market_total_24h_symbol_count_api']) for x in window if x.get('market_total_24h_symbol_count_api') is not None)) if any(x.get('market_total_24h_symbol_count_api') is not None for x in window) else None,
     }
 
     if audit_enabled:
@@ -326,6 +339,12 @@ def _record_market_total_24h_vol_sample(
         f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f} | '
         f'config_min={float(market_total_24h_vol_min):.2f}'
     )
+    if min_value_api is not None and max_value_api is not None and avg_value_api is not None:
+        msg += (
+            f' | api_min={min_value_api:.2f}'
+            f' | api_max={max_value_api:.2f}'
+            f' | api_avg={avg_value_api:.2f}'
+        )
     _notify(bool(notify_enabled), msg)
 
 
@@ -1711,6 +1730,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             market_total_24h_vol=market_total_24h_vol_snapshot,
             market_total_24h_vol_min=market_total_24h_vol_min,
             market_total_24h_symbol_count=market_total_24h_symbol_count_snapshot,
+            market_total_24h_vol_api=(
+                float(market_snapshot.get('market_total_24h_vol_api'))
+                if market_snapshot.get('market_total_24h_vol_api') is not None
+                else None
+            ),
+            market_total_24h_symbol_count_api=(
+                int(market_snapshot.get('market_total_24h_symbol_count_api'))
+                if market_snapshot.get('market_total_24h_symbol_count_api') is not None
+                else None
+            ),
         )
     except Exception as e:
         logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
