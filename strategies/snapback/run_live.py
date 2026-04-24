@@ -1144,9 +1144,19 @@ def _select_stage5_candidate_symbol(candidates: list[dict[str, Any]], election_r
     return str(ranked[0]['symbol']).upper().strip()
 
 
-def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time_bj: str, cross_section: Any, active_symbols: set[str], full_df: dict[str, Any], strategy_cfg: dict[str, Any], *, logic_selected_symbol: str | None, signal_digest: str | None) -> list[dict[str, Any]]:
-    import pandas as pd  # type: ignore
-
+def _build_stage5_structure_rows(
+    c_bar_ts: int,
+    signal_time_ms: int,
+    signal_time_bj: str,
+    cross_section: Any,
+    active_symbols: set[str],
+    full_df: dict[str, Any],
+    strategy_cfg: dict[str, Any],
+    *,
+    market_total_24h_vol_snapshot: float,
+    logic_selected_symbol: str | None,
+    signal_digest: str | None,
+) -> list[dict[str, Any]]:
     universe = (strategy_cfg or {}).get('universe') or {}
     structure = (strategy_cfg or {}).get('structure') or {}
     a_high_source = str(structure.get('a_high_source') or '').strip()
@@ -1210,7 +1220,10 @@ def _build_stage5_structure_rows(c_bar_ts: int, signal_time_ms: int, signal_time
     if cross_section is None or getattr(cross_section, 'empty', True):
         return audit_rows
 
-    market_total_24h_vol = float(pd.to_numeric(cross_section['vol_24h'], errors='coerce').dropna().sum()) if 'vol_24h' in cross_section.columns else 0.0
+    # Use the hub-owned market-wide snapshot here. Re-summing cross_section['vol_24h']
+    # would only measure the already-prefiltered candidate subset and can understate
+    # the true market total by a large margin.
+    market_total_24h_vol = float(market_total_24h_vol_snapshot or 0.0)
     if market_total_24h_vol < market_total_24h_vol_min:
         for sym, row in cross_section.iterrows():
             symbol = str(sym).upper().strip()
@@ -2255,6 +2268,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         active_symbols,
         full_df,
         strategy_cfg,
+        market_total_24h_vol_snapshot=market_total_24h_vol_snapshot,
         logic_selected_symbol=signal_symbol,
         signal_digest=signal_digest_preview,
     )
