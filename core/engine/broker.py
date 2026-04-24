@@ -1,7 +1,16 @@
 import logging
+from datetime import timedelta, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
+
+BJ = timezone(timedelta(hours=8))
+
+
+def _fmt_bj_minute(ts_ms: int | None) -> str | None:
+    if ts_ms is None:
+        return None
+    return pd.to_datetime(ts_ms, unit="ms", utc=True).tz_convert(BJ).strftime("%Y-%m-%d %H:%M")
 
 
 class Order:
@@ -207,7 +216,7 @@ class VirtualBroker:
             pos.breakeven_sl_price = float(exec_price) + risk_distance * self.breakeven_guard_floor_r
 
         self.active_positions[symbol] = pos
-        time_str = pd.to_datetime(time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
+        time_str = _fmt_bj_minute(time_ms) or ""
         logging.info(
             f"[{time_str}] 市价开仓成交: {symbol} 进场多单 @ {exec_price:.4f} | "
             f"止盈: {order.tp_price:.4f} | 止损: {order.sl_price:.4f}"
@@ -226,7 +235,7 @@ class VirtualBroker:
 
         breakeven_armed_time_bj = None
         if pos.breakeven_armed_time_ms is not None:
-            breakeven_armed_time_bj = pd.to_datetime(pos.breakeven_armed_time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
+            breakeven_armed_time_bj = _fmt_bj_minute(pos.breakeven_armed_time_ms)
 
         self.trade_history.append(
             {
@@ -251,7 +260,7 @@ class VirtualBroker:
                 "context": pos.context,
             }
         )
-        time_str = pd.to_datetime(time_ms, unit="ms").strftime("%Y-%m-%d %H:%M")
+        time_str = _fmt_bj_minute(time_ms) or ""
         logging.info(
             f"[{time_str}] 平仓离场: {symbol} @ {price:.4f} | 原因: {reason} | 盈亏: {pct_pnl*100:.2f}%"
         )

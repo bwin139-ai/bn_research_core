@@ -968,7 +968,7 @@ def build_market_snapshot(account: str) -> dict[str, Any]:
         'newly_listed_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('newly_listed_symbol_count_1m_rollsum') or 0),
         'newly_listed_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('newly_listed_symbols_1m_rollsum') or []),
         'market_total_24h_vol_source': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_source') or ''),
-        'market_total_24h_vol_status': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_status') or ''),
+        'market_total_24h_vol_1m_rollsum_status': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_status') or ''),
         'hub_owned_1m_rollsum_state_updated_utc_ms': market_total_24h_payload_rollsum.get('hub_owned_1m_rollsum_state_updated_utc_ms'),
         'hub_owned_1m_rollsum_state_updated_bj': market_total_24h_payload_rollsum.get('hub_owned_1m_rollsum_state_updated_bj'),
     }

@@ -65,6 +65,11 @@ def load_market_snapshot_from_hub(account: str, *, max_age_secs: int = _HUB_SNAP
     payload = read_current_pickle(account, 'market_snapshot')
     if not isinstance(payload, dict):
         raise RuntimeError(f'hub payload missing: account={account} name=market_snapshot')
+    if 'market_total_24h_vol_1m_rollsum_status' not in payload:
+        raise RuntimeError(
+            'hub payload schema mismatch: '
+            f'account={account} name=market_snapshot missing=market_total_24h_vol_1m_rollsum_status'
+        )
     return payload
 
 
@@ -107,7 +112,7 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'market_total_24h_symbol_count_1m_rollsum': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
         'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
         'market_total_24h_vol_source': str(snapshot.get('market_total_24h_vol_source') or ''),
-        'market_total_24h_vol_1m_rollsum_status': str(snapshot.get('market_total_24h_vol_status') or ''),
+        'market_total_24h_vol_1m_rollsum_status': str(snapshot.get('market_total_24h_vol_1m_rollsum_status') or ''),
         'hub_owned_1m_rollsum_state_updated_utc_ms': snapshot.get('hub_owned_1m_rollsum_state_updated_utc_ms'),
         'hub_owned_1m_rollsum_state_updated_bj': snapshot.get('hub_owned_1m_rollsum_state_updated_bj'),
         'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),

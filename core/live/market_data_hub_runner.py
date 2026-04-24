@@ -267,7 +267,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_vol_1m_rollsum = float(market_snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
-    market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_status') or '')
+    market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '')
     candidate_symbols = list_candidate_symbols(account)
     rollsum_refreshed_this_round = False
 
