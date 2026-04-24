@@ -13,13 +13,9 @@ from core.runtime_state import get_state_dir
 QUEUE_DIR = get_state_dir()
 
 
-def _preview_text(content: str, limit: int = 60) -> str:
+def _log_text(content: str) -> str:
     try:
-        text = str(content).replace('\r\n', '\n').replace('\r', '\n').replace('\n', '换行')
-        data = text.encode('utf-8', errors='ignore')
-        if len(data) <= limit:
-            return data.decode('utf-8', errors='ignore')
-        return data[:limit].decode('utf-8', errors='ignore') + '…'
+        return json.dumps(str(content), ensure_ascii=False)
     except Exception:
         return '<unprintable>'
 
@@ -38,7 +34,7 @@ def send_to_bot(content: str, label: str = 'global') -> bool:
                 f.flush()
                 os.fsync(f.fileno())
 
-        logging.info('[PUSH] queued label=%s msg="%s"', queue_label, _preview_text(content))
+        logging.info('[PUSH] queued label=%s msg=%s', queue_label, _log_text(content))
         return True
     except Exception as e:
         logging.error('[PUSH] send_to_bot failed: %s', e, exc_info=True)
