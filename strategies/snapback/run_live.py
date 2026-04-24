@@ -54,6 +54,8 @@ _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
 _CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 1
 _MARKET_TOTAL_24H_VOL_STATS_WINDOW = 30
 _MARKET_TOTAL_24H_VOL_ROLLING: dict[str, list[dict[str, Any]]] = {}
+_FINALIZE_QUALITY_STATS_WINDOW = 30
+_FINALIZE_QUALITY_ROLLING: dict[str, list[dict[str, Any]]] = {}
 EPS = 1e-9
 
 
@@ -345,6 +347,125 @@ def _record_market_total_24h_vol_sample(
             f' | api_max={max_value_api:.2f}'
             f' | api_avg={avg_value_api:.2f}'
         )
+    _notify(bool(notify_enabled), msg)
+
+
+def _record_finalize_quality_sample(
+    account: str,
+    *,
+    notify_enabled: bool,
+    audit_enabled: bool,
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    candidate_symbol_count_before_finalize: int,
+    candidate_symbol_count_after_finalize: int,
+    finalize_removed_symbol_count: int,
+    finalize_summary: dict[str, Any],
+) -> None:
+    account_key = str(account).strip() or 'unknown'
+    sample = {
+        'bar_ts': int(current_time_ms),
+        'bar_bj': str(current_time_bj),
+        'c_bar_ts': int(c_bar_ts),
+        'c_bar_bj': str(c_bar_bj),
+        'candidate_symbol_count_before_finalize': int(candidate_symbol_count_before_finalize),
+        'candidate_symbol_count_after_finalize': int(candidate_symbol_count_after_finalize),
+        'finalize_removed_symbol_count': int(finalize_removed_symbol_count),
+        'finalize_rounds': int(finalize_summary.get('finalize_rounds') or 0),
+        'deadline_hit': bool(finalize_summary.get('deadline_hit')),
+        'all_passed': bool(finalize_summary.get('all_passed')),
+        'all_passed_elapsed_ms': (
+            int(finalize_summary.get('all_passed_elapsed_ms'))
+            if finalize_summary.get('all_passed_elapsed_ms') is not None
+            else None
+        ),
+        'timeout_not_finalized_count': int(finalize_summary.get('timeout_not_finalized_count') or 0),
+        'verify_failed_count': int(finalize_summary.get('verify_failed_count') or 0),
+        'delayed_finalize_count': int(finalize_summary.get('delayed_finalize_count') or 0),
+        'passed_count': int(finalize_summary.get('passed_count') or 0),
+    }
+    bucket = _FINALIZE_QUALITY_ROLLING.setdefault(account_key, [])
+    bucket.append(sample)
+    if len(bucket) < _FINALIZE_QUALITY_STATS_WINDOW:
+        return
+
+    window = bucket[:_FINALIZE_QUALITY_STATS_WINDOW]
+    del bucket[:_FINALIZE_QUALITY_STATS_WINDOW]
+
+    elapsed_values = [int(x['all_passed_elapsed_ms']) for x in window if x.get('all_passed_elapsed_ms') is not None]
+    before_values = [int(x['candidate_symbol_count_before_finalize']) for x in window]
+    after_values = [int(x['candidate_symbol_count_after_finalize']) for x in window]
+    removed_values = [int(x['finalize_removed_symbol_count']) for x in window]
+    timeout_values = [int(x['timeout_not_finalized_count']) for x in window]
+    verify_failed_values = [int(x['verify_failed_count']) for x in window]
+    delayed_values = [int(x['delayed_finalize_count']) for x in window]
+    rounds_values = [int(x['finalize_rounds']) for x in window]
+    passed_values = [int(x['passed_count']) for x in window]
+    all_passed_count = sum(1 for x in window if bool(x.get('all_passed')))
+    deadline_hit_count = sum(1 for x in window if bool(x.get('deadline_hit')))
+    timeout_round_count = sum(1 for x in window if int(x.get('timeout_not_finalized_count') or 0) > 0)
+
+    payload = {
+        'account': account_key,
+        'window_rounds': int(len(window)),
+        'first_bar_ts': int(window[0]['bar_ts']),
+        'first_bar_bj': str(window[0]['bar_bj']),
+        'last_bar_ts': int(window[-1]['bar_ts']),
+        'last_bar_bj': str(window[-1]['bar_bj']),
+        'first_c_bar_ts': int(window[0]['c_bar_ts']),
+        'first_c_bar_bj': str(window[0]['c_bar_bj']),
+        'last_c_bar_ts': int(window[-1]['c_bar_ts']),
+        'last_c_bar_bj': str(window[-1]['c_bar_bj']),
+        'all_passed_count': int(all_passed_count),
+        'deadline_hit_count': int(deadline_hit_count),
+        'timeout_round_count': int(timeout_round_count),
+        'timeout_not_finalized_count_max': int(max(timeout_values)) if timeout_values else 0,
+        'verify_failed_count_max': int(max(verify_failed_values)) if verify_failed_values else 0,
+        'delayed_finalize_count_max': int(max(delayed_values)) if delayed_values else 0,
+        'candidate_symbol_count_before_finalize_avg': float(sum(before_values) / float(len(before_values))) if before_values else None,
+        'candidate_symbol_count_after_finalize_avg': float(sum(after_values) / float(len(after_values))) if after_values else None,
+        'finalize_removed_symbol_count_avg': float(sum(removed_values) / float(len(removed_values))) if removed_values else None,
+        'finalize_removed_symbol_count_max': int(max(removed_values)) if removed_values else 0,
+        'finalize_rounds_avg': float(sum(rounds_values) / float(len(rounds_values))) if rounds_values else None,
+        'passed_count_avg': float(sum(passed_values) / float(len(passed_values))) if passed_values else None,
+        'all_passed_elapsed_ms_min': int(min(elapsed_values)) if elapsed_values else None,
+        'all_passed_elapsed_ms_max': int(max(elapsed_values)) if elapsed_values else None,
+        'all_passed_elapsed_ms_avg': float(sum(elapsed_values) / float(len(elapsed_values))) if elapsed_values else None,
+    }
+
+    if audit_enabled:
+        _write_stage_record(account_key, 'finalize_quality_stats', payload)
+
+    body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
+    logging.info('[finalize_quality_stats] %s', body)
+    _log_market_data_event(account_key, logging.INFO, '[finalize_quality_stats] %s', body)
+
+    msg = (
+        f'[Snapback-Live] finalize 30轮统计 | account={account_key} | '
+        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
+        f'all_passed={all_passed_count}/{len(window)} | '
+        f'deadline_hit={deadline_hit_count} | '
+        f'timeout_rounds={timeout_round_count}'
+    )
+    if payload['all_passed_elapsed_ms_min'] is not None:
+        msg += (
+            f' | elapsed_ms(min/max/avg)='
+            f'{int(payload["all_passed_elapsed_ms_min"])}/'
+            f'{int(payload["all_passed_elapsed_ms_max"])}/'
+            f'{float(payload["all_passed_elapsed_ms_avg"]):.1f}'
+        )
+    if payload['candidate_symbol_count_before_finalize_avg'] is not None and payload['candidate_symbol_count_after_finalize_avg'] is not None:
+        msg += (
+            f' | candidates_avg='
+            f'{float(payload["candidate_symbol_count_before_finalize_avg"]):.1f}'
+            f'->{float(payload["candidate_symbol_count_after_finalize_avg"]):.1f}'
+        )
+    msg += (
+        f' | removed_max={int(payload["finalize_removed_symbol_count_max"])}'
+        f' | timeout_max={int(payload["timeout_not_finalized_count_max"])}'
+    )
     _notify(bool(notify_enabled), msg)
 
 
@@ -1917,6 +2038,23 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'all_passed_elapsed_ms': (finalize_summary or {}).get('all_passed_elapsed_ms'),
             **finalize_summary,
         })
+    if finalize_summary is not None:
+        try:
+            _record_finalize_quality_sample(
+                account,
+                notify_enabled=notify_enabled,
+                audit_enabled=audit_enabled,
+                current_time_ms=current_time_ms,
+                current_time_bj=current_time_bj,
+                c_bar_ts=c_bar_ts,
+                c_bar_bj=c_bar_bj,
+                candidate_symbol_count_before_finalize=int(candidate_symbol_count_before_finalize or 0),
+                candidate_symbol_count_after_finalize=int(candidate_symbol_count_after_finalize or 0),
+                finalize_removed_symbol_count=int(finalize_removed_symbol_count or 0),
+                finalize_summary=finalize_summary,
+            )
+        except Exception as e:
+            logging.warning('[finalize_quality_stats] record_failed | account=%s | reason=%s', account, e)
 
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
