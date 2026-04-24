@@ -42,6 +42,10 @@ class BinanceRestIpBan(RuntimeError):
     pass
 
 
+class BinanceRestNonRetryableHttpError(RuntimeError):
+    pass
+
+
 def _record_http_429_seen(now_epoch: float | None = None) -> int:
     if now_epoch is None:
         now_epoch = time.time()
@@ -50,6 +54,49 @@ def _record_http_429_seen(now_epoch: float | None = None) -> int:
     _HTTP_429_SEEN_AT[:] = recent
     _HTTP_429_SEEN_AT.append(float(now_epoch))
     return len(_HTTP_429_SEEN_AT)
+
+
+def _response_error_body_text(resp: requests.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        code = data.get("code")
+        msg = data.get("msg")
+        parts = []
+        if code is not None:
+            parts.append(f"code={code}")
+        if msg is not None:
+            parts.append(f"msg={msg}")
+        if parts:
+            return " | ".join(parts)
+        try:
+            return json.dumps(data, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            pass
+    text = (resp.text or "").strip()
+    return text[:500]
+
+
+def _is_static_index_price_400(url: str, body_text: str) -> bool:
+    if "indexPriceKlines" not in str(url):
+        return False
+    text = str(body_text or "").lower()
+    static_markers = [
+        "invalid symbol",
+        "invalid pair",
+        "symbol is invalid",
+        "pair is invalid",
+        "not support",
+        "not supported",
+        "index price",
+        "no index",
+        "premarket",
+        "pre-market",
+        "pre market",
+    ]
+    return any(marker in text for marker in static_markers)
 
 
 # ----------------------------
@@ -408,6 +455,23 @@ def http_get_json(
                 time.sleep(sleep_s)
                 backoff = min(backoff * 2, 60.0)
                 continue
+            if 400 <= r.status_code < 500:
+                body_text = _response_error_body_text(r)
+                logging.warning(
+                    "client error (%s). url=%s params=%s body=%s",
+                    r.status_code,
+                    url,
+                    params,
+                    body_text,
+                )
+                if r.status_code == 400 and _is_static_index_price_400(url, body_text):
+                    raise BinanceRestNonRetryableHttpError(
+                        f"non-retryable client error status={r.status_code} body={body_text}"
+                    )
+                if attempt == max_retry:
+                    r.raise_for_status()
+                time.sleep(10.0)
+                continue
             if 500 <= r.status_code < 600:
                 logging.warning(
                     "server error (%s). sleep %.1fs. url=%s",
@@ -422,6 +486,8 @@ def http_get_json(
             return r.json()
         except Exception as e:
             if isinstance(e, BinanceRestIpBan):
+                raise
+            if isinstance(e, BinanceRestNonRetryableHttpError):
                 raise
             if attempt == max_retry:
                 raise
