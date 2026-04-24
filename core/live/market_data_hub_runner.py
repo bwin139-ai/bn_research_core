@@ -99,7 +99,7 @@ def _refresh_rollsum_batch(
     signal_time_ts: int,
     hub_cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    refresh_batch_size = int(hub_cfg.get('rollsum_refresh_batch_size', 80) or 80)
+    refresh_batch_size = int(hub_cfg['rollsum_refresh_batch_size'])
     refresh_start_idx = _load_rollsum_refresh_start_idx(account)
     refresh_batch_symbols, next_refresh_start_idx = _pick_round_robin_refresh_batch(
         candidate_symbols,
@@ -163,18 +163,83 @@ def _load_json(path: str) -> dict[str, Any]:
         return json.load(f)
 
 
+def _require_bool(cfg: dict[str, Any], path: str, key: str) -> bool:
+    if key not in cfg:
+        raise KeyError(f'hub_config 缺少必要字段: {key} | {path}')
+    value = cfg[key]
+    if not isinstance(value, bool):
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 bool | {path}')
+    return value
+
+
+def _require_non_empty_str(cfg: dict[str, Any], path: str, key: str) -> str:
+    if key not in cfg:
+        raise KeyError(f'hub_config 缺少必要字段: {key} | {path}')
+    value = str(cfg[key]).strip()
+    if not value:
+        raise ValueError(f'hub_config 字段不能为空: {key} | {path}')
+    return value
+
+
+def _require_positive_int(cfg: dict[str, Any], path: str, key: str) -> int:
+    if key not in cfg:
+        raise KeyError(f'hub_config 缺少必要字段: {key} | {path}')
+    value = cfg[key]
+    if isinstance(value, bool):
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 int | {path}')
+    try:
+        out = int(value)
+    except Exception as e:
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 int | {path}') from e
+    if out <= 0:
+        raise ValueError(f'hub_config 字段必须 > 0: {key} | {path}')
+    return out
+
+
+def _require_non_negative_float(cfg: dict[str, Any], path: str, key: str) -> float:
+    if key not in cfg:
+        raise KeyError(f'hub_config 缺少必要字段: {key} | {path}')
+    value = cfg[key]
+    if isinstance(value, bool):
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 number | {path}')
+    try:
+        out = float(value)
+    except Exception as e:
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 number | {path}') from e
+    if out < 0:
+        raise ValueError(f'hub_config 字段必须 >= 0: {key} | {path}')
+    return out
+
+
+def _require_symbol_list(cfg: dict[str, Any], path: str, key: str) -> list[str]:
+    if key not in cfg:
+        raise KeyError(f'hub_config 缺少必要字段: {key} | {path}')
+    raw = cfg[key]
+    if not isinstance(raw, list):
+        raise TypeError(f'hub_config 字段类型错误: {key} 必须是 list | {path}')
+    out: list[str] = []
+    for idx, item in enumerate(raw):
+        symbol = str(item).upper().strip()
+        if not symbol:
+            raise ValueError(f'hub_config {key}[{idx}] 不能为空 | {path}')
+        out.append(symbol)
+    return out
+
+
 def _load_hub_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
-    if 'account' not in data:
-        raise KeyError(f'hub_config 缺少必要字段: account | {path}')
-    if 'history_window_mins' not in data:
-        raise KeyError(f'hub_config 缺少必要字段: history_window_mins | {path}')
-    data.setdefault('audit_enabled', True)
-    data.setdefault('enabled', True)
-    data.setdefault('publish_config_snapshot', True)
-    data.setdefault('min_24h_quote_volume', 50000000)
-    data.setdefault('rollsum_refresh_batch_size', 80)
-    return data
+    if not isinstance(data, dict):
+        raise TypeError(f'hub_config 顶层必须是 JSON object | {path}')
+    return {
+        'enabled': _require_bool(data, path, 'enabled'),
+        'account': _require_non_empty_str(data, path, 'account'),
+        'audit_enabled': _require_bool(data, path, 'audit_enabled'),
+        'history_window_mins': _require_positive_int(data, path, 'history_window_mins'),
+        'publish_config_snapshot': _require_bool(data, path, 'publish_config_snapshot'),
+        'min_24h_quote_volume': _require_non_negative_float(data, path, 'min_24h_quote_volume'),
+        'rollsum_refresh_batch_size': _require_positive_int(data, path, 'rollsum_refresh_batch_size'),
+        'exclude_symbols': _require_symbol_list(data, path, 'exclude_symbols'),
+    }
 
 
 def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
@@ -255,9 +320,10 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
 
 def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     account = str(hub_cfg['account']).strip()
-    audit_enabled = bool(hub_cfg.get('audit_enabled', True))
+    audit_enabled = bool(hub_cfg['audit_enabled'])
     history_window_mins = int(hub_cfg['history_window_mins'])
-    min_24h_quote_volume = float(hub_cfg.get('min_24h_quote_volume', 30000000) or 0.0)
+    min_24h_quote_volume = float(hub_cfg['min_24h_quote_volume'])
+    exclude_symbols = list(hub_cfg['exclude_symbols'])
 
     market_snapshot = build_market_snapshot_via_hub(account, audit_enabled=audit_enabled)
     latest_closed_bar_ts = int(market_snapshot['latest_closed_bar_ts'])
@@ -268,7 +334,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '')
-    candidate_symbols = list_candidate_symbols(account)
+    candidate_symbols = list_candidate_symbols(account, exclude_symbols=exclude_symbols)
     rollsum_refreshed_this_round = False
 
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
@@ -495,7 +561,7 @@ def main() -> None:
     setup_logging()
     hub_cfgs = [_load_hub_config(path) for path in args.hub_configs]
     for hub_cfg in hub_cfgs:
-        if bool(hub_cfg.get('publish_config_snapshot', True)):
+        if bool(hub_cfg['publish_config_snapshot']):
             account = str(hub_cfg['account']).strip()
             write_current_snapshot(account, 'hub_config', {
                 'schema_version': 1,
@@ -512,7 +578,7 @@ def main() -> None:
         max_ban_until_epoch: float | None = None
         for hub_cfg in hub_cfgs:
             account = str(hub_cfg['account']).strip()
-            if not bool(hub_cfg.get('enabled', True)):
+            if not bool(hub_cfg['enabled']):
                 continue
             try:
                 _run_account_once(hub_cfg)
