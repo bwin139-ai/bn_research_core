@@ -4,7 +4,7 @@
 Spring-SABC loss/win structure audit.
 
 Example:
-PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_spring_loss_win_profile.py \
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python audit_tools/spring/audit_spring_loss_win_profile.py \
   --trades output/state/sim_trades.SPRING_V1_30D_P6_0415T1941_ALL.jsonl \
   --out-dir output/state/spring_loss_win_profile.SPRING_V1_30D_P6_0415T1941_ALL
 """

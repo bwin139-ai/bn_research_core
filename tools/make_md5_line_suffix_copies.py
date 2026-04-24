@@ -11,7 +11,7 @@ FILES = [
     # "strategies/schedule_backtests.py",
     # "strategies/run_backtest.py",
     # "strategies/klines_1m_store.py",
-    #"audit_hub_vs_klines_1m_v1.py",
+    #"audit_tools/data_quality/audit_hub_vs_klines_1m_v1.py",
     # "PROJECT_IRON_LAWS.md",
     # "audit_24hchg_vs_drop_window.py",
     #"visual_audit_bucketizer_v5.py",
@@ -76,7 +76,7 @@ FILES = [
     # "============= spring-sabc 策略 ==============",        
     # "strategies/spring/config.json",
     # "strategies/spring/logic.py",
-    #"audit_spring_pre_a_profile.py",
+    #"audit_tools/spring/audit_spring_pre_a_profile.py",
 ]
 
 
