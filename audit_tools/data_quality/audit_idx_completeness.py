@@ -4,13 +4,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
 
 import pandas as pd
 import pyarrow.parquet as pq
 
 REQUIRED_IDX_COLS = ["high_idx", "low_idx", "close_idx"]
+INTERVAL_MS = 60_000
+BASELINE_POLICY_PRE_MARKET_NO_IDX = "PRE_MARKET_NO_IDX"
 
 
 @dataclass
@@ -43,6 +45,7 @@ class SymbolSummary:
     shards_missing_columns: int
     first_open_time_ms: Optional[int]
     last_open_time_ms: Optional[int]
+    baseline_policy: str
     classification: str
 
 
@@ -55,6 +58,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--summary-json", default="output/state/idx_completeness_audit.summary.json", help="summary JSON output path")
     ap.add_argument("--symbols", default="", help="optional comma-separated symbols filter")
     ap.add_argument("--top-n", type=int, default=30, help="top N symbols in summary rankings")
+    ap.add_argument(
+        "--audit-mode",
+        choices=["full", "incremental"],
+        default="full",
+        help="full: audit all rows; incremental: only audit rows after baseline watermark",
+    )
+    ap.add_argument(
+        "--baseline-file",
+        default="",
+        help="Optional baseline watermark json. Required for incremental mode.",
+    )
     return ap.parse_args()
 
 
@@ -78,14 +92,35 @@ def list_symbol_dirs(data_dir: str, symbols_filter: Optional[set[str]] = None) -
     return out
 
 
-def audit_shard(symbol: str, file_path: str) -> ShardAuditRow:
+def load_baseline(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload.get("symbols"), dict):
+        raise ValueError(f"baseline file missing symbols map: {path}")
+    return payload
+
+
+def baseline_entry_for_symbol(baseline: Optional[dict], symbol: str) -> Optional[dict]:
+    if not baseline:
+        return None
+    entry = (baseline.get("symbols") or {}).get(str(symbol).upper())
+    return entry if isinstance(entry, dict) else None
+
+
+def audit_shard(symbol: str, file_path: str, *, min_open_time_ms: Optional[int] = None) -> Optional[ShardAuditRow]:
     pf = pq.ParquetFile(file_path)
     names = set(pf.schema_arrow.names)
     has_cols = {col: col in names for col in REQUIRED_IDX_COLS}
 
     cols_to_read = ["open_time_ms"] + [col for col in REQUIRED_IDX_COLS if has_cols[col]]
-    tbl = pq.read_table(file_path, columns=cols_to_read)
+    tbl = pq.read_table(
+        file_path,
+        columns=cols_to_read,
+        filters=[("open_time_ms", ">=", int(min_open_time_ms))] if min_open_time_ms is not None else None,
+    )
     df = tbl.to_pandas()
+    if df.empty:
+        return None
 
     row_count = len(df)
     first_open = int(df["open_time_ms"].iloc[0]) if row_count > 0 else None
@@ -129,9 +164,11 @@ def audit_shard(symbol: str, file_path: str) -> ShardAuditRow:
     )
 
 
-def classify_symbol(total_rows: int, total_missing: int, shards_missing_columns: int, shards_missing_any: int) -> str:
+def classify_symbol(total_rows: int, total_missing: int, shards_missing_columns: int, shards_missing_any: int, baseline_policy: str) -> str:
     if total_rows <= 0:
         return "EMPTY"
+    if baseline_policy == BASELINE_POLICY_PRE_MARKET_NO_IDX and total_missing == total_rows:
+        return BASELINE_POLICY_PRE_MARKET_NO_IDX
     if shards_missing_columns > 0:
         return "OLD_SCHEMA_OR_BROKEN"
     if total_missing == 0:
@@ -143,7 +180,7 @@ def classify_symbol(total_rows: int, total_missing: int, shards_missing_columns:
     return "PARTIAL_GAP"
 
 
-def build_symbol_summaries(rows: List[ShardAuditRow]) -> List[SymbolSummary]:
+def build_symbol_summaries(rows: List[ShardAuditRow], baseline: Optional[dict]) -> List[SymbolSummary]:
     by_symbol: Dict[str, List[ShardAuditRow]] = {}
     for row in rows:
         by_symbol.setdefault(row.symbol, []).append(row)
@@ -162,6 +199,7 @@ def build_symbol_summaries(rows: List[ShardAuditRow]) -> List[SymbolSummary]:
         )
         first_open = min((x.first_open_time_ms for x in parts if x.first_open_time_ms is not None), default=None)
         last_open = max((x.last_open_time_ms for x in parts if x.last_open_time_ms is not None), default=None)
+        baseline_policy = str((baseline_entry_for_symbol(baseline, symbol) or {}).get("policy") or "")
         summaries.append(
             SymbolSummary(
                 symbol=symbol,
@@ -174,7 +212,8 @@ def build_symbol_summaries(rows: List[ShardAuditRow]) -> List[SymbolSummary]:
                 shards_missing_columns=shards_missing_columns,
                 first_open_time_ms=first_open,
                 last_open_time_ms=last_open,
-                classification=classify_symbol(total_rows, total_missing, shards_missing_columns, shards_missing_any),
+                baseline_policy=baseline_policy,
+                classification=classify_symbol(total_rows, total_missing, shards_missing_columns, shards_missing_any, baseline_policy),
             )
         )
     return summaries
@@ -210,6 +249,7 @@ def to_ms_records(symbol_summaries: List[SymbolSummary], top_n: int) -> dict:
         "symbols_no_idx_all_rows": [x.symbol for x in symbol_summaries if x.classification == "NO_IDX_ALL_ROWS"],
         "symbols_partial_gap": [x.symbol for x in symbol_summaries if x.classification == "PARTIAL_GAP"],
         "symbols_old_schema_or_broken": [x.symbol for x in symbol_summaries if x.classification == "OLD_SCHEMA_OR_BROKEN"],
+        "symbols_pre_market_no_idx": [x.symbol for x in symbol_summaries if x.classification == BASELINE_POLICY_PRE_MARKET_NO_IDX],
         "top_missing_ratio": [asdict(x) for x in top_missing_ratio],
         "top_missing_rows": [asdict(x) for x in top_missing_rows],
     }
@@ -220,9 +260,17 @@ def main() -> None:
     symbols_filter = None
     if args.symbols.strip():
         symbols_filter = {x.strip().upper() for x in args.symbols.split(",") if x.strip()}
+    baseline = None
+    if args.audit_mode == "incremental":
+        if not args.baseline_file.strip():
+            raise SystemExit("--baseline-file is required when --audit-mode=incremental")
+        baseline = load_baseline(args.baseline_file)
+    elif args.baseline_file.strip() and os.path.exists(args.baseline_file):
+        baseline = load_baseline(args.baseline_file)
 
     symbol_dirs = list_symbol_dirs(args.data_dir, symbols_filter)
     shard_rows: List[ShardAuditRow] = []
+    skipped_no_new_rows = 0
 
     for symbol in symbol_dirs:
         sym_dir = os.path.join(args.data_dir, symbol)
@@ -231,8 +279,27 @@ def main() -> None:
             for fn in os.listdir(sym_dir)
             if fn.endswith(".parquet")
         )
+        baseline_entry = baseline_entry_for_symbol(baseline, symbol)
+        min_open_time_ms = None
+        last_contract_ms = None
+        if baseline_entry and baseline_entry.get("last_contract_open_time_ms") is not None:
+            last_contract_ms = int(baseline_entry["last_contract_open_time_ms"])
+            min_open_time_ms = max(0, last_contract_ms - INTERVAL_MS)
+
+        before_count = len(shard_rows)
+        new_rows_seen = 0
         for fp in files:
-            shard_rows.append(audit_shard(symbol, fp))
+            row = audit_shard(symbol, fp, min_open_time_ms=min_open_time_ms)
+            if row is None:
+                continue
+            shard_rows.append(row)
+            if last_contract_ms is None:
+                new_rows_seen += row.rows
+            else:
+                new_rows_seen += max(0, row.rows - 1)
+        if args.audit_mode == "incremental" and last_contract_ms is not None and len(shard_rows) > before_count and new_rows_seen <= 0:
+            shard_rows = shard_rows[:before_count]
+            skipped_no_new_rows += 1
 
     shard_df = pd.DataFrame([asdict(x) for x in shard_rows])
     ensure_parent(args.out_csv)
@@ -240,11 +307,15 @@ def main() -> None:
         shard_df = shard_df.sort_values(["symbol", "month"]).reset_index(drop=True)
     shard_df.to_csv(args.out_csv, index=False)
 
-    symbol_summaries = build_symbol_summaries(shard_rows)
+    symbol_summaries = build_symbol_summaries(shard_rows, baseline)
     summary = to_ms_records(symbol_summaries, args.top_n)
     summary["data_dir"] = args.data_dir
     summary["out_csv"] = args.out_csv
-    summary["symbols_audited"] = len(symbol_dirs)
+    summary["symbols_discovered"] = len(symbol_dirs)
+    summary["symbols_audited"] = len(symbol_summaries)
+    summary["symbols_skipped_no_new_rows"] = skipped_no_new_rows
+    summary["audit_mode"] = args.audit_mode
+    summary["baseline_file"] = args.baseline_file
 
     ensure_parent(args.summary_json)
     with open(args.summary_json, "w", encoding="utf-8") as f:
@@ -254,7 +325,11 @@ def main() -> None:
     print("idx 完整性审计完成")
     print("=" * 80)
     print(f"data_dir           : {args.data_dir}")
-    print(f"symbols_audited    : {len(symbol_dirs)}")
+    print(f"audit_mode         : {args.audit_mode}")
+    print(f"baseline_file      : {args.baseline_file or '(not set)'}")
+    print(f"symbols_discovered : {len(symbol_dirs)}")
+    print(f"symbols_audited    : {len(symbol_summaries)}")
+    print(f"symbols_skipped    : {skipped_no_new_rows}")
     print(f"per_shard_csv      : {args.out_csv}")
     print(f"summary_json       : {args.summary_json}")
     print(f"total_rows         : {summary['total_rows']}")
