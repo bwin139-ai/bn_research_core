@@ -120,16 +120,16 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 # *** 1. 先运行 合约价 sync ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
-  --limit 1500 \
-  --sleep-ms 2000 \
+  --limit 1000 \
+  --sleep-ms 3000 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
-  --days 5 \
-  --limit 1500 \
-  --sleep-ms 2000 \
+  --days 2 \
+  --limit 1000 \
+  --sleep-ms 10000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 
