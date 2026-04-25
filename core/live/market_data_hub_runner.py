@@ -15,13 +15,14 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from core.live.audit_log import write_event
+from core.live.audit_log import append_stage_record, write_event
 from core.live.market_data import (
     list_candidate_symbols,
     read_hub_owned_1m_rollsum_market_view,
     refresh_hub_owned_1m_rollsum_for_symbols,
 )
 from core.live.market_data_hub_store import read_current_snapshot, write_current_pickle, write_current_snapshot
+from core.message_bridge import send_to_bot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
     build_market_snapshot_via_hub,
@@ -31,6 +32,10 @@ from core.live.market_data_hub import (
 BJ = timezone(timedelta(hours=8))
 _HUB_OWNED_1M_ROLLSUM_REFRESH_PROGRESS_SNAPSHOT = 'rollsum_refresh_progress'
 _BINANCE_BAN_UNTIL_RE = re.compile(r'banned until (\d{10,})', re.IGNORECASE)
+_MARKET_TOTAL_24H_VOL_STATS_WINDOW = 30
+_MARKET_TOTAL_24H_VOL_ROLLING: dict[str, list[dict[str, Any]]] = {}
+_FINALIZE_QUALITY_STATS_WINDOW = 30
+_FINALIZE_QUALITY_ROLLING: dict[str, list[dict[str, Any]]] = {}
 
 
 def _load_rollsum_refresh_start_idx(account: str) -> int:
@@ -234,6 +239,7 @@ def _load_hub_config(path: str) -> dict[str, Any]:
         'enabled': _require_bool(data, path, 'enabled'),
         'account': _require_non_empty_str(data, path, 'account'),
         'audit_enabled': _require_bool(data, path, 'audit_enabled'),
+        'notify_enabled': _require_bool(data, path, 'notify_enabled'),
         'history_window_mins': _require_positive_int(data, path, 'history_window_mins'),
         'publish_config_snapshot': _require_bool(data, path, 'publish_config_snapshot'),
         'min_24h_quote_volume': _require_non_negative_float(data, path, 'min_24h_quote_volume'),
@@ -246,6 +252,243 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _json_default(v: Any) -> Any:
+    if hasattr(v, 'item'):
+        return v.item()
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, Path):
+        return str(v)
+    if isinstance(v, set):
+        return sorted(v)
+    if isinstance(v, tuple):
+        return list(v)
+    return str(v)
+
+
+def _json_safe_dumps(data: Any, *, sort_keys: bool = False, separators: tuple[str, str] | None = None) -> str:
+    kwargs: dict[str, Any] = {
+        'ensure_ascii': False,
+        'default': _json_default,
+    }
+    if sort_keys:
+        kwargs['sort_keys'] = True
+    if separators is not None:
+        kwargs['separators'] = separators
+    return json.dumps(data, **kwargs)
+
+
+def _notify(enabled: bool, message: str, label: str = 'snapback') -> None:
+    if enabled:
+        send_to_bot(message, label=label)
+
+
+def _write_stage_record(account: str, stage: str, payload: dict[str, Any]) -> Path:
+    return append_stage_record(account, stage, payload)
+
+
+def _record_market_total_24h_vol_sample(
+    account: str,
+    *,
+    notify_enabled: bool,
+    audit_enabled: bool,
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    market_total_24h_vol: float,
+    market_total_24h_symbol_count: int,
+    market_total_24h_vol_api: float | None,
+    market_total_24h_symbol_count_api: int | None,
+) -> None:
+    account_key = str(account).strip() or 'unknown'
+    sample = {
+        'bar_ts': int(current_time_ms),
+        'bar_bj': str(current_time_bj),
+        'c_bar_ts': int(c_bar_ts),
+        'c_bar_bj': str(c_bar_bj),
+        'market_total_24h_vol': float(market_total_24h_vol),
+        'market_total_24h_symbol_count': int(market_total_24h_symbol_count),
+        'market_total_24h_vol_api': float(market_total_24h_vol_api) if market_total_24h_vol_api is not None else None,
+        'market_total_24h_symbol_count_api': int(market_total_24h_symbol_count_api) if market_total_24h_symbol_count_api is not None else None,
+    }
+    bucket = _MARKET_TOTAL_24H_VOL_ROLLING.setdefault(account_key, [])
+    bucket.append(sample)
+    if len(bucket) < _MARKET_TOTAL_24H_VOL_STATS_WINDOW:
+        return
+
+    window = bucket[:_MARKET_TOTAL_24H_VOL_STATS_WINDOW]
+    del bucket[:_MARKET_TOTAL_24H_VOL_STATS_WINDOW]
+
+    values = [float(x['market_total_24h_vol']) for x in window]
+    min_value = min(values)
+    max_value = max(values)
+    avg_value = sum(values) / float(len(values))
+    api_values = [float(x['market_total_24h_vol_api']) for x in window if x.get('market_total_24h_vol_api') is not None]
+    min_value_api = min(api_values) if api_values else None
+    max_value_api = max(api_values) if api_values else None
+    avg_value_api = (sum(api_values) / float(len(api_values))) if api_values else None
+    payload = {
+        'account': account_key,
+        'window_rounds': int(len(window)),
+        'first_bar_ts': int(window[0]['bar_ts']),
+        'first_bar_bj': str(window[0]['bar_bj']),
+        'last_bar_ts': int(window[-1]['bar_ts']),
+        'last_bar_bj': str(window[-1]['bar_bj']),
+        'first_c_bar_ts': int(window[0]['c_bar_ts']),
+        'first_c_bar_bj': str(window[0]['c_bar_bj']),
+        'last_c_bar_ts': int(window[-1]['c_bar_ts']),
+        'last_c_bar_bj': str(window[-1]['c_bar_bj']),
+        'market_total_24h_vol_min_observed': float(min_value),
+        'market_total_24h_vol_max_observed': float(max_value),
+        'market_total_24h_vol_avg_observed': float(avg_value),
+        'market_total_24h_vol_min_api_observed': float(min_value_api) if min_value_api is not None else None,
+        'market_total_24h_vol_max_api_observed': float(max_value_api) if max_value_api is not None else None,
+        'market_total_24h_vol_avg_api_observed': float(avg_value_api) if avg_value_api is not None else None,
+        'market_total_24h_symbol_count_min_observed': int(min(int(x['market_total_24h_symbol_count']) for x in window)),
+        'market_total_24h_symbol_count_max_observed': int(max(int(x['market_total_24h_symbol_count']) for x in window)),
+        'market_total_24h_symbol_count_min_api_observed': int(min(int(x['market_total_24h_symbol_count_api']) for x in window if x.get('market_total_24h_symbol_count_api') is not None)) if any(x.get('market_total_24h_symbol_count_api') is not None for x in window) else None,
+        'market_total_24h_symbol_count_max_api_observed': int(max(int(x['market_total_24h_symbol_count_api']) for x in window if x.get('market_total_24h_symbol_count_api') is not None)) if any(x.get('market_total_24h_symbol_count_api') is not None for x in window) else None,
+    }
+
+    if audit_enabled:
+        _write_stage_record(account_key, 'market_total_24h_vol_stats', payload)
+
+    body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
+    logging.info('[market_total_24h_vol_stats] %s', body)
+
+    msg = (
+        f'[DataHub] market_total_24h_vol 30轮统计 | account={account_key} | '
+        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
+        f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f}'
+    )
+    if min_value_api is not None and max_value_api is not None and avg_value_api is not None:
+        msg += (
+            f' | api_min={min_value_api:.2f}'
+            f' | api_max={max_value_api:.2f}'
+            f' | api_avg={avg_value_api:.2f}'
+        )
+    _notify(bool(notify_enabled), msg)
+
+
+def _record_finalize_quality_sample(
+    account: str,
+    *,
+    notify_enabled: bool,
+    audit_enabled: bool,
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    candidate_symbol_count_before_finalize: int,
+    candidate_symbol_count_after_finalize: int,
+    finalize_removed_symbol_count: int,
+    finalize_summary: dict[str, Any],
+) -> None:
+    account_key = str(account).strip() or 'unknown'
+    sample = {
+        'bar_ts': int(current_time_ms),
+        'bar_bj': str(current_time_bj),
+        'c_bar_ts': int(c_bar_ts),
+        'c_bar_bj': str(c_bar_bj),
+        'candidate_symbol_count_before_finalize': int(candidate_symbol_count_before_finalize),
+        'candidate_symbol_count_after_finalize': int(candidate_symbol_count_after_finalize),
+        'finalize_removed_symbol_count': int(finalize_removed_symbol_count),
+        'finalize_rounds': int(finalize_summary.get('finalize_rounds') or 0),
+        'deadline_hit': bool(finalize_summary.get('deadline_hit')),
+        'all_passed': bool(finalize_summary.get('all_passed')),
+        'all_passed_elapsed_ms': (
+            int(finalize_summary.get('all_passed_elapsed_ms'))
+            if finalize_summary.get('all_passed_elapsed_ms') is not None
+            else None
+        ),
+        'timeout_not_finalized_count': int(finalize_summary.get('timeout_not_finalized_count') or 0),
+        'verify_failed_count': int(finalize_summary.get('verify_failed_count') or 0),
+        'delayed_finalize_count': int(finalize_summary.get('delayed_finalize_count') or 0),
+        'passed_count': int(finalize_summary.get('passed_count') or 0),
+    }
+    bucket = _FINALIZE_QUALITY_ROLLING.setdefault(account_key, [])
+    bucket.append(sample)
+    if len(bucket) < _FINALIZE_QUALITY_STATS_WINDOW:
+        return
+
+    window = bucket[:_FINALIZE_QUALITY_STATS_WINDOW]
+    del bucket[:_FINALIZE_QUALITY_STATS_WINDOW]
+
+    elapsed_values = [int(x['all_passed_elapsed_ms']) for x in window if x.get('all_passed_elapsed_ms') is not None]
+    before_values = [int(x['candidate_symbol_count_before_finalize']) for x in window]
+    after_values = [int(x['candidate_symbol_count_after_finalize']) for x in window]
+    removed_values = [int(x['finalize_removed_symbol_count']) for x in window]
+    timeout_values = [int(x['timeout_not_finalized_count']) for x in window]
+    verify_failed_values = [int(x['verify_failed_count']) for x in window]
+    delayed_values = [int(x['delayed_finalize_count']) for x in window]
+    rounds_values = [int(x['finalize_rounds']) for x in window]
+    passed_values = [int(x['passed_count']) for x in window]
+    all_passed_count = sum(1 for x in window if bool(x.get('all_passed')))
+    deadline_hit_count = sum(1 for x in window if bool(x.get('deadline_hit')))
+    timeout_round_count = sum(1 for x in window if int(x.get('timeout_not_finalized_count') or 0) > 0)
+
+    payload = {
+        'account': account_key,
+        'window_rounds': int(len(window)),
+        'first_bar_ts': int(window[0]['bar_ts']),
+        'first_bar_bj': str(window[0]['bar_bj']),
+        'last_bar_ts': int(window[-1]['bar_ts']),
+        'last_bar_bj': str(window[-1]['bar_bj']),
+        'first_c_bar_ts': int(window[0]['c_bar_ts']),
+        'first_c_bar_bj': str(window[0]['c_bar_bj']),
+        'last_c_bar_ts': int(window[-1]['c_bar_ts']),
+        'last_c_bar_bj': str(window[-1]['c_bar_bj']),
+        'all_passed_count': int(all_passed_count),
+        'deadline_hit_count': int(deadline_hit_count),
+        'timeout_round_count': int(timeout_round_count),
+        'timeout_not_finalized_count_max': int(max(timeout_values)) if timeout_values else 0,
+        'verify_failed_count_max': int(max(verify_failed_values)) if verify_failed_values else 0,
+        'delayed_finalize_count_max': int(max(delayed_values)) if delayed_values else 0,
+        'candidate_symbol_count_before_finalize_avg': float(sum(before_values) / float(len(before_values))) if before_values else None,
+        'candidate_symbol_count_after_finalize_avg': float(sum(after_values) / float(len(after_values))) if after_values else None,
+        'finalize_removed_symbol_count_avg': float(sum(removed_values) / float(len(removed_values))) if removed_values else None,
+        'finalize_removed_symbol_count_max': int(max(removed_values)) if removed_values else 0,
+        'finalize_rounds_avg': float(sum(rounds_values) / float(len(rounds_values))) if rounds_values else None,
+        'passed_count_avg': float(sum(passed_values) / float(len(passed_values))) if passed_values else None,
+        'all_passed_elapsed_ms_min': int(min(elapsed_values)) if elapsed_values else None,
+        'all_passed_elapsed_ms_max': int(max(elapsed_values)) if elapsed_values else None,
+        'all_passed_elapsed_ms_avg': float(sum(elapsed_values) / float(len(elapsed_values))) if elapsed_values else None,
+    }
+
+    if audit_enabled:
+        _write_stage_record(account_key, 'finalize_quality_stats', payload)
+
+    body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
+    logging.info('[finalize_quality_stats] %s', body)
+
+    msg = (
+        f'[DataHub] finalize 30轮统计 | account={account_key} | '
+        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
+        f'all_passed={all_passed_count}/{len(window)} | '
+        f'deadline_hit={deadline_hit_count} | '
+        f'timeout_rounds={timeout_round_count}'
+    )
+    if payload['all_passed_elapsed_ms_min'] is not None:
+        msg += (
+            f' | elapsed_ms(min/max/avg)='
+            f'{int(payload["all_passed_elapsed_ms_min"])}/'
+            f'{int(payload["all_passed_elapsed_ms_max"])}/'
+            f'{float(payload["all_passed_elapsed_ms_avg"]):.1f}'
+        )
+    if payload['candidate_symbol_count_before_finalize_avg'] is not None and payload['candidate_symbol_count_after_finalize_avg'] is not None:
+        msg += (
+            f' | candidates_avg='
+            f'{float(payload["candidate_symbol_count_before_finalize_avg"]):.1f}'
+            f'->{float(payload["candidate_symbol_count_after_finalize_avg"]):.1f}'
+        )
+    msg += (
+        f' | removed_max={int(payload["finalize_removed_symbol_count_max"])}'
+        f' | timeout_max={int(payload["timeout_not_finalized_count_max"])}'
+    )
+    _notify(bool(notify_enabled), msg)
 
 
 def _write_empty_hub_inputs_snapshot(
@@ -321,6 +564,7 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
 def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     account = str(hub_cfg['account']).strip()
     audit_enabled = bool(hub_cfg['audit_enabled'])
+    notify_enabled = bool(hub_cfg['notify_enabled'])
     history_window_mins = int(hub_cfg['history_window_mins'])
     min_24h_quote_volume = float(hub_cfg['min_24h_quote_volume'])
     exclude_symbols = list(hub_cfg['exclude_symbols'])
@@ -415,6 +659,30 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(rollsum_view.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(rollsum_view.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(rollsum_view.get('market_total_24h_vol_status') or '')
+    try:
+        _record_market_total_24h_vol_sample(
+            account,
+            notify_enabled=notify_enabled,
+            audit_enabled=audit_enabled,
+            current_time_ms=signal_time_ts,
+            current_time_bj=signal_time_bj,
+            c_bar_ts=latest_closed_bar_ts,
+            c_bar_bj=latest_closed_bar_bj,
+            market_total_24h_vol=market_total_24h_vol_1m_rollsum,
+            market_total_24h_symbol_count=market_total_24h_symbol_count_1m_rollsum,
+            market_total_24h_vol_api=(
+                float(market_snapshot.get('market_total_24h_vol_api'))
+                if market_snapshot.get('market_total_24h_vol_api') is not None
+                else None
+            ),
+            market_total_24h_symbol_count_api=(
+                int(market_snapshot.get('market_total_24h_symbol_count_api'))
+                if market_snapshot.get('market_total_24h_symbol_count_api') is not None
+                else None
+            ),
+        )
+    except Exception as e:
+        logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
         reason = 'hub_owned_1m_rollsum_regressed_not_ready'
         write_event(account, reason, {
@@ -529,7 +797,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         })
         return
 
-    finalize_candidate_payload_via_hub(
+    finalized_payload = finalize_candidate_payload_via_hub(
         account,
         candidate_payload,
         history_window_mins=history_window_mins,
@@ -542,6 +810,27 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=dict(market_snapshot['ticker_map']),
     )
+    try:
+        candidate_symbol_count_before_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
+        candidate_symbol_count_after_finalize = int((finalized_payload or {}).get('symbol_count') or 0)
+        finalize_removed_symbol_count = max(0, candidate_symbol_count_before_finalize - candidate_symbol_count_after_finalize)
+        finalize_summary = dict((finalized_payload or {}).get('finalize_summary') or {})
+        if finalize_summary:
+            _record_finalize_quality_sample(
+                account,
+                notify_enabled=notify_enabled,
+                audit_enabled=audit_enabled,
+                current_time_ms=int((finalized_payload or {}).get('signal_time_ts') or signal_time_ts),
+                current_time_bj=str((finalized_payload or {}).get('signal_time_bj') or signal_time_bj),
+                c_bar_ts=int((finalized_payload or {}).get('latest_closed_bar_ts') or latest_closed_bar_ts),
+                c_bar_bj=str((finalized_payload or {}).get('latest_closed_bar_bj') or latest_closed_bar_bj),
+                candidate_symbol_count_before_finalize=candidate_symbol_count_before_finalize,
+                candidate_symbol_count_after_finalize=candidate_symbol_count_after_finalize,
+                finalize_removed_symbol_count=finalize_removed_symbol_count,
+                finalize_summary=finalize_summary,
+            )
+    except Exception as e:
+        logging.warning('[finalize_quality_stats] record_failed | account=%s | reason=%s', account, e)
 
     if not rollsum_refreshed_this_round:
         _refresh_rollsum_batch(

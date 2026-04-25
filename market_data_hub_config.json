@@ -2,6 +2,7 @@
   "enabled": true,
   "account": "mybwin139",
   "audit_enabled": true,
+  "notify_enabled": true,
   "history_window_mins": 180,
   "publish_config_snapshot": true,
   "min_24h_quote_volume": 40000000,

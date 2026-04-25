@@ -339,8 +339,7 @@ def _record_market_total_24h_vol_sample(
     msg = (
         f'[Snapback-Live] market_total_24h_vol 30轮统计 | account={account_key} | '
         f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
-        f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f} | '
-        f'config_min={float(market_total_24h_vol_min):.2f}'
+        f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f}'
     )
     if min_value_api is not None and max_value_api is not None and avg_value_api is not None:
         msg += (
@@ -1853,32 +1852,6 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     current_time_ms = int(market_snapshot.get('signal_time_ts') or (c_bar_ts + 60000))
     current_time_bj = str(market_snapshot.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
 
-    try:
-        _record_market_total_24h_vol_sample(
-            account,
-            notify_enabled=notify_enabled,
-            audit_enabled=audit_enabled,
-            current_time_ms=current_time_ms,
-            current_time_bj=current_time_bj,
-            c_bar_ts=c_bar_ts,
-            c_bar_bj=c_bar_bj,
-            market_total_24h_vol=market_total_24h_vol_snapshot,
-            market_total_24h_vol_min=market_total_24h_vol_min,
-            market_total_24h_symbol_count=market_total_24h_symbol_count_snapshot,
-            market_total_24h_vol_api=(
-                float(market_snapshot.get('market_total_24h_vol_api'))
-                if market_snapshot.get('market_total_24h_vol_api') is not None
-                else None
-            ),
-            market_total_24h_symbol_count_api=(
-                int(market_snapshot.get('market_total_24h_symbol_count_api'))
-                if market_snapshot.get('market_total_24h_symbol_count_api') is not None
-                else None
-            ),
-        )
-    except Exception as e:
-        logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
-
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
         if audit_enabled:
             write_event(account, 'market_total_24h_vol_not_ready_skip', {
@@ -2052,24 +2025,6 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'all_passed_elapsed_ms': (finalize_summary or {}).get('all_passed_elapsed_ms'),
             **finalize_summary,
         })
-    if finalize_summary is not None:
-        try:
-            _record_finalize_quality_sample(
-                account,
-                notify_enabled=notify_enabled,
-                audit_enabled=audit_enabled,
-                current_time_ms=current_time_ms,
-                current_time_bj=current_time_bj,
-                c_bar_ts=c_bar_ts,
-                c_bar_bj=c_bar_bj,
-                candidate_symbol_count_before_finalize=int(candidate_symbol_count_before_finalize or 0),
-                candidate_symbol_count_after_finalize=int(candidate_symbol_count_after_finalize or 0),
-                finalize_removed_symbol_count=int(finalize_removed_symbol_count or 0),
-                finalize_summary=finalize_summary,
-            )
-        except Exception as e:
-            logging.warning('[finalize_quality_stats] record_failed | account=%s | reason=%s', account, e)
-
     timing_fields = {
         'loop_started_utc_ms': loop_started_utc_ms,
         'loop_started_bj': loop_started_bj,
