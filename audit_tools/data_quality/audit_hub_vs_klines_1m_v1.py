@@ -32,6 +32,8 @@ FIELD_GROUPS = {
     "contract": ["open", "high", "low", "close", "quote_asset_volume"],
     "index": ["high_idx", "low_idx", "close_idx"],
 }
+DEFAULT_CONTRACT_LIMIT = 1441
+DEFAULT_INDEX_LIMIT = 180
 
 
 def fmt_bj(ts_ms: int | None) -> str | None:
@@ -164,6 +166,17 @@ def load_local_rows(data_dir: Path, symbol: str, min_ts: int, max_ts: int) -> tu
     return out, missing_months
 
 
+def _full_window_present(df: pd.DataFrame, columns: list[str]) -> pd.Series:
+    if df.empty:
+        return pd.Series([], dtype=bool)
+    present = pd.Series(True, index=df.index)
+    for col in columns:
+        if col not in df.columns:
+            return pd.Series(False, index=df.index)
+        present &= pd.notna(pd.to_numeric(df[col], errors="coerce"))
+    return present
+
+
 @dataclass
 class CompareResult:
     summary: dict[str, Any]
@@ -265,11 +278,15 @@ def compare_symbol(
     max_abs_by_field: dict[str, float] = {}
     mismatch_count_by_field: dict[str, int] = {}
     compared_bar_count = 0
+    contract_compared_bar_count = 0
+    idx_compared_bar_count = 0
 
     both = merged[merged["_merge"] == "both"].copy()
     if not both.empty:
-        compared_bar_count = int(len(both))
-        for field in FIELD_GROUPS["contract"] + FIELD_GROUPS["index"]:
+        contract_compared_bar_count = int(len(both))
+        compared_bar_count = contract_compared_bar_count
+
+        for field in FIELD_GROUPS["contract"]:
             hub_col = f"{field}_hub"
             local_col = f"{field}_local"
             if hub_col not in both.columns or local_col not in both.columns:
@@ -305,6 +322,44 @@ def compare_symbol(
                     }
                 )
 
+        hub_idx_present = _full_window_present(both, [f"{field}_hub" for field in FIELD_GROUPS["index"]])
+        local_idx_present = _full_window_present(both, [f"{field}_local" for field in FIELD_GROUPS["index"]])
+        idx_both = both.loc[hub_idx_present & local_idx_present].copy()
+        idx_compared_bar_count = int(len(idx_both))
+        compared_bar_count = max(contract_compared_bar_count, idx_compared_bar_count)
+
+        if not idx_both.empty:
+            for field in FIELD_GROUPS["index"]:
+                hub_col = f"{field}_hub"
+                local_col = f"{field}_local"
+                if hub_col not in idx_both.columns or local_col not in idx_both.columns:
+                    continue
+
+                hub_s = pd.to_numeric(idx_both[hub_col], errors="coerce")
+                local_s = pd.to_numeric(idx_both[local_col], errors="coerce")
+                diff_s = (hub_s - local_s).abs()
+                mismatch_mask = (
+                    (hub_s.isna() ^ local_s.isna())
+                    | ((hub_s.notna()) & (local_s.notna()) & (diff_s > tolerance_price))
+                )
+                mismatch_rows = idx_both.loc[mismatch_mask, ["open_time_ms", hub_col, local_col]]
+                mismatch_count_by_field[field] = int(len(mismatch_rows))
+                if diff_s.notna().any():
+                    max_abs_by_field[field] = float(diff_s.max())
+
+                for _, row in mismatch_rows.iterrows():
+                    diffs.append(
+                        {
+                            "symbol": symbol,
+                            "open_time_ms": int(row["open_time_ms"]),
+                            "open_time_bj": fmt_bj(int(row["open_time_ms"])),
+                            "field": field,
+                            "hub_value": None if pd.isna(row[hub_col]) else float(row[hub_col]),
+                            "local_value": None if pd.isna(row[local_col]) else float(row[local_col]),
+                            "abs_diff": None if pd.isna(row[hub_col]) or pd.isna(row[local_col]) else abs(float(row[hub_col]) - float(row[local_col])),
+                        }
+                    )
+
     for ts in missing_in_local:
         diffs.append({
             "symbol": symbol,
@@ -336,6 +391,8 @@ def compare_symbol(
         "hub_overlap_bar_count": int(len(hub_overlap)),
         "local_overlap_bar_count": int(len(local_overlap)),
         "compared_bar_count": int(compared_bar_count),
+        "contract_compared_bar_count": int(contract_compared_bar_count),
+        "idx_compared_bar_count": int(idx_compared_bar_count),
         "hub_latest_bar_ts": hub_max_ts,
         "hub_latest_bar_bj": fmt_bj(hub_max_ts),
         "local_latest_bar_ts": local_latest_bar_ts,
@@ -361,8 +418,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--project-root", default=".", help="repo root")
     ap.add_argument("--symbols", default="", help="comma-separated symbols")
     ap.add_argument("--use-finalized-symbols", action="store_true", help="use current finalized passed_symbols")
-    ap.add_argument("--contract-limit", type=int, default=180, help="hub shared contract cache limit")
-    ap.add_argument("--index-limit", type=int, default=180, help="hub shared index cache limit")
+    ap.add_argument("--contract-limit", type=int, default=DEFAULT_CONTRACT_LIMIT, help="hub shared contract cache limit")
+    ap.add_argument("--index-limit", type=int, default=DEFAULT_INDEX_LIMIT, help="hub shared index cache limit")
     ap.add_argument("--tolerance-price", type=float, default=1e-9)
     ap.add_argument("--tolerance-volume", type=float, default=1e-6)
     ap.add_argument(
