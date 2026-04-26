@@ -236,6 +236,13 @@ def _candidate_audit_path(base_dir: str, run_id: str) -> str:
     return os.path.join(base_dir, 'snapback_candidate_pool_audit.jsonl')
 
 
+def _spring_decision_audit_path(base_dir: str, run_id: str) -> str:
+    rid = str(run_id or "").strip()
+    if rid:
+        return os.path.join(base_dir, f"spring_decision_audit.{rid}.jsonl")
+    return os.path.join(base_dir, "spring_decision_audit.jsonl")
+
+
 def _patch_candidate_pool_audit_writer(strategy: Any, audit_path: str) -> None:
     target_path = Path(audit_path)
 
@@ -691,9 +698,127 @@ def main():
             out.append(rec)
         return out
 
+    spring_decision_audit_path = None
+
+    def _spring_audit_compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+        keep = [
+            "symbol",
+            "score_order",
+            "score",
+            "chg_24h",
+            "vol_24h",
+            "a_time_ms",
+            "b_time_ms",
+            "c_time_ms",
+            "gamma_time_ms",
+            "a_close",
+            "a_high",
+            "b_close",
+            "b_low",
+            "c_close",
+            "ab_bars",
+            "bc_bars",
+            "ab_chg_pct",
+            "rebound_ratio",
+            "bc_over_ab_bars",
+            "vol_ratio",
+            "vol_gamma_a",
+            "vol_ac",
+            "gamma_ac_vol_ratio",
+            "risk_pct",
+            "stop_loss_price",
+            "signal_fail_reason",
+            "signal_emit",
+            "fail_reason",
+        ]
+        return {k: _json_safe(candidate.get(k)) for k in keep if k in candidate}
+
+    def _write_spring_decision_audit_row(
+        strategy: Any,
+        current_time_ms: int,
+        cross_section: Any,
+        active_symbols: set[str],
+        signal: Optional[Dict[str, Any]],
+    ) -> None:
+        if not spring_decision_audit_path:
+            return
+
+        universe_candidates = list(getattr(strategy, "_last_universe_candidates", []) or [])
+        structure_candidates = list(getattr(strategy, "_last_structure_candidates", []) or [])
+        universe_audits = dict(getattr(strategy, "_last_universe_audits", {}) or {})
+        structure_audits = dict(getattr(strategy, "_last_structure_audits", {}) or {})
+
+        if not universe_candidates and not structure_candidates and not signal:
+            return
+
+        selected_symbols: List[str] = []
+        for item in universe_candidates:
+            sym = str(item.get("symbol") or "").upper().strip()
+            if sym and sym not in selected_symbols:
+                selected_symbols.append(sym)
+        for item in structure_candidates:
+            sym = str(item.get("symbol") or "").upper().strip()
+            if sym and sym not in selected_symbols:
+                selected_symbols.append(sym)
+        emitted_symbol = str((signal or {}).get("symbol") or "").upper().strip()
+        if emitted_symbol and emitted_symbol not in selected_symbols:
+            selected_symbols.append(emitted_symbol)
+
+        selected_audits: List[Dict[str, Any]] = []
+        for sym in selected_symbols:
+            rec = structure_audits.get(sym) or universe_audits.get(sym)
+            if rec:
+                selected_audits.append(_json_safe(rec))
+
+        selected_cross_rows: Dict[str, Any] = {}
+        cs = cross_section if isinstance(cross_section, pd.DataFrame) else pd.DataFrame()
+        if not cs.empty:
+            try:
+                cs.index = [str(sym).upper().strip() for sym in cs.index]
+            except Exception:
+                pass
+            for sym in selected_symbols:
+                if sym in cs.index:
+                    selected_cross_rows[sym] = _series_snapshot(cs.loc[sym])
+
+        signal_digest = None
+        if signal:
+            signal_digest = {
+                "symbol": emitted_symbol or None,
+                "signal_time": _json_safe(signal.get("signal_time")),
+                "signal_time_bj": _json_safe(signal.get("signal_time_bj")),
+                "current_price": _json_safe(signal.get("current_price")),
+                "tp_price": _json_safe(signal.get("tp_price")),
+                "sl_price": _json_safe(signal.get("sl_price")),
+                "params": _json_safe(signal.get("params")),
+            }
+
+        payload = {
+            "run_id": args.run_id,
+            "strategy": args.strategy,
+            "bar_ts": int(current_time_ms),
+            "bar_bj": _bj_from_ms(int(current_time_ms)),
+            "cross_section_symbol_count": int(len(cs.index)) if isinstance(cs, pd.DataFrame) else 0,
+            "active_symbols": sorted(str(sym).upper().strip() for sym in (active_symbols or set()) if str(sym).strip()),
+            "universe_candidate_count": len(universe_candidates),
+            "structure_candidate_count": len(structure_candidates),
+            "selected_symbols": selected_symbols,
+            "universe_candidates": [_spring_audit_compact_candidate(x) for x in universe_candidates],
+            "structure_candidates": [_spring_audit_compact_candidate(x) for x in structure_candidates],
+            "selected_candidate_audits": selected_audits,
+            "selected_cross_rows": selected_cross_rows,
+            "signal": signal_digest,
+        }
+        with open(spring_decision_audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, cls=NumpyEncoder) + "\n")
+
     # 初始化目录和日志
     out_dir = os.path.join(PROJECT_ROOT, args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    if args.strategy == "spring-sabc":
+        spring_decision_audit_path = _spring_decision_audit_path(out_dir, args.run_id)
+        Path(spring_decision_audit_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(spring_decision_audit_path).write_text("", encoding="utf-8")
     if audit_enabled:
         audit_dir = os.path.join(PROJECT_ROOT, args.audit_out_dir) if str(args.audit_out_dir or "").strip() else out_dir
         os.makedirs(audit_dir, exist_ok=True)
@@ -819,6 +944,14 @@ def main():
         signal = strategy.on_kline_close(
             ts, cross_section, active_symbols, full_df=df_dict
         )
+        if args.strategy == "spring-sabc":
+            _write_spring_decision_audit_row(
+                strategy,
+                ts,
+                cross_section,
+                active_symbols,
+                signal,
+            )
 
         structure_audit_map = {}
         if audit_enabled and hasattr(strategy, "audit_symbols_at_kline_close"):

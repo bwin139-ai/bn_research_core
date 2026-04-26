@@ -377,12 +377,27 @@ class SpringSABCStrategy:
             if "high" in pattern_df.columns
             else list(close_values)
         )
+        open_values = (
+            [float(x) for x in pd.to_numeric(pattern_df["open"], errors="coerce").tolist()]
+            if "open" in pattern_df.columns
+            else list(close_values)
+        )
         low_values = (
             [float(x) for x in pd.to_numeric(pattern_df["low"], errors="coerce").tolist()]
             if "low" in pattern_df.columns
             else list(close_values)
         )
         vol_values = [float(x) for x in vols.tolist()]
+        quote_vol_values = (
+            [float(x) for x in pd.to_numeric(pattern_df["quote_asset_volume"], errors="coerce").fillna(0.0).tolist()]
+            if "quote_asset_volume" in pattern_df.columns
+            else []
+        )
+        base_vol_values = (
+            [float(x) for x in pd.to_numeric(pattern_df["volume"], errors="coerce").fillna(0.0).tolist()]
+            if "volume" in pattern_df.columns
+            else []
+        )
         time_values = [int(x) for x in pattern_df.index.tolist()]
         c_close = close_values[c_idx]
         c_time_ms = time_values[c_idx]
@@ -482,10 +497,51 @@ class SpringSABCStrategy:
             if gamma_ac_vol_ratio < self.gamma_ac_vol_ratio_min:
                 continue
 
+            pre_slice_end = a_idx + 1
+            pre_start_close = close_values[0] if pre_slice_end > 0 else None
+            pre_end_close = close_values[a_idx] if pre_slice_end > 0 else None
+            pre_high = max(high_values[:pre_slice_end]) if pre_slice_end > 0 else None
+            pre_low = min(low_values[:pre_slice_end]) if pre_slice_end > 0 else None
+            pre_chg_pct = (
+                (float(pre_end_close) / float(pre_start_close)) - 1.0
+                if pre_start_close is not None and pre_end_close is not None and pre_start_close > 0
+                else None
+            )
+            pre_range_pct = (
+                (float(pre_high) / float(pre_low)) - 1.0
+                if pre_high is not None and pre_low is not None and pre_low > 0
+                else None
+            )
+            pre_high_to_a_close_pct = (
+                (float(pre_high) / float(a_close)) - 1.0
+                if pre_high is not None and a_close > 0
+                else None
+            )
+            pre_a_close_pos_in_range = (
+                (float(a_close) - float(pre_low)) / (float(pre_high) - float(pre_low))
+                if pre_high is not None and pre_low is not None and pre_high > pre_low
+                else None
+            )
+            pre_a_high_pos_in_range = (
+                (float(high_values[a_idx]) - float(pre_low)) / (float(pre_high) - float(pre_low))
+                if pre_high is not None and pre_low is not None and pre_high > pre_low
+                else None
+            )
+            pre_up_bars = sum(
+                1 for open_value, close_value in zip(open_values[:pre_slice_end], close_values[:pre_slice_end]) if close_value > open_value
+            )
+            pre_down_bars = sum(
+                1 for open_value, close_value in zip(open_values[:pre_slice_end], close_values[:pre_slice_end]) if close_value < open_value
+            )
+            pre_flat_bars = max(0, int(pre_slice_end) - int(pre_up_bars) - int(pre_down_bars))
+            pre_quote_vol = float(sum(quote_vol_values[:pre_slice_end])) if quote_vol_values else None
+            pre_base_vol = float(sum(base_vol_values[:pre_slice_end])) if base_vol_values else None
+
             best = {
                 "a_idx": a_idx,
                 "b_idx": b_idx,
                 "c_idx": c_idx,
+                "s_time_ms": time_values[0],
                 "gamma_time_ms": hist_time_values[gamma_pos],
                 "a_time_ms": time_values[a_idx],
                 "b_time_ms": time_values[b_idx],
@@ -508,6 +564,24 @@ class SpringSABCStrategy:
                 "vol_ac": float(vol_ac),
                 "gamma_ac_vol_ratio": float(gamma_ac_vol_ratio),
                 "gamma_ac_vol_ratio_min": float(self.gamma_ac_vol_ratio_min),
+                "pre_a_bars": int(pre_slice_end),
+                "pre_a_start_close": float(pre_start_close) if pre_start_close is not None else None,
+                "pre_a_end_close": float(pre_end_close) if pre_end_close is not None else None,
+                "pre_a_high": float(pre_high) if pre_high is not None else None,
+                "pre_a_low": float(pre_low) if pre_low is not None else None,
+                "pre_a_chg_pct": float(pre_chg_pct) if pre_chg_pct is not None else None,
+                "pre_a_range_pct": float(pre_range_pct) if pre_range_pct is not None else None,
+                "pre_a_high_to_a_close_pct": float(pre_high_to_a_close_pct) if pre_high_to_a_close_pct is not None else None,
+                "pre_a_close_pos_in_range": float(pre_a_close_pos_in_range) if pre_a_close_pos_in_range is not None else None,
+                "pre_a_high_pos_in_range": float(pre_a_high_pos_in_range) if pre_a_high_pos_in_range is not None else None,
+                "pre_a_quote_vol": float(pre_quote_vol) if pre_quote_vol is not None else None,
+                "pre_a_base_vol": float(pre_base_vol) if pre_base_vol is not None else None,
+                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(pre_slice_end)) if pre_quote_vol is not None and pre_slice_end > 0 else None,
+                "pre_a_up_bars": int(pre_up_bars),
+                "pre_a_down_bars": int(pre_down_bars),
+                "pre_a_flat_bars": int(pre_flat_bars),
+                "pre_a_up_ratio": float(pre_up_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+                "pre_a_down_ratio": float(pre_down_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
                 "abc_selection_mode": "nearest_valid_b",
                 "b_scan_direction": "from_c_leftward",
                 "b_initial_filter": "c_close_gt_b_close",
@@ -680,6 +754,7 @@ class SpringSABCStrategy:
                     "score": int(candidate.get("score", 0)),
                     "chg_24h": float(candidate.get("chg_24h", 0.0)),
                     "vol_24h": float(candidate.get("vol_24h", 0.0)),
+                    "s_time_ms": int(candidate.get("s_time_ms", candidate["a_time_ms"])),
                     "a_time_ms": int(candidate["a_time_ms"]),
                     "b_time_ms": int(candidate["b_time_ms"]),
                     "gamma_time_ms": int(candidate["gamma_time_ms"]),
@@ -700,6 +775,24 @@ class SpringSABCStrategy:
                     "vol_ac": float(candidate["vol_ac"]),
                     "gamma_ac_vol_ratio": float(candidate["gamma_ac_vol_ratio"]),
                     "gamma_ac_vol_ratio_min": float(candidate["gamma_ac_vol_ratio_min"]),
+                    "pre_a_bars": int(candidate.get("pre_a_bars", 0)),
+                    "pre_a_start_close": candidate.get("pre_a_start_close"),
+                    "pre_a_end_close": candidate.get("pre_a_end_close"),
+                    "pre_a_high": candidate.get("pre_a_high"),
+                    "pre_a_low": candidate.get("pre_a_low"),
+                    "pre_a_chg_pct": candidate.get("pre_a_chg_pct"),
+                    "pre_a_range_pct": candidate.get("pre_a_range_pct"),
+                    "pre_a_high_to_a_close_pct": candidate.get("pre_a_high_to_a_close_pct"),
+                    "pre_a_close_pos_in_range": candidate.get("pre_a_close_pos_in_range"),
+                    "pre_a_high_pos_in_range": candidate.get("pre_a_high_pos_in_range"),
+                    "pre_a_quote_vol": candidate.get("pre_a_quote_vol"),
+                    "pre_a_base_vol": candidate.get("pre_a_base_vol"),
+                    "pre_a_avg_quote_vol_per_bar": candidate.get("pre_a_avg_quote_vol_per_bar"),
+                    "pre_a_up_bars": candidate.get("pre_a_up_bars"),
+                    "pre_a_down_bars": candidate.get("pre_a_down_bars"),
+                    "pre_a_flat_bars": candidate.get("pre_a_flat_bars"),
+                    "pre_a_up_ratio": candidate.get("pre_a_up_ratio"),
+                    "pre_a_down_ratio": candidate.get("pre_a_down_ratio"),
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),

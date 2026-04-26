@@ -161,6 +161,18 @@ def _bar_count_if(df: pd.DataFrame, expr: str) -> int:
     return int((c == o).sum())
 
 
+def _context_has_pre_a_features(trade: Dict[str, Any]) -> bool:
+    ctx = dict(trade.get("context") or {})
+    return (
+        _safe_int(ctx.get("s_time_ms"), None) is not None
+        and _safe_int(ctx.get("pre_a_bars"), None) is not None
+        and _safe_float(ctx.get("pre_a_start_close"), None) is not None
+        and _safe_float(ctx.get("pre_a_end_close"), None) is not None
+        and _safe_float(ctx.get("pre_a_high"), None) is not None
+        and _safe_float(ctx.get("pre_a_low"), None) is not None
+    )
+
+
 def _features_for_trade(trade: Dict[str, Any], symbol_df: pd.DataFrame) -> Dict[str, Any]:
     ctx = dict(trade.get("context") or {})
     symbol = str(trade.get("symbol") or "")
@@ -174,36 +186,65 @@ def _features_for_trade(trade: Dict[str, Any], symbol_df: pd.DataFrame) -> Dict[
     if a_time is None and signal_time is not None:
         # Fallback only for defensive auditing; normal Spring trades should have a_time_ms.
         a_time = signal_time - MINUTE_MS
-    s_time = (c_time - max(0, pattern_window_bars - 1) * MINUTE_MS) if c_time is not None else None
-    if s_time is None or a_time is None or symbol_df.empty:
-        pre = pd.DataFrame()
-    else:
-        pre = symbol_df[(symbol_df.index >= int(s_time)) & (symbol_df.index <= int(a_time))].copy()
-
-    first = pre.iloc[0] if not pre.empty else None
-    last = pre.iloc[-1] if not pre.empty else None
-    high = _safe_float(pd.to_numeric(pre["high"], errors="coerce").max(), None) if "high" in pre.columns and not pre.empty else None
-    low = _safe_float(pd.to_numeric(pre["low"], errors="coerce").min(), None) if "low" in pre.columns and not pre.empty else None
-    start_close = _safe_float(first.get("close"), None) if first is not None else None
-    end_close = _safe_float(last.get("close"), None) if last is not None else None
+    s_time = _safe_int(ctx.get("s_time_ms"), (c_time - max(0, pattern_window_bars - 1) * MINUTE_MS) if c_time is not None else None)
+    start_close = _safe_float(ctx.get("pre_a_start_close"), None)
+    end_close = _safe_float(ctx.get("pre_a_end_close"), None)
+    high = _safe_float(ctx.get("pre_a_high"), None)
+    low = _safe_float(ctx.get("pre_a_low"), None)
     a_close = _safe_float(ctx.get("a_close"), end_close)
     a_high = _safe_float(ctx.get("a_high"), None)
-    a_low = None
-    if a_time is not None and a_time in symbol_df.index and "low" in symbol_df.columns:
-        a_low = _safe_float(symbol_df.loc[a_time].get("low"), None)
+    pre_chg_pct = _safe_float(ctx.get("pre_a_chg_pct"), None)
+    pre_range_pct = _safe_float(ctx.get("pre_a_range_pct"), None)
+    pre_high_to_a_close_pct = _safe_float(ctx.get("pre_a_high_to_a_close_pct"), None)
+    pre_a_close_pos_in_range = _safe_float(ctx.get("pre_a_close_pos_in_range"), None)
+    pre_a_high_pos_in_range = _safe_float(ctx.get("pre_a_high_pos_in_range"), None)
+    quote_vol = _safe_float(ctx.get("pre_a_quote_vol"), None)
+    base_vol = _safe_float(ctx.get("pre_a_base_vol"), None)
+    bars = _safe_int(ctx.get("pre_a_bars"), 0) or 0
+    up_bars = _safe_int(ctx.get("pre_a_up_bars"), 0) or 0
+    down_bars = _safe_int(ctx.get("pre_a_down_bars"), 0) or 0
+    flat_bars = _safe_int(ctx.get("pre_a_flat_bars"), max(0, bars - up_bars - down_bars)) or 0
+    pre_a_up_ratio = _safe_float(ctx.get("pre_a_up_ratio"), None)
+    pre_a_down_ratio = _safe_float(ctx.get("pre_a_down_ratio"), None)
 
-    pre_chg_pct = ((end_close / start_close) - 1.0) if start_close and end_close and start_close > 0 else None
-    pre_range_pct = ((high / low) - 1.0) if high and low and low > 0 else None
-    pre_high_to_a_close_pct = ((high / a_close) - 1.0) if high and a_close and a_close > 0 else None
-    pre_a_close_pos_in_range = ((a_close - low) / (high - low)) if a_close is not None and high is not None and low is not None and high > low else None
-    pre_a_high_pos_in_range = ((a_high - low) / (high - low)) if a_high is not None and high is not None and low is not None and high > low else None
+    need_fallback = any(
+        value is None
+        for value in (
+            s_time,
+            start_close,
+            end_close,
+            high,
+            low,
+            pre_chg_pct,
+            pre_range_pct,
+            pre_high_to_a_close_pct,
+            pre_a_close_pos_in_range,
+            pre_a_high_pos_in_range,
+        )
+    ) or bars <= 0
 
-    quote_vol = _sum_col(pre, ["quote_asset_volume", "quote_volume", "quote_vol"])
-    base_vol = _sum_col(pre, ["volume", "base_volume"])
-    bars = int(len(pre))
-    up_bars = _bar_count_if(pre, "up")
-    down_bars = _bar_count_if(pre, "down")
-    flat_bars = max(0, bars - up_bars - down_bars)
+    if need_fallback and s_time is not None and a_time is not None and not symbol_df.empty:
+        pre = symbol_df[(symbol_df.index >= int(s_time)) & (symbol_df.index <= int(a_time))].copy()
+        first = pre.iloc[0] if not pre.empty else None
+        last = pre.iloc[-1] if not pre.empty else None
+        high = _safe_float(pd.to_numeric(pre["high"], errors="coerce").max(), high) if "high" in pre.columns and not pre.empty else high
+        low = _safe_float(pd.to_numeric(pre["low"], errors="coerce").min(), low) if "low" in pre.columns and not pre.empty else low
+        start_close = _safe_float(first.get("close"), start_close) if first is not None else start_close
+        end_close = _safe_float(last.get("close"), end_close) if last is not None else end_close
+        a_close = _safe_float(ctx.get("a_close"), end_close)
+        pre_chg_pct = ((end_close / start_close) - 1.0) if start_close and end_close and start_close > 0 else pre_chg_pct
+        pre_range_pct = ((high / low) - 1.0) if high and low and low > 0 else pre_range_pct
+        pre_high_to_a_close_pct = ((high / a_close) - 1.0) if high and a_close and a_close > 0 else pre_high_to_a_close_pct
+        pre_a_close_pos_in_range = ((a_close - low) / (high - low)) if a_close is not None and high is not None and low is not None and high > low else pre_a_close_pos_in_range
+        pre_a_high_pos_in_range = ((a_high - low) / (high - low)) if a_high is not None and high is not None and low is not None and high > low else pre_a_high_pos_in_range
+        quote_vol = _sum_col(pre, ["quote_asset_volume", "quote_volume", "quote_vol"])
+        base_vol = _sum_col(pre, ["volume", "base_volume"])
+        bars = int(len(pre))
+        up_bars = _bar_count_if(pre, "up")
+        down_bars = _bar_count_if(pre, "down")
+        flat_bars = max(0, bars - up_bars - down_bars)
+        pre_a_up_ratio = up_bars / bars if bars else pre_a_up_ratio
+        pre_a_down_ratio = down_bars / bars if bars else pre_a_down_ratio
 
     pnl_pct = _safe_float(trade.get("pnl_pct"), 0.0) or 0.0
     entry_price = _safe_float(trade.get("entry_price"), None)
@@ -240,8 +281,8 @@ def _features_for_trade(trade: Dict[str, Any], symbol_df: pd.DataFrame) -> Dict[
         "pre_a_up_bars": up_bars,
         "pre_a_down_bars": down_bars,
         "pre_a_flat_bars": flat_bars,
-        "pre_a_up_ratio": up_bars / bars if bars else None,
-        "pre_a_down_ratio": down_bars / bars if bars else None,
+        "pre_a_up_ratio": pre_a_up_ratio if pre_a_up_ratio is not None else (up_bars / bars if bars else None),
+        "pre_a_down_ratio": pre_a_down_ratio if pre_a_down_ratio is not None else (down_bars / bars if bars else None),
         "score_order": _safe_int(ctx.get("score_order"), None),
         "score": _safe_int(ctx.get("score"), None),
         "chg_24h": _safe_float(ctx.get("chg_24h"), None),
@@ -326,9 +367,10 @@ def main() -> int:
     missing_symbols = []
     for trade in trades:
         symbol = str(trade.get("symbol") or "")
+        use_context_only = _context_has_pre_a_features(trade)
         if symbol not in symbol_cache:
-            symbol_cache[symbol] = _load_symbol_df(kline_root, symbol)
-            if symbol_cache[symbol].empty:
+            symbol_cache[symbol] = pd.DataFrame() if use_context_only else _load_symbol_df(kline_root, symbol)
+            if not use_context_only and symbol_cache[symbol].empty:
                 missing_symbols.append(symbol)
         rows.append(_features_for_trade(trade, symbol_cache[symbol]))
 

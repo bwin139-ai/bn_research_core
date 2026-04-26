@@ -147,6 +147,16 @@ def _bucket(v: Any, cuts: List[float], labels: List[str], default: str = "NA") -
     return labels[-1]
 
 
+def _context_has_gamma_features(trade: Dict[str, Any]) -> bool:
+    ctx = dict(trade.get("context") or {})
+    return (
+        _safe_float(ctx.get("vol_gamma_a"), None) is not None
+        and _safe_float(ctx.get("vol_ac"), None) is not None
+        and _safe_float(ctx.get("gamma_ac_vol_ratio"), None) is not None
+        and _safe_int(ctx.get("bars_ac"), None) is not None
+    )
+
+
 def _features_for_trade(trade: Dict[str, Any], symbol_df: pd.DataFrame) -> Dict[str, Any]:
     ctx = dict(trade.get("context") or {})
     symbol = str(trade.get("symbol") or "")
@@ -156,18 +166,24 @@ def _features_for_trade(trade: Dict[str, Any], symbol_df: pd.DataFrame) -> Dict[
     a_time = _safe_int(ctx.get("a_time_ms"), None)
     c_time = _safe_int(ctx.get("c_time_ms"), None)
 
-    bars_ac = None
-    gamma_time = None
-    vol_gamma_a = None
-    vol_ac = None
-    vol_ac_over_gamma_a = None
-    gamma_a_bars = 0
-    ac_bars = 0
+    bars_ac = _safe_int(ctx.get("bars_ac"), None)
+    gamma_time = _safe_int(ctx.get("gamma_time_ms"), None)
+    vol_gamma_a = _safe_float(ctx.get("vol_gamma_a"), None)
+    vol_ac = _safe_float(ctx.get("vol_ac"), None)
+    vol_ac_over_gamma_a = _safe_float(ctx.get("gamma_ac_vol_ratio"), None)
+    gamma_a_bars = int(bars_ac or 0)
+    ac_bars = int(bars_ac or 0)
 
-    if a_time is not None and c_time is not None and c_time > a_time and not symbol_df.empty:
+    if (
+        (bars_ac is None or gamma_time is None or vol_gamma_a is None or vol_ac is None or vol_ac_over_gamma_a is None)
+        and a_time is not None
+        and c_time is not None
+        and c_time > a_time
+        and not symbol_df.empty
+    ):
         bars_ac = int(round((c_time - a_time) / MINUTE_MS))
         if bars_ac > 0:
-            gamma_time = a_time - bars_ac * MINUTE_MS
+            gamma_time = gamma_time if gamma_time is not None else (a_time - bars_ac * MINUTE_MS)
             # Equal-length windows: (gamma, A] and (A, C]
             gamma_a_df = symbol_df[(symbol_df.index > gamma_time) & (symbol_df.index <= a_time)].copy()
             ac_df = symbol_df[(symbol_df.index > a_time) & (symbol_df.index <= c_time)].copy()
@@ -279,9 +295,10 @@ def main() -> int:
     missing_symbols = []
     for trade in trades:
         symbol = str(trade.get("symbol") or "")
+        use_context_only = _context_has_gamma_features(trade)
         if symbol not in symbol_cache:
-            symbol_cache[symbol] = _load_symbol_df(kline_root, symbol)
-            if symbol_cache[symbol].empty:
+            symbol_cache[symbol] = pd.DataFrame() if use_context_only else _load_symbol_df(kline_root, symbol)
+            if not use_context_only and symbol_cache[symbol].empty:
                 missing_symbols.append(symbol)
         rows.append(_features_for_trade(trade, symbol_cache[symbol]))
 
