@@ -4,12 +4,12 @@
     "max_history_window_mins": 150
   },
   "universe": {
-    "24h_quote_volume_min": 40000000,
+    "24h_quote_volume_min": 30000000,
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000
     },
-    "market_total_24h_vol_min": 35000000000
+    "market_total_24h_vol_min": 20000000000
   },
   "structure": {
     "a_high_source": "contract",
