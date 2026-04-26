@@ -578,13 +578,17 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '')
+    # Keep strategy-facing candidate selection scoped by hub exclude_symbols, but
+    # refresh the hub-owned 1m rollsum on the full market universe so the market
+    # total 24h volume stays truly market-wide and comparable with Binance 24h API.
+    refresh_symbols = list_candidate_symbols(account)
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=exclude_symbols)
     rollsum_refreshed_this_round = False
 
     if market_total_24h_vol_status != 'ready_hub_owned_1m':
         refresh_res = _refresh_rollsum_batch(
             account,
-            candidate_symbols=candidate_symbols,
+            candidate_symbols=refresh_symbols,
             latest_closed_bar_ts=latest_closed_bar_ts,
             signal_time_ts=signal_time_ts,
             hub_cfg=hub_cfg,
@@ -835,7 +839,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     if not rollsum_refreshed_this_round:
         _refresh_rollsum_batch(
             account,
-            candidate_symbols=candidate_symbols,
+            candidate_symbols=refresh_symbols,
             latest_closed_bar_ts=latest_closed_bar_ts,
             signal_time_ts=signal_time_ts,
             hub_cfg=hub_cfg,
