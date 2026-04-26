@@ -124,14 +124,15 @@ nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --sleep-ms 3000 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
+tail -n 20 -f logs/klines_1m_sync.log
 
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --limit 1000 \
-  --sleep-ms 5000 \
+  --sleep-ms 3000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
-
+tail -n 20 -f logs/klines_1m_augment_idx.log
 
 # *** 单独运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u klines_1m_store.py augment-idx \
