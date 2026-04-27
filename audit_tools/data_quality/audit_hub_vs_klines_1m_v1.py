@@ -442,7 +442,7 @@ def resolve_symbols(args: argparse.Namespace, project_root: Path) -> list[str]:
     if manual:
         return sorted(dict.fromkeys(manual))
     if args.use_finalized_symbols:
-        fpath = project_root / "state/live_audit/market_data_hub/mybwin139/current/finalized_candidate_inputs.json"
+        fpath = project_root / "state/live_audit/market_data_hub/shared/current/finalized_candidate_inputs.json"
         data = read_json(fpath)
         fs = data.get("finalize_summary") or {}
         symbols = [normalize_symbol(x) for x in (fs.get("passed_symbols") or [])]
