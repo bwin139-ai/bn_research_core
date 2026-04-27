@@ -44,6 +44,10 @@ class SpringSABCStrategy:
         self.vol_ratio_min = float(structure["vol_climax"]["ratio_min"])
         self.gamma_ac_vol_ratio_min = float(structure["vol_climax"]["gamma_ac_vol_ratio_min"])
         self.rebound_ratio_min = float(structure["rebound"]["ratio_min"])
+        rebound_ratio_max = structure["rebound"].get("ratio_max")
+        self.rebound_ratio_max = (
+            float(rebound_ratio_max) if rebound_ratio_max is not None else None
+        )
         self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
 
         self.stop_loss_anchor = str(exit_policy["stop_loss_anchor"])
@@ -464,6 +468,8 @@ class SpringSABCStrategy:
             rebound_ratio = (c_close - b_close) / ab_drop_abs
             if rebound_ratio < self.rebound_ratio_min:
                 continue
+            if self.rebound_ratio_max is not None and rebound_ratio > self.rebound_ratio_max:
+                continue
 
             bc_over_ab = float(bc_bars) / float(ab_bars)
             if bc_over_ab > self.bc_over_ab_bars_max:
@@ -555,6 +561,8 @@ class SpringSABCStrategy:
                 "bc_bars": int(bc_bars),
                 "ab_chg_pct": float(ab_chg_pct),
                 "rebound_ratio": float(rebound_ratio),
+                "rebound_ratio_min": float(self.rebound_ratio_min),
+                "rebound_ratio_max": float(self.rebound_ratio_max) if self.rebound_ratio_max is not None else None,
                 "bars_ac": int(bars_ac),
                 "bc_over_ab_bars": float(bc_over_ab),
                 "ab_avg_vol": float(ab_avg_vol),
@@ -747,6 +755,8 @@ class SpringSABCStrategy:
                     "cooldown_hours": self.cooldown_hours,
                     "max_risk_pct": self.max_risk_pct,
                     "gamma_ac_vol_ratio_min": self.gamma_ac_vol_ratio_min,
+                    "rebound_ratio_min": self.rebound_ratio_min,
+                    "rebound_ratio_max": self.rebound_ratio_max,
                 },
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -768,6 +778,8 @@ class SpringSABCStrategy:
                     "bc_bars": int(candidate["bc_bars"]),
                     "ab_chg_pct": float(candidate["ab_chg_pct"]),
                     "rebound_ratio": float(candidate["rebound_ratio"]),
+                    "rebound_ratio_min": candidate.get("rebound_ratio_min", self.rebound_ratio_min),
+                    "rebound_ratio_max": candidate.get("rebound_ratio_max", self.rebound_ratio_max),
                     "bars_ac": int(candidate["bars_ac"]),
                     "bc_over_ab_bars": float(candidate["bc_over_ab_bars"]),
                     "vol_ratio": float(candidate["vol_ratio"]),

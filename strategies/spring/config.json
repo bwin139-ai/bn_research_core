@@ -63,6 +63,7 @@
     },
     "rebound": {
       "ratio_min": 0.75,
+      "ratio_max": 1.2,
       "bc_over_ab_bars_max": 2.0
     }
   },

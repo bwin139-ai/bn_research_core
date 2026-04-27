@@ -720,6 +720,8 @@ def main():
             "bc_bars",
             "ab_chg_pct",
             "rebound_ratio",
+            "rebound_ratio_min",
+            "rebound_ratio_max",
             "bc_over_ab_bars",
             "vol_ratio",
             "vol_gamma_a",
