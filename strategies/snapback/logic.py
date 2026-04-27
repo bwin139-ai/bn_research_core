@@ -360,6 +360,7 @@ class WashoutSnapbackStrategy:
         active_symbols: set,
         full_df: Dict[str, pd.DataFrame] = None,
         target_symbols: set | None = None,
+        market_total_24h_vol_override: float | None = None,
     ) -> Dict[str, Dict[str, Any]]:
         audits: Dict[str, Dict[str, Any]] = {}
         target_set = {str(s).upper().strip() for s in (target_symbols or set()) if str(s).strip()}
@@ -373,7 +374,11 @@ class WashoutSnapbackStrategy:
                 }
             return audits
 
-        market_total_24h_vol = self._calc_market_total_24h_vol(cross_section)
+        market_total_24h_vol = (
+            float(market_total_24h_vol_override)
+            if market_total_24h_vol_override is not None
+            else self._calc_market_total_24h_vol(cross_section)
+        )
         if market_total_24h_vol < self.market_total_24h_vol_min:
             for sym in target_set:
                 audits[sym] = {
@@ -746,12 +751,17 @@ class WashoutSnapbackStrategy:
         cross_section: pd.DataFrame,
         active_symbols: set,
         full_df: Dict[str, pd.DataFrame] = None,
+        market_total_24h_vol_override: float | None = None,
     ) -> dict:
 
         if cross_section.empty or full_df is None:
             return None
 
-        market_total_24h_vol = self._calc_market_total_24h_vol(cross_section)
+        market_total_24h_vol = (
+            float(market_total_24h_vol_override)
+            if market_total_24h_vol_override is not None
+            else self._calc_market_total_24h_vol(cross_section)
+        )
         if market_total_24h_vol < self.market_total_24h_vol_min:
             return None
 

@@ -2202,7 +2202,13 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
 
     signal_eval_started_utc_ms = _now_utc_ms()
     signal_eval_perf_started = time.perf_counter()
-    signal = strategy.on_kline_close(c_bar_ts, cross_section, active_symbols, full_df)
+    signal = strategy.on_kline_close(
+        c_bar_ts,
+        cross_section,
+        active_symbols,
+        full_df,
+        market_total_24h_vol_override=market_total_24h_vol_snapshot,
+    )
     # 只持久化进入本轮前已经存在于 state 的 cooldown。
     # strategy.on_kline_close() 在“刚选出 signal”时会先写内部 cooldown，
     # 若这里立即 sync 回 state，trade_consumer.consume_signal() 会在同一轮
