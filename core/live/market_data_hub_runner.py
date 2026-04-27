@@ -21,7 +21,13 @@ from core.live.market_data import (
     read_hub_owned_1m_rollsum_market_view,
     refresh_hub_owned_1m_rollsum_for_symbols,
 )
-from core.live.market_data_hub_store import read_current_snapshot, write_current_pickle, write_current_snapshot
+from core.live.market_data_hub_store import (
+    read_current_snapshot,
+    write_current_pickle,
+    write_current_snapshot,
+    write_shared_current_pickle,
+    write_shared_current_snapshot,
+)
 from core.message_bridge import send_to_bot
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
@@ -235,9 +241,10 @@ def _load_hub_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
     if not isinstance(data, dict):
         raise TypeError(f'hub_config 顶层必须是 JSON object | {path}')
+    account = _require_non_empty_str(data, path, 'account')
     return {
         'enabled': _require_bool(data, path, 'enabled'),
-        'account': _require_non_empty_str(data, path, 'account'),
+        'account': account,
         'audit_enabled': _require_bool(data, path, 'audit_enabled'),
         'notify_enabled': _require_bool(data, path, 'notify_enabled'),
         'history_window_mins': _require_positive_int(data, path, 'history_window_mins'),
@@ -527,8 +534,8 @@ def _write_empty_hub_inputs_snapshot(
         'market_total_24h_vol_source': str(market_total_24h_vol_source),
         'market_total_24h_vol_status': str(market_total_24h_vol_status),
     }
-    write_current_snapshot(account, snapshot_name, payload)
-    write_current_pickle(account, snapshot_name, dict(payload))
+    write_shared_current_snapshot(snapshot_name, payload)
+    write_shared_current_pickle(snapshot_name, dict(payload))
 
 
 def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
@@ -790,6 +797,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         ticker_map=dict(market_snapshot['ticker_map']),
         audit_enabled=audit_enabled,
         use_full_market_inputs=True,
+        shared_output=True,
     )
     candidate_payload = candidate_res.get('data') if candidate_res.get('ok') else None
     if not candidate_payload:
@@ -856,7 +864,7 @@ def main() -> None:
     for hub_cfg in hub_cfgs:
         if bool(hub_cfg['publish_config_snapshot']):
             account = str(hub_cfg['account']).strip()
-            write_current_snapshot(account, 'hub_config', {
+            write_shared_current_snapshot('hub_config', {
                 'schema_version': 1,
                 'account': account,
                 'snapshot_name': 'hub_config',

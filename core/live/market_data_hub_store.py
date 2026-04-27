@@ -39,6 +39,18 @@ def _current_dir(account: str) -> Path:
     return path
 
 
+def _shared_dir() -> Path:
+    path = _hub_dir() / "shared"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _shared_current_dir() -> Path:
+    path = _shared_dir() / "current"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _daily_dir(account: str, day_bj: str | None) -> Path:
     day_key = str(day_bj or "").strip() or datetime.now(timezone.utc).astimezone(_BJ).strftime("%Y-%m-%d")
     path = _account_dir(account) / "daily" / day_key
@@ -84,8 +96,28 @@ def _current_pickle_path(account: str, name: str) -> Path:
     return _current_dir(account) / f"{str(name).strip()}.pkl"
 
 
+def _shared_current_json_path(name: str) -> Path:
+    return _shared_current_dir() / f"{str(name).strip()}.json"
+
+
+def _shared_current_pickle_path(name: str) -> Path:
+    return _shared_current_dir() / f"{str(name).strip()}.pkl"
+
+
 def write_current_pickle(account: str, name: str, payload: Any) -> Path:
     path = _current_pickle_path(account, name)
+    _atomic_write_bytes(path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    return path
+
+
+def write_shared_current_snapshot(name: str, payload: dict[str, Any]) -> Path:
+    path = _shared_current_json_path(name)
+    _atomic_write_json(path, payload)
+    return path
+
+
+def write_shared_current_pickle(name: str, payload: Any) -> Path:
+    path = _shared_current_pickle_path(name)
     _atomic_write_bytes(path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
     return path
 
@@ -102,6 +134,26 @@ def read_current_snapshot(account: str, name: str) -> dict[str, Any] | None:
 
 def read_current_pickle(account: str, name: str) -> Any:
     path = _current_pickle_path(account, name)
+    if not path.exists():
+        return None
+    try:
+        return pickle.loads(path.read_bytes())
+    except Exception:
+        return None
+
+
+def read_shared_current_snapshot(name: str) -> dict[str, Any] | None:
+    path = _shared_current_json_path(name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def read_shared_current_pickle(name: str) -> Any:
+    path = _shared_current_pickle_path(name)
     if not path.exists():
         return None
     try:

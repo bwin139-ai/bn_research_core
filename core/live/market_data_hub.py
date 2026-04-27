@@ -14,7 +14,17 @@ from core.live.market_data import (
     merge_shared_symbol_bars_cache_stats,
     new_shared_symbol_bars_cache_stats,
 )
-from core.live.market_data_hub_store import append_daily_snapshot, read_current_pickle, read_current_snapshot, write_current_pickle, write_current_snapshot
+from core.live.market_data_hub_store import (
+    append_daily_snapshot,
+    read_current_pickle,
+    read_current_snapshot,
+    read_shared_current_pickle,
+    read_shared_current_snapshot,
+    write_current_pickle,
+    write_current_snapshot,
+    write_shared_current_pickle,
+    write_shared_current_snapshot,
+)
 
 BJ = timezone(timedelta(hours=8))
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
@@ -59,10 +69,16 @@ def _raise_if_snapshot_stale(account: str, name: str, snapshot: dict[str, Any] |
     return snapshot
 
 
+def _clone_shared_payload_for_consumer(payload: dict[str, Any], account: str) -> dict[str, Any]:
+    out = dict(payload)
+    out['account'] = str(account).strip()
+    return out
+
+
 def load_market_snapshot_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
-    meta = read_current_snapshot(account, 'market_snapshot')
+    meta = read_shared_current_snapshot('market_snapshot')
     _raise_if_snapshot_stale(account, 'market_snapshot', meta, max_age_secs=max_age_secs)
-    payload = read_current_pickle(account, 'market_snapshot')
+    payload = read_shared_current_pickle('market_snapshot')
     if not isinstance(payload, dict):
         raise RuntimeError(f'hub payload missing: account={account} name=market_snapshot')
     if 'market_total_24h_vol_1m_rollsum_status' not in payload:
@@ -70,25 +86,25 @@ def load_market_snapshot_from_hub(account: str, *, max_age_secs: int = _HUB_SNAP
             'hub payload schema mismatch: '
             f'account={account} name=market_snapshot missing=market_total_24h_vol_1m_rollsum_status'
         )
-    return payload
+    return _clone_shared_payload_for_consumer(payload, account)
 
 
 def load_finalized_candidate_inputs_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
-    meta = read_current_snapshot(account, 'finalized_candidate_inputs')
+    meta = read_shared_current_snapshot('finalized_candidate_inputs')
     _raise_if_snapshot_stale(account, 'finalized_candidate_inputs', meta, max_age_secs=max_age_secs)
-    payload = read_current_pickle(account, 'finalized_candidate_inputs')
+    payload = read_shared_current_pickle('finalized_candidate_inputs')
     if not isinstance(payload, dict):
         raise RuntimeError(f'hub payload missing: account={account} name=finalized_candidate_inputs')
-    return payload
+    return _clone_shared_payload_for_consumer(payload, account)
 
 
 def load_candidate_inputs_from_hub(account: str, *, max_age_secs: int = _HUB_SNAPSHOT_MAX_AGE_SECS) -> dict[str, Any]:
-    meta = read_current_snapshot(account, 'candidate_inputs')
+    meta = read_shared_current_snapshot('candidate_inputs')
     _raise_if_snapshot_stale(account, 'candidate_inputs', meta, max_age_secs=max_age_secs)
-    payload = read_current_pickle(account, 'candidate_inputs')
+    payload = read_shared_current_pickle('candidate_inputs')
     if not isinstance(payload, dict):
         raise RuntimeError(f'hub payload missing: account={account} name=candidate_inputs')
-    return payload
+    return _clone_shared_payload_for_consumer(payload, account)
 
 
 def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[str, Any]:
@@ -119,8 +135,8 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
         'newly_listed_symbol_count_1m_rollsum': int(snapshot.get('newly_listed_symbol_count_1m_rollsum') or 0),
     }
-    write_current_snapshot(account, 'market_snapshot', payload)
-    write_current_pickle(account, 'market_snapshot', snapshot)
+    write_shared_current_snapshot('market_snapshot', payload)
+    write_shared_current_pickle('market_snapshot', snapshot)
     if audit_enabled:
         append_daily_snapshot(account, 'market_snapshot', payload, day_bj=str(snapshot.get('signal_time_bj') or '')[:10])
     return snapshot
@@ -137,6 +153,7 @@ def build_live_inputs_via_hub(
     ticker_map: dict[str, dict[str, Any]] | None = None,
     audit_enabled: bool = False,
     use_full_market_inputs: bool = False,
+    shared_output: bool = False,
 ) -> dict[str, Any]:
     if use_full_market_inputs:
         res = build_live_inputs_full_market(
@@ -178,9 +195,15 @@ def build_live_inputs_via_hub(
         'shared_symbol_bars_cache': (res.get('data') or {}).get('shared_symbol_bars_cache'),
         'errors': res.get('errors'),
     }
-    write_current_snapshot(account, f'{audit_label}_inputs', payload)
+    if shared_output:
+        write_shared_current_snapshot(f'{audit_label}_inputs', payload)
+    else:
+        write_current_snapshot(account, f'{audit_label}_inputs', payload)
     if bool(res.get('ok')) and isinstance(res.get('data'), dict):
-        write_current_pickle(account, f'{audit_label}_inputs', res.get('data'))
+        if shared_output:
+            write_shared_current_pickle(f'{audit_label}_inputs', res.get('data'))
+        else:
+            write_current_pickle(account, f'{audit_label}_inputs', res.get('data'))
     if audit_enabled:
         append_daily_snapshot(account, f'{audit_label}_inputs', payload, day_bj=str(payload.get('signal_time_bj') or '')[:10])
     return res
@@ -571,6 +594,6 @@ def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -
         'finalize_summary': finalize_summary,
         'finalize_shared_symbol_bars_cache': finalized_payload.get('finalize_shared_symbol_bars_cache'),
     }
-    write_current_snapshot(account, 'finalized_candidate_inputs', payload)
-    write_current_pickle(account, 'finalized_candidate_inputs', finalized_payload)
+    write_shared_current_snapshot('finalized_candidate_inputs', payload)
+    write_shared_current_pickle('finalized_candidate_inputs', finalized_payload)
     append_daily_snapshot(account, 'finalized_candidate_inputs', payload, day_bj=str(payload.get('signal_time_bj') or '')[:10])
