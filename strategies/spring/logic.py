@@ -49,6 +49,27 @@ class SpringSABCStrategy:
             float(rebound_ratio_max) if rebound_ratio_max is not None else None
         )
         self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
+        pre_a = dict(structure.get("pre_a") or {})
+        pre_a_chg_pct_min = pre_a.get("chg_pct_min")
+        pre_a_range_pct_max = pre_a.get("range_pct_max")
+        pre_a_high_to_a_close_pct_max = pre_a.get("high_to_a_close_pct_max")
+        pre_a_close_pos_in_range_min = pre_a.get("close_pos_in_range_min")
+        self.pre_a_chg_pct_min = (
+            float(pre_a_chg_pct_min) if pre_a_chg_pct_min is not None else None
+        )
+        self.pre_a_range_pct_max = (
+            float(pre_a_range_pct_max) if pre_a_range_pct_max is not None else None
+        )
+        self.pre_a_high_to_a_close_pct_max = (
+            float(pre_a_high_to_a_close_pct_max)
+            if pre_a_high_to_a_close_pct_max is not None
+            else None
+        )
+        self.pre_a_close_pos_in_range_min = (
+            float(pre_a_close_pos_in_range_min)
+            if pre_a_close_pos_in_range_min is not None
+            else None
+        )
 
         self.stop_loss_anchor = str(exit_policy["stop_loss_anchor"])
         self.take_profit_pct = float(exit_policy["take_profit_pct"])
@@ -326,6 +347,10 @@ class SpringSABCStrategy:
         rec["a_time_ms"] = None
         rec["b_time_ms"] = None
         rec["c_time_ms"] = None
+        rec["pre_a_chg_pct_min"] = self.pre_a_chg_pct_min
+        rec["pre_a_range_pct_max"] = self.pre_a_range_pct_max
+        rec["pre_a_high_to_a_close_pct_max"] = self.pre_a_high_to_a_close_pct_max
+        rec["pre_a_close_pos_in_range_min"] = self.pre_a_close_pos_in_range_min
 
         sym_df = self._extract_symbol_history(full_df, symbol)
         if sym_df is None:
@@ -422,6 +447,8 @@ class SpringSABCStrategy:
             vol_prefix.append(vol_prefix[-1] + value)
 
         best: Optional[Dict[str, Any]] = None
+        last_reject_reason: Optional[str] = None
+        last_reject_snapshot: Optional[Dict[str, Any]] = None
         for b_search_rank_from_c, b_idx in enumerate(range(c_idx - 1, 0, -1), start=1):
             bc_bars = c_idx - b_idx
             if bc_bars <= 0:
@@ -542,6 +569,75 @@ class SpringSABCStrategy:
             pre_flat_bars = max(0, int(pre_slice_end) - int(pre_up_bars) - int(pre_down_bars))
             pre_quote_vol = float(sum(quote_vol_values[:pre_slice_end])) if quote_vol_values else None
             pre_base_vol = float(sum(base_vol_values[:pre_slice_end])) if base_vol_values else None
+            candidate_snapshot = {
+                "s_time_ms": time_values[0],
+                "a_time_ms": time_values[a_idx],
+                "b_time_ms": time_values[b_idx],
+                "c_time_ms": c_time_ms,
+                "a_close": float(a_close),
+                "b_close": float(b_close),
+                "c_close": float(c_close),
+                "ab_bars": int(ab_bars),
+                "bc_bars": int(bc_bars),
+                "ab_chg_pct": float(ab_chg_pct),
+                "rebound_ratio": float(rebound_ratio),
+                "vol_ratio": float(vol_ratio),
+                "gamma_ac_vol_ratio": float(gamma_ac_vol_ratio),
+                "pre_a_bars": int(pre_slice_end),
+                "pre_a_start_close": float(pre_start_close) if pre_start_close is not None else None,
+                "pre_a_end_close": float(pre_end_close) if pre_end_close is not None else None,
+                "pre_a_high": float(pre_high) if pre_high is not None else None,
+                "pre_a_low": float(pre_low) if pre_low is not None else None,
+                "pre_a_chg_pct": float(pre_chg_pct) if pre_chg_pct is not None else None,
+                "pre_a_range_pct": float(pre_range_pct) if pre_range_pct is not None else None,
+                "pre_a_high_to_a_close_pct": float(pre_high_to_a_close_pct) if pre_high_to_a_close_pct is not None else None,
+                "pre_a_close_pos_in_range": float(pre_a_close_pos_in_range) if pre_a_close_pos_in_range is not None else None,
+                "pre_a_high_pos_in_range": float(pre_a_high_pos_in_range) if pre_a_high_pos_in_range is not None else None,
+                "pre_a_quote_vol": float(pre_quote_vol) if pre_quote_vol is not None else None,
+                "pre_a_base_vol": float(pre_base_vol) if pre_base_vol is not None else None,
+                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(pre_slice_end)) if pre_quote_vol is not None and pre_slice_end > 0 else None,
+                "pre_a_up_bars": int(pre_up_bars),
+                "pre_a_down_bars": int(pre_down_bars),
+                "pre_a_flat_bars": int(pre_flat_bars),
+                "pre_a_up_ratio": float(pre_up_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+                "pre_a_down_ratio": float(pre_down_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+            }
+            if self.pre_a_chg_pct_min is not None:
+                if pre_chg_pct is None:
+                    last_reject_reason = "pre_a_chg_pct_missing"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+                if pre_chg_pct < self.pre_a_chg_pct_min:
+                    last_reject_reason = "pre_a_chg_pct_below_min"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+            if self.pre_a_range_pct_max is not None:
+                if pre_range_pct is None:
+                    last_reject_reason = "pre_a_range_pct_missing"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+                if pre_range_pct > self.pre_a_range_pct_max:
+                    last_reject_reason = "pre_a_range_pct_above_max"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+            if self.pre_a_high_to_a_close_pct_max is not None:
+                if pre_high_to_a_close_pct is None:
+                    last_reject_reason = "pre_a_high_to_a_close_pct_missing"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+                if pre_high_to_a_close_pct > self.pre_a_high_to_a_close_pct_max:
+                    last_reject_reason = "pre_a_high_to_a_close_pct_above_max"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+            if self.pre_a_close_pos_in_range_min is not None:
+                if pre_a_close_pos_in_range is None:
+                    last_reject_reason = "pre_a_close_pos_in_range_missing"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
+                if pre_a_close_pos_in_range < self.pre_a_close_pos_in_range_min:
+                    last_reject_reason = "pre_a_close_pos_in_range_below_min"
+                    last_reject_snapshot = dict(candidate_snapshot)
+                    continue
 
             best = {
                 "a_idx": a_idx,
@@ -590,6 +686,10 @@ class SpringSABCStrategy:
                 "pre_a_flat_bars": int(pre_flat_bars),
                 "pre_a_up_ratio": float(pre_up_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
                 "pre_a_down_ratio": float(pre_down_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+                "pre_a_chg_pct_min": self.pre_a_chg_pct_min,
+                "pre_a_range_pct_max": self.pre_a_range_pct_max,
+                "pre_a_high_to_a_close_pct_max": self.pre_a_high_to_a_close_pct_max,
+                "pre_a_close_pos_in_range_min": self.pre_a_close_pos_in_range_min,
                 "abc_selection_mode": "nearest_valid_b",
                 "b_scan_direction": "from_c_leftward",
                 "b_initial_filter": "c_close_gt_b_close",
@@ -604,11 +704,13 @@ class SpringSABCStrategy:
             break
 
         if best is None:
-            rec["fail_reason"] = "spring_structure_not_found"
+            rec["fail_reason"] = last_reject_reason or "spring_structure_not_found"
             rec["pattern_window_bars"] = int(len(pattern_df))
             rec["baseline_window_bars"] = int(len(baseline_df))
             rec["c_time_ms"] = c_time_ms
             rec["c_close"] = c_close
+            if last_reject_snapshot:
+                rec.update(last_reject_snapshot)
             rec["abc_selection_mode"] = "nearest_valid_b"
             rec["b_scan_direction"] = "from_c_leftward"
             rec["b_initial_filter"] = "c_close_gt_b_close"
@@ -757,6 +859,10 @@ class SpringSABCStrategy:
                     "gamma_ac_vol_ratio_min": self.gamma_ac_vol_ratio_min,
                     "rebound_ratio_min": self.rebound_ratio_min,
                     "rebound_ratio_max": self.rebound_ratio_max,
+                    "pre_a_chg_pct_min": self.pre_a_chg_pct_min,
+                    "pre_a_range_pct_max": self.pre_a_range_pct_max,
+                    "pre_a_high_to_a_close_pct_max": self.pre_a_high_to_a_close_pct_max,
+                    "pre_a_close_pos_in_range_min": self.pre_a_close_pos_in_range_min,
                 },
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -805,6 +911,10 @@ class SpringSABCStrategy:
                     "pre_a_flat_bars": candidate.get("pre_a_flat_bars"),
                     "pre_a_up_ratio": candidate.get("pre_a_up_ratio"),
                     "pre_a_down_ratio": candidate.get("pre_a_down_ratio"),
+                    "pre_a_chg_pct_min": candidate.get("pre_a_chg_pct_min", self.pre_a_chg_pct_min),
+                    "pre_a_range_pct_max": candidate.get("pre_a_range_pct_max", self.pre_a_range_pct_max),
+                    "pre_a_high_to_a_close_pct_max": candidate.get("pre_a_high_to_a_close_pct_max", self.pre_a_high_to_a_close_pct_max),
+                    "pre_a_close_pos_in_range_min": candidate.get("pre_a_close_pos_in_range_min", self.pre_a_close_pos_in_range_min),
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),

@@ -65,6 +65,12 @@
       "ratio_min": 0.75,
       "ratio_max": 1.2,
       "bc_over_ab_bars_max": 2.0
+    },
+    "pre_a": {
+      "chg_pct_min": null,
+      "range_pct_max": null,
+      "high_to_a_close_pct_max": 0.2,
+      "close_pos_in_range_min": null
     }
   },
   "exit_policy": {
