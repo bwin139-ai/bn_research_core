@@ -67,7 +67,7 @@
       "bc_over_ab_bars_max": 2.0
     },
     "pre_a": {
-      "chg_pct_min": null,
+      "chg_pct_min": 0.0,
       "range_pct_max": null,
       "high_to_a_close_pct_max": 0.2,
       "close_pos_in_range_min": null
