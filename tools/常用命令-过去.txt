@@ -37,10 +37,11 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
 # ============== snapback 实盘运行 ===============
  nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.highfreq.json --live-config strategies/snapback/live_config.highfreq.json' >> /root/bn_research_core/output/logs/snapback_live.console.highfreq.log 2>&1 &
 
- nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.profit.json' >> /root/bn_research_core/output/logs/snapback_live.console.profit.log 2>&1 &
+ nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.chen912.json' >> /root/bn_research_core/output/logs/snapback_live.console.chen912.log 2>&1 &
+ nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.junjie2026.json' >> /root/bn_research_core/output/logs/snapback_live.console.junjie2026.log 2>&1 &
  
  tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.highfreq.log
- tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.profit.log
+ tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.chen912.log
  ls -lht state/live_audit
  ls -lht state/live_audit/stage_audit/*.stage3_enriched.*jsonl
 
@@ -52,8 +53,8 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
 RUNSET="Snapback_SmokeTest_$(date +%m%dT%H%M)"
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy snapback \
-  --start 2026-04-26T14:00:00+08:00 \
-  --end   2026-04-26T20:00:00+08:00 \
+  --start 2026-04-27T12:00:00+08:00 \
+  --end   2026-04-27T15:40:00+08:00 \
   --kline-window 60 \
   --config snapback/config.highfreq.json \
   --out-dir "output/SmokeTest" \

@@ -20,7 +20,9 @@ cd /root/bn_research_core &&
 PYTHONPATH=/root/bn_research_core \
 /root/service_env/bin/python -u core/live/market_data_hub_runner.py \
   --hub-config market_data_hub_config.json
-' > output/logs/market_data_hub.console.log 2>&1 &
+' >> output/logs/market_data_hub.console.log 2>&1 &
+
+tail -n 20 -f output/logs/market_data_hub.console.log
 
 python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/market_snapshot.json
 python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/candidate_inputs.json
@@ -53,7 +55,7 @@ RUNSET="SPRING_V1_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
   --strategy spring-sabc \
   --start 2025-04-18T00:00:00+08:00 \
-  --end 2026-04-26T20:00:00+08:00 \
+  --end 2026-04-27T12:00:00+08:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -73,7 +75,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0426T2146_ALL"
+RUNID="SPRING_V1_30D_P6_0427T1606_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \
@@ -121,7 +123,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1000 \
-  --sleep-ms 3000 \
+  --sleep-ms 2000 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 tail -n 20 -f logs/klines_1m_sync.log
@@ -129,7 +131,7 @@ tail -n 20 -f logs/klines_1m_sync.log
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --limit 1000 \
-  --sleep-ms 3000 \
+  --sleep-ms 2000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 tail -n 20 -f logs/klines_1m_augment_idx.log
