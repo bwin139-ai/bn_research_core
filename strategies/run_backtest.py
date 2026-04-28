@@ -79,6 +79,16 @@ def _extract_fee_side(config: Dict[str, Any]) -> float:
     return DEFAULT_FEE_SIDE
 
 
+def _extract_base_order_notional_usdt(config: Dict[str, Any]) -> Optional[float]:
+    risk_controls = config.get("risk_controls")
+    if not isinstance(risk_controls, dict):
+        return None
+    value = _safe_float(risk_controls.get("base_order_notional_usdt"), None)
+    if value is not None and value > 0:
+        return float(value)
+    return None
+
+
 def _extract_exit_time_ms(trade: Dict[str, Any]) -> int:
     for key in ("exit_time", "entry_time", "signal_time"):
         v = trade.get(key)
@@ -927,6 +937,7 @@ def main():
         sys.exit(1)
 
     broker = VirtualBroker(config=config)
+    base_order_notional_usdt = _extract_base_order_notional_usdt(config)
 
     # 🧠 动态挂载策略大脑
     if args.strategy == "snapback":
@@ -1031,6 +1042,19 @@ def main():
                         f.write(json.dumps(forensic_row, ensure_ascii=False, cls=NumpyEncoder) + "\n")
 
         if signal:
+            if signal.get("position_notional_usdt") is None and base_order_notional_usdt is not None:
+                signal["position_notional_usdt"] = float(base_order_notional_usdt)
+                signal["base_order_notional_usdt"] = float(base_order_notional_usdt)
+                signal["sizing_ratio"] = 1.0
+                params = signal.get("params")
+                if isinstance(params, dict):
+                    params["base_order_notional_usdt"] = float(base_order_notional_usdt)
+                    params["sizing_ratio"] = 1.0
+                context = signal.get("context")
+                if isinstance(context, dict):
+                    context["base_order_notional_usdt"] = float(base_order_notional_usdt)
+                    context["position_notional_usdt"] = float(base_order_notional_usdt)
+                    context["sizing_ratio"] = 1.0
             signals_history.append(signal)
             if args.strategy == "spring-sabc":
                 logging.info(strategy.build_entry_log(signal))

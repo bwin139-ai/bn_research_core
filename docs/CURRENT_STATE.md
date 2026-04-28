@@ -167,6 +167,7 @@ market_data_hub_config.json:
 6. live projection / live_signals / live_trades / bn truth / triplet audit 主线已经打通。
 7. ENTRY 后 SL / TP 建立顺序与 SL 保护失败 fail-fast 风险修补已完成。
 8. 实盘账户 live config 已新增/调整。
+9. snapback sim 配置新增显式 `risk_controls.base_order_notional_usdt`，sim 信号与交易流水不再依赖后处理默认 100U。
 
 当前配置事实：
 
@@ -178,14 +179,16 @@ strategies/snapback/config.highfreq.json:
 - structure.s_to_c_window.mins = 60
 - structure.election_rule = drop_pct_top1
 - exit_policy.time_stop.max_hold_mins = 4
+- risk_controls.base_order_notional_usdt = 100
 ```
 
 当前 pending：
 
 1. 持续做 snapback sim/live 一致性验证。
 2. 继续明确 live 使用 hub 后与 sim feeder 的 universe / 24h_vol 口径差异。
-3. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
-4. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
+4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
+5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
 
 ### 3.5 Spring-SABC
 

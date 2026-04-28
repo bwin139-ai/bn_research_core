@@ -52,6 +52,7 @@ class StrategyConfig:
         ("exit_policy", "time_stop", "max_hold_mins"),
         ("exit_policy", "time_stop", "min_profit_pct"),
         ("risk_controls", "cooldown_hours"),
+        ("risk_controls", "base_order_notional_usdt"),
         ("benchmark", "index_weights"),
     ]
 
@@ -139,6 +140,16 @@ class StrategyConfig:
                 "【铁律违背】structure.joint_filters.messy_one_leg_block_depth_bands 只允许 "
                 + str(sorted(allowed_depth_bands))
             )
+        cooldown_hours = raw_data["risk_controls"]["cooldown_hours"]
+        if not isinstance(cooldown_hours, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须是 number')
+        if float(cooldown_hours) < 0:
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须 >= 0')
+        base_order_notional_usdt = raw_data["risk_controls"]["base_order_notional_usdt"]
+        if not isinstance(base_order_notional_usdt, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须是 number')
+        if float(base_order_notional_usdt) <= 0:
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须 > 0')
 
     @staticmethod
     def _validate_spring(raw_data: Dict[str, Any]) -> None:

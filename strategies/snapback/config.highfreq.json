@@ -81,7 +81,8 @@
     }
   },
   "risk_controls": {
-    "cooldown_hours": 4
+    "cooldown_hours": 4,
+    "base_order_notional_usdt": 100
   },
   "benchmark": {
     "index_weights": {

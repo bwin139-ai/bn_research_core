@@ -43,3 +43,16 @@ active_symbols
  - 当前已在交易中的币种集合
  - 意思是：当前已经有持仓，或者有挂单，正在占用交易席位的币。
  - 策略在扫描时会避开它们，避免重复开仓。
+base_order_notional_usdt
+ - sim 固定开仓名义金额
+ - 来自策略配置 risk_controls.base_order_notional_usdt。
+ - sim 侧生成 signal 后由 run_backtest 注入 signal / order / trade 流水。
+ - 绩效统计优先按 position_notional_usdt * pnl_pct 计算实际 USDT 盈亏。
+position_notional_usdt
+ - 本笔 sim 交易实际使用的开仓名义金额。
+ - 对 snapback sim 当前等于 base_order_notional_usdt。
+ - 不应再由后处理阶段静默假设为 100U。
+entry_notional_usdt
+ - snapback live 配置中的实盘开仓名义金额。
+ - live 下单数量按 entry_notional_usdt / current_price 计算。
+ - 它与 sim 的 base_order_notional_usdt 都是显式资金字段，但分别属于 sim 与 live 配置边界。
