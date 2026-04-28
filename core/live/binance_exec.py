@@ -13,6 +13,11 @@ from urllib.parse import urlencode
 import requests
 
 from core.live.binance_client import get_client, load_account_secrets
+from core.live.rate_limit_guard import (
+    record_binance_rest_quota,
+    sleep_if_binance_rest_banned,
+    sleep_if_binance_rest_quota_near_limit,
+)
 from core.message_bridge import send_to_bot
 
 MARGIN_TYPE = "CROSSED"
@@ -95,12 +100,23 @@ def _emit_trade_event(
     send_to_bot(msg, label="snapback")
 
 
-def _call_with_retry(fn, *, retry_max: int = 0, retry_delay_secs: float = 1.0):
+def _call_with_retry(
+    fn,
+    *,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+    before_attempt=None,
+    on_success=None,
+):
     last_err: Exception | None = None
     attempts = max(0, int(retry_max)) + 1
     for attempt in range(1, attempts + 1):
         try:
+            if callable(before_attempt):
+                before_attempt()
             result = fn()
+            if callable(on_success):
+                on_success(result)
             return _ok(result, attempts=attempt)
         except Exception as e:  # pragma: no cover - network/api path
             last_err = e
@@ -149,7 +165,13 @@ def _signed_futures_algo_request(account: str, method: str, path: str, payload: 
         request_kwargs["params"] = params
     else:
         request_kwargs["data"] = params
+    sleep_if_binance_rest_banned(source=f'binance_exec.algo:{path}')
+    sleep_if_binance_rest_quota_near_limit(source=f'binance_exec.algo:{path}')
     resp = requests.request(method_upper, f"{_algo_base_url()}{path}", **request_kwargs)
+    record_binance_rest_quota(
+        source=f'binance_exec.algo:{path}',
+        headers=getattr(resp, 'headers', None),
+    )
     try:
         data = resp.json()
     except Exception:
@@ -160,6 +182,34 @@ def _signed_futures_algo_request(account: str, method: str, path: str, payload: 
         raise RuntimeError(f"algo api http status={resp.status_code}: {data}")
     _raise_api_error(data)
     return data
+
+
+def _record_client_quota(client: Any, source: str) -> None:
+    response = getattr(client, 'response', None)
+    record_binance_rest_quota(
+        source=source,
+        headers=getattr(response, 'headers', None),
+    )
+
+
+def _call_client_with_retry(
+    client: Any,
+    source: str,
+    fn,
+    *,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+):
+    return _call_with_retry(
+        fn,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source=source),
+            sleep_if_binance_rest_quota_near_limit(source=source),
+        ),
+        on_success=lambda _result: _record_client_quota(client, source),
+    )
 
 
 def _normalize_algo_order_row(raw: dict[str, Any]) -> dict[str, Any]:
@@ -383,7 +433,7 @@ def _normalize_income_row(raw: dict[str, Any]) -> dict[str, Any]:
 
 def get_account_status(account: str) -> dict[str, Any]:
     client = get_client(account)
-    res = _call_with_retry(client.futures_account)
+    res = _call_client_with_retry(client, 'binance_exec.futures_account', client.futures_account)
     if not res["ok"]:
         return res
     raw = res["data"]
@@ -400,7 +450,7 @@ def get_account_status(account: str) -> dict[str, Any]:
 
 def get_symbol_filters(account: str, symbol: str) -> dict[str, Any]:
     client = get_client(account)
-    res = _call_with_retry(client.futures_exchange_info)
+    res = _call_client_with_retry(client, 'binance_exec.futures_exchange_info', client.futures_exchange_info)
     if not res["ok"]:
         return res
     su = (symbol or "").upper().strip()
@@ -413,7 +463,7 @@ def get_symbol_filters(account: str, symbol: str) -> dict[str, Any]:
 def get_last_price(account: str, symbol: str) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
-    res = _call_with_retry(lambda: client.futures_symbol_ticker(symbol=su))
+    res = _call_client_with_retry(client, 'binance_exec.futures_symbol_ticker', lambda: client.futures_symbol_ticker(symbol=su))
     if not res["ok"]:
         return res
     raw = res["data"]
@@ -423,7 +473,7 @@ def get_last_price(account: str, symbol: str) -> dict[str, Any]:
 def get_open_orders(account: str, symbol: str | None = None) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
-    base_res = _call_with_retry(lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
+    base_res = _call_client_with_retry(client, 'binance_exec.futures_get_open_orders', lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
     if not base_res["ok"]:
         return base_res
     algo_res = _call_with_retry(lambda: _get_open_algo_orders(account, su if su else None))
@@ -456,6 +506,11 @@ def get_order(
         lambda: client.futures_get_order(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_get_order'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_get_order'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_get_order'),
     )
     if res["ok"]:
         return _ok(_normalize_order_row(res["data"]), attempts=res.get("attempts"))
@@ -495,7 +550,7 @@ def _normalize_position_snapshot_row(raw: dict[str, Any]) -> dict[str, Any]:
 
 def get_positions(account: str, symbol: str | None = None) -> dict[str, Any]:
     client = get_client(account)
-    res = _call_with_retry(client.futures_position_information)
+    res = _call_client_with_retry(client, 'binance_exec.futures_position_information', client.futures_position_information)
     if not res["ok"]:
         return res
     su = (symbol or "").upper().strip()
@@ -537,14 +592,14 @@ def get_position(account: str, symbol: str, position_side: str) -> dict[str, Any
 
 def ensure_hedge_mode(account: str) -> dict[str, Any]:
     client = get_client(account)
-    get_res = _call_with_retry(client.futures_get_position_mode)
+    get_res = _call_client_with_retry(client, 'binance_exec.futures_get_position_mode', client.futures_get_position_mode)
     if not get_res["ok"]:
         return get_res
     raw = get_res["data"]
     dual_side = bool(raw.get("dualSidePosition", False))
     if dual_side:
         return _ok({"position_side_mode": POSITION_MODE, "changed": False, "raw": raw})
-    set_res = _call_with_retry(lambda: client.futures_change_position_mode(dualSidePosition="true"))
+    set_res = _call_client_with_retry(client, 'binance_exec.futures_change_position_mode', lambda: client.futures_change_position_mode(dualSidePosition="true"))
     if not set_res["ok"]:
         return set_res
     return _ok({"position_side_mode": POSITION_MODE, "changed": True, "raw": set_res["data"]})
@@ -553,7 +608,7 @@ def ensure_hedge_mode(account: str) -> dict[str, Any]:
 def ensure_cross_margin(account: str, symbol: str) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
-    res = _call_with_retry(lambda: client.futures_change_margin_type(symbol=su, marginType=MARGIN_TYPE))
+    res = _call_client_with_retry(client, 'binance_exec.futures_change_margin_type', lambda: client.futures_change_margin_type(symbol=su, marginType=MARGIN_TYPE))
     if res["ok"]:
         return _ok({"symbol": su, "margin_type": MARGIN_TYPE, "changed": True, "raw": res["data"]})
     reason = str(res["reason"])
@@ -566,7 +621,7 @@ def ensure_leverage(account: str, symbol: str, leverage: int) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
     lev = int(leverage)
-    res = _call_with_retry(lambda: client.futures_change_leverage(symbol=su, leverage=lev))
+    res = _call_client_with_retry(client, 'binance_exec.futures_change_leverage', lambda: client.futures_change_leverage(symbol=su, leverage=lev))
     if not res["ok"]:
         return res
     return _ok({"symbol": su, "leverage": int(res["data"].get("leverage", lev)), "raw": res["data"]})
@@ -658,6 +713,11 @@ def place_entry_order(
         lambda: client.futures_create_order(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_create_order'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_create_order'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_create_order'),
     )
     if not res["ok"]:
         _emit_trade_event(
@@ -797,6 +857,11 @@ def place_tp_order(
         lambda: client.futures_create_order(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_create_order'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_create_order'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_create_order'),
     )
     if not res["ok"]:
         _emit_trade_event(
@@ -990,6 +1055,11 @@ def place_time_stop_order(
         lambda: client.futures_create_order(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_create_order'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_create_order'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_create_order'),
     )
     if not res["ok"]:
         _emit_trade_event(
@@ -1062,6 +1132,11 @@ def get_all_orders(
         lambda: client.futures_get_all_orders(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_get_all_orders'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_get_all_orders'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_get_all_orders'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1093,6 +1168,11 @@ def get_account_trades(
         lambda: client.futures_account_trades(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_account_trades'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_account_trades'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_account_trades'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1128,6 +1208,11 @@ def get_income_history(
         lambda: client.futures_income_history(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_income_history'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_income_history'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_income_history'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1148,6 +1233,11 @@ def get_position_snapshots(
         client.futures_position_information,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_position_information'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_position_information'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_position_information'),
     )
     if not res["ok"]:
         return res
@@ -1200,6 +1290,11 @@ def cancel_order(
         lambda: client.futures_cancel_order(**payload),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        before_attempt=lambda: (
+            sleep_if_binance_rest_banned(source='binance_exec.futures_cancel_order'),
+            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_cancel_order'),
+        ),
+        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_cancel_order'),
     )
     if res["ok"]:
         raw = res["data"]

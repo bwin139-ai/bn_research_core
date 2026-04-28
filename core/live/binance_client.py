@@ -8,6 +8,12 @@ from typing import Any
 import requests
 from binance.client import Client
 
+from core.live.rate_limit_guard import (
+    record_binance_rest_quota,
+    sleep_if_binance_rest_banned,
+    sleep_if_binance_rest_quota_near_limit,
+)
+
 _CLIENTS: dict[str, Client] = {}
 
 
@@ -89,6 +95,8 @@ def get_index_price_klines(
     start_time: int | None = None,
     end_time: int | None = None,
 ) -> list[list[Any]]:
+    sleep_if_binance_rest_banned(source='binance_client.index_price_klines')
+    sleep_if_binance_rest_quota_near_limit(source='binance_client.index_price_klines')
     client = get_client(account)
     pair = (symbol or "").upper().strip()
     if not pair:
@@ -113,6 +121,11 @@ def get_index_price_klines(
                 }.items() if v is not None
             })
             if isinstance(rows, list):
+                response = getattr(client, "response", None)
+                record_binance_rest_quota(
+                    source='binance_client.index_price_klines',
+                    headers=getattr(response, 'headers', None),
+                )
                 return rows
         except TypeError:
             try:
@@ -120,9 +133,14 @@ def get_index_price_klines(
                     k: v for k, v in {
                         "startTime": params.get("startTime"),
                         "endTime": params.get("endTime"),
-                    }.items() if v is not None
+                }.items() if v is not None
                 })
                 if isinstance(rows, list):
+                    response = getattr(client, "response", None)
+                    record_binance_rest_quota(
+                        source='binance_client.index_price_klines',
+                        headers=getattr(response, 'headers', None),
+                    )
                     return rows
             except Exception:
                 pass
@@ -132,6 +150,11 @@ def get_index_price_klines(
         try:
             rows = raw_method("get", "indexPriceKlines", data=params)
             if isinstance(rows, list):
+                response = getattr(client, "response", None)
+                record_binance_rest_quota(
+                    source='binance_client.index_price_klines',
+                    headers=getattr(response, 'headers', None),
+                )
                 return rows
         except Exception:
             pass
@@ -142,6 +165,10 @@ def get_index_price_klines(
         timeout=10.0,
     )
     resp.raise_for_status()
+    record_binance_rest_quota(
+        source='binance_client.index_price_klines',
+        headers=getattr(resp, 'headers', None),
+    )
     data = resp.json()
     if not isinstance(data, list):
         raise RuntimeError(f"indexPriceKlines 返回异常: {data}")

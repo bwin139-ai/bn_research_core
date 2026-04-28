@@ -11,7 +11,11 @@ import pandas as pd
 
 from core.live.audit_log import append_stage_record, get_stage_audit_dir
 from core.live.binance_client import get_client, get_index_price_klines
-from core.live.rate_limit_guard import sleep_if_binance_rest_banned
+from core.live.rate_limit_guard import (
+    record_binance_rest_quota,
+    sleep_if_binance_rest_banned,
+    sleep_if_binance_rest_quota_near_limit,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,8 +46,16 @@ def _to_int(v: Any, default: int = 0) -> int:
 
 def _exchange_server_time_ms(account: str) -> int:
     sleep_if_binance_rest_banned(source='market_data.futures_time')
+    sleep_if_binance_rest_quota_near_limit(source='market_data.futures_time')
     client = get_client(account)
-    return int(client.futures_time()['serverTime'])
+    payload = client.futures_time()
+    response = getattr(client, 'response', None)
+    record_binance_rest_quota(
+        source='market_data.futures_time',
+        headers=getattr(response, 'headers', None),
+        server_time_utc_ms=_to_int(payload.get('serverTime'), default=0) or None,
+    )
+    return int(payload['serverTime'])
 
 
 def _last_closed_bar_open_time_ms(account: str) -> int:
@@ -627,12 +639,19 @@ def _load_or_refresh_exchange_info(account: str) -> dict[str, Any]:
     if _cache_is_fresh(cached, _SHARED_EXCHANGE_INFO_TTL_SECS):
         return cached
     sleep_if_binance_rest_banned(source='market_data.exchange_info')
+    sleep_if_binance_rest_quota_near_limit(source='market_data.exchange_info')
     client = get_client(account)
     now_ms = int(time.time() * 1000)
+    data = client.futures_exchange_info()
+    response = getattr(client, 'response', None)
+    record_binance_rest_quota(
+        source='market_data.exchange_info',
+        headers=getattr(response, 'headers', None),
+    )
     payload = {
         'fetched_utc_ms': now_ms,
         'fetched_bj': _fmt_bj_from_ms(now_ms),
-        'data': client.futures_exchange_info(),
+        'data': data,
     }
     _atomic_write_json(path, payload)
     return payload
@@ -644,12 +663,19 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
     if _cache_is_fresh(cached, _SHARED_TICKER_TTL_SECS):
         return cached
     sleep_if_binance_rest_banned(source='market_data.futures_ticker')
+    sleep_if_binance_rest_quota_near_limit(source='market_data.futures_ticker')
     client = get_client(account)
     now_ms = int(time.time() * 1000)
+    data = client.futures_ticker()
+    response = getattr(client, 'response', None)
+    record_binance_rest_quota(
+        source='market_data.futures_ticker',
+        headers=getattr(response, 'headers', None),
+    )
     payload = {
         'fetched_utc_ms': now_ms,
         'fetched_bj': _fmt_bj_from_ms(now_ms),
-        'data': client.futures_ticker(),
+        'data': data,
     }
     _atomic_write_json(path, payload)
     return payload
@@ -1302,6 +1328,7 @@ def _fetch_symbol_klines_remote(
     end_time: int | None = None,
 ) -> list[list[Any]]:
     sleep_if_binance_rest_banned(source='market_data.futures_klines')
+    sleep_if_binance_rest_quota_near_limit(source='market_data.futures_klines')
     client = get_client(account)
     params: dict[str, Any] = {
         'symbol': symbol,
@@ -1312,7 +1339,13 @@ def _fetch_symbol_klines_remote(
         params['startTime'] = int(start_time)
     if end_time is not None:
         params['endTime'] = int(end_time)
-    return client.futures_klines(**params)
+    rows = client.futures_klines(**params)
+    response = getattr(client, 'response', None)
+    record_binance_rest_quota(
+        source='market_data.futures_klines',
+        headers=getattr(response, 'headers', None),
+    )
+    return rows
 
 
 def _fetch_symbol_index_price_klines_remote(
@@ -1324,6 +1357,7 @@ def _fetch_symbol_index_price_klines_remote(
     end_time: int | None = None,
 ) -> list[list[Any]]:
     sleep_if_binance_rest_banned(source='market_data.index_price_klines')
+    sleep_if_binance_rest_quota_near_limit(source='market_data.index_price_klines')
     return get_index_price_klines(
         account,
         symbol,

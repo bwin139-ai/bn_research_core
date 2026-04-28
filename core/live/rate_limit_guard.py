@@ -11,6 +11,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BJ = timezone(timedelta(hours=8))
 _SHARED_DIR = PROJECT_ROOT / 'output' / 'shared_market'
 _BAN_UNTIL_FILENAME = 'binance_rest_ban_until.shared.json'
+_QUOTA_STATE_FILENAME = 'binance_rest_quota.shared.json'
+_REQUEST_WEIGHT_LIMIT_1M = 2400
+_REQUEST_WEIGHT_GUARD_THRESHOLD_1M = 2200
 
 
 def _now_ms() -> int:
@@ -28,10 +31,126 @@ def _ban_until_path() -> Path:
     return _SHARED_DIR / _BAN_UNTIL_FILENAME
 
 
+def _quota_state_path() -> Path:
+    _SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    return _SHARED_DIR / _QUOTA_STATE_FILENAME
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp_path = path.with_name(f'{path.name}.{os.getpid()}.{time.time_ns()}.tmp')
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False) + '\n', encoding='utf-8')
     os.replace(tmp_path, path)
+
+
+def _read_json_dict(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _extract_header_int(headers: Any, name: str) -> int | None:
+    if headers is None:
+        return None
+    target = str(name or '').strip().lower()
+    if not target:
+        return None
+    try:
+        items = headers.items()
+    except Exception:
+        return None
+    for key, value in items:
+        if str(key or '').strip().lower() != target:
+            continue
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return None
+    return None
+
+
+def read_binance_rest_quota_state() -> dict[str, Any] | None:
+    return _read_json_dict(_quota_state_path())
+
+
+def record_binance_rest_quota(
+    *,
+    source: str,
+    headers: Any,
+    server_time_utc_ms: int | None = None,
+) -> dict[str, Any] | None:
+    used_weight_1m = _extract_header_int(headers, 'X-MBX-USED-WEIGHT-1M')
+    order_count_10s = _extract_header_int(headers, 'X-MBX-ORDER-COUNT-10S')
+    order_count_1m = _extract_header_int(headers, 'X-MBX-ORDER-COUNT-1M')
+    if used_weight_1m is None and order_count_10s is None and order_count_1m is None:
+        return None
+
+    now_ms = _now_ms()
+    observed_ms = int(server_time_utc_ms) if server_time_utc_ms is not None else now_ms
+    minute_bucket_utc = int(observed_ms // 60000)
+    prev = read_binance_rest_quota_state() or {}
+    prev_used_weight_1m = prev.get('used_weight_1m')
+    prev_minute_bucket_utc = prev.get('minute_bucket_utc')
+    used_weight_1m_delta = None
+    if (
+        used_weight_1m is not None
+        and prev_used_weight_1m is not None
+        and prev_minute_bucket_utc == minute_bucket_utc
+    ):
+        try:
+            used_weight_1m_delta = max(0, int(used_weight_1m) - int(prev_used_weight_1m))
+        except Exception:
+            used_weight_1m_delta = None
+
+    payload = {
+        'schema_version': 1,
+        'source': str(source),
+        'recorded_utc_ms': int(now_ms),
+        'recorded_bj': _fmt_bj_from_ms(int(now_ms)),
+        'observed_utc_ms': int(observed_ms),
+        'observed_bj': _fmt_bj_from_ms(int(observed_ms)),
+        'minute_bucket_utc': int(minute_bucket_utc),
+        'used_weight_1m': int(used_weight_1m) if used_weight_1m is not None else None,
+        'used_weight_1m_delta': int(used_weight_1m_delta) if used_weight_1m_delta is not None else None,
+        'order_count_10s': int(order_count_10s) if order_count_10s is not None else None,
+        'order_count_1m': int(order_count_1m) if order_count_1m is not None else None,
+        'weight_limit_1m': int(prev.get('weight_limit_1m') or _REQUEST_WEIGHT_LIMIT_1M),
+        'weight_guard_threshold_1m': int(prev.get('weight_guard_threshold_1m') or _REQUEST_WEIGHT_GUARD_THRESHOLD_1M),
+        'guard_sleep_count_total': int(prev.get('guard_sleep_count_total') or 0),
+        'guard_sleep_secs_total': float(prev.get('guard_sleep_secs_total') or 0.0),
+        'guard_sleep_last_utc_ms': prev.get('guard_sleep_last_utc_ms'),
+        'guard_sleep_last_bj': prev.get('guard_sleep_last_bj'),
+        'ban_count_total': int(prev.get('ban_count_total') or 0),
+        'ban_last_utc_ms': prev.get('ban_last_utc_ms'),
+        'ban_last_bj': prev.get('ban_last_bj'),
+    }
+    try:
+        _atomic_write_json(_quota_state_path(), payload)
+    except Exception:
+        return None
+    return payload
+
+
+def _update_quota_state(mutator) -> dict[str, Any]:
+    current = read_binance_rest_quota_state() or {
+        'schema_version': 1,
+        'recorded_utc_ms': _now_ms(),
+        'recorded_bj': _fmt_bj_from_ms(_now_ms()),
+        'weight_limit_1m': _REQUEST_WEIGHT_LIMIT_1M,
+        'weight_guard_threshold_1m': _REQUEST_WEIGHT_GUARD_THRESHOLD_1M,
+        'guard_sleep_count_total': 0,
+        'guard_sleep_secs_total': 0.0,
+        'ban_count_total': 0,
+    }
+    payload = mutator(dict(current))
+    payload['schema_version'] = 1
+    _atomic_write_json(_quota_state_path(), payload)
+    return payload
 
 
 def record_binance_rest_ban(
@@ -57,6 +176,19 @@ def record_binance_rest_ban(
         'ban_until_bj': _fmt_bj_from_ms(int(ban_until_utc_ms)),
     }
     _atomic_write_json(_ban_until_path(), payload)
+    def _mutate_quota_state(current: dict[str, Any]) -> dict[str, Any]:
+        current['ban_count_total'] = int(current.get('ban_count_total') or 0) + 1
+        current['ban_last_utc_ms'] = int(now_ms)
+        current['ban_last_bj'] = _fmt_bj_from_ms(int(now_ms))
+        current.setdefault('weight_limit_1m', _REQUEST_WEIGHT_LIMIT_1M)
+        current.setdefault('weight_guard_threshold_1m', _REQUEST_WEIGHT_GUARD_THRESHOLD_1M)
+        current.setdefault('guard_sleep_count_total', 0)
+        current.setdefault('guard_sleep_secs_total', 0.0)
+        return current
+    try:
+        _update_quota_state(_mutate_quota_state)
+    except Exception:
+        pass
     return payload
 
 
@@ -93,4 +225,51 @@ def sleep_if_binance_rest_banned(*, source: str, pad_secs: float = 1.0) -> float
             flush=True,
         )
         time.sleep(sleep_s)
+    return sleep_s
+
+
+def sleep_if_binance_rest_quota_near_limit(
+    *,
+    source: str,
+    weight_guard_threshold_1m: int = _REQUEST_WEIGHT_GUARD_THRESHOLD_1M,
+    weight_limit_1m: int = _REQUEST_WEIGHT_LIMIT_1M,
+    pad_secs: float = 1.0,
+) -> float:
+    payload = read_binance_rest_quota_state()
+    if payload is None:
+        return 0.0
+    used_weight_1m = payload.get('used_weight_1m')
+    minute_bucket_utc = payload.get('minute_bucket_utc')
+    if used_weight_1m is None or minute_bucket_utc is None:
+        return 0.0
+    now_ms = _now_ms()
+    current_minute_bucket_utc = int(now_ms // 60000)
+    if int(minute_bucket_utc) != current_minute_bucket_utc:
+        return 0.0
+    threshold = max(1, int(weight_guard_threshold_1m))
+    limit = max(threshold, int(weight_limit_1m))
+    if int(used_weight_1m) < threshold:
+        return 0.0
+    next_minute_ms = int((current_minute_bucket_utc + 1) * 60000)
+    sleep_s = max(0.0, (next_minute_ms - now_ms) / 1000.0) + max(0.0, float(pad_secs))
+    if sleep_s <= 0.0:
+        return 0.0
+    def _mutate_quota_state(current: dict[str, Any]) -> dict[str, Any]:
+        current['weight_limit_1m'] = int(limit)
+        current['weight_guard_threshold_1m'] = int(threshold)
+        current['guard_sleep_count_total'] = int(current.get('guard_sleep_count_total') or 0) + 1
+        current['guard_sleep_secs_total'] = float(current.get('guard_sleep_secs_total') or 0.0) + float(sleep_s)
+        current['guard_sleep_last_utc_ms'] = int(now_ms)
+        current['guard_sleep_last_bj'] = _fmt_bj_from_ms(int(now_ms))
+        return current
+    try:
+        _update_quota_state(_mutate_quota_state)
+    except Exception:
+        pass
+    print(
+        f'[binance_rest_quota_guard] source={source} used_weight_1m={int(used_weight_1m)}/{limit} '
+        f'sleep={sleep_s:.1f}s until_bj={_fmt_bj_from_ms(next_minute_ms)}',
+        flush=True,
+    )
+    time.sleep(sleep_s)
     return sleep_s
