@@ -86,6 +86,6 @@
   },
   "risk_controls": {
     "cooldown_hours": 4,
-    "max_risk_pct": 0.08
+    "max_risk_pct": 0.12
   }
 }
