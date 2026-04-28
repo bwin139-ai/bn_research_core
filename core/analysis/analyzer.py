@@ -31,7 +31,16 @@ class PerformanceAnalyzer:
 
         # 严格固定金额（单利）+ 扣除双边手续费模式
         trades_df["net_pnl_pct"] = trades_df["pnl_pct"] - self.fee_rate
-        trades_df["equity_change"] = trades_df["net_pnl_pct"] * self.initial_capital
+        if "position_notional_usdt" in trades_df.columns:
+            notional = pd.to_numeric(trades_df["position_notional_usdt"], errors="coerce")
+            trades_df["position_notional_usdt_effective"] = notional.where(
+                notional > 0, self.initial_capital
+            )
+        else:
+            trades_df["position_notional_usdt_effective"] = self.initial_capital
+        trades_df["equity_change"] = (
+            trades_df["net_pnl_pct"] * trades_df["position_notional_usdt_effective"]
+        )
         trades_df["cumulative_equity"] = (
             self.initial_capital + trades_df["equity_change"].cumsum()
         )

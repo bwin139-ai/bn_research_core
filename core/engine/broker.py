@@ -32,6 +32,12 @@ class Order:
         self.tp_price = 0.0
         self.sl_price = 0.0
         self.context = context if context is not None else {}
+        self.position_notional_usdt: Optional[float] = None
+        self.sizing_ratio: Optional[float] = None
+        self.signal_risk_pct: Optional[float] = None
+        self.risk_budget_pct: Optional[float] = None
+        self.planned_sl_loss_usdt: Optional[float] = None
+        self.base_order_notional_usdt: Optional[float] = None
 
 
 class Position:
@@ -45,6 +51,12 @@ class Position:
         signal_time_ms: int = 0,
         signal_price: float = 0.0,
         context: dict = None,
+        position_notional_usdt: Optional[float] = None,
+        sizing_ratio: Optional[float] = None,
+        signal_risk_pct: Optional[float] = None,
+        risk_budget_pct: Optional[float] = None,
+        planned_sl_loss_usdt: Optional[float] = None,
+        base_order_notional_usdt: Optional[float] = None,
     ):
         self.symbol = symbol
         self.entry_price = entry_price
@@ -54,6 +66,12 @@ class Position:
         self.signal_time_ms = signal_time_ms
         self.signal_price = signal_price
         self.context = context if context is not None else {}
+        self.position_notional_usdt = position_notional_usdt
+        self.sizing_ratio = sizing_ratio
+        self.signal_risk_pct = signal_risk_pct
+        self.risk_budget_pct = risk_budget_pct
+        self.planned_sl_loss_usdt = planned_sl_loss_usdt
+        self.base_order_notional_usdt = base_order_notional_usdt
         self.breakeven_guard_enabled = False
         self.breakeven_guard_armed = False
         self.breakeven_guard_trigger_r = 0.0
@@ -205,6 +223,12 @@ class VirtualBroker:
             signal_time_ms=order.signal_time_ms,
             signal_price=order.signal_price,
             context=order.context,
+            position_notional_usdt=order.position_notional_usdt,
+            sizing_ratio=order.sizing_ratio,
+            signal_risk_pct=order.signal_risk_pct,
+            risk_budget_pct=order.risk_budget_pct,
+            planned_sl_loss_usdt=order.planned_sl_loss_usdt,
+            base_order_notional_usdt=order.base_order_notional_usdt,
         )
 
         risk_distance = float(exec_price) - float(order.sl_price)
@@ -247,6 +271,17 @@ class VirtualBroker:
                 "entry_price": pos.entry_price,
                 "exit_price": price,
                 "pnl_pct": pct_pnl,
+                "position_notional_usdt": pos.position_notional_usdt,
+                "sizing_ratio": pos.sizing_ratio,
+                "signal_risk_pct": pos.signal_risk_pct,
+                "risk_budget_pct": pos.risk_budget_pct,
+                "planned_sl_loss_usdt": pos.planned_sl_loss_usdt,
+                "base_order_notional_usdt": pos.base_order_notional_usdt,
+                "gross_pnl_usdt": (
+                    float(pos.position_notional_usdt) * float(pct_pnl)
+                    if pos.position_notional_usdt is not None
+                    else None
+                ),
                 "reason": reason,
                 "exit_bar_tp_sl_both_hit": bool(exit_bar_tp_sl_both_hit),
                 "breakeven_guard_enabled": bool(pos.breakeven_guard_enabled),

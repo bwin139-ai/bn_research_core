@@ -79,7 +79,8 @@ class StrategyConfig:
         ("exit_policy", "breakeven_guard", "trigger_r"),
         ("exit_policy", "breakeven_guard", "floor_r"),
         ("risk_controls", "cooldown_hours"),
-        ("risk_controls", "max_risk_pct"),
+        ("risk_controls", "base_order_notional_usdt"),
+        ("risk_controls", "full_notional_risk_pct"),
     ]
 
     @staticmethod
@@ -203,11 +204,16 @@ class StrategyConfig:
             raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须是 number')
         if float(cooldown_hours) < 0:
             raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须 >= 0')
-        max_risk_pct = raw_data["risk_controls"]["max_risk_pct"]
-        if not isinstance(max_risk_pct, (int, float)):
-            raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须是 number')
-        if float(max_risk_pct) <= 0:
-            raise ValueError('【铁律违背】risk_controls.max_risk_pct 必须 > 0')
+        base_order_notional_usdt = raw_data["risk_controls"]["base_order_notional_usdt"]
+        if not isinstance(base_order_notional_usdt, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须是 number')
+        if float(base_order_notional_usdt) <= 0:
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须 > 0')
+        full_notional_risk_pct = raw_data["risk_controls"]["full_notional_risk_pct"]
+        if not isinstance(full_notional_risk_pct, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.full_notional_risk_pct 必须是 number')
+        if float(full_notional_risk_pct) <= 0:
+            raise ValueError('【铁律违背】risk_controls.full_notional_risk_pct 必须 > 0')
         gamma_ac_vol_ratio_min = raw_data["structure"]["vol_climax"]["gamma_ac_vol_ratio_min"]
         if not isinstance(gamma_ac_vol_ratio_min, (int, float)):
             raise ValueError('【铁律违背】structure.vol_climax.gamma_ac_vol_ratio_min 必须是 number')

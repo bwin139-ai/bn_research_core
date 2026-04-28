@@ -5,14 +5,16 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from strategies.run_backtest import build_extended_summary_metrics, _extract_fee_side  # type: ignore
+BJ_TZ = timezone(timedelta(hours=8))
+DEFAULT_FEE_SIDE = 0.0005
 
 
 def round2(value: float) -> float:
@@ -32,8 +34,40 @@ def load_jsonl(path: Path) -> List[dict]:
     return rows
 
 
+def _safe_float(v: object, default: float | None = None) -> float | None:
+    try:
+        if v is None:
+            return default
+        if isinstance(v, str) and not v.strip():
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _extract_fee_side(config: Dict[str, Any]) -> float:
+    candidates = [
+        config.get("fee_side"),
+        config.get("backtest", {}).get("fee_side") if isinstance(config.get("backtest"), dict) else None,
+        config.get("runtime", {}).get("fee_side") if isinstance(config.get("runtime"), dict) else None,
+        config.get("sim", {}).get("fee_side") if isinstance(config.get("sim"), dict) else None,
+    ]
+    for v in candidates:
+        fv = _safe_float(v, None)
+        if fv is not None:
+            return fv
+    return DEFAULT_FEE_SIDE
+
+
 def _pnl_usdt_from_trade(trade: Dict[str, object], initial_equity: float) -> float:
-    return float(initial_equity) * float(trade['pnl_pct'])
+    notional = trade.get('position_notional_usdt')
+    try:
+        notional_usdt = float(notional)
+    except Exception:
+        notional_usdt = float(initial_equity)
+    if notional_usdt <= 0:
+        notional_usdt = float(initial_equity)
+    return notional_usdt * float(trade['pnl_pct'])
 
 
 def _hold_minutes_from_trade(trade: Dict[str, object]) -> float:
@@ -142,32 +176,61 @@ def load_meta_fallback(run_id: str, state_dir: Path, explicit_merge_meta: str | 
     )
 
 
-def normalize_monthly_stats(monthly_stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> List[Dict[str, Any]]:
+    monthly: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        dt = datetime.fromtimestamp(row["exit_time_ms"] / 1000.0, tz=timezone.utc).astimezone(BJ_TZ)
+        key = dt.strftime("%Y-%m")
+        item = monthly.setdefault(
+            key,
+            {
+                "month": key,
+                "trade_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "flat_count": 0,
+                "gross_pnl_usdt": 0.0,
+                "net_pnl_usdt": 0.0,
+            },
+        )
+        item["trade_count"] += 1
+        if float(row["gross_amount_usdt"]) > 0:
+            item["win_count"] += 1
+        elif float(row["gross_amount_usdt"]) < 0:
+            item["loss_count"] += 1
+        else:
+            item["flat_count"] += 1
+        item["gross_pnl_usdt"] += float(row["gross_amount_usdt"])
+        item["net_pnl_usdt"] += float(row["net_amount_usdt"])
+
     out: List[Dict[str, Any]] = []
-    for row in monthly_stats:
+    for key in sorted(monthly.keys()):
+        item = monthly[key]
+        gross_pnl_usdt = float(item["gross_pnl_usdt"])
+        net_pnl_usdt = float(item["net_pnl_usdt"])
         out.append(
             {
-                "month": row.get("month"),
-                "trade_count": int(row.get("trade_count", 0)),
-                "win_count": int(row.get("win_count", 0)),
-                "loss_count": int(row.get("loss_count", 0)),
-                "flat_count": int(row.get("flat_count", 0)),
-                "net_pnl_usdt": round2(row.get("net_pnl", 0.0)),
-                "gross_return_pct": round2(float(row.get("gross_pnl_pct_sum", 0.0)) * 100.0),
-                "net_return_pct": round2(float(row.get("net_pnl_pct_sum", 0.0)) * 100.0),
-                "gross_pnl_usdt_simple_100": round2(row.get("gross_pnl_amount_simple_100", 0.0)),
-                "net_pnl_usdt_simple_100": round2(row.get("net_pnl_amount_simple_100", 0.0)),
+                "month": item["month"],
+                "trade_count": int(item["trade_count"]),
+                "win_count": int(item["win_count"]),
+                "loss_count": int(item["loss_count"]),
+                "flat_count": int(item["flat_count"]),
+                "net_pnl_usdt": round2(net_pnl_usdt),
+                "gross_return_pct": round2(gross_pnl_usdt / initial_equity * 100.0),
+                "net_return_pct": round2(net_pnl_usdt / initial_equity * 100.0),
+                "gross_pnl_usdt_simple_100": round2(gross_pnl_usdt),
+                "net_pnl_usdt_simple_100": round2(net_pnl_usdt),
             }
         )
     return out
 
 
 def build_normalized_metrics(trades: List[Dict[str, object]], fee_side: float, initial_equity: float, show_gross: bool = False) -> Dict[str, object]:
-    raw = build_extended_summary_metrics(trades, fee_side=fee_side, initial_equity=initial_equity)
     try:
         from core.analysis.sim_equity_curves import build_equity_payload, prepare_rows  # type: ignore
 
-        equity_metrics = build_equity_payload(prepare_rows(trades, fee_side), initial_equity, show_gross=show_gross)
+        rows = prepare_rows(trades, fee_side, initial_equity)
+        equity_metrics = build_equity_payload(rows, initial_equity, show_gross=show_gross)
     except Exception as exc:
         raise RuntimeError(f"failed to build normalized equity metrics: {exc}") from exc
 
@@ -180,7 +243,7 @@ def build_normalized_metrics(trades: List[Dict[str, object]], fee_side: float, i
         "return_simple_net_pct": equity_metrics["return_simple_net_pct"],
         "return_compound_net_pct": equity_metrics["return_compound_net_pct"],
         "max_drawdown": dict(equity_metrics["max_drawdown"]),
-        "monthly_stats": normalize_monthly_stats(raw.get("monthly_stats", [])),
+        "monthly_stats": build_monthly_stats(rows, initial_equity),
     }
     if show_gross:
         out.update(

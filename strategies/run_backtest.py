@@ -92,13 +92,23 @@ def _extract_symbol(trade: Dict[str, Any]) -> str:
     return str(v) if v is not None else ""
 
 
-def _prepare_trade_rows(trade_history: List[Dict[str, Any]], fee_side: float) -> List[Dict[str, Any]]:
+def _trade_notional_usdt(trade: Dict[str, Any], initial_equity: float) -> float:
+    value = _safe_float(trade.get("position_notional_usdt"), None)
+    if value is not None and value > 0:
+        return float(value)
+    return float(initial_equity)
+
+
+def _prepare_trade_rows(trade_history: List[Dict[str, Any]], fee_side: float, initial_equity: float) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     fee_frac = fee_side * 2.0
     for t in trade_history:
         gross_pct = _safe_float(t.get("pnl_pct"), None)
         if gross_pct is None:
             continue
+        notional_usdt = _trade_notional_usdt(t, initial_equity)
+        gross_amount_usdt = notional_usdt * float(gross_pct)
+        net_amount_usdt = notional_usdt * (float(gross_pct) - fee_frac)
         exit_ms = _extract_exit_time_ms(t)
         rows.append(
             {
@@ -106,6 +116,11 @@ def _prepare_trade_rows(trade_history: List[Dict[str, Any]], fee_side: float) ->
                 "exit_time_ms": exit_ms,
                 "gross_pct": float(gross_pct),
                 "net_pct": float(gross_pct) - fee_frac,
+                "notional_usdt": float(notional_usdt),
+                "gross_amount_usdt": float(gross_amount_usdt),
+                "net_amount_usdt": float(net_amount_usdt),
+                "gross_return_on_initial": float(gross_amount_usdt / initial_equity),
+                "net_return_on_initial": float(net_amount_usdt / initial_equity),
             }
         )
     rows.sort(key=lambda x: (x["exit_time_ms"], x["symbol"]))
@@ -118,10 +133,10 @@ def _build_equity_curves(rows: List[Dict[str, Any]], initial_equity: float) -> D
     compound_gross = [initial_equity]
     compound_net = [initial_equity]
     for row in rows:
-        gp = row["gross_pct"]
-        npct = row["net_pct"]
-        simple_gross.append(simple_gross[-1] + initial_equity * gp)
-        simple_net.append(simple_net[-1] + initial_equity * npct)
+        gp = row["gross_return_on_initial"]
+        npct = row["net_return_on_initial"]
+        simple_gross.append(simple_gross[-1] + row["gross_amount_usdt"])
+        simple_net.append(simple_net[-1] + row["net_amount_usdt"])
         compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + gp))
         compound_net.append(compound_net[-1] * max(0.0, 1.0 + npct))
     return {
@@ -199,10 +214,10 @@ def _build_monthly_stats(rows: List[Dict[str, Any]], initial_equity: float) -> L
             item["loss_count"] += 1
         else:
             item["flat_count"] += 1
-        item["gross_pnl_pct_sum"] += row["gross_pct"]
-        item["net_pnl_pct_sum"] += row["net_pct"]
-        item["gross_pnl_amount_simple_100"] += initial_equity * row["gross_pct"]
-        item["net_pnl_amount_simple_100"] += initial_equity * row["net_pct"]
+        item["gross_pnl_pct_sum"] += row["gross_return_on_initial"]
+        item["net_pnl_pct_sum"] += row["net_return_on_initial"]
+        item["gross_pnl_amount_simple_100"] += row["gross_amount_usdt"]
+        item["net_pnl_amount_simple_100"] += row["net_amount_usdt"]
     out = []
     for key in sorted(monthly.keys()):
         item = monthly[key]
@@ -320,11 +335,11 @@ def _apply_spring_logging_hooks(strategy: Any, broker: VirtualBroker) -> None:
 
 
 def build_extended_summary_metrics(trade_history: List[Dict[str, Any]], fee_side: float, initial_equity: float = EQUITY_INITIAL) -> Dict[str, Any]:
-    rows = _prepare_trade_rows(trade_history, fee_side)
+    rows = _prepare_trade_rows(trade_history, fee_side, initial_equity)
     times_ms = [rows[0]["exit_time_ms"] if rows else 0] + [r["exit_time_ms"] for r in rows]
     curves = _build_equity_curves(rows, initial_equity)
-    simple_gross_sum_pct = sum(r["gross_pct"] for r in rows)
-    simple_net_sum_pct = sum(r["net_pct"] for r in rows)
+    simple_gross_sum_pct = sum(r["gross_return_on_initial"] for r in rows)
+    simple_net_sum_pct = sum(r["net_return_on_initial"] for r in rows)
     compound_gross_pct = ((curves["compound_gross"][-1] / initial_equity) - 1.0) if curves["compound_gross"] else 0.0
     compound_net_pct = ((curves["compound_net"][-1] / initial_equity) - 1.0) if curves["compound_net"] else 0.0
     return {
@@ -736,6 +751,11 @@ def main():
             "pre_a_high_to_a_close_pct_max",
             "pre_a_close_pos_in_range_min",
             "risk_pct",
+            "base_order_notional_usdt",
+            "full_notional_risk_pct",
+            "sizing_ratio",
+            "position_notional_usdt",
+            "planned_sl_loss_usdt",
             "stop_loss_price",
             "signal_fail_reason",
             "signal_emit",
@@ -800,6 +820,11 @@ def main():
                 "current_price": _json_safe(signal.get("current_price")),
                 "tp_price": _json_safe(signal.get("tp_price")),
                 "sl_price": _json_safe(signal.get("sl_price")),
+                "position_notional_usdt": _json_safe(signal.get("position_notional_usdt")),
+                "sizing_ratio": _json_safe(signal.get("sizing_ratio")),
+                "signal_risk_pct": _json_safe(signal.get("signal_risk_pct")),
+                "risk_budget_pct": _json_safe(signal.get("risk_budget_pct")),
+                "planned_sl_loss_usdt": _json_safe(signal.get("planned_sl_loss_usdt")),
                 "params": _json_safe(signal.get("params")),
             }
 
@@ -1021,6 +1046,12 @@ def main():
             )
             order.tp_price = signal["tp_price"]
             order.sl_price = signal["sl_price"]
+            order.position_notional_usdt = _safe_float(signal.get("position_notional_usdt"), None)
+            order.sizing_ratio = _safe_float(signal.get("sizing_ratio"), None)
+            order.signal_risk_pct = _safe_float(signal.get("signal_risk_pct"), None)
+            order.risk_budget_pct = _safe_float(signal.get("risk_budget_pct"), None)
+            order.planned_sl_loss_usdt = _safe_float(signal.get("planned_sl_loss_usdt"), None)
+            order.base_order_notional_usdt = _safe_float(signal.get("base_order_notional_usdt"), None)
             broker.active_orders[signal["symbol"]] = order
 
         if args.strategy == "spring-sabc":

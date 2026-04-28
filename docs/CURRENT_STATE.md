@@ -196,8 +196,9 @@ strategies/snapback/config.highfreq.json:
 3. 增加 rebound ratio 上限过滤。
 4. 增加 pre-A structure filters。
 5. pre-A trend 当前要求非负。
-6. Spring 配置曾对齐 1924 基线，并多轮调整 `max_risk_pct`。
+6. Spring 配置曾对齐 1924 基线，并多轮调整 `max_risk_pct`；回测事实显示硬过滤收紧到 `0.12/0.10/0.08` 没有改善综合表现。
 7. 当前配置中 BREAKEVEN_GUARD 关闭，保留代码语义但不作为当前主基线启用。
+8. `max_risk_pct` 已从 Spring 活跃语义中删除；风险距离改为动态开仓金额计算依据。
 
 当前配置事实：
 
@@ -215,14 +216,15 @@ strategies/spring/config.json:
 - take_profit_pct = -1
 - max_hold_mins = 60
 - breakeven_guard.enabled = false
-- max_risk_pct = 0.1
+- base_order_notional_usdt = 100
+- full_notional_risk_pct = 0.05
 ```
 
 当前 pending：
 
-1. 继续确认 `max_risk_pct = 0.1` 的正式阶段定位。
+1. 基于 `SPRING_V1_30D_P6_0427T1606_ALL` 作为结构毕业候选，重跑动态 sizing 后的正式 sim。
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
-3. 若再调整 Spring 结构过滤，必须同步评估审计工具是否需要扩展。
+3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
 
 ### 3.6 audit tools / 目录治理
 
@@ -277,8 +279,8 @@ strategies/spring/config.json:
 
 ```text
 1. 固定当前 config 事实。
-2. 继续审计 2026-04 坏月份。
-3. 若要改 pre-A / rebound / risk 参数，先形成语义说明，再做单问题 patch。
+2. 用动态开仓金额语义重跑 `0427T1606` 候选基线，确认收益、回撤与 2026-04 表现。
+3. 若要改 pre-A / rebound / sizing 参数，先形成语义说明，再做单问题 patch。
 ```
 
 ### 5.4 文档

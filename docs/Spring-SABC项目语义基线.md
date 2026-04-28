@@ -322,6 +322,71 @@ breakeven_guard_armed = true
 
 后续若重新启用 BREAKEVEN_GUARD，只能在本文件已定义的 sim/live 时序语义上继续实验，禁止退回到旧的同 bar arm + exit 错误语义。
 
+13.2 风险距离与动态开仓金额语义
+
+Spring-SABC 不使用 `risk_pct` 作为信号硬过滤条件。
+
+定义：
+
+```text
+risk_pct = (entry_price - stop_loss_price) / entry_price
+```
+
+`risk_pct` 表示该笔结构从入场价到原始止损价的价格风险距离。
+
+Spring-SABC 的资金管理使用两个显式配置字段：
+
+```text
+risk_controls.base_order_notional_usdt
+risk_controls.full_notional_risk_pct
+```
+
+含义：
+
+```text
+base_order_notional_usdt：满额开仓名义金额
+full_notional_risk_pct：满额开仓对应的风险距离预算
+```
+
+开仓金额计算公式固定为：
+
+```text
+sizing_ratio = min(1.0, full_notional_risk_pct / risk_pct)
+position_notional_usdt = base_order_notional_usdt * sizing_ratio
+planned_sl_loss_usdt = position_notional_usdt * risk_pct
+```
+
+因此：
+
+```text
+若 risk_pct <= full_notional_risk_pct，则按 base_order_notional_usdt 满额开仓。
+若 risk_pct > full_notional_risk_pct，则按比例降低开仓金额。
+```
+
+该规则的目的，是保留高波动 SABC 结构的信号机会，同时约束单笔原始 STOP_LOSS 的计划亏损金额。
+
+旧字段 `risk_controls.max_risk_pct` 不再属于 Spring-SABC 活跃语义：
+
+```text
+1. 它不再作为信号过滤条件。
+2. 它不再作为配置字段出现。
+3. 后续不得用 0.99 等参数让旧过滤逻辑“事实失效”。
+```
+
+sim 侧交易流水必须落盘动态 sizing 字段，至少包括：
+
+```text
+base_order_notional_usdt
+full_notional_risk_pct / risk_budget_pct
+signal_risk_pct
+sizing_ratio
+position_notional_usdt
+planned_sl_loss_usdt
+```
+
+sim 侧绩效统计必须优先使用 `position_notional_usdt` 计算实际 USDT 盈亏。
+如果未来 live 启用 Spring-SABC，live 下单数量必须按同一套 `position_notional_usdt / entry_price` 口径对齐。
+
 14. Runtime 与 Structure 的关系
 
 runtime.max_history_window_mins 的职责是：

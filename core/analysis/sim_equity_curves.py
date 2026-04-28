@@ -37,7 +37,18 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def prepare_rows(trades: List[Dict[str, Any]], fee_side: float) -> List[Dict[str, Any]]:
+def _trade_notional_usdt(row: Dict[str, Any], initial_equity: float) -> float:
+    value = row.get("position_notional_usdt")
+    try:
+        notional = float(value)
+    except Exception:
+        notional = float(initial_equity)
+    if notional <= 0:
+        notional = float(initial_equity)
+    return notional
+
+
+def prepare_rows(trades: List[Dict[str, Any]], fee_side: float, initial_equity: float) -> List[Dict[str, Any]]:
     fee_ratio_round_trip = fee_side * 2.0
     out: List[Dict[str, Any]] = []
     for row in trades:
@@ -51,12 +62,20 @@ def prepare_rows(trades: List[Dict[str, Any]], fee_side: float) -> List[Dict[str
                 break
         gross_ratio = float(row["pnl_pct"])
         net_ratio = gross_ratio - fee_ratio_round_trip
+        notional_usdt = _trade_notional_usdt(row, initial_equity)
+        gross_amount_usdt = notional_usdt * gross_ratio
+        net_amount_usdt = notional_usdt * net_ratio
         out.append(
             {
                 "exit_time_ms": exit_ms,
                 "dt": datetime.fromtimestamp(exit_ms / 1000.0, tz=UTC),
                 "gross_ratio": gross_ratio,
                 "net_ratio": net_ratio,
+                "notional_usdt": notional_usdt,
+                "gross_amount_usdt": gross_amount_usdt,
+                "net_amount_usdt": net_amount_usdt,
+                "gross_return_on_initial": gross_amount_usdt / float(initial_equity),
+                "net_return_on_initial": net_amount_usdt / float(initial_equity),
             }
         )
     out.sort(key=lambda x: x["exit_time_ms"])
@@ -69,10 +88,10 @@ def build_curves(rows: List[Dict[str, Any]], initial_equity: float):
     compound_gross = [initial_equity]
     compound_net = [initial_equity]
     for r in rows:
-        simple_gross.append(simple_gross[-1] + initial_equity * r["gross_ratio"])
-        simple_net.append(simple_net[-1] + initial_equity * r["net_ratio"])
-        compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + r["gross_ratio"]))
-        compound_net.append(compound_net[-1] * max(0.0, 1.0 + r["net_ratio"]))
+        simple_gross.append(simple_gross[-1] + r["gross_amount_usdt"])
+        simple_net.append(simple_net[-1] + r["net_amount_usdt"])
+        compound_gross.append(compound_gross[-1] * max(0.0, 1.0 + r["gross_return_on_initial"]))
+        compound_net.append(compound_net[-1] * max(0.0, 1.0 + r["net_return_on_initial"]))
     return simple_gross, simple_net, compound_gross, compound_net
 
 
@@ -181,8 +200,8 @@ def build_equity_payload(rows: List[Dict[str, Any]], initial_equity: float, show
     simple_gross, simple_net, compound_gross, compound_net = build_curves(rows, initial_equity)
     times_ms = [rows[0]["exit_time_ms"] if rows else 0] + [r["exit_time_ms"] for r in rows]
 
-    simple_gross_return_pct = sum(r["gross_ratio"] for r in rows) * 100.0
-    simple_net_return_pct = sum(r["net_ratio"] for r in rows) * 100.0
+    simple_gross_return_pct = ((simple_gross[-1] / initial_equity) - 1.0) * 100.0 if simple_gross else 0.0
+    simple_net_return_pct = ((simple_net[-1] / initial_equity) - 1.0) * 100.0 if simple_net else 0.0
     compound_gross_return_pct = ((compound_gross[-1] / initial_equity) - 1.0) * 100.0 if compound_gross else 0.0
     compound_net_return_pct = ((compound_net[-1] / initial_equity) - 1.0) * 100.0 if compound_net else 0.0
 
@@ -335,7 +354,7 @@ def main():
     initial_equity = float(summary.get("equity_initial_usdt", summary.get("equity_initial", args.initial_equity)))
     fee_side = float(summary.get("fee_side", args.fee_side))
 
-    rows = prepare_rows(load_jsonl(trades_path), fee_side)
+    rows = prepare_rows(load_jsonl(trades_path), fee_side, initial_equity)
     payload = build_equity_payload(rows, initial_equity, show_gross=args.show_gross)
     curves = payload.pop("_curves")
 

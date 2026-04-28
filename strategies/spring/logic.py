@@ -80,7 +80,8 @@ class SpringSABCStrategy:
         self.breakeven_guard_trigger_r = float(breakeven_guard["trigger_r"])
         self.breakeven_guard_floor_r = float(breakeven_guard["floor_r"])
         self.cooldown_hours = float(risk_controls["cooldown_hours"])
-        self.max_risk_pct = float(risk_controls["max_risk_pct"])
+        self.base_order_notional_usdt = float(risk_controls["base_order_notional_usdt"])
+        self.full_notional_risk_pct = float(risk_controls["full_notional_risk_pct"])
         self.cooldown_ms = int(round(self.cooldown_hours * 3600_000))
         self.cooldown_until: Dict[str, int] = {}
 
@@ -150,6 +151,7 @@ class SpringSABCStrategy:
             f" | AC/γA量比: {self._safe_float(context.get('gamma_ac_vol_ratio'), 0.0):.2f}"
             f" | 反弹比例: {self._pct_text(context.get('rebound_ratio'))}"
             f" | AB/BC: {int(context.get('ab_bars', 0))}/{int(context.get('bc_bars', 0))}"
+            f" | 开仓金额: {self._safe_float(signal.get('position_notional_usdt'), 0.0):.2f}U"
             f" | 评分: {int(context.get('score', 0))} (#{int(context.get('score_order', 0))})"
         )
 
@@ -157,6 +159,7 @@ class SpringSABCStrategy:
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
             f"[{signal_time_bj} BJ] 市价开仓成交: {signal['symbol']} 进场多单 @ {self._price_text(signal.get('current_price'))}"
+            f" | 金额: {self._safe_float(signal.get('position_notional_usdt'), 0.0):.2f}U"
             f" | 止盈: {self._price_text(signal.get('tp_price'))}"
             f" | 止损: {self._price_text(signal.get('sl_price'))}"
         )
@@ -814,16 +817,11 @@ class SpringSABCStrategy:
                 if audit_rec is not None:
                     audit_rec["signal_emit"] = False
                     audit_rec["risk_pct"] = float(risk_pct)
-                    audit_rec["max_risk_pct"] = self.max_risk_pct
                     audit_rec["signal_fail_reason"] = "signal_risk_distance_nonpositive"
                 continue
-            if risk_pct > self.max_risk_pct:
-                if audit_rec is not None:
-                    audit_rec["signal_emit"] = False
-                    audit_rec["risk_pct"] = float(risk_pct)
-                    audit_rec["max_risk_pct"] = self.max_risk_pct
-                    audit_rec["signal_fail_reason"] = "signal_risk_pct_above_max"
-                continue
+            sizing_ratio = min(1.0, self.full_notional_risk_pct / float(risk_pct))
+            position_notional_usdt = self.base_order_notional_usdt * sizing_ratio
+            planned_sl_loss_usdt = position_notional_usdt * float(risk_pct)
             if self.take_profit_pct == -1.0:
                 risk_distance = float(current_price) - float(sl_price)
                 if risk_distance <= 0:
@@ -855,7 +853,8 @@ class SpringSABCStrategy:
                     "breakeven_guard_trigger_r": self.breakeven_guard_trigger_r,
                     "breakeven_guard_floor_r": self.breakeven_guard_floor_r,
                     "cooldown_hours": self.cooldown_hours,
-                    "max_risk_pct": self.max_risk_pct,
+                    "base_order_notional_usdt": self.base_order_notional_usdt,
+                    "full_notional_risk_pct": self.full_notional_risk_pct,
                     "gamma_ac_vol_ratio_min": self.gamma_ac_vol_ratio_min,
                     "rebound_ratio_min": self.rebound_ratio_min,
                     "rebound_ratio_max": self.rebound_ratio_max,
@@ -864,6 +863,12 @@ class SpringSABCStrategy:
                     "pre_a_high_to_a_close_pct_max": self.pre_a_high_to_a_close_pct_max,
                     "pre_a_close_pos_in_range_min": self.pre_a_close_pos_in_range_min,
                 },
+                "position_notional_usdt": float(position_notional_usdt),
+                "sizing_ratio": float(sizing_ratio),
+                "signal_risk_pct": float(risk_pct),
+                "risk_budget_pct": float(self.full_notional_risk_pct),
+                "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
+                "base_order_notional_usdt": float(self.base_order_notional_usdt),
                 "context": {
                     "strategy_name": self.strategy_name,
                     "score_order": int(candidate.get("score_order", 0)),
@@ -919,7 +924,11 @@ class SpringSABCStrategy:
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),
                     "risk_pct": float(risk_pct),
-                    "max_risk_pct": self.max_risk_pct,
+                    "base_order_notional_usdt": self.base_order_notional_usdt,
+                    "full_notional_risk_pct": self.full_notional_risk_pct,
+                    "sizing_ratio": float(sizing_ratio),
+                    "position_notional_usdt": float(position_notional_usdt),
+                    "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
                     "take_profit_mode": take_profit_mode,
                     "breakeven_guard_enabled": self.breakeven_guard_enabled,
                     "breakeven_guard_trigger_r": self.breakeven_guard_trigger_r,
@@ -948,7 +957,11 @@ class SpringSABCStrategy:
                 audit_rec["tp_price"] = float(tp_price)
                 audit_rec["sl_price"] = float(sl_price)
                 audit_rec["risk_pct"] = float(risk_pct)
-                audit_rec["max_risk_pct"] = self.max_risk_pct
+                audit_rec["base_order_notional_usdt"] = self.base_order_notional_usdt
+                audit_rec["full_notional_risk_pct"] = self.full_notional_risk_pct
+                audit_rec["sizing_ratio"] = float(sizing_ratio)
+                audit_rec["position_notional_usdt"] = float(position_notional_usdt)
+                audit_rec["planned_sl_loss_usdt"] = float(planned_sl_loss_usdt)
                 audit_rec["cooldown_active"] = False
                 audit_rec["cooldown_until_after_signal"] = cooldown_until_after_signal if cooldown_until_after_signal > 0 else None
                 audit_rec["cooldown_until_after_signal_bj"] = self._bj_from_ms(cooldown_until_after_signal) if cooldown_until_after_signal > 0 else None
