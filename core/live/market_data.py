@@ -60,6 +60,8 @@ _SHARED_TICKER_TTL_SECS = 55
 _SHARED_EXCHANGE_INFO_TTL_SECS = 300
 _SHARED_LATEST_CLOSED_BAR_TTL_SECS = 2
 _SHARED_SYMBOL_BARS_TTL_SECS = 2
+_SHARED_SYMBOL_BARS_INCREMENTAL_MAX_LIMIT = 1000
+_SHARED_SYMBOL_BARS_INCREMENTAL_OVERLAP_BARS = 3
 _KLINES_1M_DIR = Path(PROJECT_ROOT) / 'data/klines_1m'
 _MARKET_24H_ROLLSUM_WINDOW_BARS = 1440
 _HUB_OWNED_1M_ROLLSUM_STATE_FILENAME = 'hub_owned_1m_rollsum_state.json'
@@ -400,6 +402,99 @@ def _is_recent_prefix_continuous(
     return bool(info.get('ok'))
 
 
+def _normalize_kline_rows(
+    rows: list[list[Any]] | None,
+    *,
+    latest_closed_bar_ts: int | None,
+    keep_limit: int | None,
+) -> list[list[Any]]:
+    merged: dict[int, list[Any]] = {}
+    max_ts = _to_int(latest_closed_bar_ts, default=0)
+    for row in list(rows or []):
+        if not isinstance(row, (list, tuple)) or len(row) == 0:
+            continue
+        open_time_ms = _to_int(row[0], default=0)
+        if open_time_ms <= 0:
+            continue
+        if max_ts > 0 and open_time_ms > max_ts:
+            continue
+        merged[int(open_time_ms)] = list(row)
+    ordered = [merged[ts] for ts in sorted(merged.keys())]
+    if keep_limit is not None and int(keep_limit) > 0 and len(ordered) > int(keep_limit):
+        ordered = ordered[-int(keep_limit):]
+    return ordered
+
+
+def _build_incremental_kline_fetch_plan(
+    cached_rows: list[list[Any]] | None,
+    *,
+    latest_closed_bar_ts: int | None,
+    keep_limit: int,
+) -> dict[str, Any] | None:
+    latest_ts = _to_int(latest_closed_bar_ts, default=0)
+    if latest_ts <= 0:
+        return None
+    normalized_cached_rows = _normalize_kline_rows(
+        cached_rows,
+        latest_closed_bar_ts=latest_ts,
+        keep_limit=keep_limit,
+    )
+    if not normalized_cached_rows:
+        return None
+    open_times = [_to_int(row[0], default=0) for row in normalized_cached_rows if isinstance(row, (list, tuple)) and len(row) > 0]
+    open_times = sorted({int(ts) for ts in open_times if int(ts) > 0})
+    if not open_times:
+        return None
+    cached_max_open_time_ms = int(open_times[-1])
+    if cached_max_open_time_ms >= latest_ts:
+        return None
+    if not _is_recent_prefix_continuous(open_times, cached_max_open_time_ms):
+        return None
+    lag_bars = max(0, (latest_ts - cached_max_open_time_ms) // 60000)
+    if lag_bars <= 0:
+        return None
+    overlap_bars = min(_SHARED_SYMBOL_BARS_INCREMENTAL_OVERLAP_BARS, max(1, len(open_times) - 1))
+    remote_limit = int(lag_bars + overlap_bars + 2)
+    if remote_limit > int(_SHARED_SYMBOL_BARS_INCREMENTAL_MAX_LIMIT):
+        return None
+    return {
+        'start_time': max(0, cached_max_open_time_ms - overlap_bars * 60000),
+        'end_time': latest_ts,
+        'remote_limit': remote_limit,
+        'cached_rows': normalized_cached_rows,
+        'cached_max_open_time_ms': cached_max_open_time_ms,
+        'lag_bars': int(lag_bars),
+    }
+
+
+def _fetch_remote_symbol_bar_rows(
+    account: str,
+    symbol: str,
+    *,
+    kind: str,
+    limit: int,
+    start_time: int | None = None,
+    end_time: int | None = None,
+) -> list[list[Any]]:
+    if kind == 'contract':
+        return _fetch_symbol_klines_remote(
+            account,
+            symbol,
+            limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
+    if kind == 'index':
+        return _fetch_symbol_index_price_klines_remote(
+            account,
+            symbol,
+            limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
+    raise ValueError(f'unsupported bars kind: {kind}')
+
+
 def _load_or_refresh_symbol_bar_rows(
     account: str,
     symbol: str,
@@ -411,10 +506,11 @@ def _load_or_refresh_symbol_bar_rows(
 ) -> list[list[Any]]:
     path = _symbol_bars_snapshot_path(symbol, limit, kind)
     cached = _read_json_file(path)
+    cached_rows = cached.get('data') if isinstance(cached, dict) else None
     cached_max_open_time_ms = _cached_rows_max_open_time_ms(cached)
     coverage_ok = _cached_rows_cover_latest_closed_bar(cached, required_latest_closed_bar_ts, limit)
     if _cache_is_fresh(cached, _SHARED_SYMBOL_BARS_TTL_SECS) and coverage_ok:
-        rows = cached.get('data')
+        rows = cached_rows
         if isinstance(rows, list):
             _record_shared_symbol_bars_cache_event(cache_stats, kind=kind, symbol=symbol, cache_hit=True)
             _record_shared_symbol_bars_cache_diag(
@@ -440,24 +536,48 @@ def _load_or_refresh_symbol_bar_rows(
             coverage_ok=coverage_ok,
         )
     now_ms = int(time.time() * 1000)
-    remote_limit = int(limit)
-    if required_latest_closed_bar_ts is not None:
-        # Binance latest-N queries often include the still-open 1m bar. Pull one extra
-        # and normalize back to the requested closed-bar window.
-        remote_limit = int(limit) + 1
-    if kind == 'contract':
-        rows = _fetch_symbol_klines_remote(account, symbol, remote_limit)
-    elif kind == 'index':
-        rows = _fetch_symbol_index_price_klines_remote(account, symbol, remote_limit)
-    else:
-        raise ValueError(f'unsupported bars kind: {kind}')
-    if required_latest_closed_bar_ts is not None:
-        rows = [
-            row for row in rows
-            if isinstance(row, (list, tuple)) and len(row) > 0 and _to_int(row[0], default=0) <= int(required_latest_closed_bar_ts)
-        ]
-        if len(rows) > int(limit):
-            rows = rows[-int(limit):]
+    rows: list[list[Any]]
+    incremental_plan = _build_incremental_kline_fetch_plan(
+        cached_rows if isinstance(cached_rows, list) else None,
+        latest_closed_bar_ts=required_latest_closed_bar_ts,
+        keep_limit=int(limit),
+    )
+    if incremental_plan is not None:
+        fetched_rows = _fetch_remote_symbol_bar_rows(
+            account,
+            symbol,
+            kind=kind,
+            limit=int(incremental_plan['remote_limit']),
+            start_time=int(incremental_plan['start_time']),
+            end_time=int(incremental_plan['end_time']),
+        )
+        rows = _normalize_kline_rows(
+            list(incremental_plan['cached_rows']) + list(fetched_rows or []),
+            latest_closed_bar_ts=required_latest_closed_bar_ts,
+            keep_limit=int(limit),
+        )
+        payload_preview = {
+            'data': rows,
+        }
+        if required_latest_closed_bar_ts is not None and not _cached_rows_cover_latest_closed_bar(payload_preview, required_latest_closed_bar_ts, limit):
+            incremental_plan = None
+    if incremental_plan is None:
+        remote_limit = int(limit)
+        if required_latest_closed_bar_ts is not None:
+            # Binance latest-N queries often include the still-open 1m bar. Pull one extra
+            # and normalize back to the requested closed-bar window.
+            remote_limit = int(limit) + 1
+        rows = _fetch_remote_symbol_bar_rows(
+            account,
+            symbol,
+            kind=kind,
+            limit=remote_limit,
+        )
+        rows = _normalize_kline_rows(
+            rows,
+            latest_closed_bar_ts=required_latest_closed_bar_ts,
+            keep_limit=int(limit),
+        )
     payload = {
         'fetched_utc_ms': now_ms,
         'fetched_bj': _fmt_bj_from_ms(now_ms),
@@ -1173,15 +1293,45 @@ def _filter_symbols_by_universe(
     return eligible, errors
 
 
-def _fetch_symbol_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
+def _fetch_symbol_klines_remote(
+    account: str,
+    symbol: str,
+    limit: int,
+    *,
+    start_time: int | None = None,
+    end_time: int | None = None,
+) -> list[list[Any]]:
     sleep_if_binance_rest_banned(source='market_data.futures_klines')
     client = get_client(account)
-    return client.futures_klines(symbol=symbol, interval=_INTERVAL, limit=int(limit))
+    params: dict[str, Any] = {
+        'symbol': symbol,
+        'interval': _INTERVAL,
+        'limit': int(limit),
+    }
+    if start_time is not None:
+        params['startTime'] = int(start_time)
+    if end_time is not None:
+        params['endTime'] = int(end_time)
+    return client.futures_klines(**params)
 
 
-def _fetch_symbol_index_price_klines_remote(account: str, symbol: str, limit: int) -> list[list[Any]]:
+def _fetch_symbol_index_price_klines_remote(
+    account: str,
+    symbol: str,
+    limit: int,
+    *,
+    start_time: int | None = None,
+    end_time: int | None = None,
+) -> list[list[Any]]:
     sleep_if_binance_rest_banned(source='market_data.index_price_klines')
-    return get_index_price_klines(account, symbol, interval=_INTERVAL, limit=int(limit))
+    return get_index_price_klines(
+        account,
+        symbol,
+        interval=_INTERVAL,
+        limit=int(limit),
+        start_time=start_time,
+        end_time=end_time,
+    )
 
 
 def _fetch_symbol_klines(
@@ -1191,7 +1341,17 @@ def _fetch_symbol_klines(
     *,
     cache_stats: dict[str, Any] | None = None,
     required_latest_closed_bar_ts: int | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
 ) -> list[list[Any]]:
+    if start_time is not None or end_time is not None:
+        return _fetch_symbol_klines_remote(
+            account,
+            symbol,
+            limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
     return _load_or_refresh_symbol_bar_rows(
         account,
         symbol,
@@ -1209,7 +1369,17 @@ def _fetch_symbol_index_price_klines(
     *,
     cache_stats: dict[str, Any] | None = None,
     required_latest_closed_bar_ts: int | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
 ) -> list[list[Any]]:
+    if start_time is not None or end_time is not None:
+        return _fetch_symbol_index_price_klines_remote(
+            account,
+            symbol,
+            limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
     return _load_or_refresh_symbol_bar_rows(
         account,
         symbol,
