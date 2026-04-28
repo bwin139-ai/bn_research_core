@@ -368,7 +368,7 @@ spring-sabc
 
 16. ABC 精确搜索算法
 
-本节为 spring-sabc 的唯一 ABC 结构定义，原 `Spring-SABC_ABC结构定义.md` 的内容已并入本文件。
+本节为 spring-sabc 的唯一 ABC 结构定义，原 `Spring-SABC_ABC结构定义.md` 的内容已并入本文件；旧入口已归档到 `docs/archive/legacy/`，不再作为活跃语义文件。
 
 16.1 C 固定语义
 

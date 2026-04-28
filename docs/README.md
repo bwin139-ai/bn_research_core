@@ -1,73 +1,52 @@
 # bn_research_core 文档导航
 
-本目录用于承载本仓库的唯一语义基线、Patch 协作规则、当前现场状态、策略语义定义，以及面向 Codex 的协作入口。
+本目录只保留当前协作需要的活跃文档。新线程不要靠旧聊天记忆恢复项目状态，应先读根目录 `AGENTS.md`，再按本文档进入具体材料。
 
-当前文档优先级固定为：
+## 必读入口
 
-1. `PROJECT_BASELINE.md`
-2. `STANDARD_PATCH_FRAMEWORK.md`
-3. `CURRENT_STATE.md`
-4. 具体策略语义文档
-5. 协作文档、归档报告、流程说明
+1. `../AGENTS.md`
+   - Codex / AI agent 的根工作规则。
+   - 定义启动检查、文档优先级、patch 纪律、归档边界。
 
-## 1. 必读主文档
+2. `PROJECT_BASELINE.md`
+   - 项目宪法。
+   - 定义公共语义、LONG-only、fail-fast、事实优先、禁止伪兼容等最高规则。
 
-### 1.1 宪法层
+3. `STANDARD_PATCH_FRAMEWORK.md`
+   - 正式 patch 协作框架。
+   - 定义单问题、单分类、锁基线、最小修改、验证与交付要求。
 
-- `PROJECT_BASELINE.md`
-  - 项目最高优先级语义与禁令。
-  - 适用于 `sim / live / audit / patch / review / 对话协作`。
+4. `CURRENT_STATE.md`
+   - 当前现场快照。
+   - 只记录当前正在做什么、做到哪里、下一步是什么。
 
-### 1.2 Patch 协作层
-
-- `STANDARD_PATCH_FRAMEWORK.md`
-  - 正式 Patch 的进入条件、分类约束、交付顺序、最小修改原则。
-  - 若与宪法冲突，以宪法为准。
-
-### 1.3 现场状态层
-
-- `CURRENT_STATE.md`
-  - 当前主线、已完成事实、pending、明确不做、下一步顺序。
-  - 只记录当前现场，不重写宪法和 Patch 框架。
-
-## 2. Codex 协作入口
-
-- `新聊天开场白.md`
-  - 新线程启动入口。
-  - 用于告诉 Codex 当前线程应该先读什么、当前主线是什么、哪些旧主线不要误拉回。
-
-- `CODEX_DOC_SYSTEM.md`
-  - 面向 Codex 的仓库文档分层说明。
-  - 回答“遇到一个任务时，应该先查哪层文档”。
-
-- `CODEX_COLLAB_WORKFLOW.md`
-  - 面向 Codex 的标准协作流程。
-  - 回答“从统一语义到执行 patch 与验证，应该按什么顺序做”。
-
-## 3. 策略语义层
+## 策略语义
 
 - `Spring-SABC项目语义基线.md`
-  - Spring-SABC 的唯一策略语义基线。
+  - Spring-SABC 的唯一活跃语义基线。
+  - 涉及 Spring-SABC 时必须阅读。
 
-- `Spring-SABC_ABC结构定义.md`
-  - 旧引用入口。
-  - 当前应以 `Spring-SABC项目语义基线.md` 为准。
-
-## 4. 代码理解与归档层
+## 代码理解材料
 
 - `snapback-sabc_代码流程.md`
-  - 面向当前代码实现的流程理解材料。
+  - Snapback/SABC live/sim 相关术语和流程速查。
+  - 只作为理解辅助，不覆盖主文档语义。
 
-- `snapback_sim_live_audit_report.md`
-  - 审计结论与归档报告类材料。
+## 新线程开场白
 
-## 5. 使用原则
+- `新聊天开场白.md`
+  - 可直接复制给新 Codex 线程的短启动提示。
+  - 只负责指向活跃文档，不再复制大段历史内容。
 
-1. 先读主文档，再读策略语义，再读实现与报告。
-2. 先统一语义，再进入审代码、patch、验证。
-3. 当前线程若需要正式 Patch，必须继续遵守：
-   - 先锁基线
-   - 一次只处理一个主问题
-   - Patch 分类唯一
-   - 输入一致 + 输出一致
-4. 未经批准，不做 `git push`，不碰生产发布。
+## 归档区
+
+- `archive/legacy/`
+  - 旧版协作文档、旧入口、旧引用文件。
+
+- `archive/reports/`
+  - 阶段性审计报告和历史结论。
+
+- `archive/scratch/`
+  - 临时笔记、系统残留文件、一次性现场材料。
+
+归档文件只提供历史参考。若归档内容与活跃文档冲突，一律以活跃文档为准。
