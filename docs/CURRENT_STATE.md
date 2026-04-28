@@ -236,6 +236,26 @@ strategies/spring/config.json:
 1. audit scripts 已按 data_quality / spring / snapback / maintenance 等方向整理。
 2. `make_md5_line_suffix_copies.py` 等工具增强。
 3. 常用审计命令与常用命令文件持续维护。
+4. 2026-04-28 已执行一次服务器磁盘清理：删除 mybwin139 旧 stage3 parquet、旧 stage3 enriched 日文件，并清理 Spring 回测审计中除 `SPRING_V1_30D_P6_0427T1606` 外的历史 decision audit。清理后服务器可用空间从约 14G 提升到约 43G。
+
+当前服务器清理纪律：
+
+```text
+清理历史 state/audit/output 前必须做二次快照稳定性检查：
+
+1. 第一次记录候选文件 path / size / mtime / inode / run_id。
+2. 间隔至少 10 秒后再次记录同一候选集合。
+3. 只有两次 path / size / mtime / inode 完全一致，且无活跃进程或 open file handle，才可删除。
+4. 当前日期、当前 run_id、仍在增长的文件、live/data_hub/backtest 活跃产物，默认不删。
+5. 若发现关联长跑进程，必须先报告进程与文件关系，等待用户明确授权后才能 stop/kill/restart。
+6. 删除后必须复查磁盘空间、剩余文件和是否仍有同 run_id 新文件生成。
+```
+
+当前保留事实：
+
+```text
+output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
+```
 
 当前注意：
 
@@ -243,6 +263,8 @@ strategies/spring/config.json:
 当前仍有未提交本地改动；新线程开始时必须先看 git status，不要误把它当成已提交事实：
 
 - tools/常用命令
+- tools/常用命令-过去.txt
+- docs/新Codex线程开场白.txt
 ```
 
 ---

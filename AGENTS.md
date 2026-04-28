@@ -79,3 +79,27 @@ When a task changes project state, update `docs/CURRENT_STATE.md`.
 When a document becomes stale but still has historical value, move it under
 `docs/archive/` instead of keeping it in the active docs root.
 Do not store secrets, API tokens, or one-off production commands in active docs.
+
+## 7. Server Cleanup Discipline
+
+Server-side cleanup is a common maintenance task because live processes and
+backtests can produce large audit/state files quickly. Treat cleanup as
+potentially destructive production work.
+
+Before deleting any server file or directory:
+
+1. Build a candidate snapshot with path, size, mtime, inode, and owning run id
+   when it can be inferred from the filename.
+2. Wait at least 10 seconds and build the same snapshot again.
+3. Delete only candidates whose path, size, mtime, and inode are unchanged in
+   both snapshots.
+4. Check for open file handles or related active processes when the candidate
+   may belong to live, data hub, or a running backtest.
+5. If a file is still changing, belongs to the current date/current run id, or
+   has a related long-running process, do not delete it without explicit user
+   confirmation.
+6. After deletion, re-check disk space and verify no same-run files are still
+   being produced.
+
+Never stop, restart, or kill live/data-hub/backtest processes during cleanup
+unless the user explicitly authorizes that process action.
