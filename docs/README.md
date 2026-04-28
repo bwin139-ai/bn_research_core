@@ -38,6 +38,10 @@
   - 可直接复制给新 Codex 线程的短启动提示。
   - 只负责指向活跃文档，不再复制大段历史内容。
 
+- `新Codex线程开场白.txt`
+  - 用户侧新线程模板。
+  - 适合每次新开 Codex 线程时直接复制发送，并在末尾填写本轮任务。
+
 ## 归档区
 
 - `archive/legacy/`
@@ -45,6 +49,7 @@
 
 - `archive/reports/`
   - 阶段性审计报告和历史结论。
+  - 当前 5 天推进总账：`archive/reports/2026-04-28_codex_5day_progress_summary.md`。
 
 - `archive/scratch/`
   - 临时笔记、系统残留文件、一次性现场材料。

@@ -1,0 +1,26 @@
+这是 bn_research_core 项目的新 Codex 线程。请不要依赖任何历史聊天记忆。
+
+请先执行启动检查：
+1. 运行 git status --short
+2. 阅读 AGENTS.md
+3. 阅读 docs/README.md
+4. 阅读 docs/PROJECT_BASELINE.md
+5. 阅读 docs/STANDARD_PATCH_FRAMEWORK.md
+6. 阅读 docs/CURRENT_STATE.md
+
+如果本轮任务涉及具体策略或模块，请补读相关语义文档和源码事实。
+
+请先简要复述你读到的当前项目状态、未提交改动、本文档任务边界，然后再开始执行。
+
+本轮任务是：
+【这里写你的任务】
+
+如果任务是 Spring-SABC，再加一句：
+本轮涉及 Spring-SABC，请同时阅读 docs/Spring-SABC项目语义基线.md。
+
+如果任务是 data_hub / live 协同，可以加：
+本轮涉及 data_hub 与 live 协同，请先从 CURRENT_STATE.md 中确认当前 data_hub / live 主线，再读取相关源码
+
+
+
+任务结束前，请判断是否需要更新 docs/CURRENT_STATE.md 或相关语义文档；如果需要，请一并更新。
