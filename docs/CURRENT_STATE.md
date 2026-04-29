@@ -213,7 +213,8 @@ strategies/snapback/config.highfreq.json:
 17. 新增 `strategies/spring/config.live_smoke_10u.json` 与 `strategies/spring/live_execution.smoke_10u.json`，用于 10U 小仓位实盘 smoke；所有实盘执行参数从 JSON 读取，代码不内置 10U、杠杆、重试、冷却等测试参数。
 18. 2026-04-29 15:05 BJ，已在阿里云 `mybwin139` 执行一次 Spring 10U / 5x 实盘 smoke：`SKYAIUSDT` entry 成交，Spring `SPR_SL` 与 `SPR_TP` 保护单建立成功。
 19. 2026-04-29 15:09-15:10 BJ，确认 Spring smoke 发生跨策略串线 incident：Snapback live 捕获并维护了 Spring open_trade，取消 Spring `SPR_TP/SPR_SL`，提交 Snapback `SNP_TS` time-stop 并完成离场。
-20. 2026-04-29 本地已落地 Spring/Snapback live state ownership 隔离 patch，当前仍未提交、未部署。
+20. 2026-04-29 已提交、推送并部署 Spring/Snapback live state ownership 隔离 patch：`11d1b22 live: isolate strategy state ownership`。
+21. 2026-04-29 20:17 BJ，重启 3 个 Snapback live 进程后执行 Spring 10U / 5x live smoke：`SKYAIUSDT` entry 成交，`SPR_SL` 与 `SPR_TP` 提交成功；随后交易所真相显示 `SPR_TP` 立即成交、`SPR_SL` 自动 EXPIRED，仓位与挂单为空。未复现 Snapback 串线，但暴露 Spring state 缺少 post-entry reconcile / exit monitor，Spring state 仍记录 `OPEN`。
 
 当前配置事实：
 
@@ -240,9 +241,10 @@ strategies/spring/config.json:
 1. 基于 `SPRING_V1_30D_P6_0427T1606_ALL` 作为结构毕业候选，重跑动态 sizing 后的正式 sim。
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
-4. Spring/Snapback live state ownership 隔离 patch 已在本地工作区落地；在提交、部署并复验前，仍不得执行新的 Spring 实盘下单。
+4. Spring/Snapback live state ownership 隔离 patch 已提交并部署，20:17 smoke 未复现 Snapback 接管。
 5. Spring live 后续如要常驻实盘，需要补 Spring open_trade reconcile / exit monitor / time-stop monitor；当前 `--execute-live` 只覆盖一次性开仓与保护单建立链路。
 6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
+7. 在补 Spring post-entry reconcile / exit monitor 前，不建议继续做新的 Spring 实盘 smoke；否则交易所已平而 Spring state 仍可能保留 `OPEN`。
 
 已确认 incident：
 
@@ -280,12 +282,13 @@ incident 记录时的下一刀建议：
 4. Spring 在拥有独立 state 与 reconcile/exit monitor 前，不再执行新的实盘下单。
 ```
 
-当前本地修复状态：
+当前 ownership 修复状态：
 
 ```text
 Patch 分类：LOGIC_ONLY
 
-已落地但未提交：
+已提交并部署：
+- commit = 11d1b22 live: isolate strategy state ownership
 - core/live/live_state.py
   - live state 文件名改为 strategy-specific。
   - 默认 snapback 仍写 live/snapback_{account}.state.json。
@@ -303,6 +306,39 @@ Patch 分类：LOGIC_ONLY
 - python3 -m py_compile core/live/live_state.py core/live/execution_runner.py strategies/spring/run_live_observer.py strategies/snapback/trade_consumer.py
 - live_state 临时目录写入验证：snapback_acct.state.json 与 spring_sabc_acct.state.json 分离。
 - Snapback ownership helper 验证：SNP=true，SPR/spring-sabc/unknown/mixed=false。
+
+服务器部署验证：
+- 阿里云 `/root/bn_research_core` HEAD = 11d1b22。
+- 3 个 Snapback live 进程已于 2026-04-29 20:14 BJ 重启并加载新代码。
+- 服务器 py_compile 通过。
+```
+
+20:17 Spring live smoke 事实：
+
+```text
+run_id = SPRING_SMOKE_LIVE_0429T2017
+symbol = SKYAIUSDT
+signal_time_bj = 2026-04-29 20:17:00
+order_root = 0429201742_c1b964
+entry_client_order_id = x-7Qv8Kw2S_SPR_EN_0429201742_c1b964
+sl_client_order_id = x-7Qv8Kw2S_SPR_SL_0429201742_c1b964
+tp_client_order_id = x-7Qv8Kw2S_SPR_TP_0429201742_c1b964
+
+交易所真相：
+- ENTRY: FILLED, avg_price = 0.27252, qty = 37
+- TP: FILLED, avg_price = 0.27277, qty = 37, realized_pnl = 0.00925
+- SL: EXPIRED
+- 复查 positions/open orders 均为空。
+
+state / audit 结论：
+- state/live/spring_sabc_mybwin139.state.json 中 SKYAIUSDT open_trade.strategy_code = SPR，status = OPEN。
+- state/live/snapback_mybwin139.state.json 中 SKYAIUSDT 无 open_trade。
+- Snapback audit 未出现取消本次 SPR_SL/SPR_TP 或提交 SNP_TS 的记录。
+
+当前风险：
+- Spring one-shot execution runner 建立保护单后即返回，尚无 Spring reconcile / exit monitor。
+- 若 TP/SL 很快成交或失效，Spring state 不会自动从 OPEN 同步为 CLOSED。
+- 下一刀应先补 Spring post-entry reconcile / exit monitor，再继续做新的 Spring live smoke 或常驻实盘。
 ```
 
 当前 Spring live 架构事实：
