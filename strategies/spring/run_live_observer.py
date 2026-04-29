@@ -18,7 +18,9 @@ if PROJECT_ROOT not in sys.path:
 
 from core.config_loader import StrategyConfig
 from core.live.execution_plan import build_dry_run_execution_plan
+from core.live.live_state import load_live_state
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
+from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
 from strategies.spring.live_execution import build_spring_live_execution_intent
 from strategies.spring.logic import SpringSABCStrategy
 
@@ -209,6 +211,7 @@ def run_once(
     audit_preview_limit: int,
     run_id: str,
     loop_iteration: int | None = None,
+    verify_exchange: bool = False,
 ) -> dict[str, Any]:
     started_utc_ms = _now_utc_ms()
     strategy_cfg = StrategyConfig.load(config_path)
@@ -226,7 +229,17 @@ def run_once(
         full_df=full_df,
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
-    dry_run_execution_plan = build_dry_run_execution_plan(intent) if intent else None
+    local_state_snapshot = load_live_state(account) if intent else None
+    exchange_snapshot = collect_consumer_exchange_activity_snapshot(account) if intent and verify_exchange else None
+    dry_run_execution_plan = (
+        build_dry_run_execution_plan(
+            intent,
+            exchange_snapshot=exchange_snapshot,
+            local_state_snapshot=local_state_snapshot,
+        )
+        if intent
+        else None
+    )
     finished_utc_ms = _now_utc_ms()
 
     audits = dict(getattr(strategy, "_last_signal_audits", {}) or {})
@@ -264,6 +277,7 @@ def run_once(
         "signal_symbol": str((signal or {}).get("symbol") or "").upper().strip() or None,
         "signal": signal,
         "execution_intent": intent,
+        "dry_run_verify_exchange": bool(verify_exchange),
         "dry_run_execution_plan": dry_run_execution_plan,
     }
     path = _projection_path(output_dir, run_id)
@@ -314,6 +328,7 @@ def run_loop(
     run_id: str,
     max_iterations: int,
     signal_check_second: int,
+    verify_exchange: bool,
 ) -> None:
     iteration = 0
     _write_heartbeat(
@@ -328,6 +343,7 @@ def run_loop(
             "hub_max_age_secs": int(hub_max_age_secs),
             "max_iterations": int(max_iterations),
             "signal_check_second": int(signal_check_second),
+            "verify_exchange": bool(verify_exchange),
         },
     )
     while True:
@@ -368,6 +384,7 @@ def run_loop(
                 audit_preview_limit=audit_preview_limit,
                 run_id=run_id,
                 loop_iteration=iteration,
+                verify_exchange=verify_exchange,
             )
         except Exception as exc:
             _write_heartbeat(
@@ -411,6 +428,7 @@ def main() -> None:
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=0)
     parser.add_argument("--signal-check-second", type=int, default=2)
+    parser.add_argument("--dry-run-verify-exchange", action="store_true")
     args = parser.parse_args()
 
     setup_logging()
@@ -435,6 +453,7 @@ def main() -> None:
             run_id=run_id,
             max_iterations=int(args.max_iterations),
             signal_check_second=int(args.signal_check_second),
+            verify_exchange=bool(args.dry_run_verify_exchange),
         )
     else:
         result = run_once(
@@ -446,6 +465,7 @@ def main() -> None:
             audit_preview_limit=int(args.audit_preview_limit),
             run_id=run_id,
             loop_iteration=None,
+            verify_exchange=bool(args.dry_run_verify_exchange),
         )
         _write_heartbeat(
             output_dir=args.output_dir,

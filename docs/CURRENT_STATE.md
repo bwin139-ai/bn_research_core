@@ -207,6 +207,7 @@ strategies/snapback/config.highfreq.json:
 11. Spring observe-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
 12. 新增 `strategies/spring/config.observer_loose.json`，仅用于 observe-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
 13. 新增公共 dry-run execution plan：`core/live/execution_plan.py` 消费 LONG-only execution intent，产出 orphan/local/exchange precheck、quantity、client order id、SL/TP/time-stop plan 与 state transition plan；不调用交易所、不写 live state。
+14. Spring observer 支持可选只读 exchange verified dry-run：`--dry-run-verify-exchange` 会读取交易所 positions/open orders 与本地 live state，用于验证 orphan/precheck；仍然不下单、不写 live state。
 
 当前配置事实：
 
@@ -262,6 +263,7 @@ strategies/spring/run_live_observer.py:
 - 调用 SpringSABCStrategy.on_kline_close(...)
 - signal 存在时生成并校验公共 execution intent
 - signal 存在时生成 dry_run_execution_plan 并落盘
+- 支持 `--dry-run-verify-exchange` 读取只读交易所快照与本地 live state 快照
 - 写入 output/live_projection/spring_observer.{run_id}.jsonl
 - 支持 `--loop`、`--max-iterations`、`--signal-check-second`
 - 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
