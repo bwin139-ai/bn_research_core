@@ -205,6 +205,7 @@ strategies/snapback/config.highfreq.json:
 9. Spring live 侧启动第一刀架构边界：新增公共 LONG-only live execution intent contract，并新增 Spring signal -> execution intent adapter。
 10. 新增 Spring observe-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
 11. Spring observe-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
+12. 新增 `strategies/spring/config.observer_loose.json`，仅用于 observe-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
 
 当前配置事实：
 
@@ -223,7 +224,7 @@ strategies/spring/config.json:
 - max_hold_mins = 60
 - breakeven_guard.enabled = false
 - base_order_notional_usdt = 100
-- full_notional_risk_pct = 0.05
+- full_notional_risk_pct = 0.99
 ```
 
 当前 pending：
@@ -256,6 +257,11 @@ strategies/spring/run_live_observer.py:
 - 支持 `--loop`、`--max-iterations`、`--signal-check-second`
 - 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
 - 不读取交易所、不下单、不维护订单生命周期
+
+strategies/spring/config.observer_loose.json:
+- observe-only 专用 loose 配置
+- 主用途是放宽 universe/structure 门槛，尽快产生 signal 样本以验证 execution intent 落盘路径
+- 不得用于正式 sim/live 策略基线判断
 ```
 
 ### 3.6 audit tools / 目录治理
