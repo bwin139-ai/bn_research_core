@@ -232,7 +232,7 @@ def run_once(
         full_df=full_df,
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
-    local_state_snapshot = load_live_state(account) if intent else None
+    local_state_snapshot = load_live_state(account, strategy_name="spring-sabc") if intent else None
     exchange_snapshot = collect_consumer_exchange_activity_snapshot(account) if intent and (verify_exchange or execute_live) else None
     dry_run_execution_plan = (
         build_dry_run_execution_plan(

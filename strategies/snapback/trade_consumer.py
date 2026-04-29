@@ -20,7 +20,7 @@ from core.live.binance_exec import (
     place_tp_order,
     resolve_order_fill_price,
 )
-from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
+from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root, parse_client_order_id
 from core.live.live_state import (
     load_live_state,
     load_symbol_state,
@@ -606,6 +606,52 @@ def _signal_digest(signal: dict[str, Any]) -> str:
     }
     return _json_safe_dumps(base, sort_keys=True)
 
+def _payload_client_order_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for key in (
+        'client_order_id',
+        'entry_client_order_id',
+        'tp_client_order_id',
+        'sl_client_order_id',
+        'time_stop_client_order_id',
+        'entry_order_client_id',
+        'tp_order_client_id',
+        'sl_order_client_id',
+    ):
+        value = str(payload.get(key) or '').strip()
+        if value:
+            ids.append(value)
+    return ids
+
+def _payload_strategy_codes(payload: dict[str, Any]) -> set[str]:
+    codes: set[str] = set()
+    explicit = str(payload.get('strategy_code') or '').upper().strip()
+    if explicit:
+        codes.add(explicit)
+    strategy_name = str(payload.get('strategy_name') or '').strip().lower().replace('-', '_')
+    if strategy_name == 'snapback':
+        codes.add(STRAT_CODE)
+    elif strategy_name:
+        codes.add(f"NAME:{strategy_name}")
+    for client_order_id in _payload_client_order_ids(payload):
+        parsed = parse_client_order_id(client_order_id, broker_id=BROKER_ID)
+        if parsed.get('recognized') and parsed.get('strat'):
+            codes.add(str(parsed['strat']).upper().strip())
+    return {code for code in codes if code}
+
+def _is_snapback_owned_payload(payload: dict[str, Any]) -> bool:
+    codes = _payload_strategy_codes(payload)
+    return codes == {STRAT_CODE}
+
+def _foreign_payload_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'strategy_code': payload.get('strategy_code'),
+        'strategy_name': payload.get('strategy_name'),
+        'detected_strategy_codes': sorted(_payload_strategy_codes(payload)),
+        'client_order_ids': _payload_client_order_ids(payload),
+        'order_root': payload.get('order_root'),
+    }
+
 def _resolve_selected_tp_pct(signal: dict[str, Any]) -> float | None:
     params = signal.get('params') if isinstance(signal.get('params'), dict) else {}
     context = signal.get('context') if isinstance(signal.get('context'), dict) else {}
@@ -828,6 +874,8 @@ def _build_open_trade(
     sl = sl_res['data'] if sl_res.get('ok') else {}
     return {
         'symbol': signal['symbol'],
+        'strategy_name': 'snapback',
+        'strategy_code': STRAT_CODE,
         'side': FIXED_POSITION_SIDE,
         'order_root': order_root,
         'entry_client_order_id': entry.get('client_order_id', entry_client_order_id),
@@ -878,6 +926,8 @@ def _build_pending_entry(
     entry = entry_res['data']
     return {
         'symbol': signal['symbol'],
+        'strategy_name': 'snapback',
+        'strategy_code': STRAT_CODE,
         'order_root': order_root,
         'client_order_id': entry.get('client_order_id', entry_client_order_id),
         'exchange_order_id': entry.get('exchange_order_id'),
@@ -902,6 +952,8 @@ def _recover_open_trade_from_pending(pending: dict[str, Any], position: dict[str
     signal_snapshot = pending.get('signal_snapshot') if isinstance(pending.get('signal_snapshot'), dict) else {}
     return {
         'symbol': str(pending.get('symbol') or position.get('symbol') or '').upper().strip(),
+        'strategy_name': 'snapback',
+        'strategy_code': STRAT_CODE,
         'side': FIXED_POSITION_SIDE,
         'order_root': pending.get('order_root'),
         'entry_client_order_id': pending.get('client_order_id'),
@@ -1377,6 +1429,24 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
             continue
         pending = payload.get('pending_entry_order')
         if not isinstance(pending, dict):
+            continue
+        if not _is_snapback_owned_payload(pending):
+            had_blocking_error = True
+            mark_error(
+                account,
+                symbol,
+                error_code='foreign_pending_entry_blocked',
+                error_message='snapback refused to reconcile non-SNP pending_entry_order',
+                error_bj=current_time_bj,
+            )
+            if audit_enabled:
+                write_event(account, 'foreign_pending_entry_blocked', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'foreign_payload': _foreign_payload_snapshot(pending),
+                })
             continue
         open_trade = payload.get('open_trade')
         if open_trade:
@@ -2033,6 +2103,24 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
             continue
         open_trade = payload.get('open_trade')
         if not isinstance(open_trade, dict):
+            continue
+        if not _is_snapback_owned_payload(open_trade):
+            had_blocking_error = True
+            mark_error(
+                account,
+                symbol,
+                error_code='foreign_open_trade_blocked',
+                error_message='snapback refused to reconcile non-SNP open_trade',
+                error_bj=current_time_bj,
+            )
+            if audit_enabled:
+                write_event(account, 'foreign_open_trade_blocked', {
+                    'symbol': symbol,
+                    'bar_ts': current_time_ms,
+                    'bar_bj': current_time_bj,
+                    'source': source,
+                    'foreign_payload': _foreign_payload_snapshot(open_trade),
+                })
             continue
         precheck = precheck_exchange_blockers(account, symbol, snapshot=snapshot) if snapshot is not None else precheck_exchange_blockers(account, symbol)
         pos_res = precheck.get('position') or {'ok': False, 'reason': 'missing position snapshot', 'data': None}

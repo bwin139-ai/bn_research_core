@@ -211,6 +211,9 @@ strategies/snapback/config.highfreq.json:
 15. 新增公共 live execution runner：`core/live/execution_runner.py` 消费已验证 LONG intent + execution plan + 外部 live execution JSON；显式执行 entry MARKET、SL-first、TP-after-SL、state/audit/cooldown，SL 提交失败时按配置提交 market flatten。
 16. Spring runner 增加显式 `--execute-live` + `--live-execution-config` 一次性实盘入口；默认仍不下单，且 `--execute-live` 当前只支持 once 模式，不支持 loop 常驻。
 17. 新增 `strategies/spring/config.live_smoke_10u.json` 与 `strategies/spring/live_execution.smoke_10u.json`，用于 10U 小仓位实盘 smoke；所有实盘执行参数从 JSON 读取，代码不内置 10U、杠杆、重试、冷却等测试参数。
+18. 2026-04-29 15:05 BJ，已在阿里云 `mybwin139` 执行一次 Spring 10U / 5x 实盘 smoke：`SKYAIUSDT` entry 成交，Spring `SPR_SL` 与 `SPR_TP` 保护单建立成功。
+19. 2026-04-29 15:09-15:10 BJ，确认 Spring smoke 发生跨策略串线 incident：Snapback live 捕获并维护了 Spring open_trade，取消 Spring `SPR_TP/SPR_SL`，提交 Snapback `SNP_TS` time-stop 并完成离场。
+20. 2026-04-29 本地已落地 Spring/Snapback live state ownership 隔离 patch，当前仍未提交、未部署。
 
 当前配置事实：
 
@@ -237,8 +240,70 @@ strategies/spring/config.json:
 1. 基于 `SPRING_V1_30D_P6_0427T1606_ALL` 作为结构毕业候选，重跑动态 sizing 后的正式 sim。
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
-4. Spring live 下一步可在阿里云用 `config.live_smoke_10u.json` + `live_execution.smoke_10u.json` 执行一次小仓位真实交易 smoke；执行前必须确认账户资金、交易所 precheck、local state 与 symbol filters 通过。
+4. Spring/Snapback live state ownership 隔离 patch 已在本地工作区落地；在提交、部署并复验前，仍不得执行新的 Spring 实盘下单。
 5. Spring live 后续如要常驻实盘，需要补 Spring open_trade reconcile / exit monitor / time-stop monitor；当前 `--execute-live` 只覆盖一次性开仓与保护单建立链路。
+6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
+
+已确认 incident：
+
+```text
+2026-04-29 Spring/Snapback live state ownership 串线
+
+现场事实：
+- Spring 真实开仓：
+  - symbol = SKYAIUSDT
+  - entry_client_order_id = x-7Qv8Kw2S_SPR_EN_0429150516_95e6a6
+  - sl_client_order_id = x-7Qv8Kw2S_SPR_SL_0429150516_95e6a6
+  - tp_client_order_id = x-7Qv8Kw2S_SPR_TP_0429150516_95e6a6
+  - Spring audit 文件 = state/live_audit/spring_sabc_mybwin139.jsonl
+- Snapback live 后续事件：
+  - 15:09:11 BJ: time_stop_cancel_tp_ok 取消 x-7Qv8Kw2S_SPR_TP_0429150516_95e6a6
+  - 15:09:11 BJ: time_stop_cancel_sl_ok 取消 x-7Qv8Kw2S_SPR_SL_0429150516_95e6a6
+  - 15:09:12 BJ: time_stop_submitted 提交 x-7Qv8Kw2S_SNP_TS_0429150516_95e6a6
+  - 15:10:07 BJ: position_closed_detected 记录 exit_reason = TIME_STOP
+- 复查时交易所 positions/open orders 均为空，state 中 SKYAIUSDT open_trade 已清空。
+
+初步根因：
+- core/live/live_state.py 当前文件名固定为 live/snapback_{account}.state.json。
+- Spring execution_runner 复用 load_live_state/save_symbol_state/set_open_trade，导致 Spring open_trade 写入 Snapback state namespace。
+- Snapback live maintain loop 读取同一个 state namespace，未按 strategy_code/client_order_id 策略归属过滤 open_trade，于是把 SPR open_trade 当作 Snapback 仓位维护。
+
+影响：
+- Spring 实盘 smoke 的离场由 Snapback live 执行和记录。
+- 离场 time-stop client id 使用 SNP，而 entry/SL/TP 使用 SPR。
+- 当前 2026-04-29 这笔 smoke 不再是纯 Spring live execution lifecycle 样本，只能作为跨策略串线 incident 样本。
+
+incident 记录时的下一刀建议：
+1. live_state namespace 必须 strategy-specific，例如 spring_sabc_{account}.state.json / snapback_{account}.state.json。
+2. public live execution contract 必须显式携带 strategy_name/strategy_code/state_namespace。
+3. Snapback maintain/reconcile 必须拒绝维护非 SNP open_trade/order_root/client_order_id。
+4. Spring 在拥有独立 state 与 reconcile/exit monitor 前，不再执行新的实盘下单。
+```
+
+当前本地修复状态：
+
+```text
+Patch 分类：LOGIC_ONLY
+
+已落地但未提交：
+- core/live/live_state.py
+  - live state 文件名改为 strategy-specific。
+  - 默认 snapback 仍写 live/snapback_{account}.state.json。
+  - Spring 显式写 live/spring_sabc_{account}.state.json。
+- core/live/execution_runner.py
+  - Spring live execution state 写入使用 intent.strategy_name。
+  - open_trade / pending_entry payload 写入 strategy_name 与 strategy_code。
+- strategies/spring/run_live_observer.py
+  - dry-run local_state_snapshot 读取 spring-sabc namespace。
+- strategies/snapback/trade_consumer.py
+  - Snapback pending/open_trade 写入 SNP 归属字段。
+  - Snapback reconcile 发现非 SNP 或未知归属 payload 时阻断并写 audit event，不取消、不平仓、不接管。
+
+本地验证：
+- python3 -m py_compile core/live/live_state.py core/live/execution_runner.py strategies/spring/run_live_observer.py strategies/snapback/trade_consumer.py
+- live_state 临时目录写入验证：snapback_acct.state.json 与 spring_sabc_acct.state.json 分离。
+- Snapback ownership helper 验证：SNP=true，SPR/spring-sabc/unknown/mixed=false。
+```
 
 当前 Spring live 架构事实：
 

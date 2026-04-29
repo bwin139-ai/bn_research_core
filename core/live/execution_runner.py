@@ -289,6 +289,8 @@ def _pending_entry_payload(
     entry = dict(entry_res.get("data") or {})
     return {
         "symbol": intent["symbol"],
+        "strategy_name": intent["strategy_name"],
+        "strategy_code": intent["strategy_code"],
         "order_root": order_root,
         "client_order_id": entry.get("client_order_id", order_ids["entry_client_order_id"]),
         "exchange_order_id": entry.get("exchange_order_id"),
@@ -327,6 +329,8 @@ def _open_trade_payload(
     now_bj = _now_bj_str()
     return {
         "symbol": intent["symbol"],
+        "strategy_name": intent["strategy_name"],
+        "strategy_code": intent["strategy_code"],
         "side": POSITION_SIDE_LONG,
         "order_root": order_root,
         "entry_client_order_id": entry.get("client_order_id", order_ids["entry_client_order_id"]),
@@ -381,6 +385,7 @@ def execute_live_execution_plan(
     audit_enabled = _require_bool(cfg, "audit_enabled")
     account = intent_dict["account"]
     symbol = intent_dict["symbol"]
+    state_strategy_name = str(intent_dict["strategy_name"])
     signal = deepcopy(intent_dict["signal_snapshot"])
     current_time_ms = int(intent_dict["signal_time"])
     current_time_bj = str(intent_dict["signal_time_bj"])
@@ -440,6 +445,7 @@ def execute_live_execution_plan(
         c_bar_bj=intent_dict.get("c_bar_bj"),
         signal_digest=signal_digest,
         signal_snapshot=signal,
+        strategy_name=state_strategy_name,
     )
     _write_exec_event(audit_enabled, account, "spring_live_execution_started", {
         "symbol": symbol,
@@ -456,15 +462,15 @@ def execute_live_execution_plan(
 
     hedge_res = ensure_hedge_mode(account)
     if not hedge_res.get("ok"):
-        mark_error(account, symbol, error_code="hedge_mode_ensure_failed", error_message=hedge_res.get("reason"), error_bj=_now_bj_str())
+        mark_error(account, symbol, error_code="hedge_mode_ensure_failed", error_message=hedge_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
         raise RuntimeError(f"hedge mode ensure failed: {hedge_res.get('reason')}")
     margin_res = ensure_cross_margin(account, symbol)
     if not margin_res.get("ok"):
-        mark_error(account, symbol, error_code="cross_margin_ensure_failed", error_message=margin_res.get("reason"), error_bj=_now_bj_str())
+        mark_error(account, symbol, error_code="cross_margin_ensure_failed", error_message=margin_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
         raise RuntimeError(f"cross margin ensure failed: {margin_res.get('reason')}")
     leverage_res = ensure_leverage(account, symbol, _require_int(cfg, "leverage", min_value=1))
     if not leverage_res.get("ok"):
-        mark_error(account, symbol, error_code="leverage_ensure_failed", error_message=leverage_res.get("reason"), error_bj=_now_bj_str())
+        mark_error(account, symbol, error_code="leverage_ensure_failed", error_message=leverage_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
         raise RuntimeError(f"leverage ensure failed: {leverage_res.get('reason')}")
 
     retry_max = _require_int(cfg, "order_retry_max", min_value=0)
@@ -479,7 +485,7 @@ def execute_live_execution_plan(
         client_order_id=order_ids["entry_client_order_id"],
     )
     if not entry_res.get("ok"):
-        mark_error(account, symbol, error_code="entry_submit_failed", error_message=entry_res.get("reason"), error_bj=_now_bj_str())
+        mark_error(account, symbol, error_code="entry_submit_failed", error_message=entry_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
         _write_exec_event(audit_enabled, account, "spring_entry_submit_failed", {
             "symbol": symbol,
             "source": source,
@@ -488,7 +494,7 @@ def execute_live_execution_plan(
             "order_root": order_root,
             "exchange_snapshot": entry_res,
         })
-        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
         return {"ok": False, "outcome": "failed_entry_submit", "reason": entry_res.get("reason"), "entry_res": entry_res}
 
     entry_data = dict(entry_res.get("data") or {})
@@ -506,7 +512,7 @@ def execute_live_execution_plan(
         entry_price_source=entry_price_source,
         signal_digest=signal_digest,
     )
-    set_pending_entry_order(account, symbol, pending_entry)
+    set_pending_entry_order(account, symbol, pending_entry, strategy_name=state_strategy_name)
     _write_exec_event(audit_enabled, account, "spring_entry_submitted", {
         "symbol": symbol,
         "source": source,
@@ -563,10 +569,10 @@ def execute_live_execution_plan(
             open_trade["time_stop_client_order_id"] = flatten_data.get("client_order_id", order_ids["time_stop_client_order_id"])
             open_trade["time_stop_exchange_order_id"] = flatten_data.get("exchange_order_id")
             open_trade["exit_submit_inflight"] = True
-        set_open_trade(account, symbol, open_trade)
-        set_pending_entry_order(account, symbol, None)
-        mark_error(account, symbol, error_code="entry_sl_submit_failed", error_message=sl_res.get("reason"), error_bj=_now_bj_str())
-        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+        set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
+        mark_error(account, symbol, error_code="entry_sl_submit_failed", error_message=sl_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
         _write_exec_event(audit_enabled, account, "spring_entry_sl_submit_failed", {
             "symbol": symbol,
             "source": source,
@@ -617,15 +623,15 @@ def execute_live_execution_plan(
         signal_digest=signal_digest,
         status="OPEN" if tp_res.get("ok") else "OPEN_SL_ONLY",
     )
-    set_open_trade(account, symbol, open_trade)
-    set_pending_entry_order(account, symbol, None)
+    set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+    set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
     if tp_res.get("ok"):
-        mark_error(account, symbol, error_code=None, error_message=None, error_bj=None)
+        mark_error(account, symbol, error_code=None, error_message=None, error_bj=None, strategy_name=state_strategy_name)
     else:
-        mark_error(account, symbol, error_code="tp_submit_failed", error_message=tp_res.get("reason"), error_bj=_now_bj_str())
+        mark_error(account, symbol, error_code="tp_submit_failed", error_message=tp_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
     cooldown_until_ts, cooldown_until_bj = _cooldown_until(current_time_ms, _require_int(cfg, "cooldown_mins", min_value=0))
-    set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj)
-    mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+    set_cooldown(account, symbol, cooldown_until_ts=cooldown_until_ts, cooldown_until_bj=cooldown_until_bj, strategy_name=state_strategy_name)
+    mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
     _write_exec_event(audit_enabled, account, "spring_live_execution_completed", {
         "symbol": symbol,
         "source": source,
