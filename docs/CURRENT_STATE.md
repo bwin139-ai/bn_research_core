@@ -168,6 +168,7 @@ market_data_hub_config.json:
 7. ENTRY 后 SL / TP 建立顺序与 SL 保护失败 fail-fast 风险修补已完成。
 8. 实盘账户 live config 已新增/调整。
 9. snapback sim 配置新增显式 `risk_controls.base_order_notional_usdt`，sim 信号与交易流水不再依赖后处理默认 100U。
+10. 2026-04-29 已完成 `Snapback_SmokeTest_0429T2229` 与 mybwin139 live 重叠窗口一致性审计：sim 16 笔信号全部在 live 中按 `(symbol, c_time)` 匹配；2 笔 live-only（`IRUSDT 15:48 C`、`DAMUSDT 15:49 C`）已确认为 17:00 BJ 交易所 delist 前后的已解释样本，不继续追查。
 
 当前配置事实：
 
@@ -185,10 +186,11 @@ strategies/snapback/config.highfreq.json:
 当前 pending：
 
 1. 持续做 snapback sim/live 一致性验证。
-2. 继续明确 live 使用 hub 后与 sim feeder 的 universe / 24h_vol 口径差异。
-3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
-4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
-5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+2. `Snapback_SmokeTest_0429T2229` 审计已确认 `market_total_24h_vol` 仍有代码路径口径差：sim 由 `CrossSectionalFeeder` 对本地 parquet cross-section `vol_24h` 求和，样本处为 528 个本地标的；live 由 hub-owned `market_total_24h_vol_1m_rollsum` override 注入策略，样本处 stage0 记录为 530/527 个 live rollsum 标的。后续若要求严格一致，需要单独决定 sim 是否改用 hub/1m rollsum 同源输入，或把该字段在审计中标为已知口径差。
+3. `Snapback_SmokeTest_0429T2229` 审计已确认 4 笔 `idx / basis_c_pct` 差异来自输入源：sim 使用本地 parquet `close_idx` 并在 feeder 中 downcast 到 float32；live 使用 hub finalized candidate inputs。`AIOTUSDT 07:32 C` 与 `BROCCOLI714USDT 20:06 C` 的 live audit 明确记录 finalize probe 中 `close_idx` 变化；`IRUSDT 04:42 C` 与 `LYNUSDT 16:37 C` 在 live 初始候选输入中已不同于当前本地 parquet。后续需要单独审计 hub index source 与本地 `klines_1m` idx 写入/同步口径。
+4. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
+5. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
+6. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
 
 ### 3.5 Spring-SABC
 
