@@ -305,7 +305,7 @@ strategies/spring/live_execution.smoke_10u.json:
 - `allow_live_order = true`
 - `precheck_scope = account_flat`
 - `max_position_notional_usdt = 10.0`
-- `leverage = 1`
+- `leverage = 5`
 - 要求 local/exchange/symbol filters 均 verified
 ```
 

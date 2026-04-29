@@ -9,7 +9,7 @@
   "position_side": "LONG",
   "position_mode": "HEDGE",
   "margin_type": "CROSSED",
-  "leverage": 1,
+  "leverage": 5,
   "precheck_scope": "account_flat",
   "require_local_state_precheck": true,
   "require_exchange_precheck": true,
