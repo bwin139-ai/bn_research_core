@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.config_loader import StrategyConfig
+from core.live.execution_plan import build_dry_run_execution_plan
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
 from strategies.spring.live_execution import build_spring_live_execution_intent
 from strategies.spring.logic import SpringSABCStrategy
@@ -225,6 +226,7 @@ def run_once(
         full_df=full_df,
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
+    dry_run_execution_plan = build_dry_run_execution_plan(intent) if intent else None
     finished_utc_ms = _now_utc_ms()
 
     audits = dict(getattr(strategy, "_last_signal_audits", {}) or {})
@@ -262,6 +264,7 @@ def run_once(
         "signal_symbol": str((signal or {}).get("symbol") or "").upper().strip() or None,
         "signal": signal,
         "execution_intent": intent,
+        "dry_run_execution_plan": dry_run_execution_plan,
     }
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)

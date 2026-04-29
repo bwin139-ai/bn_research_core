@@ -206,6 +206,7 @@ strategies/snapback/config.highfreq.json:
 10. 新增 Spring observe-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
 11. Spring observe-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
 12. 新增 `strategies/spring/config.observer_loose.json`，仅用于 observe-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
+13. 新增公共 dry-run execution plan：`core/live/execution_plan.py` 消费 LONG-only execution intent，产出 orphan/local/exchange precheck、quantity、client order id、SL/TP/time-stop plan 与 state transition plan；不调用交易所、不写 live state。
 
 当前配置事实：
 
@@ -242,6 +243,13 @@ core/live/execution_intent.py:
 - 只允许 LONG
 - fail-fast 校验 strategy/account/symbol/time/price/notional/SL/TP/hold/time-stop/signal_snapshot
 
+core/live/execution_plan.py:
+- 定义 dry-run execution plan
+- 输入 ValidatedLiveExecutionIntent
+- 输出 local/exchange precheck、quantity、client order ids、entry/SL/TP/time-stop plan、state transition plan
+- exchange snapshot 未提供时标记 exchange_precheck_not_verified，计划不可执行但仍可审计
+- 不调用 Binance、不写 live state
+
 strategies/spring/live_execution.py:
 - 定义 SPRING_LIVE_STRATEGY_CODE = SPR
 - 将 Spring-SABC signal 显式转换为公共 execution intent
@@ -253,6 +261,7 @@ strategies/spring/run_live_observer.py:
 - 读取 shared hub finalized_candidate_inputs
 - 调用 SpringSABCStrategy.on_kline_close(...)
 - signal 存在时生成并校验公共 execution intent
+- signal 存在时生成 dry_run_execution_plan 并落盘
 - 写入 output/live_projection/spring_observer.{run_id}.jsonl
 - 支持 `--loop`、`--max-iterations`、`--signal-check-second`
 - 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
