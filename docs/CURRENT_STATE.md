@@ -203,6 +203,7 @@ strategies/snapback/config.highfreq.json:
 7. 当前配置中 BREAKEVEN_GUARD 关闭，保留代码语义但不作为当前主基线启用。
 8. `max_risk_pct` 已从 Spring 活跃语义中删除；风险距离改为动态开仓金额计算依据。
 9. Spring live 侧启动第一刀架构边界：新增公共 LONG-only live execution intent contract，并新增 Spring signal -> execution intent adapter。
+10. 新增 Spring observe-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
 
 当前配置事实：
 
@@ -244,6 +245,14 @@ strategies/spring/live_execution.py:
 - 将 Spring-SABC signal 显式转换为公共 execution intent
 - 要求 signal.action = BUY
 - 使用 signal.position_notional_usdt 作为 live 下单名义金额来源
+
+strategies/spring/run_live_observer.py:
+- observe-only live 入口
+- 读取 shared hub finalized_candidate_inputs
+- 调用 SpringSABCStrategy.on_kline_close(...)
+- signal 存在时生成并校验公共 execution intent
+- 写入 output/live_projection/spring_observer.{run_id}.jsonl
+- 不读取交易所、不下单、不维护订单生命周期
 ```
 
 ### 3.6 audit tools / 目录治理
