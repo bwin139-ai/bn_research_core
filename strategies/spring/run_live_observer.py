@@ -18,6 +18,7 @@ if PROJECT_ROOT not in sys.path:
 
 from core.config_loader import StrategyConfig
 from core.live.execution_plan import build_dry_run_execution_plan
+from core.live.execution_runner import execute_live_execution_plan, load_live_execution_config
 from core.live.live_state import load_live_state
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
 from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
@@ -212,6 +213,8 @@ def run_once(
     run_id: str,
     loop_iteration: int | None = None,
     verify_exchange: bool = False,
+    execute_live: bool = False,
+    live_execution_config_path: str | None = None,
 ) -> dict[str, Any]:
     started_utc_ms = _now_utc_ms()
     strategy_cfg = StrategyConfig.load(config_path)
@@ -230,7 +233,7 @@ def run_once(
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
     local_state_snapshot = load_live_state(account) if intent else None
-    exchange_snapshot = collect_consumer_exchange_activity_snapshot(account) if intent and verify_exchange else None
+    exchange_snapshot = collect_consumer_exchange_activity_snapshot(account) if intent and (verify_exchange or execute_live) else None
     dry_run_execution_plan = (
         build_dry_run_execution_plan(
             intent,
@@ -240,6 +243,19 @@ def run_once(
         if intent
         else None
     )
+    live_execution_result = None
+    if execute_live:
+        if not live_execution_config_path or not str(live_execution_config_path).strip():
+            raise ValueError("live execution config path is required when execute_live is enabled")
+        if intent and dry_run_execution_plan:
+            live_execution_config = load_live_execution_config(live_execution_config_path)
+            live_execution_result = execute_live_execution_plan(
+                intent,
+                execution_plan=dry_run_execution_plan,
+                execution_config=live_execution_config,
+                exchange_snapshot=exchange_snapshot,
+                source="spring_live_observer",
+            )
     finished_utc_ms = _now_utc_ms()
 
     audits = dict(getattr(strategy, "_last_signal_audits", {}) or {})
@@ -279,6 +295,9 @@ def run_once(
         "execution_intent": intent,
         "dry_run_verify_exchange": bool(verify_exchange),
         "dry_run_execution_plan": dry_run_execution_plan,
+        "execute_live": bool(execute_live),
+        "live_execution_config_path": live_execution_config_path,
+        "live_execution_result": live_execution_result,
     }
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)
@@ -329,6 +348,8 @@ def run_loop(
     max_iterations: int,
     signal_check_second: int,
     verify_exchange: bool,
+    execute_live: bool,
+    live_execution_config_path: str | None,
 ) -> None:
     iteration = 0
     _write_heartbeat(
@@ -344,6 +365,8 @@ def run_loop(
             "max_iterations": int(max_iterations),
             "signal_check_second": int(signal_check_second),
             "verify_exchange": bool(verify_exchange),
+            "execute_live": bool(execute_live),
+            "live_execution_config_path": live_execution_config_path,
         },
     )
     while True:
@@ -385,6 +408,8 @@ def run_loop(
                 run_id=run_id,
                 loop_iteration=iteration,
                 verify_exchange=verify_exchange,
+                execute_live=execute_live,
+                live_execution_config_path=live_execution_config_path,
             )
         except Exception as exc:
             _write_heartbeat(
@@ -412,12 +437,14 @@ def run_loop(
                 "c_bar_bj": row.get("c_bar_bj"),
                 "signal_time_bj": row.get("signal_time_bj"),
                 "elapsed_ms": row.get("elapsed_ms"),
+                "execute_live": bool(row.get("execute_live")),
+                "live_execution_outcome": (row.get("live_execution_result") or {}).get("outcome") if isinstance(row.get("live_execution_result"), dict) else None,
             },
         )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Spring-SABC observe-only live runner")
+    parser = argparse.ArgumentParser(description="Spring-SABC live runner")
     parser.add_argument("--config", default="strategies/spring/config.json")
     parser.add_argument("--account", required=True)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
@@ -429,6 +456,8 @@ def main() -> None:
     parser.add_argument("--max-iterations", type=int, default=0)
     parser.add_argument("--signal-check-second", type=int, default=2)
     parser.add_argument("--dry-run-verify-exchange", action="store_true")
+    parser.add_argument("--execute-live", action="store_true")
+    parser.add_argument("--live-execution-config", default="")
     args = parser.parse_args()
 
     setup_logging()
@@ -440,6 +469,10 @@ def main() -> None:
         raise SystemExit("--max-iterations must be >= 0")
     if not 0 <= args.signal_check_second <= 59:
         raise SystemExit("--signal-check-second must be in [0, 59]")
+    if args.execute_live and args.loop:
+        raise SystemExit("--execute-live currently supports once mode only")
+    if args.execute_live and not str(args.live_execution_config).strip():
+        raise SystemExit("--live-execution-config is required with --execute-live")
     run_id = str(args.run_id).strip() or _build_run_id(args.account)
     active_symbols = _active_symbols_from_args(args.active_symbol)
     if args.loop:
@@ -454,6 +487,8 @@ def main() -> None:
             max_iterations=int(args.max_iterations),
             signal_check_second=int(args.signal_check_second),
             verify_exchange=bool(args.dry_run_verify_exchange),
+            execute_live=bool(args.execute_live),
+            live_execution_config_path=str(args.live_execution_config).strip() or None,
         )
     else:
         result = run_once(
@@ -466,6 +501,8 @@ def main() -> None:
             run_id=run_id,
             loop_iteration=None,
             verify_exchange=bool(args.dry_run_verify_exchange),
+            execute_live=bool(args.execute_live),
+            live_execution_config_path=str(args.live_execution_config).strip() or None,
         )
         _write_heartbeat(
             output_dir=args.output_dir,
@@ -478,6 +515,8 @@ def main() -> None:
                 "projection_path": result.get("path"),
                 "signal_present": bool((result.get("row") or {}).get("signal_present")),
                 "signal_symbol": (result.get("row") or {}).get("signal_symbol"),
+                "execute_live": bool((result.get("row") or {}).get("execute_live")),
+                "live_execution_outcome": ((result.get("row") or {}).get("live_execution_result") or {}).get("outcome") if isinstance((result.get("row") or {}).get("live_execution_result"), dict) else None,
             },
         )
 

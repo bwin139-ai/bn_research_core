@@ -35,6 +35,22 @@ def get_live_audit_path(account: str) -> Path:
     return get_live_audit_dir() / f"snapback_{account_key}.jsonl"
 
 
+def _strategy_file_key(strategy_name: str) -> str:
+    key = str(strategy_name).strip().lower().replace("-", "_")
+    if not key:
+        raise ValueError("strategy_name must not be empty")
+    if not all(ch.isalnum() or ch == "_" for ch in key):
+        raise ValueError(f"strategy_name contains unsupported path chars: {strategy_name!r}")
+    return key
+
+
+def get_strategy_live_audit_path(account: str, strategy_name: str) -> Path:
+    account_key = str(account).strip()
+    if not account_key:
+        raise ValueError("account must not be empty")
+    return get_live_audit_dir() / f"{_strategy_file_key(strategy_name)}_{account_key}.jsonl"
+
+
 def get_stage_audit_dir() -> Path:
     path = get_live_audit_dir() / "stage_audit"
     path.mkdir(parents=True, exist_ok=True)
@@ -122,6 +138,18 @@ def append_audit_record(account: str, event: str, payload: dict[str, Any] | None
     return _append_json_record(path, record)
 
 
+def append_strategy_audit_record(
+    account: str,
+    strategy_name: str,
+    event: str,
+    payload: dict[str, Any] | None = None,
+) -> Path:
+    path = get_strategy_live_audit_path(account, strategy_name)
+    record = _build_record(account, event, payload)
+    record["strategy_name"] = str(strategy_name).strip()
+    return _append_json_record(path, record)
+
+
 def append_stage_record(account: str, stage: str, payload: dict[str, Any] | None = None) -> Path:
     now = _now_utc()
     record: dict[str, Any] = {
@@ -152,3 +180,6 @@ def write_runner_heartbeat(account: str, payload: dict[str, Any] | None = None) 
 def write_event(account: str, event: str, payload: dict[str, Any] | None = None) -> Path:
     return append_audit_record(account, event, payload)
 
+
+def write_strategy_event(account: str, strategy_name: str, event: str, payload: dict[str, Any] | None = None) -> Path:
+    return append_strategy_audit_record(account, strategy_name, event, payload)

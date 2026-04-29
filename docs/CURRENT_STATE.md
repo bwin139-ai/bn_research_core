@@ -208,6 +208,9 @@ strategies/snapback/config.highfreq.json:
 12. 新增 `strategies/spring/config.observer_loose.json`，仅用于 observe-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
 13. 新增公共 dry-run execution plan：`core/live/execution_plan.py` 消费 LONG-only execution intent，产出 orphan/local/exchange precheck、quantity、client order id、SL/TP/time-stop plan 与 state transition plan；不调用交易所、不写 live state。
 14. Spring observer 支持可选只读 exchange verified dry-run：`--dry-run-verify-exchange` 会读取交易所 positions/open orders 与本地 live state，用于验证 orphan/precheck；仍然不下单、不写 live state。
+15. 新增公共 live execution runner：`core/live/execution_runner.py` 消费已验证 LONG intent + execution plan + 外部 live execution JSON；显式执行 entry MARKET、SL-first、TP-after-SL、state/audit/cooldown，SL 提交失败时按配置提交 market flatten。
+16. Spring runner 增加显式 `--execute-live` + `--live-execution-config` 一次性实盘入口；默认仍不下单，且 `--execute-live` 当前只支持 once 模式，不支持 loop 常驻。
+17. 新增 `strategies/spring/config.live_smoke_10u.json` 与 `strategies/spring/live_execution.smoke_10u.json`，用于 10U 小仓位实盘 smoke；所有实盘执行参数从 JSON 读取，代码不内置 10U、杠杆、重试、冷却等测试参数。
 
 当前配置事实：
 
@@ -234,7 +237,8 @@ strategies/spring/config.json:
 1. 基于 `SPRING_V1_30D_P6_0427T1606_ALL` 作为结构毕业候选，重跑动态 sizing 后的正式 sim。
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
-4. Spring live 后续应按“策略语义私有、交易执行公共”的边界继续推进：Spring 只产出已校验 LONG execution intent，公共 live execution 负责订单生命周期安全。
+4. Spring live 下一步可在阿里云用 `config.live_smoke_10u.json` + `live_execution.smoke_10u.json` 执行一次小仓位真实交易 smoke；执行前必须确认账户资金、交易所 precheck、local state 与 symbol filters 通过。
+5. Spring live 后续如要常驻实盘，需要补 Spring open_trade reconcile / exit monitor / time-stop monitor；当前 `--execute-live` 只覆盖一次性开仓与保护单建立链路。
 
 当前 Spring live 架构事实：
 
@@ -251,6 +255,20 @@ core/live/execution_plan.py:
 - exchange snapshot 未提供时标记 exchange_precheck_not_verified，计划不可执行但仍可审计
 - 不调用 Binance、不写 live state
 
+core/live/execution_runner.py:
+- 定义配置驱动 live execution runner
+- 输入 ValidatedLiveExecutionIntent + execution plan + 外部 live execution JSON
+- 要求 execution config 与 intent 的 strategy/account/side/mode 对齐
+- 要求 local/exchange precheck verified，支持 account_flat 级别 orphan 阻断
+- 调用 Binance 执行 entry MARKET、SL STOP_MARKET closePosition、TP LIMIT
+- 入场后先建 SL，SL 成功后才建 TP
+- SL 建立失败时按 JSON 中 `stop_loss_failure_action=submit_market_flatten` 提交 market flatten
+- 写 live state pending/open_trade/cooldown/error 与 live audit event
+
+core/live/audit_log.py:
+- 保留既有 snapback audit 写入入口
+- 新增 strategy-specific audit 写入入口，Spring live execution event 写入 `spring_sabc_{account}.jsonl`
+
 strategies/spring/live_execution.py:
 - 定义 SPRING_LIVE_STRATEGY_CODE = SPR
 - 将 Spring-SABC signal 显式转换为公共 execution intent
@@ -258,21 +276,37 @@ strategies/spring/live_execution.py:
 - 使用 signal.position_notional_usdt 作为 live 下单名义金额来源
 
 strategies/spring/run_live_observer.py:
-- observe-only live 入口
+- Spring live runner 入口
 - 读取 shared hub finalized_candidate_inputs
 - 调用 SpringSABCStrategy.on_kline_close(...)
 - signal 存在时生成并校验公共 execution intent
 - signal 存在时生成 dry_run_execution_plan 并落盘
 - 支持 `--dry-run-verify-exchange` 读取只读交易所快照与本地 live state 快照
+- 支持显式 `--execute-live --live-execution-config ...` 一次性真实下单
 - 写入 output/live_projection/spring_observer.{run_id}.jsonl
 - 支持 `--loop`、`--max-iterations`、`--signal-check-second`
 - 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
-- 不读取交易所、不下单、不维护订单生命周期
+- 默认不下单；只有 `--execute-live` 与外部 live execution JSON 同时满足时才会触发真实交易
 
 strategies/spring/config.observer_loose.json:
 - observe-only 专用 loose 配置
 - 主用途是放宽 universe/structure 门槛，尽快产生 signal 样本以验证 execution intent 落盘路径
 - 不得用于正式 sim/live 策略基线判断
+
+strategies/spring/config.live_smoke_10u.json:
+- 小仓位实盘 smoke 专用 Spring 策略配置
+- 继承 loose signal 门槛以尽快出信号
+- `base_order_notional_usdt = 10`
+- 不得作为 Spring 策略基线或绩效结论
+
+strategies/spring/live_execution.smoke_10u.json:
+- 小仓位实盘 smoke 专用 live execution contract
+- `execution_mode = live_once`
+- `allow_live_order = true`
+- `precheck_scope = account_flat`
+- `max_position_notional_usdt = 10.0`
+- `leverage = 1`
+- 要求 local/exchange/symbol filters 均 verified
 ```
 
 ### 3.6 audit tools / 目录治理
