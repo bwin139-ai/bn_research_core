@@ -73,12 +73,51 @@ def _projection_path(output_dir: str, run_id: str) -> Path:
     return Path(output_dir) / f"spring_observer.{run_id}.jsonl"
 
 
+def _heartbeat_path(output_dir: str, run_id: str) -> Path:
+    return Path(output_dir) / f"spring_observer_heartbeat.{run_id}.json"
+
+
 def _append_projection_row(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(_json_safe_dumps(row) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp_path.write_text(_json_safe_dumps(payload) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _write_heartbeat(
+    *,
+    output_dir: str,
+    run_id: str,
+    account: str,
+    mode: str,
+    iteration: int | None,
+    status: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    now_utc_ms = _now_utc_ms()
+    heartbeat = {
+        "schema_version": 1,
+        "run_mode": "live_observer",
+        "strategy_name": "spring-sabc",
+        "account": str(account).strip(),
+        "run_id": run_id,
+        "mode": mode,
+        "iteration": iteration,
+        "status": status,
+        "updated_utc_ms": now_utc_ms,
+        "updated_bj": _fmt_bj_from_ms(now_utc_ms),
+    }
+    if payload:
+        heartbeat.update(payload)
+    _atomic_write_json(_heartbeat_path(output_dir, run_id), heartbeat)
 
 
 def _require_payload_field(payload: Mapping[str, Any], field: str) -> Any:
@@ -168,6 +207,7 @@ def run_once(
     active_symbols: set[str],
     audit_preview_limit: int,
     run_id: str,
+    loop_iteration: int | None = None,
 ) -> dict[str, Any]:
     started_utc_ms = _now_utc_ms()
     strategy_cfg = StrategyConfig.load(config_path)
@@ -195,6 +235,7 @@ def run_once(
         "strategy_name": "spring-sabc",
         "account": str(account).strip(),
         "run_id": run_id,
+        "loop_iteration": loop_iteration,
         "config_path": config_path,
         "hub_max_age_secs": int(hub_max_age_secs),
         "started_utc_ms": started_utc_ms,
@@ -234,6 +275,127 @@ def run_once(
     return {"ok": True, "path": str(path), "row": row}
 
 
+def _next_signal_check_epoch(now_epoch: float | None = None, *, second: int = 2) -> float:
+    if not 0 <= int(second) <= 59:
+        raise ValueError(f"signal check second must be in [0, 59], got {second}")
+    if now_epoch is None:
+        now_epoch = time.time()
+    now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+    target = now.replace(second=int(second), microsecond=0)
+    if now < target:
+        return target.timestamp()
+    return (target + timedelta(minutes=1)).timestamp()
+
+
+def _sleep_until_epoch(target_epoch: float) -> None:
+    while True:
+        remaining = float(target_epoch) - time.time()
+        if remaining <= 0:
+            return
+        if remaining > 1.0:
+            time.sleep(min(remaining - 0.2, 10.0))
+        elif remaining > 0.2:
+            time.sleep(max(0.05, remaining - 0.05))
+        else:
+            time.sleep(min(remaining, 0.02))
+
+
+def run_loop(
+    *,
+    config_path: str,
+    account: str,
+    output_dir: str,
+    hub_max_age_secs: int,
+    active_symbols: set[str],
+    audit_preview_limit: int,
+    run_id: str,
+    max_iterations: int,
+    signal_check_second: int,
+) -> None:
+    iteration = 0
+    _write_heartbeat(
+        output_dir=output_dir,
+        run_id=run_id,
+        account=account,
+        mode="loop",
+        iteration=None,
+        status="started",
+        payload={
+            "config_path": config_path,
+            "hub_max_age_secs": int(hub_max_age_secs),
+            "max_iterations": int(max_iterations),
+            "signal_check_second": int(signal_check_second),
+        },
+    )
+    while True:
+        if max_iterations > 0 and iteration >= max_iterations:
+            _write_heartbeat(
+                output_dir=output_dir,
+                run_id=run_id,
+                account=account,
+                mode="loop",
+                iteration=iteration,
+                status="completed",
+            )
+            logging.info("[Spring-LiveObserver] loop completed | run_id=%s | iterations=%s", run_id, iteration)
+            return
+
+        next_epoch = _next_signal_check_epoch(second=signal_check_second)
+        _write_heartbeat(
+            output_dir=output_dir,
+            run_id=run_id,
+            account=account,
+            mode="loop",
+            iteration=iteration + 1,
+            status="sleeping",
+            payload={
+                "next_run_epoch": next_epoch,
+                "next_run_bj": datetime.fromtimestamp(next_epoch, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        _sleep_until_epoch(next_epoch)
+        iteration += 1
+        try:
+            result = run_once(
+                config_path=config_path,
+                account=account,
+                output_dir=output_dir,
+                hub_max_age_secs=hub_max_age_secs,
+                active_symbols=active_symbols,
+                audit_preview_limit=audit_preview_limit,
+                run_id=run_id,
+                loop_iteration=iteration,
+            )
+        except Exception as exc:
+            _write_heartbeat(
+                output_dir=output_dir,
+                run_id=run_id,
+                account=account,
+                mode="loop",
+                iteration=iteration,
+                status="error",
+                payload={"error": str(exc)},
+            )
+            raise
+        row = dict(result.get("row") or {})
+        _write_heartbeat(
+            output_dir=output_dir,
+            run_id=run_id,
+            account=account,
+            mode="loop",
+            iteration=iteration,
+            status="ok",
+            payload={
+                "projection_path": result.get("path"),
+                "signal_present": bool(row.get("signal_present")),
+                "signal_symbol": row.get("signal_symbol"),
+                "c_bar_bj": row.get("c_bar_bj"),
+                "signal_time_bj": row.get("signal_time_bj"),
+                "elapsed_ms": row.get("elapsed_ms"),
+            },
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Spring-SABC observe-only live runner")
     parser.add_argument("--config", default="strategies/spring/config.json")
@@ -243,6 +405,9 @@ def main() -> None:
     parser.add_argument("--active-symbol", action="append", default=[])
     parser.add_argument("--audit-preview-limit", type=int, default=30)
     parser.add_argument("--run-id", default="")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--max-iterations", type=int, default=0)
+    parser.add_argument("--signal-check-second", type=int, default=2)
     args = parser.parse_args()
 
     setup_logging()
@@ -250,16 +415,48 @@ def main() -> None:
         raise SystemExit("--hub-max-age-secs must be > 0")
     if args.audit_preview_limit <= 0:
         raise SystemExit("--audit-preview-limit must be > 0")
+    if args.max_iterations < 0:
+        raise SystemExit("--max-iterations must be >= 0")
+    if not 0 <= args.signal_check_second <= 59:
+        raise SystemExit("--signal-check-second must be in [0, 59]")
     run_id = str(args.run_id).strip() or _build_run_id(args.account)
-    run_once(
-        config_path=args.config,
-        account=args.account,
-        output_dir=args.output_dir,
-        hub_max_age_secs=int(args.hub_max_age_secs),
-        active_symbols=_active_symbols_from_args(args.active_symbol),
-        audit_preview_limit=int(args.audit_preview_limit),
-        run_id=run_id,
-    )
+    active_symbols = _active_symbols_from_args(args.active_symbol)
+    if args.loop:
+        run_loop(
+            config_path=args.config,
+            account=args.account,
+            output_dir=args.output_dir,
+            hub_max_age_secs=int(args.hub_max_age_secs),
+            active_symbols=active_symbols,
+            audit_preview_limit=int(args.audit_preview_limit),
+            run_id=run_id,
+            max_iterations=int(args.max_iterations),
+            signal_check_second=int(args.signal_check_second),
+        )
+    else:
+        result = run_once(
+            config_path=args.config,
+            account=args.account,
+            output_dir=args.output_dir,
+            hub_max_age_secs=int(args.hub_max_age_secs),
+            active_symbols=active_symbols,
+            audit_preview_limit=int(args.audit_preview_limit),
+            run_id=run_id,
+            loop_iteration=None,
+        )
+        _write_heartbeat(
+            output_dir=args.output_dir,
+            run_id=run_id,
+            account=args.account,
+            mode="once",
+            iteration=None,
+            status="ok",
+            payload={
+                "projection_path": result.get("path"),
+                "signal_present": bool((result.get("row") or {}).get("signal_present")),
+                "signal_symbol": (result.get("row") or {}).get("signal_symbol"),
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -204,6 +204,7 @@ strategies/snapback/config.highfreq.json:
 8. `max_risk_pct` 已从 Spring 活跃语义中删除；风险距离改为动态开仓金额计算依据。
 9. Spring live 侧启动第一刀架构边界：新增公共 LONG-only live execution intent contract，并新增 Spring signal -> execution intent adapter。
 10. 新增 Spring observe-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
+11. Spring observe-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
 
 当前配置事实：
 
@@ -252,6 +253,8 @@ strategies/spring/run_live_observer.py:
 - 调用 SpringSABCStrategy.on_kline_close(...)
 - signal 存在时生成并校验公共 execution intent
 - 写入 output/live_projection/spring_observer.{run_id}.jsonl
+- 支持 `--loop`、`--max-iterations`、`--signal-check-second`
+- 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
 - 不读取交易所、不下单、不维护订单生命周期
 ```
 
