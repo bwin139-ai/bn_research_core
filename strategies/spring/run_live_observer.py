@@ -18,7 +18,12 @@ if PROJECT_ROOT not in sys.path:
 
 from core.config_loader import StrategyConfig
 from core.live.execution_plan import build_dry_run_execution_plan
-from core.live.execution_runner import execute_live_execution_plan, load_live_execution_config
+from core.live.execution_runner import (
+    account_local_activity_precheck,
+    execute_live_execution_plan,
+    load_live_execution_config,
+    reconcile_strategy_open_trades,
+)
 from core.live.live_state import load_live_state
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
 from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
@@ -202,6 +207,25 @@ def _audit_preview(audits: Mapping[str, Mapping[str, Any]], limit: int) -> list[
     return rows
 
 
+def _blocked_execution_result(
+    *,
+    dry_run_execution_plan: Mapping[str, Any] | None,
+    account_local_precheck: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    executable_blockers = []
+    if isinstance(dry_run_execution_plan, Mapping):
+        executable_blockers.extend(list(dry_run_execution_plan.get("executable_blockers") or []))
+    if isinstance(account_local_precheck, Mapping):
+        executable_blockers.extend(list(account_local_precheck.get("blockers") or []))
+    return {
+        "ok": False,
+        "outcome": "execution_blocked_by_precheck",
+        "reason": ",".join(str(x) for x in executable_blockers),
+        "executable_blockers": executable_blockers,
+        "account_local_precheck": dict(account_local_precheck or {}),
+    }
+
+
 def run_once(
     *,
     config_path: str,
@@ -220,6 +244,22 @@ def run_once(
     strategy_cfg = StrategyConfig.load(config_path)
     if str(strategy_cfg.get("strategy_name") or "") != "spring-sabc":
         raise ValueError(f"config strategy_name must be spring-sabc, got {strategy_cfg.get('strategy_name')!r}")
+
+    live_execution_config = None
+    lifecycle_reconcile = None
+    account_local_precheck = None
+    if execute_live:
+        if not live_execution_config_path or not str(live_execution_config_path).strip():
+            raise ValueError("live execution config path is required when execute_live is enabled")
+        live_execution_config = load_live_execution_config(live_execution_config_path)
+        lifecycle_reconcile = reconcile_strategy_open_trades(
+            account,
+            execution_config=live_execution_config,
+            current_time_ms=started_utc_ms,
+            current_time_bj=_fmt_bj_from_ms(started_utc_ms) or "",
+            source="spring_live_observer_pre_scan",
+        )
+        account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
     payload = _load_hub_payload(account, hub_max_age_secs)
     c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, full_df = _validate_hub_payload(payload)
@@ -245,17 +285,23 @@ def run_once(
     )
     live_execution_result = None
     if execute_live:
-        if not live_execution_config_path or not str(live_execution_config_path).strip():
-            raise ValueError("live execution config path is required when execute_live is enabled")
         if intent and dry_run_execution_plan:
-            live_execution_config = load_live_execution_config(live_execution_config_path)
-            live_execution_result = execute_live_execution_plan(
-                intent,
-                execution_plan=dry_run_execution_plan,
-                execution_config=live_execution_config,
-                exchange_snapshot=exchange_snapshot,
-                source="spring_live_observer",
-            )
+            if (not bool(dry_run_execution_plan.get("ok_to_execute"))) or (
+                isinstance(account_local_precheck, Mapping)
+                and bool(account_local_precheck.get("blockers"))
+            ):
+                live_execution_result = _blocked_execution_result(
+                    dry_run_execution_plan=dry_run_execution_plan,
+                    account_local_precheck=account_local_precheck,
+                )
+            else:
+                live_execution_result = execute_live_execution_plan(
+                    intent,
+                    execution_plan=dry_run_execution_plan,
+                    execution_config=live_execution_config or load_live_execution_config(live_execution_config_path),
+                    exchange_snapshot=exchange_snapshot,
+                    source="spring_live_observer",
+                )
     finished_utc_ms = _now_utc_ms()
 
     audits = dict(getattr(strategy, "_last_signal_audits", {}) or {})
@@ -297,6 +343,8 @@ def run_once(
         "dry_run_execution_plan": dry_run_execution_plan,
         "execute_live": bool(execute_live),
         "live_execution_config_path": live_execution_config_path,
+        "lifecycle_reconcile": lifecycle_reconcile,
+        "account_local_precheck": account_local_precheck,
         "live_execution_result": live_execution_result,
     }
     path = _projection_path(output_dir, run_id)
@@ -469,8 +517,6 @@ def main() -> None:
         raise SystemExit("--max-iterations must be >= 0")
     if not 0 <= args.signal_check_second <= 59:
         raise SystemExit("--signal-check-second must be in [0, 59]")
-    if args.execute_live and args.loop:
-        raise SystemExit("--execute-live currently supports once mode only")
     if args.execute_live and not str(args.live_execution_config).strip():
         raise SystemExit("--live-execution-config is required with --execute-live")
     run_id = str(args.run_id).strip() or _build_run_id(args.account)

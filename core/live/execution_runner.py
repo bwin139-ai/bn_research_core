@@ -24,6 +24,7 @@ from core.live.binance_exec import (
 )
 from core.live.execution_intent import ValidatedLiveExecutionIntent, validate_live_execution_intent
 from core.live.live_state import (
+    load_live_state,
     mark_error,
     mark_last_processed_bar,
     mark_order_reconcile,
@@ -37,6 +38,7 @@ from core.live.live_state import (
 BJ = timezone(timedelta(hours=8))
 POSITION_SIDE_LONG = "LONG"
 FILLED_ORDER_STATUSES = {"FILLED", "FINISHED"}
+DEFAULT_STRATEGY_NAME = "spring-sabc"
 
 
 def _now_bj_str() -> str:
@@ -680,6 +682,141 @@ def _post_entry_reconcile(
         "closed_trade": closed_trade,
         "order_checks": order_checks,
         "checked_bj": checked_bj,
+    }
+
+
+def _strategy_ownership_blocker(open_trade: Mapping[str, Any], *, strategy_name: str, strategy_code: str) -> str | None:
+    payload_strategy_name = str(open_trade.get("strategy_name") or "").strip()
+    payload_strategy_code = str(open_trade.get("strategy_code") or "").upper().strip()
+    if payload_strategy_name and payload_strategy_name != strategy_name:
+        return f"foreign_strategy_name:{payload_strategy_name}"
+    if payload_strategy_code and payload_strategy_code != strategy_code:
+        return f"foreign_strategy_code:{payload_strategy_code}"
+    if not payload_strategy_name and not payload_strategy_code:
+        return "missing_strategy_ownership"
+    return None
+
+
+def _local_activity_summary(state: Mapping[str, Any]) -> dict[str, Any]:
+    pending_symbols: list[str] = []
+    open_symbols: list[str] = []
+    symbols = state.get("symbols") if isinstance(state, Mapping) else {}
+    if isinstance(symbols, Mapping):
+        for raw_symbol, payload in symbols.items():
+            if not isinstance(payload, Mapping):
+                continue
+            symbol = str(raw_symbol).upper().strip()
+            if not symbol:
+                continue
+            if payload.get("pending_entry_order"):
+                pending_symbols.append(symbol)
+            if payload.get("open_trade"):
+                open_symbols.append(symbol)
+    blockers: list[str] = []
+    if pending_symbols:
+        blockers.append("account_local_pending_entry_order")
+    if open_symbols:
+        blockers.append("account_local_open_trade")
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "pending_symbols": sorted(pending_symbols),
+        "open_symbols": sorted(open_symbols),
+        "pending_count": len(pending_symbols),
+        "open_count": len(open_symbols),
+    }
+
+
+def account_local_activity_precheck(
+    account: str,
+    *,
+    strategy_name: str = DEFAULT_STRATEGY_NAME,
+) -> dict[str, Any]:
+    state = load_live_state(account, strategy_name=strategy_name)
+    return _local_activity_summary(state)
+
+
+def reconcile_strategy_open_trades(
+    account: str,
+    *,
+    execution_config: Mapping[str, Any],
+    current_time_ms: int,
+    current_time_bj: str,
+    strategy_name: str = DEFAULT_STRATEGY_NAME,
+    source: str,
+) -> dict[str, Any]:
+    cfg = dict(execution_config)
+    if _require_str(cfg, "strategy_name") != strategy_name:
+        raise ValueError("live execution config strategy_name does not match reconcile strategy_name")
+    strategy_code = _require_str(cfg, "strategy_code").upper()
+    if _require_str(cfg, "account") != str(account):
+        raise ValueError("live execution config account does not match reconcile account")
+    audit_enabled = _require_bool(cfg, "audit_enabled")
+    state = load_live_state(account, strategy_name=strategy_name)
+    symbols = state.get("symbols") or {}
+    results: list[dict[str, Any]] = []
+    for raw_symbol, payload in sorted(symbols.items()):
+        if not isinstance(payload, Mapping):
+            continue
+        open_trade = payload.get("open_trade")
+        if not isinstance(open_trade, Mapping):
+            continue
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            continue
+        ownership_blocker = _strategy_ownership_blocker(
+            open_trade,
+            strategy_name=strategy_name,
+            strategy_code=strategy_code,
+        )
+        if ownership_blocker:
+            mark_error(
+                account,
+                symbol,
+                error_code="foreign_open_trade_blocked",
+                error_message=ownership_blocker,
+                error_bj=current_time_bj,
+                strategy_name=strategy_name,
+            )
+            _write_exec_event(audit_enabled, account, "spring_foreign_open_trade_blocked", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "reason": ownership_blocker,
+                "open_trade": dict(open_trade),
+            })
+            results.append({
+                "symbol": symbol,
+                "ok": False,
+                "outcome": "foreign_open_trade_blocked",
+                "reason": ownership_blocker,
+            })
+            continue
+        result = _post_entry_reconcile(
+            account=account,
+            symbol=symbol,
+            open_trade=dict(open_trade),
+            cfg=cfg,
+            audit_enabled=audit_enabled,
+            state_strategy_name=strategy_name,
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            source=source,
+        )
+        result = dict(result)
+        result["symbol"] = symbol
+        results.append(result)
+    post_state = load_live_state(account, strategy_name=strategy_name)
+    activity = _local_activity_summary(post_state)
+    return {
+        "ok": all(bool(row.get("ok")) for row in results) and bool(activity.get("ok")),
+        "strategy_name": strategy_name,
+        "strategy_code": strategy_code,
+        "account": str(account),
+        "checked_bj": _now_bj_str(),
+        "results": results,
+        "remaining_local_activity": activity,
     }
 
 

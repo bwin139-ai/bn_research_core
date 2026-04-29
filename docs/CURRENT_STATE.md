@@ -222,6 +222,7 @@ strategies/snapback/config.highfreq.json:
 26. 2026-04-29 21:29 BJ，watcher 发现 `AIOTUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=101 avg=0.09517，SL submitted stop=0.09216，TP submitted price=0.10495。后续交易所事实显示 SL filled avg=0.0921878、TP expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`STOP_LOSS`。
 27. 2026-04-29 21:35 BJ，watcher 又发现 `TACUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=612 avg=0.0163321，SL submitted stop=0.016236，TP submitted price=0.016418。后续交易所事实显示 TP filled avg=0.016418、SL expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`TAKE_PROFIT`。
 28. 2026-04-29 21:38 BJ，因 smoke 目标已覆盖且 watcher 已连续开出两笔真实交易，已停止临时 watcher `pid=4138786`。复查交易所 positions/open orders 为空；Spring state 中 `AIOTUSDT`、`TACUSDT`、`SKYAIUSDT` 均无 open_trade / pending_entry_order，仅保留各自 cooldown。
+29. 本地正在推进 Spring live loop LOGIC_ONLY patch：允许 `--loop --execute-live`，每轮先对 Spring state 全部 open_trade 做交易所事实 reconcile，再执行 signal scan；普通 precheck blocker 记录为 `execution_blocked_by_precheck`，不再让 loop 崩溃；新增账户级 Spring local active gate，防止其它 symbol stale/open state 时继续开下一笔。
 
 当前配置事实：
 
@@ -249,12 +250,12 @@ strategies/spring/config.json:
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
 4. Spring/Snapback live state ownership 隔离 patch 已提交并部署，20:17 smoke 未复现 Snapback 接管。
-5. Spring live 后续如要常驻实盘，仍需补循环式 open_trade reconcile / exit monitor / time-stop monitor；当前 post-entry reconcile 只覆盖 live once 入场后的一次即时对账。
+5. Spring live loop patch 已在本地推进，目标是替代临时外层 watcher；部署前仍不得再启动临时 smoke watcher。
 6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
 7. 下一次 Spring 实盘 smoke 不应绕过 cooldown；若信号仍为 `SKYAIUSDT`，需等 `2026-04-30 00:17:00 BJ` 之后或等无 cooldown 的新标的信号。
-8. 当前 Spring smoke watcher 是外层 nohup 轮询，不是正式 `--loop --execute-live` 常驻模式；若进入正式常驻实盘，仍需补公共循环式 lifecycle，而不是长期依赖临时 watcher。
-9. 21:29 与 21:35 两笔 smoke 说明：live once 即时 post-entry reconcile 只能捕获“执行返回前已经离场”的情况；若 TP/SL 在返回后触发，仍需要后续手动 reconcile 或正式循环式 exit monitor。
-10. watcher 的 dry-run 决策只看当前 candidate symbol 的 local state 与交易所快照；若其它 symbol 的 Spring state 仍 stale OPEN 但交易所已空，外层 watcher 仍可能继续下一笔。后续正式常驻前必须补账户级 Spring local active gate 与循环式 reconcile。
+8. 当前 Spring smoke watcher 已停止；正式常驻前必须使用 Python 内置 loop lifecycle，不再依赖临时外层 shell watcher。
+9. 21:29 与 21:35 两笔 smoke 说明：live once 即时 post-entry reconcile 只能捕获“执行返回前已经离场”的情况；若 TP/SL 在返回后触发，需要后续 loop reconcile / exit monitor 清理。
+10. 本地 loop patch 已补账户级 Spring local active gate 与每轮 open_trade reconcile；部署验证后再评估是否继续补 time-stop 主动提交/撤单能力。
 
 已确认 incident：
 
@@ -386,7 +387,9 @@ core/live/execution_runner.py:
 - 入场后先建 SL，SL 成功后才建 TP
 - SL 建立失败时按 JSON 中 `stop_loss_failure_action=submit_market_flatten` 提交 market flatten
 - 写 live state pending/open_trade/cooldown/error 与 live audit event
-- 当前覆盖 entry、保护单建立、live once 入场后的即时 post-entry reconcile；尚未覆盖循环式 open_trade reconcile / exit monitor / time-stop monitor
+- 当前覆盖 entry、保护单建立、live once 入场后的即时 post-entry reconcile
+- 本地 loop patch 新增 strategy-level open_trade reconcile 与 account local active precheck：每轮可清理已由 TP/SL/TS 离场的 stale open_trade；若仍有 open/pending，则阻断新的 live entry
+- 尚未覆盖主动 time-stop 提交/撤单；该能力需后续单独拆刀
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口
@@ -405,11 +408,11 @@ strategies/spring/run_live_observer.py:
 - signal 存在时生成并校验公共 execution intent
 - signal 存在时生成 dry_run_execution_plan 并落盘
 - 支持 `--dry-run-verify-exchange` 读取只读交易所快照与本地 live state 快照
-- 支持显式 `--execute-live --live-execution-config ...` 一次性真实下单
+- 支持显式 `--execute-live --live-execution-config ...` 真实下单
 - 写入 output/live_projection/spring_observer.{run_id}.jsonl
-- 支持 `--loop`、`--max-iterations`、`--signal-check-second`
+- 支持 `--loop`、`--execute-live`、`--max-iterations`、`--signal-check-second`
 - 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
-- 默认不下单；只有 `--execute-live` 与外部 live execution JSON 同时满足时才会触发真实交易
+- 默认不下单；只有 `--execute-live`、外部 live execution JSON、account local gate 与 exchange/local precheck 同时满足时才会触发真实交易
 
 strategies/spring/config.observer_loose.json:
 - observe-only 专用 loose 配置
