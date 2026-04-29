@@ -169,6 +169,30 @@ def _validate_hub_payload(payload: Mapping[str, Any]) -> tuple[int, str, int, st
     return c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, dict(full_df)
 
 
+def _latest_closed_closes(full_df: Mapping[str, Any], c_bar_ts: int) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for raw_symbol, value in dict(full_df or {}).items():
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol or not isinstance(value, pd.DataFrame) or value.empty or "close" not in value.columns:
+            continue
+        df = value.copy()
+        try:
+            df = df.sort_index()
+            df.index = pd.Index([int(x) for x in df.index])
+        except Exception:
+            continue
+        rows = df[df.index <= int(c_bar_ts)]
+        if rows.empty:
+            continue
+        try:
+            close = float(pd.to_numeric(rows["close"], errors="coerce").iloc[-1])
+        except Exception:
+            continue
+        if close > 0:
+            result[symbol] = close
+    return result
+
+
 def _active_symbols_from_args(values: list[str] | None) -> set[str]:
     result = {str(value).upper().strip() for value in (values or []) if str(value).strip()}
     return result
@@ -252,17 +276,21 @@ def run_once(
         if not live_execution_config_path or not str(live_execution_config_path).strip():
             raise ValueError("live execution config path is required when execute_live is enabled")
         live_execution_config = load_live_execution_config(live_execution_config_path)
-        lifecycle_reconcile = reconcile_strategy_open_trades(
-            account,
-            execution_config=live_execution_config,
-            current_time_ms=started_utc_ms,
-            current_time_bj=_fmt_bj_from_ms(started_utc_ms) or "",
-            source="spring_live_observer_pre_scan",
-        )
-        account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
     payload = _load_hub_payload(account, hub_max_age_secs)
     c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, full_df = _validate_hub_payload(payload)
+    latest_closes = _latest_closed_closes(full_df, c_bar_ts)
+
+    if execute_live:
+        lifecycle_reconcile = reconcile_strategy_open_trades(
+            account,
+            execution_config=live_execution_config,
+            current_time_ms=signal_time_ts,
+            current_time_bj=signal_time_bj,
+            latest_closes=latest_closes,
+            source="spring_live_observer_pre_scan",
+        )
+        account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
     strategy = SpringSABCStrategy(strategy_cfg)
     signal = strategy.on_kline_close(
@@ -328,6 +356,7 @@ def run_once(
         "hub_symbol_count": int(payload.get("symbol_count") or len(full_df)),
         "cross_section_symbol_count": int(len(cross_section)),
         "full_df_symbol_count": int(len(full_df)),
+        "latest_close_symbol_count": int(len(latest_closes)),
         "active_symbols": sorted(active_symbols),
         "universe_candidate_count": int(len(getattr(strategy, "_last_universe_candidates", []) or [])),
         "structure_candidate_count": int(len(getattr(strategy, "_last_structure_candidates", []) or [])),

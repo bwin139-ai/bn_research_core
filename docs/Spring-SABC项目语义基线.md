@@ -322,6 +322,40 @@ breakeven_guard_armed = true
 
 后续若重新启用 BREAKEVEN_GUARD，只能在本文件已定义的 sim/live 时序语义上继续实验，禁止退回到旧的同 bar arm + exit 错误语义。
 
+13.1.5 TIME_STOP live 执行语义
+
+TIME_STOP 是 Spring-SABC 的持仓阶段保护性离场类型，优先级低于交易所已挂出的 STOP_LOSS / TAKE_PROFIT。
+
+live 侧在每轮 `on_kline_close(...)` 对齐的 CB 时刻，使用最新闭合历史 bar 的 close 作为 TIME_STOP 检查价格。不得使用未来 bar，也不得用未闭合 tick 替代该语义价格。
+
+触发条件固定为：
+
+```text
+held_mins >= max_hold_mins
+current_profit_pct < time_stop_min_profit_pct
+```
+
+其中：
+
+```text
+held_mins = floor((current_time_ms - entry_ts) / 60000)
+current_profit_pct = latest_closed_close / entry_price - 1
+```
+
+若达到 `max_hold_mins` 但 `current_profit_pct >= time_stop_min_profit_pct`，live 只记录检查结果并继续持仓。
+
+若达到 `max_hold_mins` 且收益不足，live 必须按以下顺序执行：
+
+```text
+1. 基于交易所事实确认 LONG position 仍存在
+2. 撤销本策略持有的 TP / SL 剩余挂单
+3. 若撤单过程中发现 TP / SL 已成交，则不得提交 TIME_STOP
+4. 撤单成功后提交 LONG market flatten，离场类型记为 TIME_STOP
+5. 后续通过公共 reconcile 读取交易所 TS/TP/SL 事实并清理本地 state
+```
+
+TIME_STOP 不负责替代 STOP_LOSS / TAKE_PROFIT 的实时保护。入场后的 SL / TP 仍必须优先挂在交易所，由交易所实时触发。
+
 13.2 风险距离与动态开仓金额语义
 
 Spring-SABC 不使用 `risk_pct` 作为信号硬过滤条件。
