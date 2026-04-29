@@ -219,6 +219,9 @@ strategies/snapback/config.highfreq.json:
 23. 2026-04-29 21:10 BJ，服务器 `/root/bn_research_core` 已拉取 `d56d5b9` 并用 `/root/service_env/bin/python` 完成 py_compile。随后用新 post-entry reconcile 逻辑处理 20:17 Spring smoke 残留：交易所 position/open orders 为空，`SPR_TP` 为 `FILLED`、`SPR_SL` 为 `EXPIRED`，Spring audit 写入 `spring_position_closed_detected` 与 `spring_state_cleared_after_exit`，`state/live/spring_sabc_mybwin139.state.json` 中 `SKYAIUSDT.open_trade` 已清空。
 24. 2026-04-29 21:11 BJ，Spring 10U smoke dry-run 仍有 `SKYAIUSDT` 信号，交易所 precheck 为空仓无挂单，但 local precheck 因 `cooldown_until_bj = 2026-04-30 00:17:00` 返回 `local_cooldown_active`，因此未继续执行新的实盘下单。
 25. 2026-04-29 21:18 BJ，服务器启动 Spring 10U smoke watcher：`pid=4138786`，脚本 `output/live_projection/spring_smoke_live_watch.sh`，日志 `output/live_projection/spring_smoke_live_watch.20260429T131846Z.log`。watcher 每分钟先 dry-run，只有 `ok_to_execute=true` 才调用 `--execute-live`；当前首轮仍只有 `SKYAIUSDT` signal，因 `local_cooldown_active` 等待，未触发 live 下单。
+26. 2026-04-29 21:29 BJ，watcher 发现 `AIOTUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=101 avg=0.09517，SL submitted stop=0.09216，TP submitted price=0.10495。后续交易所事实显示 SL filled avg=0.0921878、TP expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`STOP_LOSS`。
+27. 2026-04-29 21:35 BJ，watcher 又发现 `TACUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=612 avg=0.0163321，SL submitted stop=0.016236，TP submitted price=0.016418。后续交易所事实显示 TP filled avg=0.016418、SL expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`TAKE_PROFIT`。
+28. 2026-04-29 21:38 BJ，因 smoke 目标已覆盖且 watcher 已连续开出两笔真实交易，已停止临时 watcher `pid=4138786`。复查交易所 positions/open orders 为空；Spring state 中 `AIOTUSDT`、`TACUSDT`、`SKYAIUSDT` 均无 open_trade / pending_entry_order，仅保留各自 cooldown。
 
 当前配置事实：
 
@@ -250,6 +253,8 @@ strategies/spring/config.json:
 6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
 7. 下一次 Spring 实盘 smoke 不应绕过 cooldown；若信号仍为 `SKYAIUSDT`，需等 `2026-04-30 00:17:00 BJ` 之后或等无 cooldown 的新标的信号。
 8. 当前 Spring smoke watcher 是外层 nohup 轮询，不是正式 `--loop --execute-live` 常驻模式；若进入正式常驻实盘，仍需补公共循环式 lifecycle，而不是长期依赖临时 watcher。
+9. 21:29 与 21:35 两笔 smoke 说明：live once 即时 post-entry reconcile 只能捕获“执行返回前已经离场”的情况；若 TP/SL 在返回后触发，仍需要后续手动 reconcile 或正式循环式 exit monitor。
+10. watcher 的 dry-run 决策只看当前 candidate symbol 的 local state 与交易所快照；若其它 symbol 的 Spring state 仍 stale OPEN 但交易所已空，外层 watcher 仍可能继续下一笔。后续正式常驻前必须补账户级 Spring local active gate 与循环式 reconcile。
 
 已确认 incident：
 
