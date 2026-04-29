@@ -344,6 +344,16 @@ state / audit 结论：
 当前 Spring live 架构事实：
 
 ```text
+总体架构边界：
+- Snapback 当前仍是老结构：信号识别、下单、持仓维护、reconcile、离场落盘集中在策略自己的 live/consumer 代码中。
+- Spring live 正在走新结构：策略层只负责 signal -> ValidatedLiveExecutionIntent adapter；交易生命周期能力沉到公共 LONG-only live execution lifecycle。
+- `core/live/execution_intent.py` 只是公共 contract 入口，不承载全部生命周期逻辑。
+- 公共 live execution lifecycle 的完整目标是：
+  signal adapter -> ValidatedLiveExecutionIntent -> execution_plan -> entry/SL/TP -> strategy-specific state/audit -> open_trade reconcile -> TP/SL/TS exit_reason -> state close -> live_trades/projection -> cooldown。
+- 未来第三、第四套 LONG 策略应只新增自己的 signal adapter、strategy_name/strategy_code/config，复用公共 live execution lifecycle；不得复制 Snapback 老式策略私有交易生命周期。
+- 后续 Spring post-entry reconcile / exit monitor / time-stop monitor 应继续补在公共 LONG-only live execution lifecycle 中，而不是写成 Spring 私有闭环。
+- Snapback 若未来迁移到公共层，必须单独拆刀；当前不得在 Spring 修复刀中混改 Snapback 架构。
+
 core/live/execution_intent.py:
 - 定义 ValidatedLiveExecutionIntent
 - 只允许 LONG
@@ -365,6 +375,7 @@ core/live/execution_runner.py:
 - 入场后先建 SL，SL 成功后才建 TP
 - SL 建立失败时按 JSON 中 `stop_loss_failure_action=submit_market_flatten` 提交 market flatten
 - 写 live state pending/open_trade/cooldown/error 与 live audit event
+- 当前只覆盖 entry 与保护单建立；尚未覆盖 post-entry reconcile / exit monitor / time-stop monitor
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口
