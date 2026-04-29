@@ -215,6 +215,7 @@ strategies/snapback/config.highfreq.json:
 19. 2026-04-29 15:09-15:10 BJ，确认 Spring smoke 发生跨策略串线 incident：Snapback live 捕获并维护了 Spring open_trade，取消 Spring `SPR_TP/SPR_SL`，提交 Snapback `SNP_TS` time-stop 并完成离场。
 20. 2026-04-29 已提交、推送并部署 Spring/Snapback live state ownership 隔离 patch：`11d1b22 live: isolate strategy state ownership`。
 21. 2026-04-29 20:17 BJ，重启 3 个 Snapback live 进程后执行 Spring 10U / 5x live smoke：`SKYAIUSDT` entry 成交，`SPR_SL` 与 `SPR_TP` 提交成功；随后交易所真相显示 `SPR_TP` 立即成交、`SPR_SL` 自动 EXPIRED，仓位与挂单为空。未复现 Snapback 串线，但暴露 Spring state 缺少 post-entry reconcile / exit monitor，Spring state 仍记录 `OPEN`。
+22. 本地已补 Spring live once 的公共 post-entry reconcile：`core/live/execution_runner.py` 在 entry/SL/TP 建立后立即查询 LONG position 与 symbol open orders；若交易所仓位和挂单均为空，则查询 TP/SL/TS 订单事实，推断 exit reason，写 Spring audit event，并清理 strategy-specific `open_trade`。
 
 当前配置事实：
 
@@ -242,9 +243,9 @@ strategies/spring/config.json:
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
 4. Spring/Snapback live state ownership 隔离 patch 已提交并部署，20:17 smoke 未复现 Snapback 接管。
-5. Spring live 后续如要常驻实盘，需要补 Spring open_trade reconcile / exit monitor / time-stop monitor；当前 `--execute-live` 只覆盖一次性开仓与保护单建立链路。
+5. Spring live 后续如要常驻实盘，仍需补循环式 open_trade reconcile / exit monitor / time-stop monitor；当前本地 post-entry reconcile 只覆盖 live once 入场后的一次即时对账。
 6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
-7. 在补 Spring post-entry reconcile / exit monitor 前，不建议继续做新的 Spring 实盘 smoke；否则交易所已平而 Spring state 仍可能保留 `OPEN`。
+7. 在本地 post-entry reconcile 完成部署验证前，不建议继续做新的 Spring 实盘 smoke；否则交易所已平而 Spring state 仍可能保留 `OPEN`。
 
 已确认 incident：
 
@@ -336,9 +337,9 @@ state / audit 结论：
 - Snapback audit 未出现取消本次 SPR_SL/SPR_TP 或提交 SNP_TS 的记录。
 
 当前风险：
-- Spring one-shot execution runner 建立保护单后即返回，尚无 Spring reconcile / exit monitor。
-- 若 TP/SL 很快成交或失效，Spring state 不会自动从 OPEN 同步为 CLOSED。
-- 下一刀应先补 Spring post-entry reconcile / exit monitor，再继续做新的 Spring live smoke 或常驻实盘。
+- Spring one-shot execution runner 已补一次即时 post-entry reconcile，但尚无循环式 Spring reconcile / exit monitor。
+- 若 TP/SL 在即时 reconcile 之后才成交或失效，Spring state 仍不会自动从 OPEN 同步为 CLOSED。
+- 下一刀若推进常驻实盘，应补公共循环式 reconcile / exit monitor / time-stop monitor，再做新的 Spring live smoke 或常驻实盘。
 ```
 
 当前 Spring live 架构事实：
@@ -375,7 +376,7 @@ core/live/execution_runner.py:
 - 入场后先建 SL，SL 成功后才建 TP
 - SL 建立失败时按 JSON 中 `stop_loss_failure_action=submit_market_flatten` 提交 market flatten
 - 写 live state pending/open_trade/cooldown/error 与 live audit event
-- 当前只覆盖 entry 与保护单建立；尚未覆盖 post-entry reconcile / exit monitor / time-stop monitor
+- 当前覆盖 entry、保护单建立、live once 入场后的即时 post-entry reconcile；尚未覆盖循环式 open_trade reconcile / exit monitor / time-stop monitor
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口

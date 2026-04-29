@@ -12,6 +12,8 @@ from core.live.binance_exec import (
     ensure_cross_margin,
     ensure_hedge_mode,
     ensure_leverage,
+    get_open_orders,
+    get_order,
     get_position,
     get_symbol_filters,
     place_entry_order,
@@ -24,6 +26,8 @@ from core.live.execution_intent import ValidatedLiveExecutionIntent, validate_li
 from core.live.live_state import (
     mark_error,
     mark_last_processed_bar,
+    mark_order_reconcile,
+    mark_position_reconcile,
     mark_signal,
     set_cooldown,
     set_open_trade,
@@ -32,6 +36,7 @@ from core.live.live_state import (
 
 BJ = timezone(timedelta(hours=8))
 POSITION_SIDE_LONG = "LONG"
+FILLED_ORDER_STATUSES = {"FILLED", "FINISHED"}
 
 
 def _now_bj_str() -> str:
@@ -372,6 +377,312 @@ def _write_exec_event(enabled: bool, account: str, event: str, payload: dict[str
         write_strategy_event(account, "spring-sabc", event, enriched)
 
 
+def _is_order_not_exist_reason(reason: Any) -> bool:
+    text = str(reason or "")
+    return (
+        "code=-2013" in text
+        or "Order does not exist" in text
+        or "Unknown order sent" in text
+        or "algo order does not exist" in text
+        or "order not exist" in text
+    )
+
+
+def _find_open_order(
+    orders: list[dict[str, Any]],
+    *,
+    exchange_order_id: Any = None,
+    client_order_id: Any = None,
+) -> dict[str, Any] | None:
+    exchange_key = str(exchange_order_id).strip() if exchange_order_id not in (None, "") else ""
+    client_key = str(client_order_id).strip() if client_order_id not in (None, "") else ""
+    if not exchange_key and not client_key:
+        return None
+    for row in orders:
+        if not isinstance(row, Mapping):
+            continue
+        row_order_id = str(row.get("order_id") or row.get("exchange_order_id") or row.get("algo_id") or "").strip()
+        row_client_id = str(row.get("client_order_id") or row.get("client_algo_id") or "").strip()
+        if exchange_key and row_order_id == exchange_key:
+            return dict(row)
+        if client_key and row_client_id == client_key:
+            return dict(row)
+    return None
+
+
+def _resolve_leg_order(
+    account: str,
+    symbol: str,
+    *,
+    known_open_orders: list[dict[str, Any]],
+    exchange_order_id: Any = None,
+    client_order_id: Any = None,
+    retry_max: int,
+    retry_delay_secs: float,
+) -> dict[str, Any]:
+    if exchange_order_id in (None, "") and not client_order_id:
+        return {"ok": True, "reason": "", "data": None, "skipped": True, "missing_identity": True}
+    matched_open_order = _find_open_order(
+        known_open_orders,
+        exchange_order_id=exchange_order_id,
+        client_order_id=client_order_id,
+    )
+    if matched_open_order is not None:
+        return {
+            "ok": True,
+            "reason": "",
+            "data": matched_open_order,
+            "skipped": True,
+            "known_open_order_snapshot": True,
+        }
+    order_res = get_order(
+        account,
+        symbol,
+        exchange_order_id=int(exchange_order_id) if exchange_order_id not in (None, "") else None,
+        client_order_id=str(client_order_id).strip() if client_order_id else None,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if (not order_res.get("ok")) and _is_order_not_exist_reason(order_res.get("reason")):
+        return {
+            "ok": True,
+            "reason": "",
+            "data": None,
+            "skipped": True,
+            "missing_on_exchange": True,
+            "missing_reason": order_res.get("reason"),
+        }
+    return order_res
+
+
+def _infer_exit_reason_from_orders(
+    account: str,
+    symbol: str,
+    open_trade: Mapping[str, Any],
+    *,
+    known_open_orders: list[dict[str, Any]],
+    retry_max: int,
+    retry_delay_secs: float,
+) -> tuple[str, dict[str, Any], str | None]:
+    checks: dict[str, Any] = {}
+    legs = [
+        (
+            "time_stop",
+            "TIME_STOP",
+            open_trade.get("time_stop_exchange_order_id"),
+            open_trade.get("time_stop_client_order_id"),
+        ),
+        (
+            "tp",
+            "TAKE_PROFIT",
+            open_trade.get("tp_order_exchange_id"),
+            open_trade.get("tp_order_client_id"),
+        ),
+        (
+            "sl",
+            "STOP_LOSS",
+            open_trade.get("sl_order_exchange_id"),
+            open_trade.get("sl_order_client_id"),
+        ),
+    ]
+    for leg_key, exit_reason, exchange_order_id, client_order_id in legs:
+        leg_res = _resolve_leg_order(
+            account,
+            symbol,
+            known_open_orders=known_open_orders,
+            exchange_order_id=exchange_order_id,
+            client_order_id=client_order_id,
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+        )
+        checks[leg_key] = leg_res
+        status = str(((leg_res.get("data") or {}) if leg_res.get("ok") else {}).get("status") or "").upper()
+        if status in FILLED_ORDER_STATUSES:
+            return exit_reason, checks, None
+
+    blocking_reason = None
+    for leg_key in ("time_stop", "tp", "sl"):
+        leg_res = checks.get(leg_key) or {}
+        if leg_res.get("ok"):
+            continue
+        blocking_reason = str(leg_res.get("reason") or f"{leg_key}_query_failed")
+        break
+    return "UNKNOWN_EXIT", checks, blocking_reason
+
+
+def _exit_order_from_checks(exit_reason: str, checks: Mapping[str, Any]) -> dict[str, Any] | None:
+    leg = "tp" if exit_reason == "TAKE_PROFIT" else "sl" if exit_reason == "STOP_LOSS" else "time_stop" if exit_reason == "TIME_STOP" else ""
+    if not leg:
+        return None
+    payload = checks.get(leg)
+    if isinstance(payload, Mapping) and isinstance(payload.get("data"), Mapping):
+        return dict(payload["data"])
+    return None
+
+
+def _resolve_exit_price(exit_reason: str, open_trade: Mapping[str, Any], exit_order: Mapping[str, Any] | None) -> tuple[float | None, str]:
+    fallback_price = float(open_trade.get("entry_price") or 0.0)
+    fallback_source = "fallback_entry_price"
+    if exit_reason == "TAKE_PROFIT" and float(open_trade.get("tp_price") or 0.0) > 0:
+        fallback_price = float(open_trade["tp_price"])
+        fallback_source = "fallback_tp_price"
+    elif exit_reason == "STOP_LOSS" and float(open_trade.get("sl_trigger_price") or 0.0) > 0:
+        fallback_price = float(open_trade["sl_trigger_price"])
+        fallback_source = "fallback_sl_price"
+    fill_res = resolve_order_fill_price(dict(exit_order or {}), fallback_price=fallback_price if fallback_price > 0 else None)
+    payload = dict(fill_res.get("data") or {}) if fill_res.get("ok") else {}
+    price = payload.get("fill_price")
+    try:
+        parsed_price = float(price)
+    except (TypeError, ValueError):
+        parsed_price = None
+    return parsed_price, str(payload.get("price_source") or fallback_source)
+
+
+def _post_entry_reconcile(
+    *,
+    account: str,
+    symbol: str,
+    open_trade: dict[str, Any],
+    cfg: Mapping[str, Any],
+    audit_enabled: bool,
+    state_strategy_name: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    source: str,
+) -> dict[str, Any]:
+    checked_bj = _now_bj_str()
+    retry_max = _require_int(cfg, "order_retry_max", min_value=0)
+    retry_delay_secs = _require_float(cfg, "api_retry_delay_secs", min_value=0.0)
+    position_res = get_position(account, symbol, POSITION_SIDE_LONG)
+    open_orders_res = get_open_orders(account, symbol)
+    mark_position_reconcile(account, symbol, reconcile_bj=checked_bj, strategy_name=state_strategy_name)
+    mark_order_reconcile(account, symbol, reconcile_bj=checked_bj, strategy_name=state_strategy_name)
+    if not position_res.get("ok"):
+        _write_exec_event(audit_enabled, account, "spring_post_entry_reconcile_blocked", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "reason": "position_query_failed",
+            "position_snapshot": position_res,
+        })
+        return {"ok": False, "outcome": "post_entry_reconcile_blocked", "reason": "position_query_failed", "position_res": position_res}
+    if not open_orders_res.get("ok"):
+        _write_exec_event(audit_enabled, account, "spring_post_entry_reconcile_blocked", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "reason": "open_orders_query_failed",
+            "orders_snapshot": open_orders_res,
+        })
+        return {"ok": False, "outcome": "post_entry_reconcile_blocked", "reason": "open_orders_query_failed", "orders_res": open_orders_res}
+
+    position = position_res.get("data")
+    open_orders = [dict(row) for row in (open_orders_res.get("data") or []) if isinstance(row, Mapping)]
+    if position:
+        return {
+            "ok": True,
+            "outcome": "position_still_open",
+            "position_snapshot": position_res,
+            "open_orders_count": len(open_orders),
+            "checked_bj": checked_bj,
+        }
+    if open_orders:
+        return {
+            "ok": True,
+            "outcome": "flat_but_open_orders_remain",
+            "position_snapshot": position_res,
+            "open_orders_snapshot": open_orders_res,
+            "open_orders_count": len(open_orders),
+            "checked_bj": checked_bj,
+        }
+
+    exit_reason, order_checks, blocking_reason = _infer_exit_reason_from_orders(
+        account,
+        symbol,
+        open_trade,
+        known_open_orders=open_orders,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if blocking_reason or exit_reason == "UNKNOWN_EXIT":
+        reason = blocking_reason or "exit_reason_unknown"
+        mark_error(
+            account,
+            symbol,
+            error_code="post_entry_exit_reason_infer_failed",
+            error_message=reason,
+            error_bj=checked_bj,
+            strategy_name=state_strategy_name,
+        )
+        _write_exec_event(audit_enabled, account, "spring_position_closed_exit_reason_infer_failed", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "reason": reason,
+            "order_checks": order_checks,
+        })
+        return {
+            "ok": False,
+            "outcome": "flat_exit_reason_unresolved",
+            "reason": reason,
+            "order_checks": order_checks,
+            "checked_bj": checked_bj,
+        }
+
+    exit_order = _exit_order_from_checks(exit_reason, order_checks)
+    exit_price, exit_price_source = _resolve_exit_price(exit_reason, open_trade, exit_order)
+    closed_trade = deepcopy(open_trade)
+    closed_trade.update({
+        "status": "CLOSED",
+        "exit_reason": exit_reason,
+        "exit_bj": checked_bj,
+        "exit_detected_bar_ts": current_time_ms,
+        "exit_detected_bar_bj": current_time_bj,
+        "exit_price": exit_price,
+        "exit_price_source": exit_price_source,
+        "exit_order_client_id": (exit_order or {}).get("client_order_id"),
+        "exit_order_exchange_id": (exit_order or {}).get("order_id"),
+        "exit_order_status": (exit_order or {}).get("status"),
+    })
+    set_open_trade(account, symbol, None, strategy_name=state_strategy_name)
+    set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
+    mark_error(account, symbol, error_code=None, error_message=None, error_bj=None, strategy_name=state_strategy_name)
+    _write_exec_event(audit_enabled, account, "spring_position_closed_detected", {
+        "symbol": symbol,
+        "source": source,
+        "bar_ts": current_time_ms,
+        "bar_bj": current_time_bj,
+        "order_root": open_trade.get("order_root"),
+        "exit_reason": exit_reason,
+        "exit_price": exit_price,
+        "exit_price_source": exit_price_source,
+        "order_checks": order_checks,
+    })
+    _write_exec_event(audit_enabled, account, "spring_state_cleared_after_exit", {
+        "symbol": symbol,
+        "source": source,
+        "bar_ts": current_time_ms,
+        "bar_bj": current_time_bj,
+        "order_root": open_trade.get("order_root"),
+        "exit_reason": exit_reason,
+    })
+    return {
+        "ok": True,
+        "outcome": "flat_state_cleared",
+        "exit_reason": exit_reason,
+        "closed_trade": closed_trade,
+        "order_checks": order_checks,
+        "checked_bj": checked_bj,
+    }
+
+
 def execute_live_execution_plan(
     intent: ValidatedLiveExecutionIntent | Mapping[str, Any],
     *,
@@ -645,6 +956,17 @@ def execute_live_execution_plan(
         "cooldown_until_ts": cooldown_until_ts,
         "cooldown_until_bj": cooldown_until_bj,
     })
+    post_entry_reconcile = _post_entry_reconcile(
+        account=account,
+        symbol=symbol,
+        open_trade=open_trade,
+        cfg=cfg,
+        audit_enabled=audit_enabled,
+        state_strategy_name=state_strategy_name,
+        current_time_ms=current_time_ms,
+        current_time_bj=current_time_bj,
+        source=source,
+    )
     return {
         "ok": bool(tp_res.get("ok")),
         "outcome": "consumed_open_confirmed" if tp_res.get("ok") else "consumed_open_sl_only",
@@ -655,6 +977,7 @@ def execute_live_execution_plan(
         "sl_res": sl_res,
         "tp_res": tp_res,
         "open_trade": open_trade,
+        "post_entry_reconcile": post_entry_reconcile,
         "cooldown_until_ts": cooldown_until_ts,
         "cooldown_until_bj": cooldown_until_bj,
     }
