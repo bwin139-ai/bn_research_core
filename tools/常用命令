@@ -75,7 +75,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0428T1629_ALL"
+RUNID="SPRING_V1_30D_P6_0429T0827_AL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \
