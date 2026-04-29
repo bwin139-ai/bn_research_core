@@ -303,12 +303,18 @@ def refresh_confirmed_delisted(
     """
     live_set = {s.upper() for s in live_symbols}
     local_dirs = list_local_symbol_dirs(data_dir)
+    require_usdt_symbols(local_dirs, f"local data_dir {data_dir}")
     local_set = set(local_dirs)
 
     force_include = load_symbol_lines(force_include_path)
+    force_include = require_usdt_symbols(force_include, force_include_path)
     force_set = set(force_include)
 
     existing_confirmed_raw = load_confirmed_delisted_records(confirmed_delisted_path)
+    require_usdt_symbols(
+        [str(row["symbol"]) for row in existing_confirmed_raw],
+        confirmed_delisted_path,
+    )
     existing_confirmed_raw_set = {str(row["symbol"]).upper() for row in existing_confirmed_raw}
     existing_confirmed_by_symbol = {
         str(row["symbol"]).upper(): row for row in existing_confirmed_raw
@@ -516,7 +522,17 @@ def fetch_exchange_info(session: requests.Session) -> Dict:
     return http_get_json(session, url, params={})
 
 
-def list_symbols_excluding_usdc(session: requests.Session) -> List[str]:
+def require_usdt_symbols(symbols: List[str], source: str) -> List[str]:
+    normalized = [str(s).strip().upper() for s in symbols if str(s).strip()]
+    invalid = sorted({s for s in normalized if not s.endswith("USDT")})
+    if invalid:
+        raise SystemExit(
+            f"{source} contains non-USDT symbols: {','.join(invalid)}"
+        )
+    return normalized
+
+
+def list_usdt_perpetual_symbols(session: requests.Session) -> List[str]:
     info = fetch_exchange_info(session)
     out = []
     for s in info.get("symbols", []):
@@ -526,11 +542,10 @@ def list_symbols_excluding_usdc(session: requests.Session) -> List[str]:
         if s.get("contractType") != "PERPETUAL":
             continue
 
-        sym = s.get("symbol", "")
-        quote = s.get("quoteAsset", "")
+        sym = str(s.get("symbol", "")).strip().upper()
+        quote = str(s.get("quoteAsset", "")).strip().upper()
 
-        # 排除 *USDC
-        if quote == "USDC" or sym.endswith("USDC"):
+        if quote != "USDT" or not sym.endswith("USDT"):
             continue
 
         out.append(sym)
@@ -1153,17 +1168,28 @@ def main():
     state = load_state(args.state_path, args.price_source)
 
     with requests.Session() as sess:
-        live_symbols = list_symbols_excluding_usdc(sess)
+        live_symbols = list_usdt_perpetual_symbols(sess)
         force_include_symbols = load_symbol_lines(args.force_include_path)
+        force_include_symbols = require_usdt_symbols(
+            force_include_symbols,
+            args.force_include_path,
+        )
         force_include_set = set(force_include_symbols)
         confirmed_delisted_symbols = [
             str(row["symbol"]).upper()
             for row in load_confirmed_delisted_records(args.confirmed_delisted_path)
         ]
+        confirmed_delisted_symbols = require_usdt_symbols(
+            confirmed_delisted_symbols,
+            args.confirmed_delisted_path,
+        )
         effective_confirmed_delisted = sorted(set(confirmed_delisted_symbols) - force_include_set)
 
         if args.symbols.strip():
-            symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+            symbols = require_usdt_symbols(
+                [x.strip().upper() for x in args.symbols.split(",") if x.strip()],
+                "--symbols",
+            )
         else:
             symbols = sorted((set(live_symbols) | force_include_set) - set(effective_confirmed_delisted))
 
@@ -1179,11 +1205,19 @@ def main():
                     stale_hours=int(args.confirmed_delisted_stale_hours),
                 )
                 force_include_symbols = delisted_status["force_include_symbols"]
+                force_include_symbols = require_usdt_symbols(
+                    force_include_symbols,
+                    args.force_include_path,
+                )
                 force_include_set = set(force_include_symbols)
                 effective_confirmed_delisted = [
                     str(row["symbol"]).upper()
                     for row in delisted_status["confirmed_delisted"]
                 ]
+                effective_confirmed_delisted = require_usdt_symbols(
+                    effective_confirmed_delisted,
+                    args.confirmed_delisted_path,
+                )
                 if not args.symbols.strip():
                     symbols = sorted((set(live_symbols) | force_include_set) - set(effective_confirmed_delisted))
                 logging.info(

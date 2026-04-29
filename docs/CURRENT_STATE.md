@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-04-29
+更新时间：2026-04-30
 
 ## 0. 文档定位
 
@@ -149,6 +149,7 @@ market_data_hub_config.json:
 6. 新增 1m 数据质量与 idx completeness 审计能力。
 7. hub-vs-klines 审计改为 overlap only，并对 cache window / finalized symbols 做了对齐。
 8. 增加 augment idx 增量同步能力。
+9. `klines_1m_store.py` 默认交易所 universe 已从“排除 USDC”修正为仅接受 `quoteAsset=USDT` 且 symbol 以 `USDT` 结尾；手工 symbols、force include、confirmed delisted 与本地 shard 目录发现非 USDT symbol 时 fail-fast。
 
 当前 pending：
 
