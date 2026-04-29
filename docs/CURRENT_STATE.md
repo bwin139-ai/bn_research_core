@@ -222,7 +222,8 @@ strategies/snapback/config.highfreq.json:
 26. 2026-04-29 21:29 BJ，watcher 发现 `AIOTUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=101 avg=0.09517，SL submitted stop=0.09216，TP submitted price=0.10495。后续交易所事实显示 SL filled avg=0.0921878、TP expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`STOP_LOSS`。
 27. 2026-04-29 21:35 BJ，watcher 又发现 `TACUSDT` 可执行并完成 10U live smoke：ENTRY filled qty=612 avg=0.0163321，SL submitted stop=0.016236，TP submitted price=0.016418。后续交易所事实显示 TP filled avg=0.016418、SL expired；21:38 BJ 手动调用 post-entry reconcile 后，Spring state 清理，exit_reason=`TAKE_PROFIT`。
 28. 2026-04-29 21:38 BJ，因 smoke 目标已覆盖且 watcher 已连续开出两笔真实交易，已停止临时 watcher `pid=4138786`。复查交易所 positions/open orders 为空；Spring state 中 `AIOTUSDT`、`TACUSDT`、`SKYAIUSDT` 均无 open_trade / pending_entry_order，仅保留各自 cooldown。
-29. 本地正在推进 Spring live loop LOGIC_ONLY patch：允许 `--loop --execute-live`，每轮先对 Spring state 全部 open_trade 做交易所事实 reconcile，再执行 signal scan；普通 precheck blocker 记录为 `execution_blocked_by_precheck`，不再让 loop 崩溃；新增账户级 Spring local active gate，防止其它 symbol stale/open state 时继续开下一笔。
+29. 2026-04-29 已提交、推送并部署 Spring live loop patch：`15eecc6 live: run spring execution loop`。该 patch 允许 `--loop --execute-live`，每轮先对 Spring state 全部 open_trade 做交易所事实 reconcile，再执行 signal scan；普通 precheck blocker 记录为 `execution_blocked_by_precheck`，不再让 loop 崩溃；新增账户级 Spring local active gate，防止其它 symbol stale/open state 时继续开下一笔。
+30. 2026-04-29 21:59 BJ，服务器用 `/root/service_env/bin/python` 跑新版本 `--loop --execute-live --max-iterations 1` 验证通过：本轮 signal=`SKYAIUSDT`，`dry_run_execution_plan.ok_to_execute=false`，blocker=`local_cooldown_active`；`lifecycle_reconcile` 返回无剩余 open/pending，`account_local_precheck` 为空，`live_execution_result.outcome=execution_blocked_by_precheck`。交易所 positions/open orders 仍为空；Spring state 无 open_trade/pending_entry，仅保留 `AIOTUSDT/SKYAIUSDT/TACUSDT` cooldown。
 
 当前配置事实：
 
@@ -250,12 +251,12 @@ strategies/spring/config.json:
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
 4. Spring/Snapback live state ownership 隔离 patch 已提交并部署，20:17 smoke 未复现 Snapback 接管。
-5. Spring live loop patch 已在本地推进，目标是替代临时外层 watcher；部署前仍不得再启动临时 smoke watcher。
+5. Spring live loop patch 已部署并完成 1 轮服务器验证；后续如要继续 smoke，应优先使用内置 `--loop --execute-live`，不再启动临时外层 watcher。
 6. Snapback live 不得维护、取消、离场或写入非 `SNP` 策略的 open_trade；Spring live 不得写入 Snapback state 文件。
 7. 下一次 Spring 实盘 smoke 不应绕过 cooldown；若信号仍为 `SKYAIUSDT`，需等 `2026-04-30 00:17:00 BJ` 之后或等无 cooldown 的新标的信号。
 8. 当前 Spring smoke watcher 已停止；正式常驻前必须使用 Python 内置 loop lifecycle，不再依赖临时外层 shell watcher。
 9. 21:29 与 21:35 两笔 smoke 说明：live once 即时 post-entry reconcile 只能捕获“执行返回前已经离场”的情况；若 TP/SL 在返回后触发，需要后续 loop reconcile / exit monitor 清理。
-10. 本地 loop patch 已补账户级 Spring local active gate 与每轮 open_trade reconcile；部署验证后再评估是否继续补 time-stop 主动提交/撤单能力。
+10. 已补账户级 Spring local active gate 与每轮 open_trade reconcile；后续再评估是否继续补 time-stop 主动提交/撤单能力。
 
 已确认 incident：
 
