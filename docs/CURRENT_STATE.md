@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-04-28
+更新时间：2026-04-29
 
 ## 0. 文档定位
 
@@ -202,6 +202,7 @@ strategies/snapback/config.highfreq.json:
 6. Spring 配置曾对齐 1924 基线，并多轮调整 `max_risk_pct`；回测事实显示硬过滤收紧到 `0.12/0.10/0.08` 没有改善综合表现。
 7. 当前配置中 BREAKEVEN_GUARD 关闭，保留代码语义但不作为当前主基线启用。
 8. `max_risk_pct` 已从 Spring 活跃语义中删除；风险距离改为动态开仓金额计算依据。
+9. Spring live 侧启动第一刀架构边界：新增公共 LONG-only live execution intent contract，并新增 Spring signal -> execution intent adapter。
 
 当前配置事实：
 
@@ -228,6 +229,22 @@ strategies/spring/config.json:
 1. 基于 `SPRING_V1_30D_P6_0427T1606_ALL` 作为结构毕业候选，重跑动态 sizing 后的正式 sim。
 2. 继续审计 Spring-SABC 坏月份 / 坏 regime，尤其 2026-04。
 3. 若再调整 Spring 结构过滤或 sizing 参数，必须同步评估审计工具是否需要扩展。
+4. Spring live 后续应按“策略语义私有、交易执行公共”的边界继续推进：Spring 只产出已校验 LONG execution intent，公共 live execution 负责订单生命周期安全。
+
+当前 Spring live 架构事实：
+
+```text
+core/live/execution_intent.py:
+- 定义 ValidatedLiveExecutionIntent
+- 只允许 LONG
+- fail-fast 校验 strategy/account/symbol/time/price/notional/SL/TP/hold/time-stop/signal_snapshot
+
+strategies/spring/live_execution.py:
+- 定义 SPRING_LIVE_STRATEGY_CODE = SPR
+- 将 Spring-SABC signal 显式转换为公共 execution intent
+- 要求 signal.action = BUY
+- 使用 signal.position_notional_usdt 作为 live 下单名义金额来源
+```
 
 ### 3.6 audit tools / 目录治理
 
