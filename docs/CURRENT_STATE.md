@@ -172,6 +172,7 @@ market_data_hub_config.json:
 9. snapback sim 配置新增显式 `risk_controls.base_order_notional_usdt`，sim 信号与交易流水不再依赖后处理默认 100U。
 10. 2026-04-29 已完成 `Snapback_SmokeTest_0429T2229` 与 mybwin139 live 重叠窗口一致性审计：sim 16 笔信号全部在 live 中按 `(symbol, c_time)` 匹配；2 笔 live-only（`IRUSDT 15:48 C`、`DAMUSDT 15:49 C`）已确认为 17:00 BJ 交易所 delist 前后的已解释样本，不继续追查。
 11. live audit 主事件与 stage audit 已改为按北京时间日期分片落盘：`state/live_audit/snapback_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/{strategy}_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/stage_audit/snapback_{account}.{stage}.YYYY-MM-DD.jsonl`，便于后续按日期做 retention 清理。
+12. 2026-04-30 已完成 `c8d8689 live: wait snapback finalized payload anchor` 部署后验证：北京时间 15:00 后三账户共 9 笔 snapback live 信号（`mybwin139` 5 笔、`junjie2026` 2 笔、`chen912` 2 笔）全部满足 `bar_bj = c_bar_bj + 1min`，未再出现旧问题中的 `C+2m` 消费；9 笔均为 `candidate_payload_wait_ok=true`，且 `expected_latest_closed_bar_ts / expected_signal_time_ts` 与 finalized payload 实际 anchor 匹配。当前观测表明该 patch 已把 live 消费约束回正确的 finalized payload anchor；实际 `signal_detected / entry_submitted` 仍发生在 `bar_bj` 后约 33-42 秒，这是等待 hub finalize 完成后的预期时序，不是旧的一分钟漂移。
 
 当前配置事实：
 
@@ -189,11 +190,10 @@ strategies/snapback/config.highfreq.json:
 当前 pending：
 
 1. 持续做 snapback sim/live 一致性验证。
-2. 2026-04-30 对 `mybwin139` 最近三天 snapback live 交易做只读时序审计，发现高优先级语义问题：按项目语义 `C bar = HBs[1]`，`signal bar = entry bar = CB = C+1m`；但 27 笔 `entry_submitted` 的实际 `signal_detected_ts_bj / entry_submitted_ts_bj` 均发生在 `C+2m` 的第 7-13 秒，虽然落盘语义字段 `bar_bj / signal_time_bj` 仍标为 `C+1m`。根因方向已由代码与服务器 `stage0_run_once_perf` 交叉确认：hub runner 每分钟 `:01` 开始并通常在 `C+1m` 第 16-24 秒发布 `finalized_candidate_inputs`；snapback live 每分钟 `:05` 读取 hub finalized payload，且旧实现只检查 75 秒 age，不校验 payload `signal_time_ts/latest_closed_bar_ts` 必须等于当前 market snapshot。因此 `C+1m :05` 会读取上一轮 finalized payload，直到 `C+2m :05` 才消费本轮 payload 并下单。2026-04-30 已提交并推送 `c8d8689 live: wait snapback finalized payload anchor`，用户已在服务器部署运行；后续 `c8d8689` 的 live timing 验证应作为独立线程，在出现数笔新信号后用 `stage0_run_once_perf` 跟踪是否回到 `CB=C+1m`。
-3. `Snapback_SmokeTest_0429T2229` 的 4 笔历史 C 点 `close_idx / basis_c_pct` 偏差审计已形成结论：`IRUSDT 2026-04-29 04:42 C` 与 `LYNUSDT 2026-04-29 16:37 C` 是 candidate 初始 index 快照即与事后 Binance 历史值不同，finalize round 1 连续两次相同后毕业；`AIOTUSDT 2026-04-29 07:32 C` 与 `BROCCOLI714USDT 2026-04-29 20:06 C` 在 finalize probe 中发生过改写，但最终毕业值仍与事后 Binance 历史值不同。4 笔均确认 candidate/finalize 阶段为 index cache miss，即当时重新请求了 Binance `/fapi/v1/indexPriceKlines`；当前交易所历史值与本地 parquet / sim 输入一致，不与 live 当时 hub 值一致。结论：snapback 结构逻辑与 `klines_1m` 不是第一嫌疑，偏差来自 hub 对 index C bar 的工程近似判定，即连续两次 index 快照相同就视为 finalized；Binance API 当前没有直接提供“index C bar 已最终稳定”的确定事实。现阶段不改逻辑，继续跟踪该类早期/未稳定 index 快照复现概率。
-4. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
-5. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
-6. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+2. `Snapback_SmokeTest_0429T2229` 的 4 笔历史 C 点 `close_idx / basis_c_pct` 偏差审计已形成结论：`IRUSDT 2026-04-29 04:42 C` 与 `LYNUSDT 2026-04-29 16:37 C` 是 candidate 初始 index 快照即与事后 Binance 历史值不同，finalize round 1 连续两次相同后毕业；`AIOTUSDT 2026-04-29 07:32 C` 与 `BROCCOLI714USDT 2026-04-29 20:06 C` 在 finalize probe 中发生过改写，但最终毕业值仍与事后 Binance 历史值不同。4 笔均确认 candidate/finalize 阶段为 index cache miss，即当时重新请求了 Binance `/fapi/v1/indexPriceKlines`；当前交易所历史值与本地 parquet / sim 输入一致，不与 live 当时 hub 值一致。结论：snapback 结构逻辑与 `klines_1m` 不是第一嫌疑，偏差来自 hub 对 index C bar 的工程近似判定，即连续两次 index 快照相同就视为 finalized；Binance API 当前没有直接提供“index C bar 已最终稳定”的确定事实。现阶段不改逻辑，继续跟踪该类早期/未稳定 index 快照复现概率。
+3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
+4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
+5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
 
 ### 3.5 Spring-SABC
 
