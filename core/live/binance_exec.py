@@ -1025,14 +1025,18 @@ def place_time_stop_order(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
+    order_role: str = "TIME_STOP",
 ) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
     pos = _normalize_position_side(position_side)
+    role = str(order_role or "TIME_STOP").upper().strip()
+    if not role:
+        role = "TIME_STOP"
     qty_res = _normalize_quantity(account, su, quantity)
     if not qty_res["ok"]:
         _emit_trade_event(
-            "TIME_STOP",
+            role,
             "fail",
             account=account,
             symbol=su,
@@ -1063,7 +1067,7 @@ def place_time_stop_order(
     )
     if not res["ok"]:
         _emit_trade_event(
-            "TIME_STOP",
+            role,
             "fail",
             account=account,
             symbol=su,
@@ -1077,7 +1081,7 @@ def place_time_stop_order(
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
     _emit_trade_event(
-        "TIME_STOP",
+        role,
         "ok",
         account=account,
         symbol=su,
@@ -1093,7 +1097,7 @@ def place_time_stop_order(
     return _ok(
         {
             "symbol": su,
-            "order_role": "TIME_STOP",
+            "order_role": role,
             "order_type": TIME_STOP_ORDER_TYPE,
             "side": payload["side"],
             "position_side": pos,

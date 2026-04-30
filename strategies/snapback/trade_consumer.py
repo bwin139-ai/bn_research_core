@@ -63,8 +63,34 @@ LEG_ENTRY = 'EN'
 LEG_TP = 'TP'
 LEG_SL = 'SL'
 LEG_TIME_STOP = 'TS'
+LEG_SL_FAIL_FLATTEN = 'SF'
+EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN = 'SL_SUBMIT_FAILED_FLATTEN'
 TERMINAL_ORDER_STATUSES = {'FILLED', 'FINISHED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'}
 FILLED_ORDER_STATUSES = {'FILLED', 'FINISHED'}
+
+def _exit_order_leg(exit_reason: str) -> str | None:
+    if exit_reason == 'TAKE_PROFIT':
+        return 'TP'
+    if exit_reason == 'STOP_LOSS':
+        return 'SL'
+    if exit_reason == 'TIME_STOP':
+        return 'TS'
+    if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN:
+        return LEG_SL_FAIL_FLATTEN
+    return None
+
+def _time_stop_exit_reason(open_trade: dict[str, Any]) -> str:
+    raw_reason = str(
+        open_trade.get('time_stop_exit_reason')
+        or open_trade.get('protective_flatten_exit_reason')
+        or ''
+    ).upper().strip()
+    if raw_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN:
+        return EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+    parsed = parse_client_order_id(open_trade.get('time_stop_client_order_id'), broker_id=BROKER_ID)
+    if parsed.get('recognized') and str(parsed.get('leg') or '').upper().strip() == LEG_SL_FAIL_FLATTEN:
+        return EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+    return 'TIME_STOP'
 
 def _now_bj_str() -> str:
     return datetime.now(timezone.utc).astimezone(BJ).strftime('%Y-%m-%d %H:%M:%S')
@@ -339,7 +365,7 @@ def _resolve_exit_order_payload(
         return (order_checks.get('tp') or {}).get('data') or (tp_cancel or {}).get('data')
     if exit_reason == 'STOP_LOSS':
         return (order_checks.get('sl') or {}).get('data') or (sl_cancel or {}).get('data')
-    if exit_reason == 'TIME_STOP':
+    if exit_reason in ('TIME_STOP', EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN):
         return (order_checks.get('time_stop') or {}).get('data') or (ts_cancel or {}).get('data')
     return None
 
@@ -457,10 +483,13 @@ def _build_live_trade_projection_row(
         'sl_order_exchange_id': sl_exchange_order_id,
         'time_stop_client_order_id': time_stop_client_order_id,
         'time_stop_exchange_order_id': time_stop_exchange_order_id,
+        'protective_flatten_client_order_id': time_stop_client_order_id if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN else None,
+        'protective_flatten_exchange_order_id': time_stop_exchange_order_id if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN else None,
+        'protective_flatten_exit_reason': exit_reason if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN else None,
         'exit_order_client_id': (exit_order or {}).get('client_order_id'),
         'exit_order_exchange_id': (exit_order or {}).get('order_id'),
         'exit_order_status': (exit_order or {}).get('status'),
-        'exit_order_leg': ('TP' if exit_reason == 'TAKE_PROFIT' else 'SL' if exit_reason == 'STOP_LOSS' else 'TS' if exit_reason == 'TIME_STOP' else None),
+        'exit_order_leg': _exit_order_leg(exit_reason),
     }
     return row
 
@@ -615,6 +644,7 @@ def _payload_client_order_ids(payload: dict[str, Any]) -> list[str]:
         'tp_client_order_id',
         'sl_client_order_id',
         'time_stop_client_order_id',
+        'protective_flatten_client_order_id',
         'entry_order_client_id',
         'tp_order_client_id',
         'sl_order_client_id',
@@ -825,7 +855,7 @@ def _infer_exit_reason(account: str, symbol: str, open_trade: dict[str, Any], re
     )
     checks['time_stop'] = ts_res
     if ts_res.get('ok') and ts_res.get('data') and str(ts_res['data'].get('status') or '').upper() in FILLED_ORDER_STATUSES:
-        return 'TIME_STOP', checks, None
+        return _time_stop_exit_reason(open_trade), checks, None
 
     tp_res = _resolve_leg_order(
         exchange_order_id=open_trade.get('tp_order_exchange_id'),
@@ -2331,9 +2361,19 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
                     'exchange_snapshot': {'position': pos_res, 'orders': ord_res, 'order_checks': order_checks, 'tp_cancel': tp_cancel, 'sl_cancel': sl_cancel, 'ts_cancel': ts_cancel},
                 })
-                event_map = {'TAKE_PROFIT': 'tp_filled', 'STOP_LOSS': 'sl_filled', 'TIME_STOP': 'time_stop_filled', 'UNKNOWN_EXIT': 'unknown_exit'}
+                event_map = {
+                    'TAKE_PROFIT': 'tp_filled',
+                    'STOP_LOSS': 'sl_filled',
+                    'TIME_STOP': 'time_stop_filled',
+                    EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN: 'sl_submit_failed_flatten_filled',
+                    'UNKNOWN_EXIT': 'unknown_exit',
+                }
                 write_event(account, event_map.get(exit_reason, 'unknown_exit'), {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'order_root': open_trade.get('order_root')})
-                write_event(account, 'position_closed_cancel_time_stop', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': ts_cancel})
+                write_event(
+                    account,
+                    'position_closed_cancel_protective_flatten' if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN else 'position_closed_cancel_time_stop',
+                    {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exchange_snapshot': ts_cancel},
+                )
                 write_event(account, 'state_cleared_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source, 'exit_reason': exit_reason})
                 write_event(account, 'cooldown_refreshed_after_exit', {'symbol': symbol, 'bar_ts': current_time_ms, 'bar_bj': current_time_bj, 'source': source})
             continue
@@ -3337,7 +3377,7 @@ def _submit_entry_and_exit_orders(
         ts_client_order_id = build_client_order_id(
             broker_id=BROKER_ID,
             strat=STRAT_CODE,
-            leg=LEG_TIME_STOP,
+            leg=LEG_SL_FAIL_FLATTEN,
             root=order_root,
         )
         ts_res = place_time_stop_order(
@@ -3348,6 +3388,7 @@ def _submit_entry_and_exit_orders(
             retry_max=prep['retry_max'],
             retry_delay_secs=prep['retry_delay_secs'],
             client_order_id=ts_client_order_id,
+            order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
         )
         fail_trade = _build_open_trade(
             entry_res,
@@ -3371,10 +3412,15 @@ def _submit_entry_and_exit_orders(
         fail_trade['tp_order_exchange_id'] = None
         fail_trade['sl_order_client_id'] = None
         fail_trade['sl_order_exchange_id'] = None
+        fail_trade['time_stop_exit_reason'] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        fail_trade['protective_flatten_exit_reason'] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        fail_trade['protective_flatten_client_order_id'] = ts_client_order_id
         if ts_res.get('ok'):
             ts_data = ts_res.get('data') or {}
             fail_trade['time_stop_client_order_id'] = ts_data.get('client_order_id', ts_client_order_id)
             fail_trade['time_stop_exchange_order_id'] = ts_data.get('exchange_order_id')
+            fail_trade['protective_flatten_client_order_id'] = ts_data.get('client_order_id', ts_client_order_id)
+            fail_trade['protective_flatten_exchange_order_id'] = ts_data.get('exchange_order_id')
             fail_trade['exit_submit_inflight'] = True
             fail_trade['status'] = 'EXIT_SUBMITTED'
             fail_trade['last_status_bj'] = current_time_bj
@@ -3398,12 +3444,14 @@ def _submit_entry_and_exit_orders(
                 'resolved_sl_price': resolved_sl_price,
                 'exchange_snapshot': sl_res,
             })
-            write_event(account, 'time_stop_submitted' if ts_res.get('ok') else 'time_stop_submit_failed', {
+            write_event(account, 'sl_submit_failed_flatten_submitted' if ts_res.get('ok') else 'sl_submit_failed_flatten_submit_failed', {
                 'symbol': symbol,
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'source': 'entry_sl_fail_flatten',
                 'order_root': order_root,
+                'exit_reason': EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
+                'protective_flatten_client_order_id': ts_client_order_id,
                 'exchange_snapshot': ts_res,
             })
             stage8_payload = {
@@ -3423,7 +3471,8 @@ def _submit_entry_and_exit_orders(
                 'entry_client_order_id': entry_res['data'].get('client_order_id', prep['entry_client_order_id']),
                 'tp_client_order_id': prep['tp_client_order_id'],
                 'sl_client_order_id': prep['sl_client_order_id'],
-                'time_stop_client_order_id': ts_client_order_id,
+                'protective_flatten_client_order_id': ts_client_order_id,
+                'protective_flatten_exit_reason': EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
                 'signal_eval_started_utc_ms': signal_eval_started_utc_ms,
                 'signal_eval_finished_utc_ms': signal_eval_finished_utc_ms,
                 'entry_submit_started_utc_ms': entry_submit_started_utc_ms,
@@ -3435,7 +3484,7 @@ def _submit_entry_and_exit_orders(
                 stage8_payload.update(timing_fields)
             _write_stage_record(account, 'stage8_exec', stage8_payload)
         if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
-            tail = '已提交市价强平' if ts_res.get('ok') else '强平提交失败，请立即人工检查'
+            tail = '已提交SL失败保护强平' if ts_res.get('ok') else 'SL失败保护强平提交失败，请立即人工检查'
             _notify(
                 True,
                 f'[Snapback-Live] 风险告警 {symbol} | entry后SL建立失败 | entry≈{entry_fill_price:.6f} | SL={resolved_sl_price:.6f} | {tail}',
