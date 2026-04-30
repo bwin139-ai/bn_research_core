@@ -189,6 +189,7 @@ strategies/snapback/config.highfreq.json:
 - risk_controls.base_order_notional_usdt = 100
 live_config.*.json:
 - pre_entry_min_sl_distance_pct = 0.003
+- `pre_entry_min_sl_distance_pct` 属于 live 执行风控配置，已由 `run_live.py` / `run_consumer.py` 的 live config loader 校验；`core/config_loader.py` 仅校验策略语义配置，不承接该字段。
 ```
 
 当前 pending：
