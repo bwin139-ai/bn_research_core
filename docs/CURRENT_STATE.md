@@ -187,11 +187,12 @@ strategies/snapback/config.highfreq.json:
 当前 pending：
 
 1. 持续做 snapback sim/live 一致性验证。
-2. `Snapback_SmokeTest_0429T2229` 审计已确认 `market_total_24h_vol` 仍有代码路径口径差：sim 由 `CrossSectionalFeeder` 对本地 parquet cross-section `vol_24h` 求和，样本处为 528 个本地标的；live 由 hub-owned `market_total_24h_vol_1m_rollsum` override 注入策略，样本处 stage0 记录为 530/527 个 live rollsum 标的。后续若要求严格一致，需要单独决定 sim 是否改用 hub/1m rollsum 同源输入，或把该字段在审计中标为已知口径差。
-3. `Snapback_SmokeTest_0429T2229` 审计已确认 4 笔 `idx / basis_c_pct` 差异来自输入源：sim 使用本地 parquet `close_idx` 并在 feeder 中 downcast 到 float32；live 使用 hub finalized candidate inputs。`AIOTUSDT 07:32 C` 与 `BROCCOLI714USDT 20:06 C` 的 live audit 明确记录 finalize probe 中 `close_idx` 变化；`IRUSDT 04:42 C` 与 `LYNUSDT 16:37 C` 在 live 初始候选输入中已不同于当前本地 parquet。后续需要单独审计 hub index source 与本地 `klines_1m` idx 写入/同步口径。
-4. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
-5. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
-6. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+2. 2026-04-30 对 `mybwin139` 最近三天 snapback live 交易做只读时序审计，发现高优先级语义问题：按项目语义 `C bar = HBs[1]`，`signal bar = entry bar = CB = C+1m`；但 27 笔 `entry_submitted` 的实际 `signal_detected_ts_bj / entry_submitted_ts_bj` 均发生在 `C+2m` 的第 7-13 秒，虽然落盘语义字段 `bar_bj / signal_time_bj` 仍标为 `C+1m`。根因方向已由代码与服务器 `stage0_run_once_perf` 交叉确认：hub runner 每分钟 `:01` 开始并通常在 `C+1m` 第 16-24 秒发布 `finalized_candidate_inputs`；snapback live 每分钟 `:05` 读取 hub finalized payload，且 `load_finalized_candidate_inputs_from_hub()` 只检查 75 秒 age，不校验 payload `signal_time_ts/latest_closed_bar_ts` 必须等于当前 market snapshot。因此 `C+1m :05` 会读取上一轮 finalized payload，直到 `C+2m :05` 才消费本轮 payload 并下单。该问题优先级高于 `idx` 后验差异，下一步应先做 `LOGIC_ONLY` patch：snapback live 读取 finalized payload 时必须 fail-fast 校验 payload 时间锚点与本轮 hub market snapshot 完全一致，并调整调度/等待机制，禁止静默消费上一轮 payload。
+3. `Snapback_SmokeTest_0429T2229` 审计已确认 `market_total_24h_vol` 仍有代码路径口径差：sim 由 `CrossSectionalFeeder` 对本地 parquet cross-section `vol_24h` 求和，样本处为 528 个本地标的；live 由 hub-owned `market_total_24h_vol_1m_rollsum` override 注入策略，样本处 stage0 记录为 530/527 个 live rollsum 标的。后续若要求严格一致，需要单独决定 sim 是否改用 hub/1m rollsum 同源输入，或把该字段在审计中标为已知口径差。
+4. `Snapback_SmokeTest_0429T2229` 审计已确认 4 笔 `idx / basis_c_pct` 差异来自输入源：sim 使用本地 parquet `close_idx` 并在 feeder 中 downcast 到 float32；live 使用 hub finalized candidate inputs。2026-04-30 服务器只读点查 Binance `/fapi/v1/indexPriceKlines` 后确认，`IRUSDT 04:42 C`、`AIOTUSDT 07:32 C`、`LYNUSDT 16:37 C`、`BROCCOLI714USDT 20:06 C` 当前交易所历史 index 返回值均与本地 parquet / sim 输入一致，不与 live 当时 hub 值一致；live timing 同时显示这 4 笔 candidate/finalize 阶段均为 index cache miss，即当时重新请求了 index bars。当前结论：差异来自 live 在 C bar 刚闭合后读取到的早期 index 快照，交易所历史 index 后续仍发生再修订；需要在修正 live 时序后再评估 hub finalize 等待/复核口径，而不是先改 `klines_1m` 写入。
+5. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
+6. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
+7. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
 
 ### 3.5 Spring-SABC
 
