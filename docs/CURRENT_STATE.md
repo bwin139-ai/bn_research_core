@@ -188,11 +188,10 @@ strategies/snapback/config.highfreq.json:
 
 1. 持续做 snapback sim/live 一致性验证。
 2. 2026-04-30 对 `mybwin139` 最近三天 snapback live 交易做只读时序审计，发现高优先级语义问题：按项目语义 `C bar = HBs[1]`，`signal bar = entry bar = CB = C+1m`；但 27 笔 `entry_submitted` 的实际 `signal_detected_ts_bj / entry_submitted_ts_bj` 均发生在 `C+2m` 的第 7-13 秒，虽然落盘语义字段 `bar_bj / signal_time_bj` 仍标为 `C+1m`。根因方向已由代码与服务器 `stage0_run_once_perf` 交叉确认：hub runner 每分钟 `:01` 开始并通常在 `C+1m` 第 16-24 秒发布 `finalized_candidate_inputs`；snapback live 每分钟 `:05` 读取 hub finalized payload，且旧实现只检查 75 秒 age，不校验 payload `signal_time_ts/latest_closed_bar_ts` 必须等于当前 market snapshot。因此 `C+1m :05` 会读取上一轮 finalized payload，直到 `C+2m :05` 才消费本轮 payload 并下单。2026-04-30 已提交并推送 `c8d8689 live: wait snapback finalized payload anchor`，用户已在服务器部署运行；后续 `c8d8689` 的 live timing 验证应作为独立线程，在出现数笔新信号后用 `stage0_run_once_perf` 跟踪是否回到 `CB=C+1m`。
-3. `Snapback_SmokeTest_0429T2229` 审计已确认 `market_total_24h_vol` 仍有代码路径口径差：sim 由 `CrossSectionalFeeder` 对本地 parquet cross-section `vol_24h` 求和，样本处为 528 个本地标的；live 由 hub-owned `market_total_24h_vol_1m_rollsum` override 注入策略，样本处 stage0 记录为 530/527 个 live rollsum 标的。后续若要求严格一致，需要单独决定 sim 是否改用 hub/1m rollsum 同源输入，或把该字段在审计中标为已知口径差。
-4. 新线程应专门推进 `Snapback_SmokeTest_0429T2229` 的 4 笔历史 C 点 `close_idx / basis_c_pct` 偏差审计；该审计不需要等待 `c8d8689` 新运行结果。目标样本为 `IRUSDT 2026-04-29 04:42 C`、`AIOTUSDT 2026-04-29 07:32 C`、`LYNUSDT 2026-04-29 16:37 C`、`BROCCOLI714USDT 2026-04-29 20:06 C`。已知事实：sim 使用本地 parquet `close_idx` 并在 feeder 中 downcast 到 float32；live 使用 hub finalized candidate inputs；2026-04-30 服务器只读点查 Binance `/fapi/v1/indexPriceKlines` 确认当前交易所历史 index 返回值均与本地 parquet / sim 输入一致，不与 live 当时 hub 值一致；live timing 同时显示这 4 笔 candidate/finalize 阶段均为 index cache miss，即当时重新请求了 index bars。新线程第一步应只读抽取每笔的 live finalized payload、candidate 初始输入、finalize probe 事件、shared cache/cache-miss 证据和当时 hub snapshot metadata，逐笔判定偏差是在 candidate 初始即存在，还是 finalize probe 改写；随后再审 hub index source 在 C bar 刚闭合后是否读到早期/未稳定 index 快照，以及 finalized payload 是否需要对 index C bar 做额外稳定性确认。`klines_1m` 当前不是第一嫌疑，只作为本地历史对照源。
-5. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
-6. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
-7. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+3. `Snapback_SmokeTest_0429T2229` 的 4 笔历史 C 点 `close_idx / basis_c_pct` 偏差审计已形成结论：`IRUSDT 2026-04-29 04:42 C` 与 `LYNUSDT 2026-04-29 16:37 C` 是 candidate 初始 index 快照即与事后 Binance 历史值不同，finalize round 1 连续两次相同后毕业；`AIOTUSDT 2026-04-29 07:32 C` 与 `BROCCOLI714USDT 2026-04-29 20:06 C` 在 finalize probe 中发生过改写，但最终毕业值仍与事后 Binance 历史值不同。4 笔均确认 candidate/finalize 阶段为 index cache miss，即当时重新请求了 Binance `/fapi/v1/indexPriceKlines`；当前交易所历史值与本地 parquet / sim 输入一致，不与 live 当时 hub 值一致。结论：snapback 结构逻辑与 `klines_1m` 不是第一嫌疑，偏差来自 hub 对 index C bar 的工程近似判定，即连续两次 index 快照相同就视为 finalized；Binance API 当前没有直接提供“index C bar 已最终稳定”的确定事实。现阶段不改逻辑，继续跟踪该类早期/未稳定 index 快照复现概率。
+4. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
+5. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
+6. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
 
 ### 3.5 Spring-SABC
 
