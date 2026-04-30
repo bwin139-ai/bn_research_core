@@ -119,6 +119,7 @@ output/live_projection
 6. full universe rollsum refresh、shared bars 增量 refill、部分 rollsum window refill 已推进。
 7. 增加 finalize quality stats 与 hub health stats，可用于现场观察。
 8. 增加 Binance REST quota / ban window / API stats 相关保护与观测。
+9. `market_data_hub` 的 candidate / finalized / market snapshot 已按账户与北京时间日期落盘到 `state/live_audit/market_data_hub/{account}/daily/YYYY-MM-DD/`，当前无需纳入 live audit 主文件分片 patch。
 
 当前配置事实：
 
@@ -170,6 +171,7 @@ market_data_hub_config.json:
 8. 实盘账户 live config 已新增/调整。
 9. snapback sim 配置新增显式 `risk_controls.base_order_notional_usdt`，sim 信号与交易流水不再依赖后处理默认 100U。
 10. 2026-04-29 已完成 `Snapback_SmokeTest_0429T2229` 与 mybwin139 live 重叠窗口一致性审计：sim 16 笔信号全部在 live 中按 `(symbol, c_time)` 匹配；2 笔 live-only（`IRUSDT 15:48 C`、`DAMUSDT 15:49 C`）已确认为 17:00 BJ 交易所 delist 前后的已解释样本，不继续追查。
+11. live audit 主事件与 stage audit 已改为按北京时间日期分片落盘：`state/live_audit/snapback_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/{strategy}_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/stage_audit/snapback_{account}.{stage}.YYYY-MM-DD.jsonl`，便于后续按日期做 retention 清理。
 
 当前配置事实：
 

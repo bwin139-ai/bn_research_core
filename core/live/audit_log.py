@@ -28,11 +28,12 @@ def get_live_audit_dir() -> Path:
     return path
 
 
-def get_live_audit_path(account: str) -> Path:
+def get_live_audit_path(account: str, *, day_bj: str | None = None) -> Path:
     account_key = str(account).strip()
     if not account_key:
         raise ValueError("account must not be empty")
-    return get_live_audit_dir() / f"snapback_{account_key}.jsonl"
+    day_key = str(day_bj or '').strip() or _bj_date_key(_now_utc())
+    return get_live_audit_dir() / f"snapback_{account_key}.{day_key}.jsonl"
 
 
 def _strategy_file_key(strategy_name: str) -> str:
@@ -44,21 +45,18 @@ def _strategy_file_key(strategy_name: str) -> str:
     return key
 
 
-def get_strategy_live_audit_path(account: str, strategy_name: str) -> Path:
+def get_strategy_live_audit_path(account: str, strategy_name: str, *, day_bj: str | None = None) -> Path:
     account_key = str(account).strip()
     if not account_key:
         raise ValueError("account must not be empty")
-    return get_live_audit_dir() / f"{_strategy_file_key(strategy_name)}_{account_key}.jsonl"
+    day_key = str(day_bj or '').strip() or _bj_date_key(_now_utc())
+    return get_live_audit_dir() / f"{_strategy_file_key(strategy_name)}_{account_key}.{day_key}.jsonl"
 
 
 def get_stage_audit_dir() -> Path:
     path = get_live_audit_dir() / "stage_audit"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _stage_use_daily_partition(stage: str) -> bool:
-    return str(stage).strip() == "stage3_enriched"
 
 
 def _bj_date_key(dt: datetime) -> str:
@@ -72,12 +70,10 @@ def get_stage_audit_path(account: str, stage: str, *, day_bj: str | None = None)
     stage_key = str(stage).strip()
     if not stage_key:
         raise ValueError("stage must not be empty")
-    if _stage_use_daily_partition(stage_key):
-        day_key = str(day_bj or '').strip()
-        if not day_key:
-            raise ValueError("day_bj must not be empty for daily-partitioned stage audit")
-        return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.{day_key}.jsonl"
-    return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.jsonl"
+    day_key = str(day_bj or '').strip()
+    if not day_key:
+        raise ValueError("day_bj must not be empty for stage audit")
+    return get_stage_audit_dir() / f"snapback_{account_key}.{stage_key}.{day_key}.jsonl"
 
 
 def _build_record(account: str, event: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -133,8 +129,8 @@ def _append_json_record(path: Path, record: dict[str, Any]) -> Path:
 
 
 def append_audit_record(account: str, event: str, payload: dict[str, Any] | None = None) -> Path:
-    path = get_live_audit_path(account)
     record = _build_record(account, event, payload)
+    path = get_live_audit_path(account, day_bj=str(record["ts_bj"])[:10])
     return _append_json_record(path, record)
 
 
@@ -144,9 +140,9 @@ def append_strategy_audit_record(
     event: str,
     payload: dict[str, Any] | None = None,
 ) -> Path:
-    path = get_strategy_live_audit_path(account, strategy_name)
     record = _build_record(account, event, payload)
     record["strategy_name"] = str(strategy_name).strip()
+    path = get_strategy_live_audit_path(account, strategy_name, day_bj=str(record["ts_bj"])[:10])
     return _append_json_record(path, record)
 
 
@@ -164,7 +160,7 @@ def append_stage_record(account: str, stage: str, payload: dict[str, Any] | None
     path = get_stage_audit_path(
         account,
         stage,
-        day_bj=_bj_date_key(now) if _stage_use_daily_partition(stage) else None,
+        day_bj=_bj_date_key(now),
     )
     return _append_json_record(path, record)
 
