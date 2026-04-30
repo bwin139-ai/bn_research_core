@@ -11,6 +11,7 @@ from core.live.audit_log import append_stage_record, write_event
 from core.live.binance_exec import (
     cancel_order,
     ensure_leverage,
+    get_last_price,
     get_open_orders,
     get_order,
     get_position,
@@ -2989,6 +2990,107 @@ def _consume_signal_precheck_and_prepare(
             'outcome': 'skipped_invalid_sl_price',
             'reason': skip_reason,
         }
+
+    if 'pre_entry_min_sl_distance_pct' not in live_cfg:
+        raise KeyError('live_config 缺少必要字段: pre_entry_min_sl_distance_pct')
+    pre_entry_min_sl_distance_pct = float(live_cfg['pre_entry_min_sl_distance_pct'])
+    if pre_entry_min_sl_distance_pct < 0:
+        raise ValueError('live_config.pre_entry_min_sl_distance_pct must be >= 0')
+    pre_entry_price_res = get_last_price(account, symbol)
+    pre_entry_price = None
+    if pre_entry_price_res.get('ok'):
+        pre_entry_price = float((pre_entry_price_res.get('data') or {}).get('price') or 0.0)
+    if pre_entry_price is None or pre_entry_price <= 0:
+        reason = pre_entry_price_res.get('reason') or f'pre_entry_price={pre_entry_price}'
+        mark_error(
+            account,
+            symbol,
+            error_code='pre_entry_price_query_failed',
+            error_message=reason,
+            error_bj=current_time_bj,
+        )
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'pre_entry_price_guard_query_failed', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'price_source': 'CONTRACT_PRICE:futures_symbol_ticker',
+                'current_price': current_price,
+                'resolved_sl_price': resolved_sl_price,
+                'min_sl_distance_pct': pre_entry_min_sl_distance_pct,
+                'exchange_snapshot': pre_entry_price_res,
+            })
+            _write_stage_record(account, 'stage7_precheck', {
+                'event': 'pre_entry_price_guard_query_failed',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'price_source': 'CONTRACT_PRICE:futures_symbol_ticker',
+                'current_price': current_price,
+                'resolved_sl_price': resolved_sl_price,
+                'min_sl_distance_pct': pre_entry_min_sl_distance_pct,
+                'reason': reason,
+            })
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'failed_pre_entry_price_query',
+            'reason': reason,
+        }
+
+    pre_entry_sl_distance_pct = (pre_entry_price - resolved_sl_price) / resolved_sl_price if resolved_sl_price > 0 else None
+    guard_payload = {
+        'symbol': symbol,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'price_source': 'CONTRACT_PRICE:futures_symbol_ticker',
+        'current_price': current_price,
+        'pre_entry_price': pre_entry_price,
+        'resolved_sl_price': resolved_sl_price,
+        'sl_distance_pct': pre_entry_sl_distance_pct,
+        'min_sl_distance_pct': pre_entry_min_sl_distance_pct,
+        'exchange_snapshot': pre_entry_price_res,
+    }
+    if pre_entry_sl_distance_pct is not None and pre_entry_sl_distance_pct < pre_entry_min_sl_distance_pct:
+        skip_reason = (
+            f'pre_entry_sl_distance_pct={pre_entry_sl_distance_pct:.8f} '
+            f'< min_sl_distance_pct={pre_entry_min_sl_distance_pct:.8f}; '
+            f'pre_entry_price={pre_entry_price:.8f}; sl_price={resolved_sl_price:.8f}'
+        )
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'pre_entry_price_guard_skip', {
+                **guard_payload,
+                'reason': skip_reason,
+            })
+            _write_stage_record(account, 'stage7_precheck', {
+                'event': 'pre_entry_price_guard_skip',
+                **guard_payload,
+                'reason': skip_reason,
+            })
+        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_signal_skip', True)):
+            _notify(
+                True,
+                f'[Snapback-Live] 跳过 {symbol} | 入场前价格距SL过近 | pre_entry={pre_entry_price:.6f} | SL={resolved_sl_price:.6f} | distance={pre_entry_sl_distance_pct*100:.2f}% | min={pre_entry_min_sl_distance_pct*100:.2f}%',
+            )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'skipped_pre_entry_price_too_close_to_sl',
+            'reason': skip_reason,
+        }
+
+    if bool(live_cfg.get('audit_enabled', True)):
+        write_event(account, 'pre_entry_price_guard_pass', guard_payload)
+        _write_stage_record(account, 'stage7_precheck', {
+            'event': 'pre_entry_price_guard_pass',
+            **guard_payload,
+        })
 
     requested_leverage = int(live_cfg['leverage'])
     leverage_res = ensure_leverage(account, symbol, requested_leverage)

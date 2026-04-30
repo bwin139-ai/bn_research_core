@@ -142,7 +142,7 @@ def _load_json(path: str) -> dict[str, Any]:
 
 def _load_live_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
-    required = ['enabled', 'account', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'audit_enabled', 'notify_enabled']
+    required = ['enabled', 'account', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'pre_entry_min_sl_distance_pct', 'audit_enabled', 'notify_enabled']
     for key in required:
         if key not in data:
             raise KeyError(f'live_config 缺少必要字段: {key}')
