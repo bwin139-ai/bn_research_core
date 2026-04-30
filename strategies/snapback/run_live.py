@@ -1995,22 +1995,7 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         _emit_run_once_perf('market_total_24h_vol_not_ready')
         return
 
-    if market_total_24h_vol_snapshot < market_total_24h_vol_min:
-        if audit_enabled:
-            write_event(account, 'market_total_24h_vol_below_min_skip', {
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'c_bar_ts': c_bar_ts,
-                'c_bar_bj': c_bar_bj,
-                'market_total_24h_vol': market_total_24h_vol_snapshot,
-                'market_total_24h_vol_min': market_total_24h_vol_min,
-                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
-                'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
-                'market_total_24h_vol_status': market_total_24h_vol_status,
-                'market_total_24h_vol_source': market_total_24h_vol_source,
-            })
-        _emit_run_once_perf('market_total_24h_vol_below_min')
-        return
+    market_total_24h_vol_below_min = market_total_24h_vol_snapshot < market_total_24h_vol_min
 
     candidate_plan_perf_started = time.perf_counter()
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
@@ -2288,6 +2273,32 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         if str(symbol).strip()
     }
     active_symbols_count = len(active_symbols)
+    if market_total_24h_vol_below_min:
+        if audit_enabled:
+            write_event(account, 'market_total_24h_vol_below_min_skip', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'market_total_24h_vol': market_total_24h_vol_snapshot,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
+                'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
+                'market_total_24h_vol_status': market_total_24h_vol_status,
+                'market_total_24h_vol_source': market_total_24h_vol_source,
+                'scan_blocked_after_reconcile': True,
+            })
+        finalize_consumer_loop_state(
+            account,
+            mode='scan_blocked',
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=list(merged_full_df.keys()),
+            audit_enabled=audit_enabled,
+            scan_gate=scan_gate,
+        )
+        _emit_run_once_perf('market_total_24h_vol_below_min')
+        return
     if not loop_gate.get('ok_to_scan'):
         finalize_consumer_loop_state(
             account,

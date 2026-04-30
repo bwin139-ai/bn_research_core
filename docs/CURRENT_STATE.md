@@ -173,6 +173,7 @@ market_data_hub_config.json:
 10. 2026-04-29 已完成 `Snapback_SmokeTest_0429T2229` 与 mybwin139 live 重叠窗口一致性审计：sim 16 笔信号全部在 live 中按 `(symbol, c_time)` 匹配；2 笔 live-only（`IRUSDT 15:48 C`、`DAMUSDT 15:49 C`）已确认为 17:00 BJ 交易所 delist 前后的已解释样本，不继续追查。
 11. live audit 主事件与 stage audit 已改为按北京时间日期分片落盘：`state/live_audit/snapback_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/{strategy}_{account}.YYYY-MM-DD.jsonl`、`state/live_audit/stage_audit/snapback_{account}.{stage}.YYYY-MM-DD.jsonl`，便于后续按日期做 retention 清理。
 12. 2026-04-30 已完成 `c8d8689 live: wait snapback finalized payload anchor` 部署后验证：北京时间 15:00 后三账户共 9 笔 snapback live 信号（`mybwin139` 5 笔、`junjie2026` 2 笔、`chen912` 2 笔）全部满足 `bar_bj = c_bar_bj + 1min`，未再出现旧问题中的 `C+2m` 消费；9 笔均为 `candidate_payload_wait_ok=true`，且 `expected_latest_closed_bar_ts / expected_signal_time_ts` 与 finalized payload 实际 anchor 匹配。当前观测表明该 patch 已把 live 消费约束回正确的 finalized payload anchor；实际 `signal_detected / entry_submitted` 仍发生在 `bar_bj` 后约 33-42 秒，这是等待 hub finalize 完成后的预期时序，不是旧的一分钟漂移。
+13. 2026-04-30 已定位 RAVEUSDT 17:59 BJ 在 `junjie2026` / `chen912` 的 live 离场未输出问题：交易所 truth 显示两账户 `RAVEUSDT` LONG position 已归零、open orders 为空、TP order 为 `FILLED`、SL algo order 为 `EXPIRED`，但本地 `state/live/snapback_{account}.state.json` 仍保留 `symbols.RAVEUSDT.open_trade.status=OPEN`。根因是 `run_live._run_once()` 在 `market_total_24h_vol < market_total_24h_vol_min` 时早退，早退点位于 `build_consumer_reconcile_plan()` / `prepare_consumer_loop_gate()` / open_trade reconcile 之前；18:31 后两账户每分钟只记录 `market_total_24h_vol_below_min_skip`，导致已有仓位 TP/SL 同步被阻断。已将该 gate 改为“reconcile 后阻断新扫描”：低于市场总量阈值时仍先维护已有 pending/open trade，再跳过新信号扫描。
 
 当前配置事实：
 
@@ -194,6 +195,7 @@ strategies/snapback/config.highfreq.json:
 3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
 4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
 5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
+6. 部署 market-total gate 顺序 patch 后，需要重启 snapback live 进程并确认 `junjie2026` / `chen912` 的 `RAVEUSDT` stale open_trade 能在下一轮 reconcile 中投影为 `TAKE_PROFIT` 离场并清空 state。
 
 ### 3.5 Spring-SABC
 
