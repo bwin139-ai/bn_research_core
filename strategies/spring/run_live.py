@@ -75,15 +75,15 @@ def _build_run_id(account: str) -> str:
     if not account_key:
         raise ValueError("account must not be empty")
     ts_utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"SPRINGOBS_{account_key}_{ts_utc}"
+    return f"SPRINGLIVE_{account_key}_{ts_utc}"
 
 
 def _projection_path(output_dir: str, run_id: str) -> Path:
-    return Path(output_dir) / f"spring_observer.{run_id}.jsonl"
+    return Path(output_dir) / f"spring_live.{run_id}.jsonl"
 
 
 def _heartbeat_path(output_dir: str, run_id: str) -> Path:
-    return Path(output_dir) / f"spring_observer_heartbeat.{run_id}.json"
+    return Path(output_dir) / f"spring_live_heartbeat.{run_id}.json"
 
 
 def _append_projection_row(path: Path, row: dict[str, Any]) -> None:
@@ -114,7 +114,7 @@ def _write_heartbeat(
     now_utc_ms = _now_utc_ms()
     heartbeat = {
         "schema_version": 1,
-        "run_mode": "live_observer",
+        "run_mode": "live",
         "strategy_name": "spring-sabc",
         "account": str(account).strip(),
         "run_id": run_id,
@@ -295,7 +295,7 @@ def run_once(
             current_time_ms=signal_time_ts,
             current_time_bj=signal_time_bj,
             latest_closes=latest_closes,
-            source="spring_live_observer_pre_scan",
+            source="spring_live_pre_scan",
         )
         account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
@@ -335,15 +335,15 @@ def run_once(
                     execution_plan=dry_run_execution_plan,
                     execution_config=live_execution_config or load_live_execution_config(live_execution_config_path),
                     exchange_snapshot=exchange_snapshot,
-                    source="spring_live_observer",
+                    source="spring_live",
                 )
     finished_utc_ms = _now_utc_ms()
 
     audits = dict(getattr(strategy, "_last_signal_audits", {}) or {})
     row = {
         "schema_version": 1,
-        "run_mode": "live_observer",
-        "projection_type": "spring_observer",
+        "run_mode": "live",
+        "projection_type": "spring_live",
         "strategy_name": "spring-sabc",
         "account": str(account).strip(),
         "run_id": run_id,
@@ -386,7 +386,7 @@ def run_once(
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)
     logging.info(
-        "[Spring-LiveObserver] wrote projection | account=%s | signal=%s | symbol=%s | path=%s",
+        "[Spring-Live] wrote projection | account=%s | signal=%s | symbol=%s | path=%s",
         account,
         bool(signal),
         row["signal_symbol"],
@@ -463,7 +463,7 @@ def run_loop(
                 iteration=iteration,
                 status="completed",
             )
-            logging.info("[Spring-LiveObserver] loop completed | run_id=%s | iterations=%s", run_id, iteration)
+            logging.info("[Spring-Live] loop completed | run_id=%s | iterations=%s", run_id, iteration)
             return
 
         next_epoch = _next_signal_check_epoch(second=signal_check_second)

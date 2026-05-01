@@ -216,11 +216,11 @@ live_config.*.json:
 7. 当前配置中 BREAKEVEN_GUARD 关闭，保留代码语义但不作为当前主基线启用。
 8. `max_risk_pct` 已从 Spring 活跃语义中删除；风险距离改为动态开仓金额计算依据。
 9. Spring live 侧启动第一刀架构边界：新增公共 LONG-only live execution intent contract，并新增 Spring signal -> execution intent adapter。
-10. 新增 Spring observe-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
-11. Spring observe-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
-12. 新增 `strategies/spring/config.observer_loose.json`，仅用于 observe-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
+10. 新增 Spring projection-only live runner：只读取 hub finalized candidate inputs，调用 Spring sim 同源逻辑，校验 execution intent 并落盘观察 projection；不触交易所、不下单。
+11. Spring projection-only live runner 增加正式 loop 模式：支持按分钟边界运行、限制迭代次数、写 heartbeat；仍然不触交易所、不下单、不维护订单生命周期。
+12. 新增 `strategies/spring/config.live_loose.json`，仅用于 projection-only 链路压测和尽快覆盖 signal -> execution intent 路径；不得作为 Spring 策略基线或绩效结论。
 13. 新增公共 dry-run execution plan：`core/live/execution_plan.py` 消费 LONG-only execution intent，产出 orphan/local/exchange precheck、quantity、client order id、SL/TP/time-stop plan 与 state transition plan；不调用交易所、不写 live state。
-14. Spring observer 支持可选只读 exchange verified dry-run：`--dry-run-verify-exchange` 会读取交易所 positions/open orders 与本地 live state，用于验证 orphan/precheck；仍然不下单、不写 live state。
+14. Spring live runner 支持可选只读 exchange verified dry-run：`--dry-run-verify-exchange` 会读取交易所 positions/open orders 与本地 live state，用于验证 orphan/precheck；仍然不下单、不写 live state。
 15. 新增公共 live execution runner：`core/live/execution_runner.py` 消费已验证 LONG intent + execution plan + 外部 live execution JSON；显式执行 entry MARKET、SL-first、TP-after-SL、state/audit/cooldown，SL 提交失败时按配置提交 market flatten。
 16. Spring runner 增加显式 `--execute-live` + `--live-execution-config` 一次性实盘入口；默认仍不下单，且 `--execute-live` 当前只支持 once 模式，不支持 loop 常驻。
 17. 新增 `strategies/spring/config.live_smoke_10u.json` 与 `strategies/spring/live_execution.smoke_10u.json`，用于 10U 小仓位实盘 smoke；所有实盘执行参数从 JSON 读取，代码不内置 10U、杠杆、重试、冷却等测试参数。
@@ -237,12 +237,13 @@ live_config.*.json:
 28. 2026-04-29 21:38 BJ，因 smoke 目标已覆盖且 watcher 已连续开出两笔真实交易，已停止临时 watcher `pid=4138786`。复查交易所 positions/open orders 为空；Spring state 中 `AIOTUSDT`、`TACUSDT`、`SKYAIUSDT` 均无 open_trade / pending_entry_order，仅保留各自 cooldown。
 29. 2026-04-29 已提交、推送并部署 Spring live loop patch：`15eecc6 live: run spring execution loop`。该 patch 允许 `--loop --execute-live`，每轮先对 Spring state 全部 open_trade 做交易所事实 reconcile，再执行 signal scan；普通 precheck blocker 记录为 `execution_blocked_by_precheck`，不再让 loop 崩溃；新增账户级 Spring local active gate，防止其它 symbol stale/open state 时继续开下一笔。
 30. 2026-04-29 21:59 BJ，服务器用 `/root/service_env/bin/python` 跑新版本 `--loop --execute-live --max-iterations 1` 验证通过：本轮 signal=`SKYAIUSDT`，`dry_run_execution_plan.ok_to_execute=false`，blocker=`local_cooldown_active`；`lifecycle_reconcile` 返回无剩余 open/pending，`account_local_precheck` 为空，`live_execution_result.outcome=execution_blocked_by_precheck`。交易所 positions/open orders 仍为空；Spring state 无 open_trade/pending_entry，仅保留 `AIOTUSDT/SKYAIUSDT/TACUSDT` cooldown。
-31. 本地已推进 Spring active time-stop patch：`core/live/execution_runner.py` 的 loop reconcile 在 LONG position 仍存在时，会使用 Spring observer 从 hub `full_df` 提取的最新闭合 C close 检查 `max_hold_mins / time_stop_min_profit_pct`；到期且收益不足时先撤 TP/SL，再提交 `SPR_TS` market flatten，并设置 `exit_submit_inflight`，后续仍由同一公共 reconcile 根据 TP/SL/TS 交易所事实清理 state。
+31. 本地已推进 Spring active time-stop patch：`core/live/execution_runner.py` 的 loop reconcile 在 LONG position 仍存在时，会使用 Spring live runner 从 hub `full_df` 提取的最新闭合 C close 检查 `max_hold_mins / time_stop_min_profit_pct`；到期且收益不足时先撤 TP/SL，再提交 `SPR_TS` market flatten，并设置 `exit_submit_inflight`，后续仍由同一公共 reconcile 根据 TP/SL/TS 交易所事实清理 state。
 32. 本地已推进 Spring open_trade bracket verify/repair patch：loop reconcile 发现 LONG position 仍 open 且未处于 `exit_submit_inflight` 时，会校验本策略 TP/SL 是否仍存在于交易所 open orders；若缺失则按 `open_trade.tp_price / sl_trigger_price` 与当前 position qty 补挂，补挂后再次查询 open orders 验证。补挂或验证失败会写 state error / audit 并 fail-fast 保留 open_trade，账户级 local active gate 会继续阻止新开仓。
 33. 2026-05-01 文档 checkpoint：下一刀将把 Spring 的 SL submit failed emergency flatten 从普通 TIME_STOP 语义拆出，对齐 Snapback 的独立 protective flatten 语义。目标字段/事件：exit reason=`SL_SUBMIT_FAILED_FLATTEN`，custom id leg=`SPR_SF`，BN exec order_role=`SL_SUBMIT_FAILED_FLATTEN`，audit event=`spring_sl_submit_failed_flatten_submitted` / `spring_sl_submit_failed_flatten_filled`，并在后续 terminal projection 中保留 `protective_flatten_*` 字段。
 34. 本地已推进 Spring SL submit failed protective flatten patch：SL 提交失败后的应急平仓使用 `SPR_SF` client id leg 与 `SL_SUBMIT_FAILED_FLATTEN` BN exec order_role；open_trade 同时写 `time_stop_exit_reason` 与 `protective_flatten_*` 字段；后续 reconcile 若该 flatten 订单成交，exit_reason 落为 `SL_SUBMIT_FAILED_FLATTEN` 并写 `spring_sl_submit_failed_flatten_filled` audit。
 35. 2026-05-01 已按 Snapback Telegram 新标准补齐 Spring live 策略侧消息格式，不改变交易语义、下单顺序、state/audit 字段或执行风控。Spring 策略侧消息使用多行头 `[HH:MM:SS 🌱 SPR] {account}`；signal 使用 `signal_time`，开仓确认使用 entry 交易所订单事件时间，离场确认使用 exit 交易所订单事件时间。公共 BN_EXEC ENTRY/SL/TP 消息已由 `core/live/binance_exec.py` 从 `SPR` client order id 识别并在第二行追加 `【BN_EXEC】`。Spring live execution config 显式新增 `notify_enabled` / `notify_on_signal_locked` / `notify_on_order_submit` / `notify_on_exit_detected` / `notify_on_order_error`。
-36. 2026-05-01 本地已推进 Spring live lifecycle 对齐 Snapback 基线 patch：`strategies/spring/run_live_observer.py` 将 hub payload anchor 校验收紧为 `signal_time_ts == latest_closed_bar_ts + 60000`，锁死 Spring `CB=C+1m`；`core/live/execution_runner.py` 补齐 Spring pending entry terminal/recovery reconcile、flat 但仍有残余 open orders 时的 exit 推断与清理、TIME_STOP submit failed 后 bracket repair、TS inflight 终态但 LONG position 仍 open 时的 reset+repair、terminal exit 后 live trade projection 落盘与 exit cooldown 刷新。该 patch 仍保持 Spring 走公共 LONG-only lifecycle，不复制 Snapback 私有 consumer 架构。
+36. 2026-05-01 本地已推进 Spring live lifecycle 对齐 Snapback 基线 patch：`strategies/spring/run_live.py` 将 hub payload anchor 校验收紧为 `signal_time_ts == latest_closed_bar_ts + 60000`，锁死 Spring `CB=C+1m`；`core/live/execution_runner.py` 补齐 Spring pending entry terminal/recovery reconcile、flat 但仍有残余 open orders 时的 exit 推断与清理、TIME_STOP submit failed 后 bracket repair、TS inflight 终态但 LONG position 仍 open 时的 reset+repair、terminal exit 后 live trade projection 落盘与 exit cooldown 刷新。该 patch 仍保持 Spring 走公共 LONG-only lifecycle，不复制 Snapback 私有 consumer 架构。
+37. 2026-05-01 本地已推进 Spring live 正式入口命名 patch：正式入口统一为 `strategies/spring/run_live.py`，旧过渡入口从源码树删除，不保留 wrapper、alias 或兼容路径；projection / heartbeat / run_id / row metadata 统一使用 `spring_live`、`spring_live_heartbeat`、`SPRINGLIVE` 与 `run_mode=live`；loose 压测配置改名为 `strategies/spring/config.live_loose.json`。后续 Spring live 审计从 `run_live.py` 与公共 `core/live/execution_runner.py` 开始。
 
 当前配置事实：
 
@@ -327,14 +328,14 @@ Patch 分类：LOGIC_ONLY
 - core/live/execution_runner.py
   - Spring live execution state 写入使用 intent.strategy_name。
   - open_trade / pending_entry payload 写入 strategy_name 与 strategy_code。
-- strategies/spring/run_live_observer.py
+- strategies/spring/run_live.py
   - dry-run local_state_snapshot 读取 spring-sabc namespace。
 - strategies/snapback/trade_consumer.py
   - Snapback pending/open_trade 写入 SNP 归属字段。
   - Snapback reconcile 发现非 SNP 或未知归属 payload 时阻断并写 audit event，不取消、不平仓、不接管。
 
 本地验证：
-- python3 -m py_compile core/live/live_state.py core/live/execution_runner.py strategies/spring/run_live_observer.py strategies/snapback/trade_consumer.py
+- python3 -m py_compile core/live/live_state.py core/live/execution_runner.py strategies/spring/run_live.py strategies/snapback/trade_consumer.py
 - live_state 临时目录写入验证：snapback_acct.state.json 与 spring_sabc_acct.state.json 分离。
 - Snapback ownership helper 验证：SNP=true，SPR/spring-sabc/unknown/mixed=false。
 
@@ -367,10 +368,9 @@ state / audit 结论：
 - state/live/snapback_mybwin139.state.json 中 SKYAIUSDT 无 open_trade。
 - Snapback audit 未出现取消本次 SPR_SL/SPR_TP 或提交 SNP_TS 的记录。
 
-当前风险：
-- Spring one-shot execution runner 已补一次即时 post-entry reconcile，但尚无循环式 Spring reconcile / exit monitor。
-- 若 TP/SL 在即时 reconcile 之后才成交或失效，Spring state 仍不会自动从 OPEN 同步为 CLOSED。
-- 下一刀若推进常驻实盘，应补公共循环式 reconcile / exit monitor / time-stop monitor，再做新的 Spring live smoke 或常驻实盘。
+该 smoke 暴露的历史风险：
+- 当时 Spring one-shot execution runner 只补了一次即时 post-entry reconcile，尚无循环式 Spring reconcile / exit monitor。
+- 后续 Spring live loop、active time-stop、bracket repair、protective flatten 与 lifecycle 对齐 patch 已把这些能力补到公共 LONG-only runner；现阶段仍需要用服务器 live smoke / projection 继续确认真实交易所路径。
 ```
 
 当前 Spring live 架构事实：
@@ -383,7 +383,7 @@ state / audit 结论：
 - 公共 live execution lifecycle 的完整目标是：
   signal adapter -> ValidatedLiveExecutionIntent -> execution_plan -> entry/SL/TP -> strategy-specific state/audit -> open_trade reconcile -> TP/SL/TS exit_reason -> state close -> live_trades/projection -> cooldown。
 - 未来第三、第四套 LONG 策略应只新增自己的 signal adapter、strategy_name/strategy_code/config，复用公共 live execution lifecycle；不得复制 Snapback 老式策略私有交易生命周期。
-- 后续 Spring post-entry reconcile / exit monitor / time-stop monitor 应继续补在公共 LONG-only live execution lifecycle 中，而不是写成 Spring 私有闭环。
+- 后续新增 Spring live 生命周期能力应继续补在公共 LONG-only live execution lifecycle 中，而不是写成 Spring 私有闭环。
 - Snapback 若未来迁移到公共层，必须单独拆刀；当前不得在 Spring 修复刀中混改 Snapback 架构。
 
 core/live/execution_intent.py:
@@ -412,7 +412,7 @@ core/live/execution_runner.py:
 - 本地 active time-stop patch 新增到期检查：使用最新闭合 C close 计算收益；若 `held_mins >= max_hold_mins` 且收益低于 `time_stop_min_profit_pct`，先取消 TP/SL，再提交 TS market flatten，并等待后续 reconcile 清理 state
 - 本地 bracket verify/repair patch 新增持仓保护单维护：position 仍 open 且未处于 `exit_submit_inflight` 时，校验 TP/SL open order 绑定；缺失则按 open_trade 记录补挂，补挂后再次验证；失败写 error/audit 并保留 open_trade
 - 本地 SL submit failed protective flatten patch 新增入场保护失败独立离场语义：SL 提交失败后的应急 market flatten 不再复用 `SPR_TS` / `TIME_STOP`，改用 `SPR_SF` / `SL_SUBMIT_FAILED_FLATTEN`，并写 `protective_flatten_client_order_id`、`protective_flatten_exchange_order_id`、`protective_flatten_exit_reason`
-- 对照 Snapback live，Spring 公共 lifecycle 本地已补齐 pending entry terminal/recovery reconcile、time-stop submit failed 后保护单修复、inflight TS 终态但 position 仍 open 的修复、terminal exit 的 live trade projection 专用落盘与 exit cooldown 刷新；下一步需要用本地最小测试与后续服务器 smoke/observe 继续确认真实交易所路径。
+- 对照 Snapback live，Spring 公共 lifecycle 本地已补齐 pending entry terminal/recovery reconcile、time-stop submit failed 后保护单修复、inflight TS 终态但 position 仍 open 的修复、terminal exit 的 live trade projection 专用落盘与 exit cooldown 刷新；下一步需要用本地最小测试与后续服务器 live smoke / projection 继续确认真实交易所路径。
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口
@@ -424,7 +424,7 @@ strategies/spring/live_execution.py:
 - 要求 signal.action = BUY
 - 使用 signal.position_notional_usdt 作为 live 下单名义金额来源
 
-strategies/spring/run_live_observer.py:
+strategies/spring/run_live.py:
 - Spring live runner 入口
 - 读取 shared hub finalized_candidate_inputs
 - 调用 SpringSABCStrategy.on_kline_close(...)
@@ -432,13 +432,13 @@ strategies/spring/run_live_observer.py:
 - signal 存在时生成 dry_run_execution_plan 并落盘
 - 支持 `--dry-run-verify-exchange` 读取只读交易所快照与本地 live state 快照
 - 支持显式 `--execute-live --live-execution-config ...` 真实下单
-- 写入 output/live_projection/spring_observer.{run_id}.jsonl
+- 写入 output/live_projection/spring_live.{run_id}.jsonl
 - 支持 `--loop`、`--execute-live`、`--max-iterations`、`--signal-check-second`
-- 写入 output/live_projection/spring_observer_heartbeat.{run_id}.json
+- 写入 output/live_projection/spring_live_heartbeat.{run_id}.json
 - 默认不下单；只有 `--execute-live`、外部 live execution JSON、account local gate 与 exchange/local precheck 同时满足时才会触发真实交易
 
-strategies/spring/config.observer_loose.json:
-- observe-only 专用 loose 配置
+strategies/spring/config.live_loose.json:
+- projection-only 专用 loose 配置
 - 主用途是放宽 universe/structure 门槛，尽快产生 signal 样本以验证 execution intent 落盘路径
 - 不得用于正式 sim/live 策略基线判断
 
@@ -532,16 +532,12 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 ### 5.3 Spring-SABC live lifecycle
 
 ```text
-下一刀（建议 LOGIC_ONLY）：
+当前审计起点：
 
-1. 锁定 `core/live/execution_runner.py` 与 `strategies/spring/run_live_observer.py` 基线。
-2. 从以下剩余 Spring 公共 lifecycle 缺口中选一个单问题推进：
-   - pending entry terminal reconcile
-   - time-stop submit failed 后保护单修复
-   - inflight TS 终态但 position 仍 open 的修复
-   - terminal exit 的 live trade projection 专用落盘
-3. 保持 LONG-only，不引入 SHORT，不复制 Snapback 私有生命周期。
-4. 本地先用 monkeypatch 覆盖成功路径与 fail-fast 阻断路径，再考虑服务器 smoke。
+1. Spring live 正式入口是 `strategies/spring/run_live.py`。
+2. 旧过渡入口已从源码树删除，不保留 wrapper、alias 或兼容路径。
+3. 运行产物命名收敛为 `spring_live.{run_id}.jsonl` 与 `spring_live_heartbeat.{run_id}.json`，默认 run_id 前缀为 `SPRINGLIVE_`。
+4. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
 ### 5.4 Spring-SABC sim / 参数
