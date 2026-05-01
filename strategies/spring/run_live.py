@@ -221,6 +221,20 @@ def _active_symbols_from_args(values: list[str] | None) -> set[str]:
     return result
 
 
+def _active_symbols_for_signal_generation(
+    base_active_symbols: set[str],
+    account_local_precheck: Mapping[str, Any] | None,
+) -> set[str]:
+    result = {str(symbol).upper().strip() for symbol in base_active_symbols if str(symbol).strip()}
+    if isinstance(account_local_precheck, Mapping):
+        for field in ("pending_symbols", "open_symbols"):
+            for raw_symbol in account_local_precheck.get(field) or []:
+                symbol = str(raw_symbol).upper().strip()
+                if symbol:
+                    result.add(symbol)
+    return result
+
+
 def _fail_reason_counts(audits: Mapping[str, Mapping[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for rec in audits.values():
@@ -432,11 +446,12 @@ def run_once(
         )
         account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
+    signal_active_symbols = _active_symbols_for_signal_generation(active_symbols, account_local_precheck)
     strategy = SpringSABCStrategy(strategy_cfg)
     signal = strategy.on_kline_close(
         signal_time_ts,
         cross_section,
-        active_symbols,
+        signal_active_symbols,
         full_df=full_df,
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
@@ -497,7 +512,9 @@ def run_once(
         "cross_section_symbol_count": int(len(cross_section)),
         "full_df_symbol_count": int(len(full_df)),
         "latest_close_symbol_count": int(len(latest_closes)),
-        "active_symbols": sorted(active_symbols),
+        "configured_active_symbols": sorted(active_symbols),
+        "active_symbols": sorted(signal_active_symbols),
+        "live_state_active_symbols": sorted(signal_active_symbols - active_symbols),
         "universe_candidate_count": int(len(getattr(strategy, "_last_universe_candidates", []) or [])),
         "structure_candidate_count": int(len(getattr(strategy, "_last_structure_candidates", []) or [])),
         "audited_symbol_count": int(len(audits)),

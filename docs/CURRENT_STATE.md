@@ -555,7 +555,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 4. loop 消费 finalized_candidate_inputs 时必须匹配本轮 expected C anchor，deadline 为 `signal_time+50s`；不得用 fresh 但非当前轮的 payload 产生信号或交易。
 5. Spring live 在参数与 live execution config 校验通过后会立即写 `[Spring-Live] runner started | account=... | run_id=... | mode=...` 日志；当 `--execute-live` 且 live execution config `notify_enabled=true` 时，同步写入 `spring` PUSH 队列，使 `nohup` 日志不必等第一轮 projection 才能看到启动时间。
 6. Spring live 常规每分钟 projection 结果只落盘到 `spring_live.{run_id}.jsonl` 与 heartbeat，不再写 `wrote projection` INFO 日志刷屏。
-7. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
+7. Spring live 的本策略 pending/open symbol 会在信号生成前并入 active symbols，使持仓期间同一 symbol 不再每分钟重复打印 `Spring雷达锁定`；projection 同时保留 `configured_active_symbols`、实际 `active_symbols` 与 `live_state_active_symbols` 供审计。
+8. 公共 BN_EXEC 事件支持按调用方传入 `notify_label`；Spring execution runner 传 `spring`，避免 Spring 的 ENTRY/SL/TP/CANCEL 执行通知落到 `snapback` 队列。
+9. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
 ### 5.4 Spring-SABC sim / 参数

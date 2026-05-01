@@ -45,6 +45,7 @@ FILLED_ORDER_STATUSES = {"FILLED", "FINISHED"}
 TERMINAL_ORDER_STATUSES = {"FILLED", "FINISHED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 DEFAULT_STRATEGY_NAME = "spring-sabc"
 DEFAULT_PROJECTION_DIR = "output/live_projection"
+SPRING_NOTIFY_LABEL = "spring"
 EXIT_REASON_TIME_STOP = "TIME_STOP"
 EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN = "SL_SUBMIT_FAILED_FLATTEN"
 LEG_SL_FAIL_FLATTEN = "SF"
@@ -466,7 +467,7 @@ def _notify_enabled(cfg: Mapping[str, Any], field: str) -> bool:
 
 
 def _send_spring_notify(message: str) -> None:
-    send_to_bot(message, label="spring")
+    send_to_bot(message, label=SPRING_NOTIFY_LABEL)
 
 
 def _json_default(value: Any) -> Any:
@@ -691,6 +692,7 @@ def _cancel_order_if_present(
         client_order_id=str(client_order_id).strip() if client_order_id else None,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
+        notify_label=SPRING_NOTIFY_LABEL,
     )
     if cancel_res.get("ok"):
         cancel_res = dict(cancel_res)
@@ -1285,6 +1287,7 @@ def _verify_or_repair_open_trade_brackets(
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
             client_order_id=tp_client_order_id,
+            notify_label=SPRING_NOTIFY_LABEL,
         )
         repair_results["tp"] = tp_res
         if not tp_res.get("ok"):
@@ -1341,6 +1344,7 @@ def _verify_or_repair_open_trade_brackets(
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
             client_order_id=sl_client_order_id,
+            notify_label=SPRING_NOTIFY_LABEL,
         )
         repair_results["sl"] = sl_res
         if not sl_res.get("ok"):
@@ -1927,6 +1931,7 @@ def _maybe_submit_time_stop(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=ts_client_order_id,
+        notify_label=SPRING_NOTIFY_LABEL,
     )
     if not ts_res.get("ok"):
         reason = str(ts_res.get("reason") or "time_stop_submit_failed")
@@ -2655,6 +2660,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["entry_client_order_id"],
+        notify_label=SPRING_NOTIFY_LABEL,
     )
     if not entry_res.get("ok"):
         mark_error(account, symbol, error_code="entry_submit_failed", error_message=entry_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
@@ -2706,6 +2712,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["sl_client_order_id"],
+        notify_label=SPRING_NOTIFY_LABEL,
     )
     _write_exec_event(audit_enabled, account, "spring_sl_submitted" if sl_res.get("ok") else "spring_sl_submit_failed", {
         "symbol": symbol,
@@ -2731,6 +2738,7 @@ def execute_live_execution_plan(
             retry_delay_secs=retry_delay_secs,
             client_order_id=flatten_client_order_id,
             order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
+            notify_label=SPRING_NOTIFY_LABEL,
         )
         open_trade = _open_trade_payload(
             intent=intent_dict,
@@ -2796,6 +2804,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["tp_client_order_id"],
+        notify_label=SPRING_NOTIFY_LABEL,
     )
     _write_exec_event(audit_enabled, account, "spring_tp_submitted" if tp_res.get("ok") else "spring_tp_submit_failed", {
         "symbol": symbol,

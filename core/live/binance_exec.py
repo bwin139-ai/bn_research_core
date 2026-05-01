@@ -160,7 +160,11 @@ def _emit_trade_event(
     attempts: int | None = None,
     is_algo_order: bool | None = None,
     event_time_ms: int | None = None,
+    notify_label: str = "snapback",
 ) -> None:
+    queue_label = str(notify_label or "").strip()
+    if not queue_label:
+        raise ValueError("notify_label must not be empty")
     legacy_parts: list[str] = [
         f"[BN_EXEC] {str(action or '').upper()} {str(status or '').lower()}",
         f"account={account}",
@@ -209,7 +213,7 @@ def _emit_trade_event(
         logging.info(log_msg)
     else:
         logging.error(log_msg)
-    send_to_bot(bot_msg, label="snapback")
+    send_to_bot(bot_msg, label=queue_label)
 
 
 def _call_with_retry(
@@ -794,6 +798,7 @@ def place_entry_order(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
@@ -809,6 +814,7 @@ def place_entry_order(
             client_order_id=client_order_id,
             reason=qty_res["reason"],
             attempts=qty_res.get("attempts"),
+            notify_label=notify_label,
         )
         return qty_res
     side = "BUY" if pos == "LONG" else "SELL"
@@ -843,6 +849,7 @@ def place_entry_order(
             client_order_id=cid,
             reason=res["reason"],
             attempts=res.get("attempts"),
+            notify_label=notify_label,
         )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
@@ -886,6 +893,7 @@ def place_entry_order(
         order_status=normalized_entry.get("status"),
         attempts=res.get("attempts"),
         event_time_ms=_extract_order_event_time_ms(normalized_entry, raw),
+        notify_label=notify_label,
     )
     return _ok(
         {
@@ -921,6 +929,7 @@ def place_tp_order(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
@@ -936,6 +945,7 @@ def place_tp_order(
             client_order_id=client_order_id,
             reason=qty_res["reason"],
             attempts=qty_res.get("attempts"),
+            notify_label=notify_label,
         )
         return qty_res
     f = qty_res["data"]["filters"]
@@ -952,6 +962,7 @@ def place_tp_order(
             qty=qty_res["data"]["qty"],
             client_order_id=client_order_id,
             reason=reason,
+            notify_label=notify_label,
         )
         return _err(reason)
     cid = client_order_id or _gen_client_order_id("TP", su)
@@ -989,6 +1000,7 @@ def place_tp_order(
             client_order_id=cid,
             reason=res["reason"],
             attempts=res.get("attempts"),
+            notify_label=notify_label,
         )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
@@ -1006,6 +1018,7 @@ def place_tp_order(
         order_status=raw.get("status"),
         attempts=res.get("attempts"),
         event_time_ms=_extract_order_event_time_ms(raw),
+        notify_label=notify_label,
     )
     return _ok(
         {
@@ -1033,6 +1046,7 @@ def place_sl_order(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     su = (symbol or "").upper().strip()
     pos = _normalize_position_side(position_side)
@@ -1049,6 +1063,7 @@ def place_sl_order(
             reason=filters_res["reason"],
             attempts=filters_res.get("attempts"),
             is_algo_order=True,
+            notify_label=notify_label,
         )
         return filters_res
     px = _normalize_price(stop_price, filters_res["data"]["tick_size"])
@@ -1064,6 +1079,7 @@ def place_sl_order(
             client_order_id=client_order_id,
             reason=reason,
             is_algo_order=True,
+            notify_label=notify_label,
         )
         return _err(reason)
     cid = client_order_id or _gen_client_order_id("SL", su)
@@ -1096,6 +1112,7 @@ def place_sl_order(
             reason=res["reason"],
             attempts=res.get("attempts"),
             is_algo_order=True,
+            notify_label=notify_label,
         )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
@@ -1113,6 +1130,7 @@ def place_sl_order(
         attempts=res.get("attempts"),
         is_algo_order=True,
         event_time_ms=_extract_order_event_time_ms(raw),
+        notify_label=notify_label,
     )
     return _ok(
         {
@@ -1141,6 +1159,7 @@ def place_time_stop_order(
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
     order_role: str = "TIME_STOP",
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     client = get_client(account)
     su = (symbol or "").upper().strip()
@@ -1159,6 +1178,7 @@ def place_time_stop_order(
             client_order_id=client_order_id,
             reason=qty_res["reason"],
             attempts=qty_res.get("attempts"),
+            notify_label=notify_label,
         )
         return qty_res
     cid = client_order_id or _gen_client_order_id("TS", su)
@@ -1192,6 +1212,7 @@ def place_time_stop_order(
             client_order_id=cid,
             reason=res["reason"],
             attempts=res.get("attempts"),
+            notify_label=notify_label,
         )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     raw = res["data"]
@@ -1209,6 +1230,7 @@ def place_time_stop_order(
         order_status=raw.get("status"),
         attempts=res.get("attempts"),
         event_time_ms=_extract_order_event_time_ms(raw),
+        notify_label=notify_label,
     )
     return _ok(
         {
@@ -1386,6 +1408,7 @@ def cancel_order(
     client_order_id: str | None = None,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     su = (symbol or "").upper().strip()
     if exchange_order_id is None and not client_order_id:
@@ -1398,6 +1421,7 @@ def cancel_order(
             client_order_id=client_order_id,
             exchange_order_id=exchange_order_id,
             reason=reason,
+            notify_label=notify_label,
         )
         return _err(reason)
     client = get_client(account)
@@ -1428,6 +1452,7 @@ def cancel_order(
             order_status=raw.get("status"),
             attempts=res.get("attempts"),
             is_algo_order=False,
+            notify_label=notify_label,
         )
         return _ok(
             {
@@ -1450,6 +1475,7 @@ def cancel_order(
             exchange_order_id=exchange_order_id,
             reason=res["reason"],
             attempts=res.get("attempts"),
+            notify_label=notify_label,
         )
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
     algo_res = _call_with_retry(
@@ -1472,6 +1498,7 @@ def cancel_order(
             reason=algo_res["reason"],
             attempts=algo_res.get("attempts"),
             is_algo_order=True,
+            notify_label=notify_label,
         )
         return _err(algo_res["reason"], payload=payload, attempts=algo_res.get("attempts"))
     raw = algo_res["data"]
@@ -1485,6 +1512,7 @@ def cancel_order(
         order_status=raw.get("msg") or raw.get("code"),
         attempts=algo_res.get("attempts"),
         is_algo_order=True,
+        notify_label=notify_label,
     )
     return _ok(
         {
@@ -1504,6 +1532,7 @@ def cancel_all_orders(
     *,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
+    notify_label: str = "snapback",
 ) -> dict[str, Any]:
     open_res = get_open_orders(account, symbol)
     if not open_res["ok"]:
@@ -1516,6 +1545,7 @@ def cancel_all_orders(
             exchange_order_id=order["order_id"],
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
+            notify_label=notify_label,
         )
         rows.append(cancel_res)
     return _ok(rows)
