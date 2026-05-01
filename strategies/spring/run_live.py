@@ -519,13 +519,6 @@ def run_once(
     }
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)
-    logging.info(
-        "[Spring-Live] wrote projection | account=%s | signal=%s | symbol=%s | path=%s",
-        account,
-        bool(signal),
-        row["signal_symbol"],
-        path,
-    )
     return {"ok": True, "path": str(path), "row": row}
 
 
