@@ -405,6 +405,7 @@ core/live/execution_runner.py:
 - 本地 loop patch 新增 strategy-level open_trade reconcile 与 account local active precheck：每轮可清理已由 TP/SL/TS 离场的 stale open_trade；若仍有 open/pending，则阻断新的 live entry
 - 本地 active time-stop patch 新增到期检查：使用最新闭合 C close 计算收益；若 `held_mins >= max_hold_mins` 且收益低于 `time_stop_min_profit_pct`，先取消 TP/SL，再提交 TS market flatten，并等待后续 reconcile 清理 state
 - 对照 Snapback live，Spring 公共 lifecycle 仍未补齐：pending entry terminal reconcile、open bracket repair/verify、time-stop submit failed 后保护单修复、inflight TS 终态但 position 仍 open 的修复、terminal exit 的 live trade projection 专用落盘；这些不得混入本 time-stop 刀，后续需继续拆小刀补齐
+- 2026-05-01 文档 checkpoint：下一刀建议先补 Spring 公共 open_trade bracket verify/repair。目标是在每轮 loop reconcile 发现 LONG position 仍 open 时，校验本策略 TP/SL 保护单是否仍在交易所 open orders 中；若缺失，按 live execution config 尝试补挂；若补挂或补挂后验证失败，fail-fast 写 state error / audit，并保留 account local active gate 阻止继续开新仓。本刀不处理 pending entry terminal reconcile、time-stop submit failed repair、TS inflight 异常修复或 terminal exit projection。
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口
@@ -521,7 +522,23 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 4. 只在偏离事实明确后进入单问题 patch。
 ```
 
-### 5.3 Spring-SABC
+### 5.3 Spring-SABC live lifecycle
+
+```text
+下一刀（建议 LOGIC_ONLY）：
+
+1. 锁定 `core/live/execution_runner.py` 与 `strategies/spring/run_live_observer.py` 基线。
+2. 在公共 Spring open_trade reconcile 中补 bracket verify / repair：
+   - position 仍 open 时校验 TP / SL 是否绑定在交易所 open orders 中。
+   - TP 缺失则基于 open_trade.tp_price 与当前 position qty 补挂 LIMIT TP。
+   - SL 缺失则基于 open_trade.sl_trigger_price 补挂 STOP_MARKET closePosition SL。
+   - 补挂后必须再验证 TP / SL 均存在；验证失败写 error/audit 并保持 open_trade，不清 state。
+3. 保持 LONG-only，不引入 SHORT，不复制 Snapback 私有生命周期。
+4. 不在本刀处理 pending entry terminal reconcile、time-stop submit failed repair、TS inflight 异常修复、terminal exit projection。
+5. 本地先用 monkeypatch 覆盖：TP 缺失修复、SL 缺失修复、补挂失败 fail-fast、保护单完整 no-op。
+```
+
+### 5.4 Spring-SABC sim / 参数
 
 ```text
 1. 固定当前 config 事实。
