@@ -28,6 +28,7 @@ from core.live.live_data_gate import expected_snapshot_from_signal_check_epoch
 from core.live.live_data_gate import wait_finalized_candidate_inputs_for_snapshot
 from core.live.live_state import load_live_state
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
+from core.message_bridge import send_to_bot
 from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
 from strategies.spring.live_execution import build_spring_live_execution_intent
 from strategies.spring.logic import SpringSABCStrategy
@@ -129,6 +130,22 @@ def _write_heartbeat(
     if payload:
         heartbeat.update(payload)
     _atomic_write_json(_heartbeat_path(output_dir, run_id), heartbeat)
+
+
+def _runner_notify_enabled(*, execute_live: bool, live_execution_config_path: str | None) -> bool:
+    if not execute_live:
+        return False
+    if not live_execution_config_path or not str(live_execution_config_path).strip():
+        raise ValueError("live execution config path is required when execute_live is enabled")
+    live_execution_config = load_live_execution_config(live_execution_config_path)
+    return bool(live_execution_config.get("notify_enabled", False))
+
+
+def _notify_runner_started(*, notify_enabled: bool, account: str, run_id: str, mode: str) -> None:
+    message = f"[Spring-Live] runner started | account={account} | run_id={run_id} | mode={mode}"
+    logging.info(message)
+    if notify_enabled:
+        send_to_bot(message, label="spring")
 
 
 def _require_payload_field(payload: Mapping[str, Any], field: str) -> Any:
@@ -682,6 +699,17 @@ def main() -> None:
         raise SystemExit("--live-execution-config is required with --execute-live")
     run_id = str(args.run_id).strip() or _build_run_id(args.account)
     active_symbols = _active_symbols_from_args(args.active_symbol)
+    live_execution_config_path = str(args.live_execution_config).strip() or None
+    runner_notify_enabled = _runner_notify_enabled(
+        execute_live=bool(args.execute_live),
+        live_execution_config_path=live_execution_config_path,
+    )
+    _notify_runner_started(
+        notify_enabled=runner_notify_enabled,
+        account=args.account,
+        run_id=run_id,
+        mode="loop" if args.loop else "once",
+    )
     if args.loop:
         run_loop(
             config_path=args.config,
@@ -695,7 +723,7 @@ def main() -> None:
             signal_check_second=int(args.signal_check_second),
             verify_exchange=bool(args.dry_run_verify_exchange),
             execute_live=bool(args.execute_live),
-            live_execution_config_path=str(args.live_execution_config).strip() or None,
+            live_execution_config_path=live_execution_config_path,
         )
     else:
         result = run_once(
@@ -709,7 +737,7 @@ def main() -> None:
             loop_iteration=None,
             verify_exchange=bool(args.dry_run_verify_exchange),
             execute_live=bool(args.execute_live),
-            live_execution_config_path=str(args.live_execution_config).strip() or None,
+            live_execution_config_path=live_execution_config_path,
         )
         _write_heartbeat(
             output_dir=args.output_dir,
