@@ -42,6 +42,9 @@ POSITION_SIDE_LONG = "LONG"
 FILLED_ORDER_STATUSES = {"FILLED", "FINISHED"}
 TERMINAL_ORDER_STATUSES = {"FILLED", "FINISHED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 DEFAULT_STRATEGY_NAME = "spring-sabc"
+EXIT_REASON_TIME_STOP = "TIME_STOP"
+EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN = "SL_SUBMIT_FAILED_FLATTEN"
+LEG_SL_FAIL_FLATTEN = "SF"
 
 
 def _now_bj_str() -> str:
@@ -509,10 +512,17 @@ def _infer_exit_reason_from_orders(
     retry_delay_secs: float,
 ) -> tuple[str, dict[str, Any], str | None]:
     checks: dict[str, Any] = {}
+    time_stop_exit_reason = str(
+        open_trade.get("protective_flatten_exit_reason")
+        or open_trade.get("time_stop_exit_reason")
+        or EXIT_REASON_TIME_STOP
+    ).upper().strip()
+    if time_stop_exit_reason != EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN:
+        time_stop_exit_reason = EXIT_REASON_TIME_STOP
     legs = [
         (
             "time_stop",
-            "TIME_STOP",
+            time_stop_exit_reason,
             open_trade.get("time_stop_exchange_order_id"),
             open_trade.get("time_stop_client_order_id"),
         ),
@@ -555,7 +565,7 @@ def _infer_exit_reason_from_orders(
 
 
 def _exit_order_from_checks(exit_reason: str, checks: Mapping[str, Any]) -> dict[str, Any] | None:
-    leg = "tp" if exit_reason == "TAKE_PROFIT" else "sl" if exit_reason == "STOP_LOSS" else "time_stop" if exit_reason == "TIME_STOP" else ""
+    leg = "tp" if exit_reason == "TAKE_PROFIT" else "sl" if exit_reason == "STOP_LOSS" else "time_stop" if exit_reason in {EXIT_REASON_TIME_STOP, EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN} else ""
     if not leg:
         return None
     payload = checks.get(leg)
@@ -1343,6 +1353,20 @@ def _post_entry_reconcile(
         "exit_price_source": exit_price_source,
         "order_checks": order_checks,
     })
+    if exit_reason == EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN:
+        _write_exec_event(audit_enabled, account, "spring_sl_submit_failed_flatten_filled", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "exit_reason": exit_reason,
+            "protective_flatten_client_order_id": open_trade.get("protective_flatten_client_order_id") or open_trade.get("time_stop_client_order_id"),
+            "protective_flatten_exchange_order_id": open_trade.get("protective_flatten_exchange_order_id") or open_trade.get("time_stop_exchange_order_id"),
+            "exit_price": exit_price,
+            "exit_price_source": exit_price_source,
+            "order_checks": order_checks,
+        })
     _write_exec_event(audit_enabled, account, "spring_state_cleared_after_exit", {
         "symbol": symbol,
         "source": source,
@@ -1675,6 +1699,12 @@ def execute_live_execution_plan(
         "exchange_snapshot": sl_res,
     })
     if not sl_res.get("ok"):
+        flatten_client_order_id = build_client_order_id(
+            broker_id=BROKER_ID,
+            strat=str(intent_dict["strategy_code"]).upper(),
+            leg=LEG_SL_FAIL_FLATTEN,
+            root=order_root,
+        )
         flatten_res = place_time_stop_order(
             account,
             symbol,
@@ -1682,7 +1712,8 @@ def execute_live_execution_plan(
             qty_for_exit,
             retry_max=retry_max,
             retry_delay_secs=retry_delay_secs,
-            client_order_id=order_ids["time_stop_client_order_id"],
+            client_order_id=flatten_client_order_id,
+            order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
         )
         open_trade = _open_trade_payload(
             intent=intent_dict,
@@ -1696,10 +1727,15 @@ def execute_live_execution_plan(
             signal_digest=signal_digest,
             status="EXIT_SUBMITTED" if flatten_res.get("ok") else "BRACKET_GAP_CRITICAL",
         )
+        open_trade["time_stop_exit_reason"] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        open_trade["protective_flatten_exit_reason"] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        open_trade["protective_flatten_client_order_id"] = flatten_client_order_id
         if flatten_res.get("ok"):
             flatten_data = dict(flatten_res.get("data") or {})
-            open_trade["time_stop_client_order_id"] = flatten_data.get("client_order_id", order_ids["time_stop_client_order_id"])
+            open_trade["time_stop_client_order_id"] = flatten_data.get("client_order_id", flatten_client_order_id)
             open_trade["time_stop_exchange_order_id"] = flatten_data.get("exchange_order_id")
+            open_trade["protective_flatten_client_order_id"] = flatten_data.get("client_order_id", flatten_client_order_id)
+            open_trade["protective_flatten_exchange_order_id"] = flatten_data.get("exchange_order_id")
             open_trade["exit_submit_inflight"] = True
         set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
         set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
@@ -1713,6 +1749,16 @@ def execute_live_execution_plan(
             "order_root": order_root,
             "sl_snapshot": sl_res,
             "flatten_snapshot": flatten_res,
+        })
+        _write_exec_event(audit_enabled, account, "spring_sl_submit_failed_flatten_submitted" if flatten_res.get("ok") else "spring_sl_submit_failed_flatten_submit_failed", {
+            "symbol": symbol,
+            "source": "entry_sl_fail_flatten",
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": order_root,
+            "exit_reason": EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
+            "protective_flatten_client_order_id": flatten_client_order_id,
+            "exchange_snapshot": flatten_res,
         })
         return {
             "ok": False,
