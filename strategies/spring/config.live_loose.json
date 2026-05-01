@@ -46,30 +46,30 @@
       "ETCUSDT",
       "ONDOUSDT"
     ],
-    "min_24h_chg_pct": -100,
-    "min_24h_quote_volume": 0,
-    "score_top_n": 50
+    "min_24h_chg_pct": 10,
+    "min_24h_quote_volume": 30000000,
+    "score_top_n": 10
   },
   "structure": {
     "pattern_window_mins": 60,
     "ab": {
-      "chg_pct_min": 0.001,
-      "consecutive_down_bars_min": 1
+      "chg_pct_min": 0.02,
+      "consecutive_down_bars_min": 2
     },
     "vol_climax": {
       "baseline_window_mins": 120,
-      "ratio_min": 0.1,
-      "gamma_ac_vol_ratio_min": 0.1
+      "ratio_min": 1.5,
+      "gamma_ac_vol_ratio_min": 1
     },
     "rebound": {
-      "ratio_min": 0.1,
-      "ratio_max": 10.0,
-      "bc_over_ab_bars_max": 10.0
+      "ratio_min": 0.5,
+      "ratio_max": 1.5,
+      "bc_over_ab_bars_max": 3.0
     },
     "pre_a": {
-      "chg_pct_min": null,
+      "chg_pct_min": 0.0,
       "range_pct_max": null,
-      "high_to_a_close_pct_max": null,
+      "high_to_a_close_pct_max": 0.2,
       "close_pos_in_range_min": null
     }
   },

@@ -1,7 +1,8 @@
 ssh aliyun-bn
 ps aux | grep python
-ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[c]ore/live/market_data_hub_runner.py'
+ps aux | grep '[s]trategies/snapback/run_live.py'
+ps aux | grep '[s]trategies/spring/run_live.py'
 
 # ============== 项目根目录 ===============
  cd ~/ai_projects/bn_research_core
@@ -27,6 +28,27 @@ tail -n 20 -f output/logs/market_data_hub.console.log
 python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/market_snapshot.json
 python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/candidate_inputs.json
 python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/finalized_candidate_inputs.json
+
+require_exchange_precheck: true
+要求交易所 positions/open orders 快照已验证。
+
+# ============== Spring-SABC live  ===============
+cd /root/bn_research_core
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config.live_smoke_10u.json \
+  --account mybwin139 \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.smoke_10u.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> output/live_projection/spring_live.nohup.log 2>&1 &
+
+
+
+
 
 # ============== Spring-SABC 冒烟测试  ===============
 RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
@@ -55,7 +77,7 @@ RUNSET="SPRING_V1_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
   --strategy spring-sabc \
   --start 2025-04-18T00:00:00+08:00 \
-  --end 2026-04-28T20:45:00+08:00 \
+  --end 2026-04-29T08:00:00+08:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
@@ -75,7 +97,7 @@ ls -ldht output/live_projection/* | head -n 5
 
 # ========= download 服务器数据 到 MacBook download=========
 # *****download***** 拉 全量 sim 数据 *****download***** 
-RUNID="SPRING_V1_30D_P6_0429T0827_AL"
+RUNID="SPRING_V1_30D_P6_0429T1310_ALL"
 DEST=~/ai_projects/bn_research_core/output/sim_spring
 mkdir -p "$DEST"
 scp \
@@ -123,7 +145,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1000 \
-  --sleep-ms 3000 \
+  --sleep-ms 2500 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 tail -n 20 -f logs/klines_1m_sync.log
@@ -131,7 +153,7 @@ tail -n 20 -f logs/klines_1m_sync.log
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --limit 1000 \
-  --sleep-ms 3000 \
+  --sleep-ms 2500 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 tail -n 20 -f logs/klines_1m_augment_idx.log
@@ -223,3 +245,14 @@ pkill -9 -f 'schedule_backtests.py --strategy snapback'
 
 
 /root/service_env/bin/python tools/cleanup_expired_stage3_run.py
+
+策略层：
+Spring signal / Snapback signal / 第三套策略 signal
+  -> 各自 adapter
+  -> ValidatedLiveExecutionIntent
+
+公共 live execution 层：
+intent -> execution_plan -> entry/SL/TP -> open_trade state
+       -> reconcile / exit monitor / TP-SL-TS 成交识别
+       -> state close / audit / live_trades projection / cooldown
+
