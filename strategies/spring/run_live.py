@@ -32,6 +32,8 @@ from strategies.spring.logic import SpringSABCStrategy
 
 BJ = timezone(timedelta(hours=8))
 DEFAULT_OUTPUT_DIR = "output/live_projection"
+_CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
+_FINALIZED_PAYLOAD_WAIT_POLL_SECS = 1.0
 
 
 def setup_logging() -> None:
@@ -145,6 +147,120 @@ def _load_hub_payload(account: str, max_age_secs: int) -> dict[str, Any]:
     return payload
 
 
+def _payload_int(payload: Mapping[str, Any] | None, key: str) -> int | None:
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _finalized_payload_mismatch_reason(
+    payload: Mapping[str, Any] | None,
+    *,
+    expected_latest_closed_bar_ts: int,
+    expected_signal_time_ts: int,
+) -> str:
+    if not isinstance(payload, Mapping):
+        return "payload_missing"
+    payload_latest_closed_bar_ts = _payload_int(payload, "latest_closed_bar_ts")
+    if payload_latest_closed_bar_ts != int(expected_latest_closed_bar_ts):
+        return (
+            "latest_closed_bar_ts_mismatch"
+            f"(payload={payload_latest_closed_bar_ts},expected={int(expected_latest_closed_bar_ts)})"
+        )
+    payload_signal_time_ts = _payload_int(payload, "signal_time_ts")
+    if payload_signal_time_ts != int(expected_signal_time_ts):
+        return (
+            "signal_time_ts_mismatch"
+            f"(payload={payload_signal_time_ts},expected={int(expected_signal_time_ts)})"
+        )
+    if not isinstance(payload.get("finalize_summary"), Mapping):
+        return "finalize_summary_missing"
+    return ""
+
+
+def _wait_finalized_candidate_inputs_for_snapshot(
+    account: str,
+    *,
+    expected_latest_closed_bar_ts: int,
+    expected_signal_time_ts: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    deadline_utc_ms = int(expected_signal_time_ts) + int(_CANDIDATE_FINALIZE_CB_DEADLINE_SECS * 1000)
+    attempts = 0
+    first_attempt_utc_ms: int | None = None
+    last_attempt_utc_ms: int | None = None
+    last_reason = ""
+    last_payload_latest_closed_bar_ts: int | None = None
+    last_payload_signal_time_ts: int | None = None
+    last_payload_published_bj: str | None = None
+    expected_latest_closed_bar_ts = int(expected_latest_closed_bar_ts)
+    expected_signal_time_ts = int(expected_signal_time_ts)
+
+    while True:
+        attempts += 1
+        attempt_utc_ms = _now_utc_ms()
+        if first_attempt_utc_ms is None:
+            first_attempt_utc_ms = attempt_utc_ms
+        last_attempt_utc_ms = attempt_utc_ms
+        try:
+            payload = load_finalized_candidate_inputs_from_hub(account, max_age_secs=None)
+            last_payload_latest_closed_bar_ts = _payload_int(payload, "latest_closed_bar_ts")
+            last_payload_signal_time_ts = _payload_int(payload, "signal_time_ts")
+            last_payload_published_bj = str(payload.get("published_bj") or "") if isinstance(payload, Mapping) else None
+            last_reason = _finalized_payload_mismatch_reason(
+                payload,
+                expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
+                expected_signal_time_ts=expected_signal_time_ts,
+            )
+            if not last_reason:
+                return payload, {
+                    "ok": True,
+                    "attempts": int(attempts),
+                    "first_attempt_utc_ms": first_attempt_utc_ms,
+                    "first_attempt_bj": _fmt_bj_from_ms(first_attempt_utc_ms),
+                    "last_attempt_utc_ms": last_attempt_utc_ms,
+                    "last_attempt_bj": _fmt_bj_from_ms(last_attempt_utc_ms),
+                    "deadline_utc_ms": int(deadline_utc_ms),
+                    "deadline_bj": _fmt_bj_from_ms(deadline_utc_ms),
+                    "last_reason": "",
+                    "expected_latest_closed_bar_ts": expected_latest_closed_bar_ts,
+                    "expected_signal_time_ts": expected_signal_time_ts,
+                    "last_payload_latest_closed_bar_ts": last_payload_latest_closed_bar_ts,
+                    "last_payload_signal_time_ts": last_payload_signal_time_ts,
+                    "last_payload_published_bj": last_payload_published_bj,
+                }
+        except Exception as exc:
+            last_reason = f"hub_candidate_payload_unavailable: {exc}"
+
+        now_ms = _now_utc_ms()
+        if now_ms >= deadline_utc_ms:
+            return None, {
+                "ok": False,
+                "attempts": int(attempts),
+                "first_attempt_utc_ms": first_attempt_utc_ms,
+                "first_attempt_bj": _fmt_bj_from_ms(first_attempt_utc_ms),
+                "last_attempt_utc_ms": last_attempt_utc_ms,
+                "last_attempt_bj": _fmt_bj_from_ms(last_attempt_utc_ms),
+                "deadline_utc_ms": int(deadline_utc_ms),
+                "deadline_bj": _fmt_bj_from_ms(deadline_utc_ms),
+                "last_reason": last_reason,
+                "expected_latest_closed_bar_ts": expected_latest_closed_bar_ts,
+                "expected_signal_time_ts": expected_signal_time_ts,
+                "last_payload_latest_closed_bar_ts": last_payload_latest_closed_bar_ts,
+                "last_payload_signal_time_ts": last_payload_signal_time_ts,
+                "last_payload_published_bj": last_payload_published_bj,
+            }
+
+        sleep_secs = min(float(_FINALIZED_PAYLOAD_WAIT_POLL_SECS), max(0.0, (deadline_utc_ms - now_ms) / 1000.0))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+
 def _validate_hub_payload(payload: Mapping[str, Any]) -> tuple[int, str, int, str, pd.DataFrame, dict[str, Any]]:
     c_bar_ts = int(_require_payload_field(payload, "latest_closed_bar_ts"))
     c_bar_bj = str(_require_payload_field(payload, "latest_closed_bar_bj"))
@@ -254,6 +370,86 @@ def _blocked_execution_result(
     }
 
 
+def _not_ready_projection_row(
+    *,
+    config_path: str,
+    account: str,
+    run_id: str,
+    loop_iteration: int | None,
+    output_dir: str,
+    hub_max_age_secs: int,
+    audit_preview_limit: int,
+    active_symbols: set[str],
+    started_utc_ms: int,
+    expected_latest_closed_bar_ts: int | None,
+    expected_signal_time_ts: int | None,
+    candidate_payload_wait: Mapping[str, Any],
+    execute_live: bool,
+    verify_exchange: bool,
+    live_execution_config_path: str | None,
+) -> dict[str, Any]:
+    finished_utc_ms = _now_utc_ms()
+    signal_time_ts = int(expected_signal_time_ts or 0) or None
+    c_bar_ts = int(expected_latest_closed_bar_ts or 0) or None
+    row = {
+        "schema_version": 1,
+        "run_mode": "live",
+        "projection_type": "spring_live",
+        "strategy_name": "spring-sabc",
+        "account": str(account).strip(),
+        "run_id": run_id,
+        "loop_iteration": loop_iteration,
+        "config_path": config_path,
+        "hub_max_age_secs": int(hub_max_age_secs),
+        "started_utc_ms": started_utc_ms,
+        "started_bj": _fmt_bj_from_ms(started_utc_ms),
+        "finished_utc_ms": finished_utc_ms,
+        "finished_bj": _fmt_bj_from_ms(finished_utc_ms),
+        "elapsed_ms": int(finished_utc_ms - started_utc_ms),
+        "signal_time_ts": signal_time_ts,
+        "signal_time_bj": _fmt_bj_from_ms(signal_time_ts),
+        "c_bar_ts": c_bar_ts,
+        "c_bar_bj": _fmt_bj_from_ms(c_bar_ts),
+        "hub_reason": "finalized_candidate_payload_not_ready_for_current_snapshot",
+        "hub_symbol_count": 0,
+        "cross_section_symbol_count": 0,
+        "full_df_symbol_count": 0,
+        "latest_close_symbol_count": 0,
+        "active_symbols": sorted(active_symbols),
+        "universe_candidate_count": 0,
+        "structure_candidate_count": 0,
+        "audited_symbol_count": 0,
+        "fail_reason_counts": {},
+        "audit_preview_limit": int(audit_preview_limit),
+        "audit_preview": [],
+        "signal_present": False,
+        "signal_symbol": None,
+        "signal": None,
+        "execution_intent": None,
+        "dry_run_verify_exchange": bool(verify_exchange),
+        "dry_run_execution_plan": None,
+        "execute_live": bool(execute_live),
+        "live_execution_config_path": live_execution_config_path,
+        "lifecycle_reconcile": None,
+        "account_local_precheck": None,
+        "live_execution_result": {
+            "ok": False,
+            "outcome": "finalized_candidate_payload_not_ready",
+            "reason": str(candidate_payload_wait.get("last_reason") or "not_ready"),
+        },
+        "candidate_payload_wait": dict(candidate_payload_wait),
+    }
+    path = _projection_path(output_dir, run_id)
+    _append_projection_row(path, row)
+    logging.info(
+        "[Spring-Live] finalized payload not ready | account=%s | reason=%s | path=%s",
+        account,
+        row["live_execution_result"]["reason"],
+        path,
+    )
+    return {"ok": False, "path": str(path), "row": row}
+
+
 def run_once(
     *,
     config_path: str,
@@ -267,6 +463,8 @@ def run_once(
     verify_exchange: bool = False,
     execute_live: bool = False,
     live_execution_config_path: str | None = None,
+    expected_latest_closed_bar_ts: int | None = None,
+    expected_signal_time_ts: int | None = None,
 ) -> dict[str, Any]:
     started_utc_ms = _now_utc_ms()
     strategy_cfg = StrategyConfig.load(config_path)
@@ -284,8 +482,40 @@ def run_once(
         live_execution_config["_projection_run_id"] = run_id
         live_execution_config["_projection_schema_version"] = 1
 
-    payload = _load_hub_payload(account, hub_max_age_secs)
+    candidate_payload_wait = None
+    if expected_latest_closed_bar_ts is not None or expected_signal_time_ts is not None:
+        if expected_latest_closed_bar_ts is None or expected_signal_time_ts is None:
+            raise ValueError("expected latest_closed_bar_ts and signal_time_ts must be provided together")
+        payload, candidate_payload_wait = _wait_finalized_candidate_inputs_for_snapshot(
+            account,
+            expected_latest_closed_bar_ts=int(expected_latest_closed_bar_ts),
+            expected_signal_time_ts=int(expected_signal_time_ts),
+        )
+        if payload is None:
+            return _not_ready_projection_row(
+                config_path=config_path,
+                account=account,
+                run_id=run_id,
+                loop_iteration=loop_iteration,
+                output_dir=output_dir,
+                hub_max_age_secs=hub_max_age_secs,
+                audit_preview_limit=audit_preview_limit,
+                active_symbols=active_symbols,
+                started_utc_ms=started_utc_ms,
+                expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
+                expected_signal_time_ts=expected_signal_time_ts,
+                candidate_payload_wait=candidate_payload_wait,
+                execute_live=execute_live,
+                verify_exchange=verify_exchange,
+                live_execution_config_path=live_execution_config_path,
+            )
+    else:
+        payload = _load_hub_payload(account, hub_max_age_secs)
     c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, full_df = _validate_hub_payload(payload)
+    if expected_latest_closed_bar_ts is not None and c_bar_ts != int(expected_latest_closed_bar_ts):
+        raise ValueError(f"hub finalized payload latest_closed_bar_ts mismatch: got {c_bar_ts}, expected {expected_latest_closed_bar_ts}")
+    if expected_signal_time_ts is not None and signal_time_ts != int(expected_signal_time_ts):
+        raise ValueError(f"hub finalized payload signal_time_ts mismatch: got {signal_time_ts}, expected {expected_signal_time_ts}")
     latest_closes = _latest_closed_closes(full_df, c_bar_ts)
 
     if execute_live:
@@ -382,6 +612,7 @@ def run_once(
         "lifecycle_reconcile": lifecycle_reconcile,
         "account_local_precheck": account_local_precheck,
         "live_execution_result": live_execution_result,
+        "candidate_payload_wait": candidate_payload_wait,
     }
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)
@@ -395,7 +626,7 @@ def run_once(
     return {"ok": True, "path": str(path), "row": row}
 
 
-def _next_signal_check_epoch(now_epoch: float | None = None, *, second: int = 2) -> float:
+def _next_signal_check_epoch(now_epoch: float | None = None, *, second: int = 5) -> float:
     if not 0 <= int(second) <= 59:
         raise ValueError(f"signal check second must be in [0, 59], got {second}")
     if now_epoch is None:
@@ -405,6 +636,13 @@ def _next_signal_check_epoch(now_epoch: float | None = None, *, second: int = 2)
     if now < target:
         return target.timestamp()
     return (target + timedelta(minutes=1)).timestamp()
+
+
+def _expected_snapshot_from_signal_check_epoch(signal_check_epoch: float) -> tuple[int, int]:
+    signal_time = datetime.fromtimestamp(float(signal_check_epoch), tz=timezone.utc).replace(second=0, microsecond=0)
+    signal_time_ts = int(signal_time.timestamp() * 1000)
+    latest_closed_bar_ts = signal_time_ts - 60_000
+    return latest_closed_bar_ts, signal_time_ts
 
 
 def _sleep_until_epoch(target_epoch: float) -> None:
@@ -481,6 +719,7 @@ def run_loop(
         )
         _sleep_until_epoch(next_epoch)
         iteration += 1
+        expected_latest_closed_bar_ts, expected_signal_time_ts = _expected_snapshot_from_signal_check_epoch(next_epoch)
         try:
             result = run_once(
                 config_path=config_path,
@@ -494,6 +733,8 @@ def run_loop(
                 verify_exchange=verify_exchange,
                 execute_live=execute_live,
                 live_execution_config_path=live_execution_config_path,
+                expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
+                expected_signal_time_ts=expected_signal_time_ts,
             )
         except Exception as exc:
             _write_heartbeat(
@@ -507,13 +748,14 @@ def run_loop(
             )
             raise
         row = dict(result.get("row") or {})
+        heartbeat_status = "ok" if bool(result.get("ok")) else "not_ready"
         _write_heartbeat(
             output_dir=output_dir,
             run_id=run_id,
             account=account,
             mode="loop",
             iteration=iteration,
-            status="ok",
+            status=heartbeat_status,
             payload={
                 "projection_path": result.get("path"),
                 "signal_present": bool(row.get("signal_present")),
@@ -523,6 +765,10 @@ def run_loop(
                 "elapsed_ms": row.get("elapsed_ms"),
                 "execute_live": bool(row.get("execute_live")),
                 "live_execution_outcome": (row.get("live_execution_result") or {}).get("outcome") if isinstance(row.get("live_execution_result"), dict) else None,
+                "candidate_payload_wait_ok": (row.get("candidate_payload_wait") or {}).get("ok") if isinstance(row.get("candidate_payload_wait"), dict) else None,
+                "candidate_payload_wait_attempts": (row.get("candidate_payload_wait") or {}).get("attempts") if isinstance(row.get("candidate_payload_wait"), dict) else None,
+                "candidate_payload_wait_last_reason": (row.get("candidate_payload_wait") or {}).get("last_reason") if isinstance(row.get("candidate_payload_wait"), dict) else None,
+                "candidate_payload_wait_deadline_bj": (row.get("candidate_payload_wait") or {}).get("deadline_bj") if isinstance(row.get("candidate_payload_wait"), dict) else None,
             },
         )
 
@@ -538,7 +784,7 @@ def main() -> None:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=0)
-    parser.add_argument("--signal-check-second", type=int, default=2)
+    parser.add_argument("--signal-check-second", type=int, default=5)
     parser.add_argument("--dry-run-verify-exchange", action="store_true")
     parser.add_argument("--execute-live", action="store_true")
     parser.add_argument("--live-execution-config", default="")
