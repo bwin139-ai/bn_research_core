@@ -164,8 +164,12 @@ def _validate_hub_payload(payload: Mapping[str, Any]) -> tuple[int, str, int, st
         raise TypeError(f"hub full_df must be dict, got {type(full_df).__name__}")
     if c_bar_ts <= 0:
         raise ValueError(f"latest_closed_bar_ts must be > 0, got {c_bar_ts}")
-    if signal_time_ts <= c_bar_ts:
-        raise ValueError(f"signal_time_ts must be after latest_closed_bar_ts, got {signal_time_ts} <= {c_bar_ts}")
+    expected_signal_time_ts = c_bar_ts + 60_000
+    if signal_time_ts != expected_signal_time_ts:
+        raise ValueError(
+            "signal_time_ts must equal latest_closed_bar_ts + 60000 for Spring CB=C+1m semantics, "
+            f"got {signal_time_ts} vs expected {expected_signal_time_ts}"
+        )
     return c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, dict(full_df)
 
 
@@ -276,6 +280,9 @@ def run_once(
         if not live_execution_config_path or not str(live_execution_config_path).strip():
             raise ValueError("live execution config path is required when execute_live is enabled")
         live_execution_config = load_live_execution_config(live_execution_config_path)
+        live_execution_config["_projection_output_dir"] = output_dir
+        live_execution_config["_projection_run_id"] = run_id
+        live_execution_config["_projection_schema_version"] = 1
 
     payload = _load_hub_payload(account, hub_max_age_secs)
     c_bar_ts, c_bar_bj, signal_time_ts, signal_time_bj, cross_section, full_df = _validate_hub_payload(payload)
