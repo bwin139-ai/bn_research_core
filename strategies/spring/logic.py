@@ -463,7 +463,7 @@ class SpringSABCStrategy:
         # - Scan B from nearest to farthest.
         # - B initial filter only requires C_close > B_close.
         # - A is the earliest start of B's strict consecutive close-down run.
-        # - B_low must be the lowest low in the whole A-B interval.
+        # - B_low must be the lowest low in the whole A-C interval.
         down_run = [0] * len(close_values)
         for idx_pos in range(1, len(close_values)):
             if close_values[idx_pos] < close_values[idx_pos - 1]:
@@ -507,8 +507,12 @@ class SpringSABCStrategy:
 
             b_low = low_values[b_idx]
             ab_low_min = min(low_values[a_idx : b_idx + 1])
+            ac_low_min = min(low_values[a_idx : c_idx + 1])
             b_low_is_ab_low = abs(float(b_low) - float(ab_low_min)) <= 1e-12
             if not b_low_is_ab_low:
+                continue
+            b_low_is_ac_low = abs(float(b_low) - float(ac_low_min)) <= 1e-12
+            if not b_low_is_ac_low:
                 continue
 
             ab_chg_pct = (a_close - b_close) / a_close
@@ -742,7 +746,9 @@ class SpringSABCStrategy:
                 "ab_down_run_bars": int(ab_down_run_bars),
                 "ab_required_bars_min": int(ab_required_bars_min),
                 "ab_low_min": float(ab_low_min),
+                "ac_low_min": float(ac_low_min),
                 "b_low_is_ab_low": bool(b_low_is_ab_low),
+                "b_low_is_ac_low": bool(b_low_is_ac_low),
                 "b_search_rank_from_c": int(b_search_rank_from_c),
             }
             break
@@ -986,7 +992,9 @@ class SpringSABCStrategy:
                     "ab_down_run_bars": int(candidate.get("ab_down_run_bars", candidate.get("ab_bars", 0))),
                     "ab_required_bars_min": int(candidate.get("ab_required_bars_min", 0)),
                     "ab_low_min": float(candidate.get("ab_low_min", candidate.get("b_low", candidate["b_close"]))),
+                    "ac_low_min": float(candidate.get("ac_low_min", candidate.get("b_low", candidate["b_close"]))),
                     "b_low_is_ab_low": bool(candidate.get("b_low_is_ab_low", False)),
+                    "b_low_is_ac_low": bool(candidate.get("b_low_is_ac_low", False)),
                     "b_search_rank_from_c": int(candidate.get("b_search_rank_from_c", 0)),
                 },
             }
