@@ -238,6 +238,7 @@ live_config.*.json:
 30. 2026-04-29 21:59 BJ，服务器用 `/root/service_env/bin/python` 跑新版本 `--loop --execute-live --max-iterations 1` 验证通过：本轮 signal=`SKYAIUSDT`，`dry_run_execution_plan.ok_to_execute=false`，blocker=`local_cooldown_active`；`lifecycle_reconcile` 返回无剩余 open/pending，`account_local_precheck` 为空，`live_execution_result.outcome=execution_blocked_by_precheck`。交易所 positions/open orders 仍为空；Spring state 无 open_trade/pending_entry，仅保留 `AIOTUSDT/SKYAIUSDT/TACUSDT` cooldown。
 31. 本地已推进 Spring active time-stop patch：`core/live/execution_runner.py` 的 loop reconcile 在 LONG position 仍存在时，会使用 Spring observer 从 hub `full_df` 提取的最新闭合 C close 检查 `max_hold_mins / time_stop_min_profit_pct`；到期且收益不足时先撤 TP/SL，再提交 `SPR_TS` market flatten，并设置 `exit_submit_inflight`，后续仍由同一公共 reconcile 根据 TP/SL/TS 交易所事实清理 state。
 32. 本地已推进 Spring open_trade bracket verify/repair patch：loop reconcile 发现 LONG position 仍 open 且未处于 `exit_submit_inflight` 时，会校验本策略 TP/SL 是否仍存在于交易所 open orders；若缺失则按 `open_trade.tp_price / sl_trigger_price` 与当前 position qty 补挂，补挂后再次查询 open orders 验证。补挂或验证失败会写 state error / audit 并 fail-fast 保留 open_trade，账户级 local active gate 会继续阻止新开仓。
+33. 2026-05-01 文档 checkpoint：下一刀将把 Spring 的 SL submit failed emergency flatten 从普通 TIME_STOP 语义拆出，对齐 Snapback 的独立 protective flatten 语义。目标字段/事件：exit reason=`SL_SUBMIT_FAILED_FLATTEN`，custom id leg=`SPR_SF`，BN exec order_role=`SL_SUBMIT_FAILED_FLATTEN`，audit event=`spring_sl_submit_failed_flatten_submitted` / `spring_sl_submit_failed_flatten_filled`，并在后续 terminal projection 中保留 `protective_flatten_*` 字段。
 
 当前配置事实：
 
@@ -406,7 +407,8 @@ core/live/execution_runner.py:
 - 本地 loop patch 新增 strategy-level open_trade reconcile 与 account local active precheck：每轮可清理已由 TP/SL/TS 离场的 stale open_trade；若仍有 open/pending，则阻断新的 live entry
 - 本地 active time-stop patch 新增到期检查：使用最新闭合 C close 计算收益；若 `held_mins >= max_hold_mins` 且收益低于 `time_stop_min_profit_pct`，先取消 TP/SL，再提交 TS market flatten，并等待后续 reconcile 清理 state
 - 本地 bracket verify/repair patch 新增持仓保护单维护：position 仍 open 且未处于 `exit_submit_inflight` 时，校验 TP/SL open order 绑定；缺失则按 open_trade 记录补挂，补挂后再次验证；失败写 error/audit 并保留 open_trade
-- 对照 Snapback live，Spring 公共 lifecycle 仍未补齐：pending entry terminal reconcile、time-stop submit failed 后保护单修复、inflight TS 终态但 position 仍 open 的修复、terminal exit 的 live trade projection 专用落盘；这些不得混入 bracket repair 刀，后续需继续拆小刀补齐
+- 2026-05-01 下一刀目标：把 Spring SL 提交失败后的应急 market flatten 从普通 TIME_STOP 拆成独立 `SL_SUBMIT_FAILED_FLATTEN` protective flatten 语义，避免正常 time-stop 与入场保护失败平仓混用同一个 exit reason / client id leg / BN exec role
+- 对照 Snapback live，Spring 公共 lifecycle 仍未补齐：pending entry terminal reconcile、time-stop submit failed 后保护单修复、inflight TS 终态但 position 仍 open 的修复、terminal exit 的 live trade projection 专用落盘；这些不得混入 SL fail flatten 拆分刀，后续需继续拆小刀补齐
 
 core/live/audit_log.py:
 - 保留既有 snapback audit 写入入口
@@ -529,11 +531,12 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 下一刀（建议 LOGIC_ONLY）：
 
 1. 锁定 `core/live/execution_runner.py` 与 `strategies/spring/run_live_observer.py` 基线。
-2. 从以下剩余 Spring 公共 lifecycle 缺口中选一个单问题推进：
-   - pending entry terminal reconcile
-   - time-stop submit failed 后保护单修复
-   - inflight TS 终态但 position 仍 open 的修复
-   - terminal exit 的 live trade projection 专用落盘
+2. 本刀先推进 Spring SL submit failed protective flatten 语义拆分：
+   - exit reason 固定为 `SL_SUBMIT_FAILED_FLATTEN`
+   - custom id leg 使用 `SPR_SF`
+   - `place_time_stop_order(..., order_role="SL_SUBMIT_FAILED_FLATTEN")`
+   - open_trade 同时保留既有 `time_stop_*` 查询字段与新增 `protective_flatten_*` 语义字段
+   - audit 使用 `spring_sl_submit_failed_flatten_submitted` / `spring_sl_submit_failed_flatten_submit_failed`
 3. 保持 LONG-only，不引入 SHORT，不复制 Snapback 私有生命周期。
 4. 本地先用 monkeypatch 覆盖成功路径与 fail-fast 阻断路径，再考虑服务器 smoke。
 ```
