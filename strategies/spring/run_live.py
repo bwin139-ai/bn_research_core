@@ -24,6 +24,8 @@ from core.live.execution_runner import (
     load_live_execution_config,
     reconcile_strategy_open_trades,
 )
+from core.live.live_data_gate import expected_snapshot_from_signal_check_epoch
+from core.live.live_data_gate import wait_finalized_candidate_inputs_for_snapshot
 from core.live.live_state import load_live_state
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
 from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
@@ -32,8 +34,6 @@ from strategies.spring.logic import SpringSABCStrategy
 
 BJ = timezone(timedelta(hours=8))
 DEFAULT_OUTPUT_DIR = "output/live_projection"
-_CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
-_FINALIZED_PAYLOAD_WAIT_POLL_SECS = 1.0
 
 
 def setup_logging() -> None:
@@ -145,120 +145,6 @@ def _load_hub_payload(account: str, max_age_secs: int) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"hub finalized candidate payload must be dict, got {type(payload).__name__}")
     return payload
-
-
-def _payload_int(payload: Mapping[str, Any] | None, key: str) -> int | None:
-    if not isinstance(payload, Mapping):
-        return None
-    raw = payload.get(key)
-    if raw in (None, ""):
-        return None
-    try:
-        return int(raw)
-    except Exception:
-        return None
-
-
-def _finalized_payload_mismatch_reason(
-    payload: Mapping[str, Any] | None,
-    *,
-    expected_latest_closed_bar_ts: int,
-    expected_signal_time_ts: int,
-) -> str:
-    if not isinstance(payload, Mapping):
-        return "payload_missing"
-    payload_latest_closed_bar_ts = _payload_int(payload, "latest_closed_bar_ts")
-    if payload_latest_closed_bar_ts != int(expected_latest_closed_bar_ts):
-        return (
-            "latest_closed_bar_ts_mismatch"
-            f"(payload={payload_latest_closed_bar_ts},expected={int(expected_latest_closed_bar_ts)})"
-        )
-    payload_signal_time_ts = _payload_int(payload, "signal_time_ts")
-    if payload_signal_time_ts != int(expected_signal_time_ts):
-        return (
-            "signal_time_ts_mismatch"
-            f"(payload={payload_signal_time_ts},expected={int(expected_signal_time_ts)})"
-        )
-    if not isinstance(payload.get("finalize_summary"), Mapping):
-        return "finalize_summary_missing"
-    return ""
-
-
-def _wait_finalized_candidate_inputs_for_snapshot(
-    account: str,
-    *,
-    expected_latest_closed_bar_ts: int,
-    expected_signal_time_ts: int,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    deadline_utc_ms = int(expected_signal_time_ts) + int(_CANDIDATE_FINALIZE_CB_DEADLINE_SECS * 1000)
-    attempts = 0
-    first_attempt_utc_ms: int | None = None
-    last_attempt_utc_ms: int | None = None
-    last_reason = ""
-    last_payload_latest_closed_bar_ts: int | None = None
-    last_payload_signal_time_ts: int | None = None
-    last_payload_published_bj: str | None = None
-    expected_latest_closed_bar_ts = int(expected_latest_closed_bar_ts)
-    expected_signal_time_ts = int(expected_signal_time_ts)
-
-    while True:
-        attempts += 1
-        attempt_utc_ms = _now_utc_ms()
-        if first_attempt_utc_ms is None:
-            first_attempt_utc_ms = attempt_utc_ms
-        last_attempt_utc_ms = attempt_utc_ms
-        try:
-            payload = load_finalized_candidate_inputs_from_hub(account, max_age_secs=None)
-            last_payload_latest_closed_bar_ts = _payload_int(payload, "latest_closed_bar_ts")
-            last_payload_signal_time_ts = _payload_int(payload, "signal_time_ts")
-            last_payload_published_bj = str(payload.get("published_bj") or "") if isinstance(payload, Mapping) else None
-            last_reason = _finalized_payload_mismatch_reason(
-                payload,
-                expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
-                expected_signal_time_ts=expected_signal_time_ts,
-            )
-            if not last_reason:
-                return payload, {
-                    "ok": True,
-                    "attempts": int(attempts),
-                    "first_attempt_utc_ms": first_attempt_utc_ms,
-                    "first_attempt_bj": _fmt_bj_from_ms(first_attempt_utc_ms),
-                    "last_attempt_utc_ms": last_attempt_utc_ms,
-                    "last_attempt_bj": _fmt_bj_from_ms(last_attempt_utc_ms),
-                    "deadline_utc_ms": int(deadline_utc_ms),
-                    "deadline_bj": _fmt_bj_from_ms(deadline_utc_ms),
-                    "last_reason": "",
-                    "expected_latest_closed_bar_ts": expected_latest_closed_bar_ts,
-                    "expected_signal_time_ts": expected_signal_time_ts,
-                    "last_payload_latest_closed_bar_ts": last_payload_latest_closed_bar_ts,
-                    "last_payload_signal_time_ts": last_payload_signal_time_ts,
-                    "last_payload_published_bj": last_payload_published_bj,
-                }
-        except Exception as exc:
-            last_reason = f"hub_candidate_payload_unavailable: {exc}"
-
-        now_ms = _now_utc_ms()
-        if now_ms >= deadline_utc_ms:
-            return None, {
-                "ok": False,
-                "attempts": int(attempts),
-                "first_attempt_utc_ms": first_attempt_utc_ms,
-                "first_attempt_bj": _fmt_bj_from_ms(first_attempt_utc_ms),
-                "last_attempt_utc_ms": last_attempt_utc_ms,
-                "last_attempt_bj": _fmt_bj_from_ms(last_attempt_utc_ms),
-                "deadline_utc_ms": int(deadline_utc_ms),
-                "deadline_bj": _fmt_bj_from_ms(deadline_utc_ms),
-                "last_reason": last_reason,
-                "expected_latest_closed_bar_ts": expected_latest_closed_bar_ts,
-                "expected_signal_time_ts": expected_signal_time_ts,
-                "last_payload_latest_closed_bar_ts": last_payload_latest_closed_bar_ts,
-                "last_payload_signal_time_ts": last_payload_signal_time_ts,
-                "last_payload_published_bj": last_payload_published_bj,
-            }
-
-        sleep_secs = min(float(_FINALIZED_PAYLOAD_WAIT_POLL_SECS), max(0.0, (deadline_utc_ms - now_ms) / 1000.0))
-        if sleep_secs > 0:
-            time.sleep(sleep_secs)
 
 
 def _validate_hub_payload(payload: Mapping[str, Any]) -> tuple[int, str, int, str, pd.DataFrame, dict[str, Any]]:
@@ -486,7 +372,7 @@ def run_once(
     if expected_latest_closed_bar_ts is not None or expected_signal_time_ts is not None:
         if expected_latest_closed_bar_ts is None or expected_signal_time_ts is None:
             raise ValueError("expected latest_closed_bar_ts and signal_time_ts must be provided together")
-        payload, candidate_payload_wait = _wait_finalized_candidate_inputs_for_snapshot(
+        payload, candidate_payload_wait = wait_finalized_candidate_inputs_for_snapshot(
             account,
             expected_latest_closed_bar_ts=int(expected_latest_closed_bar_ts),
             expected_signal_time_ts=int(expected_signal_time_ts),
@@ -638,13 +524,6 @@ def _next_signal_check_epoch(now_epoch: float | None = None, *, second: int = 5)
     return (target + timedelta(minutes=1)).timestamp()
 
 
-def _expected_snapshot_from_signal_check_epoch(signal_check_epoch: float) -> tuple[int, int]:
-    signal_time = datetime.fromtimestamp(float(signal_check_epoch), tz=timezone.utc).replace(second=0, microsecond=0)
-    signal_time_ts = int(signal_time.timestamp() * 1000)
-    latest_closed_bar_ts = signal_time_ts - 60_000
-    return latest_closed_bar_ts, signal_time_ts
-
-
 def _sleep_until_epoch(target_epoch: float) -> None:
     while True:
         remaining = float(target_epoch) - time.time()
@@ -719,7 +598,7 @@ def run_loop(
         )
         _sleep_until_epoch(next_epoch)
         iteration += 1
-        expected_latest_closed_bar_ts, expected_signal_time_ts = _expected_snapshot_from_signal_check_epoch(next_epoch)
+        expected_latest_closed_bar_ts, expected_signal_time_ts = expected_snapshot_from_signal_check_epoch(next_epoch)
         try:
             result = run_once(
                 config_path=config_path,

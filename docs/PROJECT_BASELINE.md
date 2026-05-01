@@ -61,6 +61,14 @@
 1.7.4 未显式声明为 LONG-only 的字段、分支、行为，若引入 SHORT 语义，一律视为违规。  
 1.7.5 禁止以“多空对称”“通用化”“未来扩展”为理由引入 SHORT 相关语义、字段、分支或实现。
 
+### 1.8 live 分层语义
+1.8.1 live 侧公共架构分为三段：`Live Data Gate -> Signal Generation -> Execution Lifecycle`。
+1.8.2 `Live Data Gate` 是信号生成前的公共数据门禁，负责 loop 调度锚点、expected C / signal_time 推导、hub finalized payload anchor 校验、deadline / stale 防护，以及构造策略可消费的数据事实。
+1.8.3 `Signal Generation` 是策略个性化信号生成层，只负责读取 live data facts 并运行策略自身的结构识别、过滤、评分、选币与 signal 输出。
+1.8.4 `Execution Lifecycle` 是信号后的公共交易执行生命周期，负责 execution intent、dry-run plan、exchange/local precheck、entry / SL / TP、reconcile、time-stop、repair、flatten、projection、cooldown、state 与 audit。
+1.8.5 除策略自身信号生成逻辑外，Snapback live 侧已实现且具备公共语义的 live 能力，必须逐步沉淀为公共模块并供 Spring 及后续 LONG 策略复用；禁止第三、第四策略复制私有 live 闭环。
+1.8.6 `signal` 只能表示策略计算后的信号结果；不得用 `Signal Input` 等术语指代信号生成前的数据输入层。
+
 ## 2. 行动纪律（铁律）
 
 ### 2.1 事实优先

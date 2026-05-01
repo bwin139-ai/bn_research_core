@@ -245,6 +245,7 @@ live_config.*.json:
 36. 2026-05-01 本地已推进 Spring live lifecycle 对齐 Snapback 基线 patch：`strategies/spring/run_live.py` 将 hub payload anchor 校验收紧为 `signal_time_ts == latest_closed_bar_ts + 60000`，锁死 Spring `CB=C+1m`；`core/live/execution_runner.py` 补齐 Spring pending entry terminal/recovery reconcile、flat 但仍有残余 open orders 时的 exit 推断与清理、TIME_STOP submit failed 后 bracket repair、TS inflight 终态但 LONG position 仍 open 时的 reset+repair、terminal exit 后 live trade projection 落盘与 exit cooldown 刷新。该 patch 仍保持 Spring 走公共 LONG-only lifecycle，不复制 Snapback 私有 consumer 架构。
 37. 2026-05-01 本地已推进 Spring live 正式入口命名 patch：正式入口统一为 `strategies/spring/run_live.py`，旧过渡入口从源码树删除，不保留 wrapper、alias 或兼容路径；projection / heartbeat / run_id / row metadata 统一使用 `spring_live`、`spring_live_heartbeat`、`SPRINGLIVE` 与 `run_mode=live`；loose 压测配置改名为 `strategies/spring/config.live_loose.json`。后续 Spring live 审计从 `run_live.py` 与公共 `core/live/execution_runner.py` 开始。
 38. 2026-05-01 本地已推进 Spring loop finalized payload anchor wait patch：`strategies/spring/run_live.py` 的 loop 不再按 `--hub-max-age-secs` 单次读取任意 fresh finalized payload；每轮从 scheduled signal check epoch 推导 `expected_signal_time_ts` 与 `expected_latest_closed_bar_ts`，按 1s 轮询等待 finalized payload 精确匹配当前 C anchor 且包含 `finalize_summary`，deadline 对齐 Snapback 为 `expected_signal_time_ts + 50s`。deadline 前未等到时，本轮写 `finalized_candidate_payload_not_ready` projection/heartbeat 并继续下一轮，不消费旧 payload、不下单。`--signal-check-second` 默认值从 2 改为 5，对齐 Snapback live 起始检查秒。
+39. 2026-05-01 本地已推进 live 三段架构边界 patch：项目正式采用 `Live Data Gate -> Signal Generation -> Execution Lifecycle` 术语；新增 `core/live/live_data_gate.py` 承接信号生成前的公共 finalized payload anchor gate，Spring `strategies/spring/run_live.py` 改为复用该公共模块。`signal` 仍只表示策略计算后的信号结果，信号生成前的数据输入层统一称为 `Live Data Gate`，不得称为 `Signal Input`。
 
 当前配置事实：
 
@@ -379,11 +380,13 @@ state / audit 结论：
 ```text
 总体架构边界：
 - Snapback 当前仍是老结构：信号识别、下单、持仓维护、reconcile、离场落盘集中在策略自己的 live/consumer 代码中。
-- Spring live 正在走新结构：策略层只负责 signal -> ValidatedLiveExecutionIntent adapter；交易生命周期能力沉到公共 LONG-only live execution lifecycle。
+- 新 live 结构正式分三段：`Live Data Gate -> Signal Generation -> Execution Lifecycle`。
+- Spring live 正在走新结构：`Live Data Gate` 与 `Execution Lifecycle` 逐步沉到公共 LONG-only live 模块；策略层只负责 `Signal Generation` 与 signal -> ValidatedLiveExecutionIntent adapter。
 - `core/live/execution_intent.py` 只是公共 contract 入口，不承载全部生命周期逻辑。
+- `core/live/live_data_gate.py` 承载信号生成前的公共 live 数据门禁：expected C / signal_time 推导、hub finalized payload anchor wait、deadline / stale payload 防护。
 - 公共 live execution lifecycle 的完整目标是：
   signal adapter -> ValidatedLiveExecutionIntent -> execution_plan -> entry/SL/TP -> strategy-specific state/audit -> open_trade reconcile -> TP/SL/TS exit_reason -> state close -> live_trades/projection -> cooldown。
-- 未来第三、第四套 LONG 策略应只新增自己的 signal adapter、strategy_name/strategy_code/config，复用公共 live execution lifecycle；不得复制 Snapback 老式策略私有交易生命周期。
+- 未来第三、第四套 LONG 策略应只新增自己的 signal generation / signal adapter / strategy_name / strategy_code / config，复用公共 Live Data Gate 与 Execution Lifecycle；不得复制 Snapback 老式策略私有 live 闭环。
 - 后续新增 Spring live 生命周期能力应继续补在公共 LONG-only live execution lifecycle 中，而不是写成 Spring 私有闭环。
 - Snapback 若未来迁移到公共层，必须单独拆刀；当前不得在 Spring 修复刀中混改 Snapback 架构。
 
@@ -391,6 +394,15 @@ core/live/execution_intent.py:
 - 定义 ValidatedLiveExecutionIntent
 - 只允许 LONG
 - fail-fast 校验 strategy/account/symbol/time/price/notional/SL/TP/hold/time-stop/signal_snapshot
+
+core/live/live_data_gate.py:
+- 定义公共 Live Data Gate 边界
+- 提供 `expected_snapshot_from_signal_check_epoch(...)`
+- 提供 `wait_finalized_candidate_inputs_for_snapshot(...)`
+- 要求 finalized payload 精确匹配本轮 `expected_latest_closed_bar_ts / expected_signal_time_ts`
+- 要求 payload 包含 `finalize_summary`
+- deadline 默认对齐 Snapback：`expected_signal_time_ts + 50s`
+- deadline 未等到时返回 not_ready diagnostics，由策略 runner 写 projection/heartbeat 并跳过本轮交易
 
 core/live/execution_plan.py:
 - 定义 dry-run execution plan
@@ -428,7 +440,7 @@ strategies/spring/live_execution.py:
 
 strategies/spring/run_live.py:
 - Spring live runner 入口
-- 读取 shared hub finalized_candidate_inputs
+- 通过 `core/live/live_data_gate.py` 等待并读取当前轮 shared hub finalized_candidate_inputs
 - 调用 SpringSABCStrategy.on_kline_close(...)
 - signal 存在时生成并校验公共 execution intent
 - signal 存在时生成 dry_run_execution_plan 并落盘
