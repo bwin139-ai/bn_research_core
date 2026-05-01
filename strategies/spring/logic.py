@@ -49,7 +49,8 @@ class SpringSABCStrategy:
             float(rebound_ratio_max) if rebound_ratio_max is not None else None
         )
         self.bc_over_ab_bars_max = float(structure["rebound"]["bc_over_ab_bars_max"])
-        pre_a = dict(structure.get("pre_a") or {})
+        pre_a = structure["pre_a"]
+        self.pre_a_window_mins = int(pre_a["window_mins"])
         pre_a_chg_pct_min = pre_a.get("chg_pct_min")
         pre_a_range_pct_max = pre_a.get("range_pct_max")
         pre_a_high_to_a_close_pct_max = pre_a.get("high_to_a_close_pct_max")
@@ -350,6 +351,7 @@ class SpringSABCStrategy:
         rec["a_time_ms"] = None
         rec["b_time_ms"] = None
         rec["c_time_ms"] = None
+        rec["pre_a_window_mins"] = self.pre_a_window_mins
         rec["pre_a_chg_pct_min"] = self.pre_a_chg_pct_min
         rec["pre_a_range_pct_max"] = self.pre_a_range_pct_max
         rec["pre_a_high_to_a_close_pct_max"] = self.pre_a_high_to_a_close_pct_max
@@ -420,19 +422,41 @@ class SpringSABCStrategy:
             else list(close_values)
         )
         vol_values = [float(x) for x in vols.tolist()]
-        quote_vol_values = (
-            [float(x) for x in pd.to_numeric(pattern_df["quote_asset_volume"], errors="coerce").fillna(0.0).tolist()]
-            if "quote_asset_volume" in pattern_df.columns
-            else []
-        )
-        base_vol_values = (
-            [float(x) for x in pd.to_numeric(pattern_df["volume"], errors="coerce").fillna(0.0).tolist()]
-            if "volume" in pattern_df.columns
-            else []
-        )
         time_values = [int(x) for x in pattern_df.index.tolist()]
+        hist_time_values = [int(x) for x in hist.index.tolist()]
+        hist_close_values = [float(x) for x in pd.to_numeric(hist["close"], errors="coerce").tolist()]
+        hist_high_values = (
+            [float(x) for x in pd.to_numeric(hist["high"], errors="coerce").tolist()]
+            if "high" in hist.columns
+            else list(hist_close_values)
+        )
+        hist_open_values = (
+            [float(x) for x in pd.to_numeric(hist["open"], errors="coerce").tolist()]
+            if "open" in hist.columns
+            else list(hist_close_values)
+        )
+        hist_low_values = (
+            [float(x) for x in pd.to_numeric(hist["low"], errors="coerce").tolist()]
+            if "low" in hist.columns
+            else list(hist_close_values)
+        )
+        hist_vol_values = [float(x) for x in pd.to_numeric(hist[vol_col], errors="coerce").tolist()]
+        hist_quote_vol_values = (
+            [float(x) for x in pd.to_numeric(hist["quote_asset_volume"], errors="coerce").fillna(0.0).tolist()]
+            if "quote_asset_volume" in hist.columns
+            else []
+        )
+        hist_base_vol_values = (
+            [float(x) for x in pd.to_numeric(hist["volume"], errors="coerce").fillna(0.0).tolist()]
+            if "volume" in hist.columns
+            else []
+        )
+        if any(pd.isna(x) for x in hist_close_values + hist_high_values + hist_open_values + hist_low_values + hist_vol_values):
+            rec["fail_reason"] = "history_numeric_nan"
+            return rec
         c_close = close_values[c_idx]
         c_time_ms = time_values[c_idx]
+        pattern_start_pos = len(hist) - len(pattern_df)
 
         # Spring-SABC constitution:
         # - C is fixed as HBs[0].
@@ -513,18 +537,12 @@ class SpringSABCStrategy:
             if vol_ratio < self.vol_ratio_min:
                 continue
 
-            hist_len = len(hist)
-            pattern_start_pos = hist_len - len(pattern_df)
             hist_a_pos = pattern_start_pos + a_idx
             hist_c_pos = pattern_start_pos + c_idx
             bars_ac = hist_c_pos - hist_a_pos
             gamma_pos = hist_a_pos - bars_ac
             if bars_ac <= 0 or gamma_pos < 0:
                 continue
-            hist_vol_values = [float(x) for x in pd.to_numeric(hist[vol_col], errors="coerce").tolist()]
-            if any(pd.isna(x) for x in hist_vol_values):
-                continue
-            hist_time_values = [int(x) for x in hist.index.tolist()]
             vol_gamma_a = float(sum(hist_vol_values[gamma_pos + 1 : hist_a_pos + 1]))
             vol_ac = float(sum(hist_vol_values[hist_a_pos + 1 : hist_c_pos + 1]))
             if vol_gamma_a <= 0:
@@ -533,11 +551,27 @@ class SpringSABCStrategy:
             if gamma_ac_vol_ratio < self.gamma_ac_vol_ratio_min:
                 continue
 
-            pre_slice_end = a_idx + 1
-            pre_start_close = close_values[0] if pre_slice_end > 0 else None
-            pre_end_close = close_values[a_idx] if pre_slice_end > 0 else None
-            pre_high = max(high_values[:pre_slice_end]) if pre_slice_end > 0 else None
-            pre_low = min(low_values[:pre_slice_end]) if pre_slice_end > 0 else None
+            pre_start_pos = hist_a_pos - self.pre_a_window_mins + 1
+            pre_slice_end = hist_a_pos + 1
+            if pre_start_pos < 0 or pre_slice_end - pre_start_pos != self.pre_a_window_mins:
+                last_reject_reason = "pre_a_window_insufficient_bars"
+                last_reject_snapshot = {
+                    "s_time_ms": None,
+                    "a_time_ms": time_values[a_idx],
+                    "b_time_ms": time_values[b_idx],
+                    "c_time_ms": c_time_ms,
+                    "pre_a_window_mins": int(self.pre_a_window_mins),
+                    "pre_a_bars": max(0, int(pre_slice_end) - max(0, int(pre_start_pos))),
+                }
+                continue
+            pre_close_values = hist_close_values[pre_start_pos:pre_slice_end]
+            pre_high_values = hist_high_values[pre_start_pos:pre_slice_end]
+            pre_open_values = hist_open_values[pre_start_pos:pre_slice_end]
+            pre_low_values = hist_low_values[pre_start_pos:pre_slice_end]
+            pre_start_close = pre_close_values[0]
+            pre_end_close = pre_close_values[-1]
+            pre_high = max(pre_high_values)
+            pre_low = min(pre_low_values)
             pre_chg_pct = (
                 (float(pre_end_close) / float(pre_start_close)) - 1.0
                 if pre_start_close is not None and pre_end_close is not None and pre_start_close > 0
@@ -559,21 +593,22 @@ class SpringSABCStrategy:
                 else None
             )
             pre_a_high_pos_in_range = (
-                (float(high_values[a_idx]) - float(pre_low)) / (float(pre_high) - float(pre_low))
+                (float(hist_high_values[hist_a_pos]) - float(pre_low)) / (float(pre_high) - float(pre_low))
                 if pre_high is not None and pre_low is not None and pre_high > pre_low
                 else None
             )
             pre_up_bars = sum(
-                1 for open_value, close_value in zip(open_values[:pre_slice_end], close_values[:pre_slice_end]) if close_value > open_value
+                1 for open_value, close_value in zip(pre_open_values, pre_close_values) if close_value > open_value
             )
             pre_down_bars = sum(
-                1 for open_value, close_value in zip(open_values[:pre_slice_end], close_values[:pre_slice_end]) if close_value < open_value
+                1 for open_value, close_value in zip(pre_open_values, pre_close_values) if close_value < open_value
             )
-            pre_flat_bars = max(0, int(pre_slice_end) - int(pre_up_bars) - int(pre_down_bars))
-            pre_quote_vol = float(sum(quote_vol_values[:pre_slice_end])) if quote_vol_values else None
-            pre_base_vol = float(sum(base_vol_values[:pre_slice_end])) if base_vol_values else None
+            pre_flat_bars = max(0, int(self.pre_a_window_mins) - int(pre_up_bars) - int(pre_down_bars))
+            pre_quote_vol = float(sum(hist_quote_vol_values[pre_start_pos:pre_slice_end])) if hist_quote_vol_values else None
+            pre_base_vol = float(sum(hist_base_vol_values[pre_start_pos:pre_slice_end])) if hist_base_vol_values else None
             candidate_snapshot = {
-                "s_time_ms": time_values[0],
+                "s_time_ms": hist_time_values[pre_start_pos],
+                "pattern_start_time_ms": time_values[0],
                 "a_time_ms": time_values[a_idx],
                 "b_time_ms": time_values[b_idx],
                 "c_time_ms": c_time_ms,
@@ -586,7 +621,9 @@ class SpringSABCStrategy:
                 "rebound_ratio": float(rebound_ratio),
                 "vol_ratio": float(vol_ratio),
                 "gamma_ac_vol_ratio": float(gamma_ac_vol_ratio),
-                "pre_a_bars": int(pre_slice_end),
+                "pre_a_anchor": "a_fixed_window",
+                "pre_a_window_mins": int(self.pre_a_window_mins),
+                "pre_a_bars": int(self.pre_a_window_mins),
                 "pre_a_start_close": float(pre_start_close) if pre_start_close is not None else None,
                 "pre_a_end_close": float(pre_end_close) if pre_end_close is not None else None,
                 "pre_a_high": float(pre_high) if pre_high is not None else None,
@@ -598,12 +635,12 @@ class SpringSABCStrategy:
                 "pre_a_high_pos_in_range": float(pre_a_high_pos_in_range) if pre_a_high_pos_in_range is not None else None,
                 "pre_a_quote_vol": float(pre_quote_vol) if pre_quote_vol is not None else None,
                 "pre_a_base_vol": float(pre_base_vol) if pre_base_vol is not None else None,
-                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(pre_slice_end)) if pre_quote_vol is not None and pre_slice_end > 0 else None,
+                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(self.pre_a_window_mins)) if pre_quote_vol is not None else None,
                 "pre_a_up_bars": int(pre_up_bars),
                 "pre_a_down_bars": int(pre_down_bars),
                 "pre_a_flat_bars": int(pre_flat_bars),
-                "pre_a_up_ratio": float(pre_up_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
-                "pre_a_down_ratio": float(pre_down_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+                "pre_a_up_ratio": float(pre_up_bars / float(self.pre_a_window_mins)),
+                "pre_a_down_ratio": float(pre_down_bars / float(self.pre_a_window_mins)),
             }
             if self.pre_a_chg_pct_min is not None:
                 if pre_chg_pct is None:
@@ -646,7 +683,8 @@ class SpringSABCStrategy:
                 "a_idx": a_idx,
                 "b_idx": b_idx,
                 "c_idx": c_idx,
-                "s_time_ms": time_values[0],
+                "s_time_ms": hist_time_values[pre_start_pos],
+                "pattern_start_time_ms": time_values[0],
                 "gamma_time_ms": hist_time_values[gamma_pos],
                 "a_time_ms": time_values[a_idx],
                 "b_time_ms": time_values[b_idx],
@@ -671,7 +709,9 @@ class SpringSABCStrategy:
                 "vol_ac": float(vol_ac),
                 "gamma_ac_vol_ratio": float(gamma_ac_vol_ratio),
                 "gamma_ac_vol_ratio_min": float(self.gamma_ac_vol_ratio_min),
-                "pre_a_bars": int(pre_slice_end),
+                "pre_a_anchor": "a_fixed_window",
+                "pre_a_window_mins": int(self.pre_a_window_mins),
+                "pre_a_bars": int(self.pre_a_window_mins),
                 "pre_a_start_close": float(pre_start_close) if pre_start_close is not None else None,
                 "pre_a_end_close": float(pre_end_close) if pre_end_close is not None else None,
                 "pre_a_high": float(pre_high) if pre_high is not None else None,
@@ -683,12 +723,13 @@ class SpringSABCStrategy:
                 "pre_a_high_pos_in_range": float(pre_a_high_pos_in_range) if pre_a_high_pos_in_range is not None else None,
                 "pre_a_quote_vol": float(pre_quote_vol) if pre_quote_vol is not None else None,
                 "pre_a_base_vol": float(pre_base_vol) if pre_base_vol is not None else None,
-                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(pre_slice_end)) if pre_quote_vol is not None and pre_slice_end > 0 else None,
+                "pre_a_avg_quote_vol_per_bar": float(pre_quote_vol / float(self.pre_a_window_mins)) if pre_quote_vol is not None else None,
                 "pre_a_up_bars": int(pre_up_bars),
                 "pre_a_down_bars": int(pre_down_bars),
                 "pre_a_flat_bars": int(pre_flat_bars),
-                "pre_a_up_ratio": float(pre_up_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
-                "pre_a_down_ratio": float(pre_down_bars / float(pre_slice_end)) if pre_slice_end > 0 else None,
+                "pre_a_up_ratio": float(pre_up_bars / float(self.pre_a_window_mins)),
+                "pre_a_down_ratio": float(pre_down_bars / float(self.pre_a_window_mins)),
+                "pre_a_window_mins_config": self.pre_a_window_mins,
                 "pre_a_chg_pct_min": self.pre_a_chg_pct_min,
                 "pre_a_range_pct_max": self.pre_a_range_pct_max,
                 "pre_a_high_to_a_close_pct_max": self.pre_a_high_to_a_close_pct_max,
@@ -862,6 +903,7 @@ class SpringSABCStrategy:
                     "pre_a_range_pct_max": self.pre_a_range_pct_max,
                     "pre_a_high_to_a_close_pct_max": self.pre_a_high_to_a_close_pct_max,
                     "pre_a_close_pos_in_range_min": self.pre_a_close_pos_in_range_min,
+                    "pre_a_window_mins": self.pre_a_window_mins,
                 },
                 "position_notional_usdt": float(position_notional_usdt),
                 "sizing_ratio": float(sizing_ratio),
@@ -876,6 +918,7 @@ class SpringSABCStrategy:
                     "chg_24h": float(candidate.get("chg_24h", 0.0)),
                     "vol_24h": float(candidate.get("vol_24h", 0.0)),
                     "s_time_ms": int(candidate.get("s_time_ms", candidate["a_time_ms"])),
+                    "pattern_start_time_ms": candidate.get("pattern_start_time_ms"),
                     "a_time_ms": int(candidate["a_time_ms"]),
                     "b_time_ms": int(candidate["b_time_ms"]),
                     "gamma_time_ms": int(candidate["gamma_time_ms"]),
@@ -898,6 +941,8 @@ class SpringSABCStrategy:
                     "vol_ac": float(candidate["vol_ac"]),
                     "gamma_ac_vol_ratio": float(candidate["gamma_ac_vol_ratio"]),
                     "gamma_ac_vol_ratio_min": float(candidate["gamma_ac_vol_ratio_min"]),
+                    "pre_a_anchor": candidate.get("pre_a_anchor"),
+                    "pre_a_window_mins": candidate.get("pre_a_window_mins", self.pre_a_window_mins),
                     "pre_a_bars": int(candidate.get("pre_a_bars", 0)),
                     "pre_a_start_close": candidate.get("pre_a_start_close"),
                     "pre_a_end_close": candidate.get("pre_a_end_close"),

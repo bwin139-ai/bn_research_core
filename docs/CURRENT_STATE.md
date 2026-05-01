@@ -557,7 +557,8 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 6. Spring live 常规每分钟 projection 结果只落盘到 `spring_live.{run_id}.jsonl` 与 heartbeat，不再写 `wrote projection` INFO 日志刷屏。
 7. Spring live 的本策略 pending/open symbol 会在信号生成前并入 active symbols，使持仓期间同一 symbol 不再每分钟重复打印 `Spring雷达锁定`；projection 同时保留 `configured_active_symbols`、实际 `active_symbols` 与 `live_state_active_symbols` 供审计。
 8. 公共 BN_EXEC 事件支持按调用方传入 `notify_label`；Spring execution runner 传 `spring`，避免 Spring 的 ENTRY/SL/TP/CANCEL 执行通知落到 `snapback` 队列。
-9. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
+9. Spring pre-A 语义已从 pattern window 左边界漂移改为 A 点前固定窗口：`structure.pre_a.window_mins=60`。`pre_a_chg_pct`、pre-A range、high-to-A-close、close position、up/down 统计均锚定该固定 S→A 区间；`runtime.max_history_window_mins` 必须覆盖 `structure.pattern_window_mins + structure.pre_a.window_mins`，否则 fail-fast。
+10. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
 ### 5.4 Spring-SABC sim / 参数

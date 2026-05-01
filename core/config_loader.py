@@ -72,6 +72,7 @@ class StrategyConfig:
         ("structure", "vol_climax", "gamma_ac_vol_ratio_min"),
         ("structure", "rebound", "ratio_min"),
         ("structure", "rebound", "bc_over_ab_bars_max"),
+        ("structure", "pre_a", "window_mins"),
         ("exit_policy", "stop_loss_anchor"),
         ("exit_policy", "take_profit_pct"),
         ("exit_policy", "max_hold_mins"),
@@ -169,16 +170,20 @@ class StrategyConfig:
             raise ValueError('【铁律违背】exit_policy.stop_loss_anchor 目前只允许 "b_close"')
         pattern_window_mins = raw_data["structure"]["pattern_window_mins"]
         baseline_window_mins = raw_data["structure"]["vol_climax"]["baseline_window_mins"]
+        pre_a_window_mins = raw_data["structure"]["pre_a"]["window_mins"]
         max_history_window_mins = raw_data["runtime"]["max_history_window_mins"]
         if not isinstance(pattern_window_mins, int) or pattern_window_mins <= 0:
             raise ValueError('【铁律违背】structure.pattern_window_mins 必须是正整数')
         if not isinstance(baseline_window_mins, int) or baseline_window_mins <= 0:
             raise ValueError('【铁律违背】structure.vol_climax.baseline_window_mins 必须是正整数')
+        if not isinstance(pre_a_window_mins, int) or pre_a_window_mins <= 0:
+            raise ValueError('【铁律违背】structure.pre_a.window_mins 必须是正整数')
         if not isinstance(max_history_window_mins, int) or max_history_window_mins <= 0:
             raise ValueError('【铁律违背】runtime.max_history_window_mins 必须是正整数')
-        if max_history_window_mins < max(pattern_window_mins, baseline_window_mins):
+        min_history_window_mins = max(pattern_window_mins + pre_a_window_mins, baseline_window_mins)
+        if max_history_window_mins < min_history_window_mins:
             raise ValueError(
-                '【铁律违背】runtime.max_history_window_mins 必须 >= max(structure.pattern_window_mins, structure.vol_climax.baseline_window_mins)'
+                '【铁律违背】runtime.max_history_window_mins 必须 >= max(structure.pattern_window_mins + structure.pre_a.window_mins, structure.vol_climax.baseline_window_mins)'
             )
         take_profit_pct = raw_data["exit_policy"]["take_profit_pct"]
         max_hold_mins_cfg = raw_data["exit_policy"]["max_hold_mins"]
