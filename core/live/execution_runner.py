@@ -36,6 +36,7 @@ from core.live.live_state import (
     set_open_trade,
     set_pending_entry_order,
 )
+from core.message_bridge import send_to_bot
 
 BJ = timezone(timedelta(hours=8))
 POSITION_SIDE_LONG = "LONG"
@@ -55,6 +56,72 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _fmt_hms_from_ms(ts_ms: Any) -> str:
+    try:
+        value = int(ts_ms)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    if value <= 0:
+        return "UNKNOWN"
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%H:%M:%S")
+
+
+def _fmt_short_bj_from_ms(ts_ms: Any) -> str:
+    try:
+        value = int(ts_ms)
+    except (TypeError, ValueError):
+        return "NA"
+    if value <= 0:
+        return "NA"
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%m-%d %H:%M")
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fmt_notify_price(value: Any) -> str:
+    safe = _safe_float(value)
+    if safe is None or safe <= 0:
+        return "NA"
+    return f"{safe:.6f}"
+
+
+def _fmt_notify_pct(value: Any) -> str:
+    safe = _safe_float(value)
+    if safe is None:
+        return "NA"
+    return f"{safe * 100.0:.2f}%"
+
+
+def _fmt_notify_float(value: Any) -> str:
+    safe = _safe_float(value)
+    if safe is None:
+        return "NA"
+    return f"{safe:.2f}"
+
+
+def _extract_event_time_ms(*payloads: Any) -> int | None:
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            continue
+        for key in ("update_time_ms", "time_ms", "updateTime", "time", "createTime", "transactTime"):
+            try:
+                value = int(payload.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return None
+
+
+def _spring_notify_header(account: str, event_time_ms: Any) -> str:
+    return f"[{_fmt_hms_from_ms(event_time_ms)} 🌱 SPR] {account}"
 
 
 def _require(payload: Mapping[str, Any], field: str) -> Any:
@@ -178,6 +245,11 @@ def validate_live_execution_config(
     if _require_str(cfg, "stop_loss_failure_action") != "submit_market_flatten":
         raise ValueError("live execution config stop_loss_failure_action must be submit_market_flatten")
     _require_bool(cfg, "audit_enabled")
+    _require_bool(cfg, "notify_enabled")
+    _require_bool(cfg, "notify_on_signal_locked")
+    _require_bool(cfg, "notify_on_order_submit")
+    _require_bool(cfg, "notify_on_exit_detected")
+    _require_bool(cfg, "notify_on_order_error")
     _require_bool(cfg, "require_local_state_precheck")
     _require_bool(cfg, "require_exchange_precheck")
     _require_bool(cfg, "require_symbol_filters")
@@ -383,6 +455,84 @@ def _write_exec_event(enabled: bool, account: str, event: str, payload: dict[str
         enriched = dict(payload)
         enriched["execution_contract"] = "live_execution"
         write_strategy_event(account, "spring-sabc", event, enriched)
+
+
+def _notify_enabled(cfg: Mapping[str, Any], field: str) -> bool:
+    return bool(_require_bool(cfg, "notify_enabled")) and bool(_require_bool(cfg, field))
+
+
+def _send_spring_notify(message: str) -> None:
+    send_to_bot(message, label="spring")
+
+
+def _spring_signal_message(account: str, intent: Mapping[str, Any]) -> str:
+    signal = dict(intent.get("signal_snapshot") or {})
+    context = dict(signal.get("context") or {})
+    symbol = str(intent.get("symbol") or signal.get("symbol") or "").upper().strip()
+    lines = [
+        _spring_notify_header(account, intent.get("signal_time")),
+        f"雷达锁定: {symbol}",
+        f"当前价: {_fmt_notify_price(intent.get('current_price'))}",
+        (
+            f"A: {_fmt_short_bj_from_ms(context.get('a_time_ms'))} "
+            f"high={_fmt_notify_price(context.get('a_high', context.get('a_close')))}"
+        ),
+        (
+            f"B: {_fmt_short_bj_from_ms(context.get('b_time_ms'))} "
+            f"low={_fmt_notify_price(context.get('b_low', context.get('b_close')))}"
+        ),
+        f"C: {_fmt_short_bj_from_ms(context.get('c_time_ms'))} close={_fmt_notify_price(context.get('c_close'))}",
+        f"24h涨幅: {_fmt_notify_pct(context.get('chg_24h'))}",
+        f"24h成交额: {_safe_float(context.get('vol_24h'), 0.0):.0f}",
+        f"AB跌幅: {_fmt_notify_pct(context.get('ab_chg_pct'))}",
+        f"爆量倍数: {_fmt_notify_float(context.get('vol_ratio'))}",
+        f"AC/γA量比: {_fmt_notify_float(context.get('gamma_ac_vol_ratio'))}",
+        f"反弹比例: {_fmt_notify_pct(context.get('rebound_ratio'))}",
+        f"AB/BC: {int(_safe_float(context.get('ab_bars'), 0.0) or 0)}/{int(_safe_float(context.get('bc_bars'), 0.0) or 0)}",
+        f"开仓金额: {_safe_float(intent.get('position_notional_usdt'), 0.0):.2f}U",
+        f"评分: {int(_safe_float(context.get('score'), 0.0) or 0)} (#{int(_safe_float(context.get('score_order'), 0.0) or 0)})",
+    ]
+    return "\n".join(lines)
+
+
+def _spring_entry_message(account: str, open_trade: Mapping[str, Any], event_time_ms: Any) -> str:
+    symbol = str(open_trade.get("symbol") or "").upper().strip()
+    return "\n".join([
+        _spring_notify_header(account, event_time_ms or open_trade.get("entry_ts")),
+        f"开仓 {symbol}",
+        f"entry≈{_fmt_notify_price(open_trade.get('entry_price'))}",
+        f"TP={_fmt_notify_price(open_trade.get('tp_price'))}",
+        f"SL={_fmt_notify_price(open_trade.get('sl_trigger_price'))}",
+    ])
+
+
+def _spring_exit_message(
+    account: str,
+    closed_trade: Mapping[str, Any],
+    *,
+    exit_reason: str,
+    event_time_ms: Any,
+) -> str:
+    entry_ts = int(closed_trade.get("entry_ts") or 0)
+    exit_ts = int(event_time_ms or 0)
+    hold_mins = "NA"
+    if entry_ts > 0 and exit_ts >= entry_ts:
+        hold_mins = f"{(exit_ts - entry_ts) / 60000.0:.1f}m"
+    entry_price = _safe_float(closed_trade.get("entry_price"))
+    exit_price = _safe_float(closed_trade.get("exit_price"))
+    pnl_pct = None
+    if entry_price and exit_price:
+        pnl_pct = exit_price / entry_price - 1.0
+    symbol = str(closed_trade.get("symbol") or "").upper().strip()
+    return "\n".join([
+        _spring_notify_header(account, event_time_ms),
+        f"离场 {symbol}",
+        f"reason={exit_reason}",
+        f"entry≈{_fmt_notify_price(entry_price)}",
+        f"exit≈{_fmt_notify_price(exit_price)}",
+        f"持仓={hold_mins}",
+        f"pnl={_fmt_notify_pct(pnl_pct)}",
+    ])
 
 
 def _is_order_not_exist_reason(reason: Any) -> bool:
@@ -1325,6 +1475,7 @@ def _post_entry_reconcile(
         }
 
     exit_order = _exit_order_from_checks(exit_reason, order_checks)
+    exit_event_time_ms = _extract_event_time_ms(exit_order) or current_time_ms
     exit_price, exit_price_source = _resolve_exit_price(exit_reason, open_trade, exit_order)
     closed_trade = deepcopy(open_trade)
     closed_trade.update({
@@ -1375,6 +1526,15 @@ def _post_entry_reconcile(
         "order_root": open_trade.get("order_root"),
         "exit_reason": exit_reason,
     })
+    if _notify_enabled(cfg, "notify_on_exit_detected"):
+        _send_spring_notify(
+            _spring_exit_message(
+                account,
+                closed_trade,
+                exit_reason=exit_reason,
+                event_time_ms=exit_event_time_ms,
+            )
+        )
     return {
         "ok": True,
         "outcome": "flat_state_cleared",
@@ -1615,6 +1775,8 @@ def execute_live_execution_plan(
         "account_flat_precheck": account_flat,
         "symbol_filter_precheck": filters_precheck,
     })
+    if _notify_enabled(cfg, "notify_on_signal_locked"):
+        _send_spring_notify(_spring_signal_message(account, intent_dict))
 
     hedge_res = ensure_hedge_mode(account)
     if not hedge_res.get("ok"):
@@ -1654,6 +1816,7 @@ def execute_live_execution_plan(
         return {"ok": False, "outcome": "failed_entry_submit", "reason": entry_res.get("reason"), "entry_res": entry_res}
 
     entry_data = dict(entry_res.get("data") or {})
+    entry_event_time_ms = _extract_event_time_ms(entry_data, entry_data.get("raw"))
     entry_price, entry_price_source = _resolve_entry_fill_price(
         account,
         symbol,
@@ -1823,6 +1986,8 @@ def execute_live_execution_plan(
         "cooldown_until_ts": cooldown_until_ts,
         "cooldown_until_bj": cooldown_until_bj,
     })
+    if _notify_enabled(cfg, "notify_on_order_submit"):
+        _send_spring_notify(_spring_entry_message(account, open_trade, entry_event_time_ms))
     post_entry_reconcile = _post_entry_reconcile(
         account=account,
         symbol=symbol,
