@@ -6,6 +6,7 @@ import logging
 import math
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 from urllib.parse import urlencode
@@ -26,6 +27,7 @@ ENTRY_ORDER_TYPE = "MARKET"
 TAKE_PROFIT_ORDER_TYPE = "LIMIT"
 STOP_LOSS_ORDER_TYPE = "STOP_MARKET"
 TIME_STOP_ORDER_TYPE = "MARKET"
+BJ = timezone(timedelta(hours=8))
 
 
 def _ok(data: Any = None, **extra: Any) -> dict[str, Any]:
@@ -47,6 +49,99 @@ def _preview_reason(reason: Any, limit: int = 180) -> str:
     return text[:limit] + "…"
 
 
+def _fmt_event_hms(event_time_ms: Any) -> str:
+    try:
+        ts_ms = int(event_time_ms)
+    except Exception:
+        return "UNKNOWN"
+    if ts_ms <= 0:
+        return "UNKNOWN"
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%H:%M:%S")
+
+
+def _extract_order_event_time_ms(*payloads: Any) -> int | None:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in ("update_time_ms", "time_ms", "updateTime", "time", "createTime", "transactTime"):
+            value = payload.get(key)
+            try:
+                ts_ms = int(value)
+            except Exception:
+                continue
+            if ts_ms > 0:
+                return ts_ms
+    return None
+
+
+def _strategy_code_from_client_order_id(client_order_id: str | None) -> str:
+    cid = str(client_order_id or "").upper()
+    if "_SPR_" in cid:
+        return "SPR"
+    if "_SNP_" in cid:
+        return "SNP"
+    return "BN"
+
+
+def _strategy_icon(strategy_code: str) -> str:
+    if strategy_code == "SNP":
+        return "🦅"
+    if strategy_code == "SPR":
+        return "🌱"
+    return "BN"
+
+
+def _format_trade_event_message(
+    action: str,
+    status: str,
+    *,
+    account: str,
+    symbol: str,
+    qty: float | None,
+    price: float | None,
+    stop_price: float | None,
+    client_order_id: str | None,
+    exchange_order_id: int | None,
+    order_status: str | None,
+    reason: str | None,
+    attempts: int | None,
+    is_algo_order: bool | None,
+    event_time_ms: int | None,
+) -> str:
+    strategy_code = _strategy_code_from_client_order_id(client_order_id)
+    status_text = str(status or "").lower().strip()
+    lines = [
+        f"[{_fmt_event_hms(event_time_ms)} {_strategy_icon(strategy_code)} {strategy_code}] {account}",
+        f"{str(action or '').upper()} {status_text}",
+        f"symbol={symbol}",
+    ]
+    value_parts: list[str] = []
+    if qty is not None:
+        value_parts.append(f"qty={qty}")
+    if price is not None:
+        value_parts.append(f"price={price}")
+    if value_parts:
+        lines.append(" | ".join(value_parts))
+    if stop_price is not None:
+        lines.append(f"stop={stop_price}")
+    if client_order_id:
+        lines.append(f"cid={client_order_id}")
+    if exchange_order_id is not None:
+        lines.append(f"oid={exchange_order_id}")
+    tail_parts: list[str] = []
+    if order_status:
+        tail_parts.append(f"status={order_status}")
+    if attempts is not None:
+        tail_parts.append(f"attempts={attempts}")
+    if is_algo_order is not None:
+        tail_parts.append(f"algo={bool(is_algo_order)}")
+    if tail_parts:
+        lines.append(" | ".join(tail_parts))
+    if reason:
+        lines.append(f"reason={_preview_reason(reason)}")
+    return "\n".join(lines)
+
+
 def _emit_trade_event(
     action: str,
     status: str,
@@ -64,40 +159,57 @@ def _emit_trade_event(
     reason: str | None = None,
     attempts: int | None = None,
     is_algo_order: bool | None = None,
+    event_time_ms: int | None = None,
 ) -> None:
-    parts: list[str] = [
+    legacy_parts: list[str] = [
         f"[BN_EXEC] {str(action or '').upper()} {str(status or '').lower()}",
         f"account={account}",
         f"symbol={symbol}",
     ]
     if position_side:
-        parts.append(f"pos={position_side}")
+        legacy_parts.append(f"pos={position_side}")
     if side:
-        parts.append(f"side={side}")
+        legacy_parts.append(f"side={side}")
     if qty is not None:
-        parts.append(f"qty={qty}")
+        legacy_parts.append(f"qty={qty}")
     if price is not None:
-        parts.append(f"price={price}")
+        legacy_parts.append(f"price={price}")
     if stop_price is not None:
-        parts.append(f"stop={stop_price}")
+        legacy_parts.append(f"stop={stop_price}")
     if client_order_id:
-        parts.append(f"cid={client_order_id}")
+        legacy_parts.append(f"cid={client_order_id}")
     if exchange_order_id is not None:
-        parts.append(f"oid={exchange_order_id}")
+        legacy_parts.append(f"oid={exchange_order_id}")
     if order_status:
-        parts.append(f"status={order_status}")
+        legacy_parts.append(f"status={order_status}")
     if attempts is not None:
-        parts.append(f"attempts={attempts}")
+        legacy_parts.append(f"attempts={attempts}")
     if is_algo_order is not None:
-        parts.append(f"algo={bool(is_algo_order)}")
+        legacy_parts.append(f"algo={bool(is_algo_order)}")
     if reason:
-        parts.append(f"reason={_preview_reason(reason)}")
-    msg = " | ".join(parts)
+        legacy_parts.append(f"reason={_preview_reason(reason)}")
+    log_msg = " | ".join(legacy_parts)
+    bot_msg = _format_trade_event_message(
+        action,
+        status,
+        account=account,
+        symbol=symbol,
+        qty=qty,
+        price=price,
+        stop_price=stop_price,
+        client_order_id=client_order_id,
+        exchange_order_id=exchange_order_id,
+        order_status=order_status,
+        reason=reason,
+        attempts=attempts,
+        is_algo_order=is_algo_order,
+        event_time_ms=event_time_ms,
+    )
     if str(status or "").lower() == "ok":
-        logging.info(msg)
+        logging.info(log_msg)
     else:
-        logging.error(msg)
-    send_to_bot(msg, label="snapback")
+        logging.error(log_msg)
+    send_to_bot(bot_msg, label="snapback")
 
 
 def _call_with_retry(
@@ -773,6 +885,7 @@ def place_entry_order(
         exchange_order_id=exchange_order_id_value,
         order_status=normalized_entry.get("status"),
         attempts=res.get("attempts"),
+        event_time_ms=_extract_order_event_time_ms(normalized_entry, raw),
     )
     return _ok(
         {
@@ -892,6 +1005,7 @@ def place_tp_order(
         exchange_order_id=raw.get("orderId"),
         order_status=raw.get("status"),
         attempts=res.get("attempts"),
+        event_time_ms=_extract_order_event_time_ms(raw),
     )
     return _ok(
         {
@@ -998,6 +1112,7 @@ def place_sl_order(
         order_status=raw.get("algoStatus"),
         attempts=res.get("attempts"),
         is_algo_order=True,
+        event_time_ms=_extract_order_event_time_ms(raw),
     )
     return _ok(
         {
@@ -1093,6 +1208,7 @@ def place_time_stop_order(
         exchange_order_id=raw.get("orderId"),
         order_status=raw.get("status"),
         attempts=res.get("attempts"),
+        event_time_ms=_extract_order_event_time_ms(raw),
     )
     return _ok(
         {
