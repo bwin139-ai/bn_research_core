@@ -596,6 +596,287 @@ def _time_stop_client_order_id(open_trade: Mapping[str, Any]) -> str:
     return build_client_order_id(broker_id=BROKER_ID, strat=strategy_code, leg="TS", root=order_root)
 
 
+def _bracket_client_order_id(open_trade: Mapping[str, Any], leg: str) -> str:
+    leg_key = str(leg).upper().strip()
+    existing_field = "tp_order_client_id" if leg_key == "TP" else "sl_order_client_id" if leg_key == "SL" else ""
+    if not existing_field:
+        raise ValueError(f"unsupported bracket leg: {leg}")
+    existing = str(open_trade.get(existing_field) or "").strip()
+    if existing:
+        return existing
+    strategy_code = str(open_trade.get("strategy_code") or "").upper().strip()
+    order_root = str(open_trade.get("order_root") or "").strip()
+    if not strategy_code:
+        raise ValueError("open_trade.strategy_code is required for bracket client order id")
+    if not order_root:
+        raise ValueError("open_trade.order_root is required for bracket client order id")
+    return build_client_order_id(broker_id=BROKER_ID, strat=strategy_code, leg=leg_key, root=order_root)
+
+
+def _verify_open_trade_brackets(
+    open_trade: Mapping[str, Any],
+    open_orders: list[dict[str, Any]],
+) -> dict[str, Any]:
+    tp_row = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get("tp_order_exchange_id"),
+        client_order_id=open_trade.get("tp_order_client_id"),
+    )
+    sl_row = _find_open_order(
+        open_orders,
+        exchange_order_id=open_trade.get("sl_order_exchange_id"),
+        client_order_id=open_trade.get("sl_order_client_id"),
+    )
+    return {
+        "tp_bound": tp_row is not None,
+        "sl_bound": sl_row is not None,
+        "tp_row": tp_row,
+        "sl_row": sl_row,
+    }
+
+
+def _verify_or_repair_open_trade_brackets(
+    *,
+    account: str,
+    symbol: str,
+    open_trade: dict[str, Any],
+    position: Mapping[str, Any],
+    open_orders: list[dict[str, Any]],
+    cfg: Mapping[str, Any],
+    audit_enabled: bool,
+    state_strategy_name: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    checked_bj: str,
+    source: str,
+) -> dict[str, Any]:
+    initial_verify = _verify_open_trade_brackets(open_trade, open_orders)
+    if initial_verify["tp_bound"] and initial_verify["sl_bound"]:
+        changed = False
+        tp_row = initial_verify.get("tp_row")
+        if isinstance(tp_row, Mapping):
+            if open_trade.get("tp_order_exchange_id") != tp_row.get("order_id") or open_trade.get("tp_order_client_id") != tp_row.get("client_order_id"):
+                open_trade["tp_order_exchange_id"] = tp_row.get("order_id")
+                open_trade["tp_order_client_id"] = tp_row.get("client_order_id")
+                changed = True
+        sl_row = initial_verify.get("sl_row")
+        if isinstance(sl_row, Mapping):
+            if open_trade.get("sl_order_exchange_id") != sl_row.get("order_id") or open_trade.get("sl_order_client_id") != sl_row.get("client_order_id"):
+                open_trade["sl_order_exchange_id"] = sl_row.get("order_id")
+                open_trade["sl_order_client_id"] = sl_row.get("client_order_id")
+                changed = True
+        if changed:
+            open_trade["last_status_bj"] = current_time_bj
+            set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+        return {
+            "ok": True,
+            "outcome": "bracket_verified",
+            "open_trade": open_trade,
+            "open_orders": open_orders,
+            "verify": initial_verify,
+            "checked_bj": checked_bj,
+        }
+
+    qty = float(position.get("qty") or open_trade.get("entry_qty") or 0.0)
+    if qty <= 0:
+        reason = f"position qty must be positive for bracket repair, got {qty}"
+        mark_error(
+            account,
+            symbol,
+            error_code="open_trade_bracket_qty_invalid",
+            error_message=reason,
+            error_bj=checked_bj,
+            strategy_name=state_strategy_name,
+        )
+        _write_exec_event(audit_enabled, account, "spring_open_trade_bracket_repair_blocked", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "reason": reason,
+            "verify": initial_verify,
+        })
+        return {"ok": False, "outcome": "open_trade_bracket_qty_invalid", "reason": reason, "verify": initial_verify, "checked_bj": checked_bj}
+
+    retry_max = _require_int(cfg, "order_retry_max", min_value=0)
+    retry_delay_secs = _require_float(cfg, "api_retry_delay_secs", min_value=0.0)
+    repaired = False
+    repair_results: dict[str, Any] = {}
+
+    if not initial_verify["tp_bound"]:
+        tp_price = float(open_trade.get("tp_price") or 0.0)
+        if tp_price <= 0:
+            reason = f"tp_price must be positive for bracket repair, got {tp_price}"
+            mark_error(account, symbol, error_code="tp_recreate_payload_invalid", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+            _write_exec_event(audit_enabled, account, "spring_tp_recreate_payload_invalid", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "order_root": open_trade.get("order_root"),
+                "reason": reason,
+                "verify": initial_verify,
+            })
+            return {"ok": False, "outcome": "tp_recreate_payload_invalid", "reason": reason, "verify": initial_verify, "checked_bj": checked_bj}
+        tp_client_order_id = _bracket_client_order_id(open_trade, "TP")
+        tp_res = place_tp_order(
+            account,
+            symbol,
+            POSITION_SIDE_LONG,
+            qty,
+            tp_price,
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+            client_order_id=tp_client_order_id,
+        )
+        repair_results["tp"] = tp_res
+        if not tp_res.get("ok"):
+            reason = str(tp_res.get("reason") or "tp_recreate_failed")
+            mark_error(account, symbol, error_code="tp_recreate_failed", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+            _write_exec_event(audit_enabled, account, "spring_tp_recreate_failed", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "order_root": open_trade.get("order_root"),
+                "exchange_snapshot": tp_res,
+                "verify": initial_verify,
+            })
+            return {"ok": False, "outcome": "tp_recreate_failed", "reason": reason, "repair_results": repair_results, "verify": initial_verify, "checked_bj": checked_bj}
+        tp_data = dict(tp_res.get("data") or {})
+        open_trade["tp_order_client_id"] = tp_data.get("client_order_id", tp_client_order_id)
+        open_trade["tp_order_exchange_id"] = tp_data.get("exchange_order_id")
+        repaired = True
+        _write_exec_event(audit_enabled, account, "spring_tp_recreated", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "tp_client_order_id": open_trade.get("tp_order_client_id"),
+            "exchange_snapshot": tp_res,
+        })
+
+    if not initial_verify["sl_bound"]:
+        sl_trigger_price = float(open_trade.get("sl_trigger_price") or 0.0)
+        if sl_trigger_price <= 0:
+            reason = f"sl_trigger_price must be positive for bracket repair, got {sl_trigger_price}"
+            mark_error(account, symbol, error_code="sl_recreate_payload_invalid", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+            _write_exec_event(audit_enabled, account, "spring_sl_recreate_payload_invalid", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "order_root": open_trade.get("order_root"),
+                "reason": reason,
+                "verify": initial_verify,
+            })
+            if repaired:
+                open_trade["last_status_bj"] = current_time_bj
+                set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+            return {"ok": False, "outcome": "sl_recreate_payload_invalid", "reason": reason, "repair_results": repair_results, "verify": initial_verify, "checked_bj": checked_bj}
+        sl_client_order_id = _bracket_client_order_id(open_trade, "SL")
+        sl_res = place_sl_order(
+            account,
+            symbol,
+            POSITION_SIDE_LONG,
+            sl_trigger_price,
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+            client_order_id=sl_client_order_id,
+        )
+        repair_results["sl"] = sl_res
+        if not sl_res.get("ok"):
+            reason = str(sl_res.get("reason") or "sl_recreate_failed")
+            mark_error(account, symbol, error_code="sl_recreate_failed", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+            _write_exec_event(audit_enabled, account, "spring_sl_recreate_failed", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "order_root": open_trade.get("order_root"),
+                "exchange_snapshot": sl_res,
+                "verify": initial_verify,
+            })
+            if repaired:
+                open_trade["last_status_bj"] = current_time_bj
+                set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+            return {"ok": False, "outcome": "sl_recreate_failed", "reason": reason, "repair_results": repair_results, "verify": initial_verify, "checked_bj": checked_bj}
+        sl_data = dict(sl_res.get("data") or {})
+        open_trade["sl_order_client_id"] = sl_data.get("client_order_id", sl_client_order_id)
+        open_trade["sl_order_exchange_id"] = sl_data.get("exchange_order_id")
+        repaired = True
+        _write_exec_event(audit_enabled, account, "spring_sl_recreated", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "sl_client_order_id": open_trade.get("sl_order_client_id"),
+            "exchange_snapshot": sl_res,
+        })
+
+    if repaired:
+        open_trade["last_status_bj"] = current_time_bj
+        set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+
+    verify_orders_res = get_open_orders(account, symbol)
+    if not verify_orders_res.get("ok"):
+        reason = str(verify_orders_res.get("reason") or "bracket_repair_verify_query_failed")
+        mark_error(account, symbol, error_code="open_trade_bracket_verify_query_failed", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+        _write_exec_event(audit_enabled, account, "spring_open_trade_bracket_verify_query_failed", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "exchange_snapshot": verify_orders_res,
+            "repair_results": repair_results,
+        })
+        return {"ok": False, "outcome": "open_trade_bracket_verify_query_failed", "reason": reason, "repair_results": repair_results, "checked_bj": checked_bj}
+
+    verified_open_orders = [dict(row) for row in (verify_orders_res.get("data") or []) if isinstance(row, Mapping)]
+    final_verify = _verify_open_trade_brackets(open_trade, verified_open_orders)
+    if not (final_verify["tp_bound"] and final_verify["sl_bound"]):
+        reason = f"tp_bound={final_verify['tp_bound']}, sl_bound={final_verify['sl_bound']}"
+        mark_error(account, symbol, error_code="open_trade_bracket_incomplete", error_message=reason, error_bj=checked_bj, strategy_name=state_strategy_name)
+        _write_exec_event(audit_enabled, account, "spring_open_trade_bracket_incomplete", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": open_trade.get("order_root"),
+            "reason": reason,
+            "initial_verify": initial_verify,
+            "final_verify": final_verify,
+            "repair_results": repair_results,
+            "open_orders_snapshot": verify_orders_res,
+        })
+        return {"ok": False, "outcome": "open_trade_bracket_incomplete", "reason": reason, "repair_results": repair_results, "verify": final_verify, "checked_bj": checked_bj}
+
+    _write_exec_event(audit_enabled, account, "spring_open_trade_bracket_verified_after_repair", {
+        "symbol": symbol,
+        "source": source,
+        "bar_ts": current_time_ms,
+        "bar_bj": current_time_bj,
+        "order_root": open_trade.get("order_root"),
+        "initial_verify": initial_verify,
+        "final_verify": final_verify,
+        "repair_results": repair_results,
+    })
+    return {
+        "ok": True,
+        "outcome": "bracket_repaired",
+        "open_trade": open_trade,
+        "open_orders": verified_open_orders,
+        "initial_verify": initial_verify,
+        "verify": final_verify,
+        "repair_results": repair_results,
+        "checked_bj": checked_bj,
+    }
+
+
 def _maybe_submit_time_stop(
     *,
     account: str,
@@ -940,8 +1221,28 @@ def _post_entry_reconcile(
     position = position_res.get("data")
     open_orders = [dict(row) for row in (open_orders_res.get("data") or []) if isinstance(row, Mapping)]
     if position:
+        bracket_reconcile = None
+        if not bool(open_trade.get("exit_submit_inflight")):
+            bracket_reconcile = _verify_or_repair_open_trade_brackets(
+                account=account,
+                symbol=symbol,
+                open_trade=open_trade,
+                position=dict(position),
+                open_orders=open_orders,
+                cfg=cfg,
+                audit_enabled=audit_enabled,
+                state_strategy_name=state_strategy_name,
+                current_time_ms=current_time_ms,
+                current_time_bj=current_time_bj,
+                checked_bj=checked_bj,
+                source=source,
+            )
+            if not bracket_reconcile.get("ok"):
+                return bracket_reconcile
+            open_trade = dict(bracket_reconcile.get("open_trade") or open_trade)
+            open_orders = [dict(row) for row in (bracket_reconcile.get("open_orders") or open_orders) if isinstance(row, Mapping)]
         if active_time_stop:
-            return _maybe_submit_time_stop(
+            time_stop_res = _maybe_submit_time_stop(
                 account=account,
                 symbol=symbol,
                 open_trade=open_trade,
@@ -956,11 +1257,16 @@ def _post_entry_reconcile(
                 checked_bj=checked_bj,
                 source=source,
             )
+            if bracket_reconcile is not None:
+                time_stop_res = dict(time_stop_res)
+                time_stop_res["bracket_reconcile"] = bracket_reconcile
+            return time_stop_res
         return {
             "ok": True,
             "outcome": "position_still_open",
             "position_snapshot": position_res,
             "open_orders_count": len(open_orders),
+            "bracket_reconcile": bracket_reconcile,
             "checked_bj": checked_bj,
         }
     if open_orders:
