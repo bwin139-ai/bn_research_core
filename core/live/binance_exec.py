@@ -112,7 +112,7 @@ def _format_trade_event_message(
     status_text = str(status or "").lower().strip()
     lines = [
         f"[{_fmt_event_hms(event_time_ms)} {_strategy_icon(strategy_code)} {strategy_code}] {account}",
-        f"{str(action or '').upper()} {status_text}",
+        f"{str(action or '').upper()} {status_text}【BN_EXEC】",
         f"symbol={symbol}",
     ]
     value_parts: list[str] = []
