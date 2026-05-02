@@ -27,6 +27,7 @@ from core.live.execution_runner import (
 from core.live.live_data_gate import expected_snapshot_from_signal_check_epoch
 from core.live.live_data_gate import wait_finalized_candidate_inputs_for_snapshot
 from core.live.live_state import load_live_state
+from core.live.signal_gate import build_live_signal_gate
 from core.live.market_data_hub import load_finalized_candidate_inputs_from_hub
 from core.message_bridge import send_to_bot
 from strategies.snapback.current_ledger import collect_consumer_exchange_activity_snapshot
@@ -218,20 +219,6 @@ def _latest_closed_closes(full_df: Mapping[str, Any], c_bar_ts: int) -> dict[str
 
 def _active_symbols_from_args(values: list[str] | None) -> set[str]:
     result = {str(value).upper().strip() for value in (values or []) if str(value).strip()}
-    return result
-
-
-def _active_symbols_for_signal_generation(
-    base_active_symbols: set[str],
-    account_local_precheck: Mapping[str, Any] | None,
-) -> set[str]:
-    result = {str(symbol).upper().strip() for symbol in base_active_symbols if str(symbol).strip()}
-    if isinstance(account_local_precheck, Mapping):
-        for field in ("pending_symbols", "open_symbols"):
-            for raw_symbol in account_local_precheck.get(field) or []:
-                symbol = str(raw_symbol).upper().strip()
-                if symbol:
-                    result.add(symbol)
     return result
 
 
@@ -446,12 +433,20 @@ def run_once(
         )
         account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
-    signal_active_symbols = _active_symbols_for_signal_generation(active_symbols, account_local_precheck)
+    signal_gate = build_live_signal_gate(
+        account=account,
+        strategy_name="spring-sabc",
+        current_time_ms=signal_time_ts,
+        configured_active_symbols=active_symbols,
+        account_local_precheck=account_local_precheck,
+        cooldown_map={} if not execute_live else None,
+    )
     strategy = SpringSABCStrategy(strategy_cfg)
+    strategy.cooldown_until = dict(signal_gate.cooldown_map)
     signal = strategy.on_kline_close(
         signal_time_ts,
         cross_section,
-        signal_active_symbols,
+        signal_gate.active_symbols_for_strategy,
         full_df=full_df,
     )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
@@ -513,8 +508,10 @@ def run_once(
         "full_df_symbol_count": int(len(full_df)),
         "latest_close_symbol_count": int(len(latest_closes)),
         "configured_active_symbols": sorted(active_symbols),
-        "active_symbols": sorted(signal_active_symbols),
-        "live_state_active_symbols": sorted(signal_active_symbols - active_symbols),
+        "active_symbols": sorted(signal_gate.active_symbols_for_strategy),
+        "live_state_active_symbols": sorted(signal_gate.live_state_active_symbols),
+        "cooldown_symbols": sorted(signal_gate.cooldown_symbols),
+        "signal_gate": signal_gate.to_projection(),
         "universe_candidate_count": int(len(getattr(strategy, "_last_universe_candidates", []) or [])),
         "structure_candidate_count": int(len(getattr(strategy, "_last_structure_candidates", []) or [])),
         "audited_symbol_count": int(len(audits)),

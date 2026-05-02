@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-01
+更新时间：2026-05-02
 
 ## 0. 文档定位
 
@@ -380,13 +380,14 @@ state / audit 结论：
 ```text
 总体架构边界：
 - Snapback 当前仍是老结构：信号识别、下单、持仓维护、reconcile、离场落盘集中在策略自己的 live/consumer 代码中。
-- 新 live 结构正式分三段：`Live Data Gate -> Signal Generation -> Execution Lifecycle`。
-- Spring live 正在走新结构：`Live Data Gate` 与 `Execution Lifecycle` 逐步沉到公共 LONG-only live 模块；策略层只负责 `Signal Generation` 与 signal -> ValidatedLiveExecutionIntent adapter。
+- 新 live 结构正式分四段：`Live Data Gate -> Signal Gate -> Strategy Signal Logic -> Execution Lifecycle`。
+- Spring live 正在走新结构：`Live Data Gate`、`Signal Gate` 与 `Execution Lifecycle` 逐步沉到公共 LONG-only live 模块；策略层只负责 `Strategy Signal Logic` 与 signal -> ValidatedLiveExecutionIntent adapter。
 - `core/live/execution_intent.py` 只是公共 contract 入口，不承载全部生命周期逻辑。
 - `core/live/live_data_gate.py` 承载信号生成前的公共 live 数据门禁：expected C / signal_time 推导、hub finalized payload anchor wait、deadline / stale payload 防护。
+- `core/live/signal_gate.py` 承载策略信号逻辑前的公共 live signal gate：汇总命令行 active symbols、本策略 pending/open symbols 与本策略 cooldown symbols；cooldown 默认按 `strategy_name + account + symbol` 维度隔离。
 - 公共 live execution lifecycle 的完整目标是：
   signal adapter -> ValidatedLiveExecutionIntent -> execution_plan -> entry/SL/TP -> strategy-specific state/audit -> open_trade reconcile -> TP/SL/TS exit_reason -> state close -> live_trades/projection -> cooldown。
-- 未来第三、第四套 LONG 策略应只新增自己的 signal generation / signal adapter / strategy_name / strategy_code / config，复用公共 Live Data Gate 与 Execution Lifecycle；不得复制 Snapback 老式策略私有 live 闭环。
+- 未来第三、第四套 LONG 策略应只新增自己的 strategy signal logic / signal adapter / strategy_name / strategy_code / config，复用公共 Live Data Gate、Signal Gate 与 Execution Lifecycle；不得复制 Snapback 老式策略私有 live 闭环。
 - 后续新增 Spring live 生命周期能力应继续补在公共 LONG-only live execution lifecycle 中，而不是写成 Spring 私有闭环。
 - Snapback 若未来迁移到公共层，必须单独拆刀；当前不得在 Spring 修复刀中混改 Snapback 架构。
 
@@ -555,7 +556,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 4. loop 消费 finalized_candidate_inputs 时必须匹配本轮 expected C anchor，deadline 为 `signal_time+50s`；不得用 fresh 但非当前轮的 payload 产生信号或交易。
 5. Spring live 在参数与 live execution config 校验通过后会立即写 `[Spring-Live] runner started | account=... | run_id=... | mode=...` 日志；当 `--execute-live` 且 live execution config `notify_enabled=true` 时，同步写入 `spring` PUSH 队列，使 `nohup` 日志不必等第一轮 projection 才能看到启动时间。
 6. Spring live 常规每分钟 projection 结果只落盘到 `spring_live.{run_id}.jsonl` 与 heartbeat，不再写 `wrote projection` INFO 日志刷屏。
-7. Spring live 的本策略 pending/open symbol 会在信号生成前并入 active symbols，使持仓期间同一 symbol 不再每分钟重复打印 `Spring雷达锁定`；projection 同时保留 `configured_active_symbols`、实际 `active_symbols` 与 `live_state_active_symbols` 供审计。
+7. Spring live 已复用公共 `core/live/signal_gate.py`：本策略 pending/open symbol 会在信号生成前并入 active symbols，本策略 cooldown map 会在信号生成前灌入策略，使持仓或 cooldown 期间同一 symbol 不再每分钟重复打印 `Spring雷达锁定`；projection 同时保留 `configured_active_symbols`、实际 `active_symbols`、`live_state_active_symbols`、`cooldown_symbols` 与 `signal_gate` 供审计。
 8. 公共 BN_EXEC 事件支持按调用方传入 `notify_label`；Spring execution runner 传 `spring`，避免 Spring 的 ENTRY/SL/TP/CANCEL 执行通知落到 `snapback` 队列。
 9. Spring pre-A 语义已从 pattern window 左边界漂移改为 A 点前固定窗口：`structure.pre_a.window_mins=60`。`pre_a_chg_pct`、pre-A range、high-to-A-close、close position、up/down 统计均锚定该固定 S→A 区间；`runtime.max_history_window_mins` 必须覆盖 `structure.pattern_window_mins + structure.pre_a.window_mins`，否则 fail-fast。
 10. Spring B 低点确认已从 A-B 区间最低 low 收紧为 A-C 区间最低 low：若 B 之后、C 之前出现任何低于 B_low 的 X 点，待定 B 失效，算法继续搜索其它 B；若无其它合法 B，本轮不产生信号。
