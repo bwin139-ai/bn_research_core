@@ -65,8 +65,8 @@
 1.8.1 live 侧公共架构分为四段：`Live Data Gate -> Signal Gate -> Strategy Signal Logic -> Execution Lifecycle`。
 1.8.2 `Live Data Gate` 是信号生成前的公共数据门禁，负责 loop 调度锚点、expected C / signal_time 推导、hub finalized payload anchor 校验、deadline / stale 防护，以及构造策略可消费的数据事实。
 1.8.3 `Signal Gate` 是策略信号逻辑前的公共 live 门禁，负责按 `strategy_name + account + symbol` 维度汇总命令行 active symbols、本策略 pending/open symbols 与本策略 cooldown symbols，并在策略识别信号前阻断这些 symbol。
-1.8.4 `Strategy Signal Logic` 是策略个性化信号生成层，只负责读取 live data facts，并运行策略自身的结构识别、过滤、评分、选币与 signal 输出。
-1.8.5 `Execution Lifecycle` 是信号后的公共交易执行生命周期，负责 execution intent、dry-run plan、exchange/local precheck、entry / SL / TP、reconcile、time-stop、repair、flatten、projection、cooldown、state 与 audit。
+1.8.4 `Strategy Signal Logic` 是策略个性化信号生成层，只负责读取 live data facts，并运行策略自身的结构识别、过滤、评分、选币与 signal 输出；若该层只能看到 HBs/已闭合 bar，不得伪造 `current_price`、最终 TP 或其它执行时态价格。
+1.8.5 `Execution Lifecycle` 是信号后的公共交易执行生命周期，负责 execution intent、dry-run plan、exchange/local precheck、live pre-entry price、entry / SL / TP、reconcile、time-stop、repair、flatten、projection、cooldown、state 与 audit；对于基于入场价的 TP 语义，必须在真实 entry fill 后用真实 entry price 解析最终 TP。
 1.8.6 除策略自身信号生成逻辑外，Snapback live 侧已实现且具备公共语义的 live 能力，必须逐步沉淀为公共模块并供 Spring 及后续 LONG 策略复用；禁止第三、第四策略复制私有 live 闭环。
 1.8.7 `signal` 只能表示策略计算后的信号结果；不得用 `Signal Input` 等术语指代信号生成前的数据输入层。
 

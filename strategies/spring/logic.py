@@ -141,7 +141,7 @@ class SpringSABCStrategy:
         context = dict(signal.get("context") or {})
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
-            f"[{signal_time_bj} BJ] 🌱 Spring雷达锁定: {signal['symbol']} | 当前价: {self._price_text(signal.get('current_price'))}"
+            f"[{signal_time_bj} BJ] 🌱 Spring雷达锁定: {signal['symbol']} | C收盘: {self._price_text(context.get('c_close'))}"
             f" | A: {self._bj_short_from_ms(int(context['a_time_ms']))} high={self._price_text(context.get('a_high', context.get('a_close')))}"
             f" | B: {self._bj_short_from_ms(int(context['b_time_ms']))} low={self._price_text(context.get('b_low', context.get('b_close')))}"
             f" | C: {self._bj_short_from_ms(int(context['c_time_ms']))} close={self._price_text(context.get('c_close'))}"
@@ -152,16 +152,16 @@ class SpringSABCStrategy:
             f" | AC/γA量比: {self._safe_float(context.get('gamma_ac_vol_ratio'), 0.0):.2f}"
             f" | 反弹比例: {self._pct_text(context.get('rebound_ratio'))}"
             f" | AB/BC: {int(context.get('ab_bars', 0))}/{int(context.get('bc_bars', 0))}"
-            f" | 开仓金额: {self._safe_float(signal.get('position_notional_usdt'), 0.0):.2f}U"
+            f" | 满额金额: {self._safe_float(signal.get('base_order_notional_usdt'), 0.0):.2f}U"
             f" | 评分: {int(context.get('score', 0))} (#{int(context.get('score_order', 0))})"
         )
 
     def build_entry_log(self, signal: Dict[str, Any]) -> str:
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
-            f"[{signal_time_bj} BJ] 市价开仓成交: {signal['symbol']} 进场多单 @ {self._price_text(signal.get('current_price'))}"
-            f" | 金额: {self._safe_float(signal.get('position_notional_usdt'), 0.0):.2f}U"
-            f" | 止盈: {self._price_text(signal.get('tp_price'))}"
+            f"[{signal_time_bj} BJ] Spring结构信号: {signal['symbol']}"
+            f" | 满额金额: {self._safe_float(signal.get('base_order_notional_usdt'), 0.0):.2f}U"
+            f" | TP模式: {(signal.get('params') or {}).get('take_profit_mode')}"
             f" | 止损: {self._price_text(signal.get('sl_price'))}"
         )
 
@@ -845,41 +845,10 @@ class SpringSABCStrategy:
                     audit_rec["signal_emit"] = False
                     audit_rec["signal_fail_reason"] = "symbol_in_active_symbols"
                 continue
-            if symbol not in cs.index:
-                if audit_rec is not None:
-                    audit_rec["signal_emit"] = False
-                    audit_rec["signal_fail_reason"] = "signal_symbol_not_in_cross_section"
-                continue
-            row = cs.loc[symbol]
-            current_price = self._safe_float(row.get("open"), self._safe_float(row.get("close")))
-            if current_price is None or current_price <= 0:
-                if audit_rec is not None:
-                    audit_rec["signal_emit"] = False
-                    audit_rec["signal_fail_reason"] = "signal_current_price_invalid"
-                continue
-
             sl_price = float(candidate["stop_loss_price"])
-            risk_pct = (float(current_price) - float(sl_price)) / float(current_price)
-            if risk_pct <= 0:
-                if audit_rec is not None:
-                    audit_rec["signal_emit"] = False
-                    audit_rec["risk_pct"] = float(risk_pct)
-                    audit_rec["signal_fail_reason"] = "signal_risk_distance_nonpositive"
-                continue
-            sizing_ratio = min(1.0, self.full_notional_risk_pct / float(risk_pct))
-            position_notional_usdt = self.base_order_notional_usdt * sizing_ratio
-            planned_sl_loss_usdt = position_notional_usdt * float(risk_pct)
             if self.take_profit_pct == -1.0:
-                risk_distance = float(current_price) - float(sl_price)
-                if risk_distance <= 0:
-                    if audit_rec is not None:
-                        audit_rec["signal_emit"] = False
-                        audit_rec["signal_fail_reason"] = "signal_risk_distance_nonpositive"
-                    continue
-                tp_price = float(current_price) + risk_distance
                 take_profit_mode = "risk_reward_1r"
             else:
-                tp_price = float(current_price) * (1.0 + self.take_profit_pct)
                 take_profit_mode = "fixed_pct"
             signal_time_ms = int(current_time_ms)
             signal = {
@@ -887,8 +856,6 @@ class SpringSABCStrategy:
                 "signal_time_bj": self._bj_from_ms(signal_time_ms),
                 "symbol": symbol,
                 "action": "BUY",
-                "current_price": float(current_price),
-                "tp_price": float(tp_price),
                 "sl_price": float(sl_price),
                 "params": {
                     "take_profit_pct": self.take_profit_pct,
@@ -911,11 +878,7 @@ class SpringSABCStrategy:
                     "pre_a_close_pos_in_range_min": self.pre_a_close_pos_in_range_min,
                     "pre_a_window_mins": self.pre_a_window_mins,
                 },
-                "position_notional_usdt": float(position_notional_usdt),
-                "sizing_ratio": float(sizing_ratio),
-                "signal_risk_pct": float(risk_pct),
                 "risk_budget_pct": float(self.full_notional_risk_pct),
-                "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
                 "base_order_notional_usdt": float(self.base_order_notional_usdt),
                 "context": {
                     "strategy_name": self.strategy_name,
@@ -974,12 +937,8 @@ class SpringSABCStrategy:
                     "pattern_window_bars": int(candidate.get("pattern_window_bars", 0)),
                     "baseline_window_bars": int(candidate.get("baseline_window_bars", 0)),
                     "stop_loss_price": float(sl_price),
-                    "risk_pct": float(risk_pct),
                     "base_order_notional_usdt": self.base_order_notional_usdt,
                     "full_notional_risk_pct": self.full_notional_risk_pct,
-                    "sizing_ratio": float(sizing_ratio),
-                    "position_notional_usdt": float(position_notional_usdt),
-                    "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
                     "take_profit_mode": take_profit_mode,
                     "breakeven_guard_enabled": self.breakeven_guard_enabled,
                     "breakeven_guard_trigger_r": self.breakeven_guard_trigger_r,
@@ -1006,15 +965,10 @@ class SpringSABCStrategy:
                 audit_rec["signal_fail_reason"] = None
                 audit_rec["signal_time"] = signal_time_ms
                 audit_rec["signal_time_bj"] = signal["signal_time_bj"]
-                audit_rec["current_price"] = float(current_price)
-                audit_rec["tp_price"] = float(tp_price)
                 audit_rec["sl_price"] = float(sl_price)
-                audit_rec["risk_pct"] = float(risk_pct)
+                audit_rec["take_profit_mode"] = take_profit_mode
                 audit_rec["base_order_notional_usdt"] = self.base_order_notional_usdt
                 audit_rec["full_notional_risk_pct"] = self.full_notional_risk_pct
-                audit_rec["sizing_ratio"] = float(sizing_ratio)
-                audit_rec["position_notional_usdt"] = float(position_notional_usdt)
-                audit_rec["planned_sl_loss_usdt"] = float(planned_sl_loss_usdt)
                 audit_rec["cooldown_active"] = False
                 audit_rec["cooldown_until_after_signal"] = cooldown_until_after_signal if cooldown_until_after_signal > 0 else None
                 audit_rec["cooldown_until_after_signal_bj"] = self._bj_from_ms(cooldown_until_after_signal) if cooldown_until_after_signal > 0 else None

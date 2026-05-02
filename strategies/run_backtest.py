@@ -857,6 +857,76 @@ def main():
         with open(spring_decision_audit_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, cls=NumpyEncoder) + "\n")
 
+    def _inject_spring_sim_execution_fields(signal: Dict[str, Any], cross_section: Any) -> bool:
+        symbol = str(signal.get("symbol") or "").upper().strip()
+        cs = cross_section if isinstance(cross_section, pd.DataFrame) else pd.DataFrame()
+        if not symbol or symbol not in cs.index:
+            raise ValueError(f"spring sim signal symbol missing from CB cross_section: {symbol}")
+        row = cs.loc[symbol]
+        entry_price = _safe_float(row.get("open"), None)
+        if entry_price is None or entry_price <= 0:
+            raise ValueError(f"spring sim CB open price invalid for {symbol}: {row.get('open')!r}")
+        sl_price = _safe_float(signal.get("sl_price"), None)
+        if sl_price is None or sl_price <= 0:
+            raise ValueError(f"spring sim signal sl_price invalid for {symbol}: {signal.get('sl_price')!r}")
+        risk_pct = (entry_price - sl_price) / entry_price
+        if risk_pct <= 0:
+            signal["execution_skip_reason"] = "sim_cb_open_not_above_sl"
+            signal["current_price"] = float(entry_price)
+            signal["current_price_source"] = "sim_cb_open"
+            signal["signal_risk_pct"] = float(risk_pct)
+            return False
+
+        params = signal.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("spring sim signal params must be dict")
+        base_notional = _safe_float(params.get("base_order_notional_usdt"), None)
+        full_risk_pct = _safe_float(params.get("full_notional_risk_pct"), None)
+        if base_notional is None or base_notional <= 0:
+            raise ValueError("spring sim base_order_notional_usdt must be > 0")
+        if full_risk_pct is None or full_risk_pct <= 0:
+            raise ValueError("spring sim full_notional_risk_pct must be > 0")
+
+        take_profit_mode = str(params.get("take_profit_mode") or "").strip()
+        take_profit_pct = _safe_float(params.get("take_profit_pct"), None)
+        if take_profit_mode == "risk_reward_1r":
+            tp_price = entry_price + (entry_price - sl_price)
+            tp_price_source = "sim_entry_price_rr_1r"
+        elif take_profit_mode == "fixed_pct" and take_profit_pct is not None and take_profit_pct > 0:
+            tp_price = entry_price * (1.0 + take_profit_pct)
+            tp_price_source = "sim_entry_price_fixed_pct"
+        else:
+            raise ValueError(f"spring sim unsupported take_profit_mode: {take_profit_mode!r}")
+        if tp_price <= entry_price:
+            raise ValueError(f"spring sim resolved TP must be above entry for LONG: tp={tp_price} entry={entry_price}")
+
+        sizing_ratio = min(1.0, full_risk_pct / float(risk_pct))
+        position_notional_usdt = base_notional * sizing_ratio
+        planned_sl_loss_usdt = position_notional_usdt * float(risk_pct)
+        signal.update({
+            "current_price": float(entry_price),
+            "current_price_source": "sim_cb_open",
+            "tp_price": float(tp_price),
+            "tp_price_source": tp_price_source,
+            "position_notional_usdt": float(position_notional_usdt),
+            "sizing_ratio": float(sizing_ratio),
+            "signal_risk_pct": float(risk_pct),
+            "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
+        })
+        context = signal.get("context")
+        if isinstance(context, dict):
+            context.update({
+                "execution_price": float(entry_price),
+                "execution_price_source": "sim_cb_open",
+                "risk_pct": float(risk_pct),
+                "sizing_ratio": float(sizing_ratio),
+                "position_notional_usdt": float(position_notional_usdt),
+                "planned_sl_loss_usdt": float(planned_sl_loss_usdt),
+                "tp_price": float(tp_price),
+                "tp_price_source": tp_price_source,
+            })
+        return True
+
     # 初始化目录和日志
     out_dir = os.path.join(PROJECT_ROOT, args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -990,6 +1060,9 @@ def main():
         signal = strategy.on_kline_close(
             ts, cross_section, active_symbols, full_df=df_dict
         )
+        signal_executable = True
+        if signal and args.strategy == "spring-sabc":
+            signal_executable = _inject_spring_sim_execution_fields(signal, cross_section)
         if args.strategy == "spring-sabc":
             _write_spring_decision_audit_row(
                 strategy,
@@ -1042,7 +1115,7 @@ def main():
                         f.write(json.dumps(forensic_row, ensure_ascii=False, cls=NumpyEncoder) + "\n")
 
         if signal:
-            if signal.get("position_notional_usdt") is None and base_order_notional_usdt is not None:
+            if signal.get("position_notional_usdt") is None and base_order_notional_usdt is not None and not signal.get("execution_skip_reason"):
                 signal["position_notional_usdt"] = float(base_order_notional_usdt)
                 signal["base_order_notional_usdt"] = float(base_order_notional_usdt)
                 signal["sizing_ratio"] = 1.0
@@ -1056,6 +1129,10 @@ def main():
                     context["position_notional_usdt"] = float(base_order_notional_usdt)
                     context["sizing_ratio"] = 1.0
             signals_history.append(signal)
+            if not signal_executable:
+                if args.strategy == "spring-sabc":
+                    broker.on_kline_close(ts, cross_section)
+                continue
             if args.strategy == "spring-sabc":
                 logging.info(strategy.build_entry_log(signal))
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单

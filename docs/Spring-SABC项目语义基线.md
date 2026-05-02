@@ -378,6 +378,29 @@ risk_pct = (entry_price - stop_loss_price) / entry_price
 
 `risk_pct` 表示该笔结构从入场价到原始止损价的价格风险距离。
 
+`entry_price` 属于执行时态，不属于 ABC 结构识别时态。Spring-SABC 的策略结构逻辑只使用 HBs 中已经闭合的 A/B/C 与 universe 指标；不得在 `logic.py` 中用 C_open、C_close 或其它 HBs 字段伪造 `signal.current_price`。价格时态边界固定为：
+
+```text
+Strategy Signal Logic:
+  产出 A/B/C、SL、take_profit_mode、base_order_notional_usdt、full_notional_risk_pct。
+  不产出 signal.current_price，不产出最终 tp_price，不产出基于执行价的 sizing。
+
+sim:
+  signal_time = CB，执行参考价为 CB open。
+
+live:
+  entry 前即时读取 live pre_entry_price，并落盘 price_source / exchange_snapshot。
+  市价 entry 成交后使用真实 entry fill price 作为最终 risk_reward_1r 基线。
+```
+
+`take_profit_pct = -1` 时，TP 语义为 `risk_reward_1r`，最终计算必须锚定真实执行入场价：
+
+```text
+resolved_tp_price = entry_price + (entry_price - stop_loss_price)
+```
+
+对于 LONG，执行层必须保证 `resolved_tp_price > entry_price`。若该条件无法满足，不得提交低于或等于 entry 的 TP 单。
+
 Spring-SABC 的资金管理使用两个显式配置字段：
 
 ```text

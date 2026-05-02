@@ -159,9 +159,7 @@ def build_dry_run_execution_plan(
     symbol = str(intent_dict["symbol"]).upper().strip()
     strategy_code = str(intent_dict["strategy_code"]).upper().strip()
     current_time_ms = int(intent_dict["signal_time"])
-    current_price = float(intent_dict["current_price"])
-    position_notional_usdt = float(intent_dict["position_notional_usdt"])
-    quantity = position_notional_usdt / current_price
+    base_order_notional_usdt = float(intent_dict["base_order_notional_usdt"])
     root = str(order_root).strip() if order_root else make_order_root()
     ids = _order_ids(strategy_code, root)
     local_precheck = _local_state_precheck(
@@ -183,8 +181,9 @@ def build_dry_run_execution_plan(
             "order_type": "MARKET",
             "side": "BUY",
             "position_side": POSITION_SIDE_LONG,
-            "quantity": quantity,
-            "notional_usdt": position_notional_usdt,
+            "quantity": None,
+            "notional_usdt": None,
+            "quantity_source": "resolved_after_live_pre_entry_price",
             "client_order_id": ids["entry_client_order_id"],
         },
         "stop_loss": {
@@ -202,8 +201,9 @@ def build_dry_run_execution_plan(
             "order_type": "LIMIT",
             "side": "SELL",
             "position_side": POSITION_SIDE_LONG,
-            "quantity": quantity,
-            "price": float(intent_dict["tp_price"]),
+            "quantity": None,
+            "price": None,
+            "price_source": "resolved_after_entry_fill",
             "time_in_force": "GTC",
             "working_type": "CONTRACT_PRICE",
             "client_order_id": ids["tp_client_order_id"],
@@ -213,7 +213,7 @@ def build_dry_run_execution_plan(
             "order_type": "MARKET",
             "side": "SELL",
             "position_side": POSITION_SIDE_LONG,
-            "quantity": quantity,
+            "quantity": None,
             "client_order_id": ids["time_stop_client_order_id"],
             "max_hold_mins": int(intent_dict["max_hold_mins"]),
             "min_profit_pct": float(intent_dict["time_stop_min_profit_pct"]),
@@ -257,9 +257,11 @@ def build_dry_run_execution_plan(
             "exchange": exchange_precheck,
         },
         "sizing": {
-            "current_price": current_price,
-            "position_notional_usdt": position_notional_usdt,
-            "quantity": quantity,
+            "base_order_notional_usdt": base_order_notional_usdt,
+            "full_notional_risk_pct": float(intent_dict["full_notional_risk_pct"]),
+            "position_notional_usdt": None,
+            "quantity": None,
+            "price_source": "resolved_after_live_pre_entry_price",
         },
         "order_ids": ids,
         "order_plan": order_plan,

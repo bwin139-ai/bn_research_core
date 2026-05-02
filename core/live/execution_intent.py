@@ -19,10 +19,11 @@ class ValidatedLiveExecutionIntent:
     side: str
     signal_time: int
     signal_time_bj: str
-    current_price: float
-    position_notional_usdt: float
     sl_price: float
-    tp_price: float
+    base_order_notional_usdt: float
+    full_notional_risk_pct: float
+    take_profit_mode: str
+    take_profit_pct: float
     max_hold_mins: int
     time_stop_min_profit_pct: float
     signal_snapshot: dict[str, Any]
@@ -119,21 +120,21 @@ def validate_live_execution_intent(payload: Mapping[str, Any]) -> ValidatedLiveE
 
     signal_time = _positive_int(payload, "signal_time")
     signal_time_bj = _non_empty_str(payload, "signal_time_bj")
-    current_price = _positive_float(payload, "current_price")
-    position_notional_usdt = _positive_float(payload, "position_notional_usdt")
     sl_price = _positive_float(payload, "sl_price")
-    tp_price = _positive_float(payload, "tp_price")
+    base_order_notional_usdt = _positive_float(payload, "base_order_notional_usdt")
+    full_notional_risk_pct = _positive_float(payload, "full_notional_risk_pct")
+    take_profit_mode = _non_empty_str(payload, "take_profit_mode")
+    take_profit_pct = float(_require(payload, "take_profit_pct"))
+    if take_profit_mode not in {"risk_reward_1r", "fixed_pct"}:
+        _fail("take_profit_mode", f"unsupported mode: {take_profit_mode!r}")
+    if take_profit_mode == "fixed_pct" and take_profit_pct <= 0:
+        _fail("take_profit_pct", f"fixed_pct mode requires > 0, got {take_profit_pct}")
     max_hold_mins = _positive_int(payload, "max_hold_mins")
     time_stop_min_profit_pct = _non_negative_float(payload, "time_stop_min_profit_pct")
     signal_snapshot = _dict_field(payload, "signal_snapshot")
     c_bar_ts = _optional_positive_int(payload, "c_bar_ts")
     c_bar_bj_raw = payload.get("c_bar_bj")
     c_bar_bj = str(c_bar_bj_raw).strip() if c_bar_bj_raw not in (None, "") else None
-
-    if sl_price >= current_price:
-        _fail("sl_price", f"LONG sl_price must be below current_price, got {sl_price} >= {current_price}")
-    if tp_price <= current_price:
-        _fail("tp_price", f"LONG tp_price must be above current_price, got {tp_price} <= {current_price}")
 
     return ValidatedLiveExecutionIntent(
         strategy_name=strategy_name,
@@ -143,10 +144,11 @@ def validate_live_execution_intent(payload: Mapping[str, Any]) -> ValidatedLiveE
         side=side,
         signal_time=signal_time,
         signal_time_bj=signal_time_bj,
-        current_price=current_price,
-        position_notional_usdt=position_notional_usdt,
         sl_price=sl_price,
-        tp_price=tp_price,
+        base_order_notional_usdt=base_order_notional_usdt,
+        full_notional_risk_pct=full_notional_risk_pct,
+        take_profit_mode=take_profit_mode,
+        take_profit_pct=take_profit_pct,
         max_hold_mins=max_hold_mins,
         time_stop_min_profit_pct=time_stop_min_profit_pct,
         signal_snapshot=signal_snapshot,

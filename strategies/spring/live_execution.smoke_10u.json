@@ -19,6 +19,7 @@
   "require_local_state_precheck": true,
   "require_exchange_precheck": true,
   "require_symbol_filters": true,
+  "pre_entry_min_sl_distance_pct": 0.003,
   "min_position_notional_usdt": 6,
   "max_position_notional_usdt": 11.0,
   "order_retry_max": 1,

@@ -14,6 +14,7 @@ from core.live.binance_exec import (
     ensure_cross_margin,
     ensure_hedge_mode,
     ensure_leverage,
+    get_last_price,
     get_open_orders,
     get_order,
     get_position,
@@ -260,6 +261,7 @@ def validate_live_execution_config(
     _require_int(cfg, "order_retry_max", min_value=0)
     _require_int(cfg, "cooldown_mins", min_value=0)
     _require_float(cfg, "api_retry_delay_secs", min_value=0.0)
+    _require_float(cfg, "pre_entry_min_sl_distance_pct", min_value=0.0)
     _require_float(cfg, "min_position_notional_usdt", min_value=0.0)
     _require_float(cfg, "max_position_notional_usdt", min_value=0.0)
     if _require_float(cfg, "max_position_notional_usdt", min_value=0.0) <= 0:
@@ -335,13 +337,50 @@ def _symbol_filter_precheck(account: str, symbol: str, *, quantity: float, curre
     }
 
 
+def _resolve_position_notional(intent: Mapping[str, Any], *, entry_reference_price: float) -> dict[str, float]:
+    sl_price = float(intent["sl_price"])
+    risk_pct = (float(entry_reference_price) - sl_price) / float(entry_reference_price)
+    if risk_pct <= 0:
+        raise ValueError(f"LONG entry reference price must be above sl_price, got {entry_reference_price} <= {sl_price}")
+    base_notional = float(intent["base_order_notional_usdt"])
+    full_risk_pct = float(intent["full_notional_risk_pct"])
+    sizing_ratio = min(1.0, full_risk_pct / float(risk_pct))
+    position_notional_usdt = base_notional * sizing_ratio
+    return {
+        "risk_pct": float(risk_pct),
+        "sizing_ratio": float(sizing_ratio),
+        "position_notional_usdt": float(position_notional_usdt),
+        "planned_sl_loss_usdt": float(position_notional_usdt * risk_pct),
+    }
+
+
+def _resolve_tp_price(intent: Mapping[str, Any], *, entry_price: float) -> tuple[float, str]:
+    sl_price = float(intent["sl_price"])
+    take_profit_mode = str(intent["take_profit_mode"]).strip()
+    if take_profit_mode == "risk_reward_1r":
+        risk_distance = float(entry_price) - sl_price
+        if risk_distance <= 0:
+            raise ValueError(f"LONG entry_price must be above sl_price for risk_reward_1r, got {entry_price} <= {sl_price}")
+        tp_price = float(entry_price) + risk_distance
+        source = "entry_fill_rr_1r"
+    elif take_profit_mode == "fixed_pct":
+        take_profit_pct = float(intent["take_profit_pct"])
+        if take_profit_pct <= 0:
+            raise ValueError(f"fixed_pct TP requires positive take_profit_pct, got {take_profit_pct}")
+        tp_price = float(entry_price) * (1.0 + take_profit_pct)
+        source = "entry_fill_fixed_pct"
+    else:
+        raise ValueError(f"unsupported take_profit_mode: {take_profit_mode!r}")
+    if tp_price <= float(entry_price):
+        raise ValueError(f"LONG resolved TP must be above entry_price, got {tp_price} <= {entry_price}")
+    return float(tp_price), source
+
+
 def _signal_digest(signal: Mapping[str, Any]) -> str:
     base = {
         "symbol": signal.get("symbol"),
         "signal_time": signal.get("signal_time"),
         "action": signal.get("action"),
-        "current_price": signal.get("current_price"),
-        "tp_price": signal.get("tp_price"),
         "sl_price": signal.get("sl_price"),
     }
     return json.dumps(base, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -361,7 +400,7 @@ def _resolve_entry_fill_price(account: str, symbol: str, entry_data: Mapping[str
             return position_entry_price, "position_entry_price"
     fallback = float(fallback_price or 0.0)
     if fallback > 0:
-        return fallback, "fallback_current_price"
+        return fallback, "fallback_pre_entry_price"
     raise RuntimeError("entry fill price unavailable")
 
 
@@ -373,6 +412,12 @@ def _pending_entry_payload(
     entry_res: Mapping[str, Any],
     entry_price_source: str,
     signal_digest: str,
+    pre_entry_price: float,
+    pre_entry_price_source: str,
+    position_notional_usdt: float,
+    sizing: Mapping[str, Any],
+    resolved_tp_price: float,
+    resolved_tp_price_source: str,
 ) -> dict[str, Any]:
     entry = dict(entry_res.get("data") or {})
     return {
@@ -384,12 +429,16 @@ def _pending_entry_payload(
         "exchange_order_id": entry.get("exchange_order_id"),
         "signal_time": int(intent["signal_time"]),
         "signal_time_bj": intent["signal_time_bj"],
-        "current_price": float(intent["current_price"]),
-        "entry_notional_usdt": float(intent["position_notional_usdt"]),
+        "pre_entry_price": float(pre_entry_price),
+        "pre_entry_price_source": pre_entry_price_source,
+        "current_price": float(pre_entry_price),
+        "entry_notional_usdt": float(position_notional_usdt),
         "signal_digest": signal_digest,
         "signal_snapshot": deepcopy(intent["signal_snapshot"]),
         "entry_fill_price_source": entry_price_source,
-        "tp_price": float(intent["tp_price"]),
+        "sizing": dict(sizing),
+        "tp_price": float(resolved_tp_price),
+        "resolved_tp_price_source": resolved_tp_price_source,
         "sl_price": float(intent["sl_price"]),
         "tp_client_order_id": order_ids["tp_client_order_id"],
         "sl_client_order_id": order_ids["sl_client_order_id"],
@@ -411,6 +460,12 @@ def _open_trade_payload(
     entry_price: float,
     entry_price_source: str,
     signal_digest: str,
+    pre_entry_price: float,
+    pre_entry_price_source: str,
+    position_notional_usdt: float,
+    sizing: Mapping[str, Any],
+    resolved_tp_price: float,
+    resolved_tp_price_source: str,
     status: str,
 ) -> dict[str, Any]:
     entry = dict(entry_res.get("data") or {})
@@ -429,8 +484,11 @@ def _open_trade_payload(
         "entry_bj": intent["signal_time_bj"],
         "entry_price": float(entry_price),
         "entry_price_source": entry_price_source,
+        "pre_entry_price": float(pre_entry_price),
+        "pre_entry_price_source": pre_entry_price_source,
         "entry_qty": float(entry.get("executed_qty") or entry.get("qty") or 0.0),
-        "entry_notional_usdt": float(intent["position_notional_usdt"]),
+        "entry_notional_usdt": float(position_notional_usdt),
+        "sizing": dict(sizing),
         "signal_digest": signal_digest,
         "signal_snapshot": deepcopy(intent["signal_snapshot"]),
         "tp_order_client_id": tp.get("client_order_id", order_ids["tp_client_order_id"]) if tp else None,
@@ -439,7 +497,8 @@ def _open_trade_payload(
         "sl_order_exchange_id": sl.get("exchange_order_id") if sl else None,
         "time_stop_client_order_id": None,
         "time_stop_exchange_order_id": None,
-        "tp_price": float(intent["tp_price"]),
+        "tp_price": float(resolved_tp_price),
+        "resolved_tp_price_source": resolved_tp_price_source,
         "sl_trigger_price": float(intent["sl_price"]),
         "max_hold_mins": int(intent["max_hold_mins"]),
         "time_stop_min_profit_pct": float(intent["time_stop_min_profit_pct"]),
@@ -519,7 +578,7 @@ def _spring_signal_message(account: str, intent: Mapping[str, Any]) -> str:
     lines = [
         _spring_notify_header(account, intent.get("signal_time")),
         f"雷达锁定: {symbol}",
-        f"当前价: {_fmt_notify_price(intent.get('current_price'))}",
+        f"pre-entry价: {_fmt_notify_price(intent.get('pre_entry_price'))}",
         (
             f"A: {_fmt_short_bj_from_ms(context.get('a_time_ms'))} "
             f"high={_fmt_notify_price(context.get('a_high', context.get('a_close')))}"
@@ -2571,12 +2630,6 @@ def execute_live_execution_plan(
     if not bool(execution_plan.get("ok_to_execute")):
         raise ValueError(f"execution plan is not executable: {execution_plan.get('executable_blockers')}")
 
-    notional = float(intent_dict["position_notional_usdt"])
-    min_notional = _require_float(cfg, "min_position_notional_usdt", min_value=0.0)
-    max_notional = _require_float(cfg, "max_position_notional_usdt", min_value=0.0)
-    if notional < min_notional or notional > max_notional:
-        raise ValueError(f"intent notional {notional} outside live execution bounds [{min_notional}, {max_notional}]")
-
     precheck = dict(execution_plan.get("precheck") or {})
     local_precheck = dict(precheck.get("local_state") or {})
     exchange_precheck = dict(precheck.get("exchange") or {})
@@ -2594,13 +2647,68 @@ def execute_live_execution_plan(
     else:
         account_flat = None
 
-    raw_quantity = float(((execution_plan.get("sizing") or {}).get("quantity")))
+    pre_entry_price_res = get_last_price(account, symbol)
+    pre_entry_price = None
+    if pre_entry_price_res.get("ok"):
+        pre_entry_price = _safe_float((pre_entry_price_res.get("data") or {}).get("price"))
+    pre_entry_price_source = "CONTRACT_PRICE:futures_symbol_ticker"
+    if pre_entry_price is None or pre_entry_price <= 0:
+        reason = pre_entry_price_res.get("reason") or f"pre_entry_price={pre_entry_price}"
+        mark_error(account, symbol, error_code="pre_entry_price_query_failed", error_message=reason, error_bj=_now_bj_str(), strategy_name=state_strategy_name)
+        _write_exec_event(audit_enabled, account, "spring_pre_entry_price_query_failed", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": order_root,
+            "price_source": pre_entry_price_source,
+            "sl_price": float(intent_dict["sl_price"]),
+            "exchange_snapshot": pre_entry_price_res,
+        })
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
+        return {"ok": False, "outcome": "failed_pre_entry_price_query", "reason": reason, "pre_entry_price_res": pre_entry_price_res}
+
+    min_sl_distance_pct = _require_float(cfg, "pre_entry_min_sl_distance_pct", min_value=0.0)
+    sl_price = float(intent_dict["sl_price"])
+    pre_entry_sl_distance_pct = (float(pre_entry_price) - sl_price) / sl_price if sl_price > 0 else None
+    guard_payload = {
+        "symbol": symbol,
+        "source": source,
+        "bar_ts": current_time_ms,
+        "bar_bj": current_time_bj,
+        "order_root": order_root,
+        "price_source": pre_entry_price_source,
+        "pre_entry_price": float(pre_entry_price),
+        "sl_price": sl_price,
+        "sl_distance_pct": pre_entry_sl_distance_pct,
+        "min_sl_distance_pct": min_sl_distance_pct,
+        "exchange_snapshot": pre_entry_price_res,
+    }
+    if pre_entry_sl_distance_pct is None or pre_entry_sl_distance_pct < min_sl_distance_pct:
+        reason = (
+            f"pre_entry_sl_distance_pct={pre_entry_sl_distance_pct} "
+            f"< min_sl_distance_pct={min_sl_distance_pct}; "
+            f"pre_entry_price={pre_entry_price}; sl_price={sl_price}"
+        )
+        _write_exec_event(audit_enabled, account, "spring_pre_entry_price_guard_skip", {**guard_payload, "reason": reason})
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
+        return {"ok": False, "outcome": "skipped_pre_entry_price_too_close_to_sl", "reason": reason, "pre_entry_price": pre_entry_price}
+    _write_exec_event(audit_enabled, account, "spring_pre_entry_price_guard_pass", guard_payload)
+
+    sizing = _resolve_position_notional(intent_dict, entry_reference_price=float(pre_entry_price))
+    notional = float(sizing["position_notional_usdt"])
+    min_notional = _require_float(cfg, "min_position_notional_usdt", min_value=0.0)
+    max_notional = _require_float(cfg, "max_position_notional_usdt", min_value=0.0)
+    if notional < min_notional or notional > max_notional:
+        raise ValueError(f"resolved notional {notional} outside live execution bounds [{min_notional}, {max_notional}]")
+
+    raw_quantity = notional / float(pre_entry_price)
     if _require_bool(cfg, "require_symbol_filters"):
         filters_precheck = _symbol_filter_precheck(
             account,
             symbol,
             quantity=raw_quantity,
-            current_price=float(intent_dict["current_price"]),
+            current_price=float(pre_entry_price),
         )
         if not filters_precheck["ok"]:
             raise ValueError(f"symbol filter precheck blockers present: {filters_precheck['blockers']}")
@@ -2630,12 +2738,20 @@ def execute_live_execution_plan(
         "order_root": order_root,
         "position_notional_usdt": notional,
         "quantity": quantity,
+        "pre_entry_price": float(pre_entry_price),
+        "pre_entry_price_source": pre_entry_price_source,
+        "sizing": sizing,
         "precheck": precheck,
         "account_flat_precheck": account_flat,
         "symbol_filter_precheck": filters_precheck,
     })
     if _notify_enabled(cfg, "notify_on_signal_locked"):
-        _send_spring_notify(_spring_signal_message(account, intent_dict))
+        notify_intent = {
+            **intent_dict,
+            "pre_entry_price": float(pre_entry_price),
+            "position_notional_usdt": float(notional),
+        }
+        _send_spring_notify(_spring_signal_message(account, notify_intent))
 
     hedge_res = ensure_hedge_mode(account)
     if not hedge_res.get("ok"):
@@ -2681,8 +2797,81 @@ def execute_live_execution_plan(
         account,
         symbol,
         entry_data,
-        fallback_price=float(intent_dict["current_price"]),
+        fallback_price=float(pre_entry_price),
     )
+    qty_for_exit = float(entry_data.get("executed_qty") or entry_data.get("qty") or quantity)
+    try:
+        resolved_tp_price, resolved_tp_price_source = _resolve_tp_price(intent_dict, entry_price=entry_price)
+    except Exception as exc:
+        flatten_client_order_id = build_client_order_id(
+            broker_id=BROKER_ID,
+            strat=str(intent_dict["strategy_code"]).upper(),
+            leg=LEG_SL_FAIL_FLATTEN,
+            root=order_root,
+        )
+        flatten_res = place_time_stop_order(
+            account,
+            symbol,
+            POSITION_SIDE_LONG,
+            qty_for_exit,
+            retry_max=retry_max,
+            retry_delay_secs=retry_delay_secs,
+            client_order_id=flatten_client_order_id,
+            order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
+            notify_label=SPRING_NOTIFY_LABEL,
+        )
+        open_trade = _open_trade_payload(
+            intent=intent_dict,
+            order_ids=order_ids,
+            order_root=order_root,
+            entry_res=entry_res,
+            sl_res={"ok": False, "data": None},
+            tp_res={"ok": False, "data": None},
+            entry_price=entry_price,
+            entry_price_source=entry_price_source,
+            signal_digest=signal_digest,
+            pre_entry_price=float(pre_entry_price),
+            pre_entry_price_source=pre_entry_price_source,
+            position_notional_usdt=notional,
+            sizing=sizing,
+            resolved_tp_price=0.0,
+            resolved_tp_price_source="tp_resolution_failed",
+            status="EXIT_SUBMITTED" if flatten_res.get("ok") else "BRACKET_GAP_CRITICAL",
+        )
+        open_trade["time_stop_exit_reason"] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        open_trade["protective_flatten_exit_reason"] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
+        open_trade["protective_flatten_client_order_id"] = flatten_client_order_id
+        if flatten_res.get("ok"):
+            flatten_data = dict(flatten_res.get("data") or {})
+            open_trade["time_stop_client_order_id"] = flatten_data.get("client_order_id", flatten_client_order_id)
+            open_trade["time_stop_exchange_order_id"] = flatten_data.get("exchange_order_id")
+            open_trade["protective_flatten_client_order_id"] = flatten_data.get("client_order_id", flatten_client_order_id)
+            open_trade["protective_flatten_exchange_order_id"] = flatten_data.get("exchange_order_id")
+            open_trade["exit_submit_inflight"] = True
+        set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
+        set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
+        mark_error(account, symbol, error_code="tp_resolution_failed", error_message=str(exc), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
+        _write_exec_event(audit_enabled, account, "spring_tp_resolution_failed_flatten_submitted" if flatten_res.get("ok") else "spring_tp_resolution_failed_flatten_submit_failed", {
+            "symbol": symbol,
+            "source": "entry_tp_resolution_failed_flatten",
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": order_root,
+            "entry_price": entry_price,
+            "entry_price_source": entry_price_source,
+            "pre_entry_price": float(pre_entry_price),
+            "sl_price": float(intent_dict["sl_price"]),
+            "reason": str(exc),
+            "exchange_snapshot": flatten_res,
+        })
+        return {
+            "ok": False,
+            "outcome": "failed_tp_resolution_flatten_submitted" if flatten_res.get("ok") else "failed_tp_resolution_flatten_submit_failed",
+            "reason": str(exc),
+            "entry_res": entry_res,
+            "flatten_res": flatten_res,
+        }
     pending_entry = _pending_entry_payload(
         intent=intent_dict,
         order_ids=order_ids,
@@ -2690,6 +2879,12 @@ def execute_live_execution_plan(
         entry_res=entry_res,
         entry_price_source=entry_price_source,
         signal_digest=signal_digest,
+        pre_entry_price=float(pre_entry_price),
+        pre_entry_price_source=pre_entry_price_source,
+        position_notional_usdt=notional,
+        sizing=sizing,
+        resolved_tp_price=resolved_tp_price,
+        resolved_tp_price_source=resolved_tp_price_source,
     )
     set_pending_entry_order(account, symbol, pending_entry, strategy_name=state_strategy_name)
     _write_exec_event(audit_enabled, account, "spring_entry_submitted", {
@@ -2700,10 +2895,12 @@ def execute_live_execution_plan(
         "order_root": order_root,
         "entry_price": entry_price,
         "entry_price_source": entry_price_source,
+        "pre_entry_price": float(pre_entry_price),
+        "resolved_tp_price": resolved_tp_price,
+        "resolved_tp_price_source": resolved_tp_price_source,
         "exchange_snapshot": entry_res,
     })
 
-    qty_for_exit = float(entry_data.get("executed_qty") or entry_data.get("qty") or quantity)
     sl_res = place_sl_order(
         account,
         symbol,
@@ -2750,6 +2947,12 @@ def execute_live_execution_plan(
             entry_price=entry_price,
             entry_price_source=entry_price_source,
             signal_digest=signal_digest,
+            pre_entry_price=float(pre_entry_price),
+            pre_entry_price_source=pre_entry_price_source,
+            position_notional_usdt=notional,
+            sizing=sizing,
+            resolved_tp_price=resolved_tp_price,
+            resolved_tp_price_source=resolved_tp_price_source,
             status="EXIT_SUBMITTED" if flatten_res.get("ok") else "BRACKET_GAP_CRITICAL",
         )
         open_trade["time_stop_exit_reason"] = EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN
@@ -2800,7 +3003,7 @@ def execute_live_execution_plan(
         symbol,
         POSITION_SIDE_LONG,
         qty_for_exit,
-        float(intent_dict["tp_price"]),
+        float(resolved_tp_price),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["tp_client_order_id"],
@@ -2812,6 +3015,8 @@ def execute_live_execution_plan(
         "bar_ts": current_time_ms,
         "bar_bj": current_time_bj,
         "order_root": order_root,
+        "resolved_tp_price": resolved_tp_price,
+        "resolved_tp_price_source": resolved_tp_price_source,
         "exchange_snapshot": tp_res,
     })
 
@@ -2825,6 +3030,12 @@ def execute_live_execution_plan(
         entry_price=entry_price,
         entry_price_source=entry_price_source,
         signal_digest=signal_digest,
+        pre_entry_price=float(pre_entry_price),
+        pre_entry_price_source=pre_entry_price_source,
+        position_notional_usdt=notional,
+        sizing=sizing,
+        resolved_tp_price=resolved_tp_price,
+        resolved_tp_price_source=resolved_tp_price_source,
         status="OPEN" if tp_res.get("ok") else "OPEN_SL_ONLY",
     )
     set_open_trade(account, symbol, open_trade, strategy_name=state_strategy_name)
