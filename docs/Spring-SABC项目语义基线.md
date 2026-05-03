@@ -268,6 +268,19 @@ on_kline_close(...)
 
 在 live 场景中，原始 SL / TP 在 signal_time 入场后即已创建为交易所条件单，后续由交易所实时自动触发。
 
+live execution 配置中的并发语义必须显式化：
+
+```text
+strategy_concurrency_scope = account:
+  同账户同策略只允许一笔 pending/open trade；若已有任意 Spring pending/open trade，
+  Live Signal Gate 必须在 Strategy Signal Logic 前阻断新 signal。
+
+strategy_concurrency_scope = symbol:
+  同账户同策略只阻断同 symbol 重复 pending/open trade；不同 symbol 可并发。
+```
+
+该字段表达策略自身并发约束，不得与 `precheck_scope` 混用。`precheck_scope` 只表达交易所下单前检查范围。
+
 BREAKEVEN_GUARD 则不同：它是在 `on_kline_close(...)` 中，于 CB 时刻观察最近闭合的 HBs[1] 后才执行的保护动作。
 
 若 HBs[1].high >= breakeven_trigger_price，则在当前 CB 执行：

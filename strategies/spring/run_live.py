@@ -142,6 +142,15 @@ def _runner_notify_enabled(*, execute_live: bool, live_execution_config_path: st
     return bool(live_execution_config.get("notify_enabled", False))
 
 
+def _strategy_concurrency_scope(live_execution_config: Mapping[str, Any] | None) -> str:
+    if not isinstance(live_execution_config, Mapping):
+        return "symbol"
+    scope = str(live_execution_config.get("strategy_concurrency_scope") or "").strip()
+    if scope not in {"symbol", "account"}:
+        raise ValueError("live execution config strategy_concurrency_scope must be symbol or account")
+    return scope
+
+
 def _notify_runner_started(*, notify_enabled: bool, account: str, run_id: str, mode: str) -> None:
     message = f"[Spring-Live] runner started | account={account} | run_id={run_id} | mode={mode}"
     logging.info(message)
@@ -433,22 +442,26 @@ def run_once(
         )
         account_local_precheck = account_local_activity_precheck(account, strategy_name="spring-sabc")
 
+    strategy_concurrency_scope = _strategy_concurrency_scope(live_execution_config if execute_live else None)
     signal_gate = build_live_signal_gate(
         account=account,
         strategy_name="spring-sabc",
         current_time_ms=signal_time_ts,
         configured_active_symbols=active_symbols,
+        strategy_concurrency_scope=strategy_concurrency_scope,
         account_local_precheck=account_local_precheck,
         cooldown_map={} if not execute_live else None,
     )
     strategy = SpringSABCStrategy(strategy_cfg)
     strategy.cooldown_until = dict(signal_gate.cooldown_map)
-    signal = strategy.on_kline_close(
-        signal_time_ts,
-        cross_section,
-        signal_gate.active_symbols_for_strategy,
-        full_df=full_df,
-    )
+    signal = None
+    if not signal_gate.blocks_new_signals:
+        signal = strategy.on_kline_close(
+            signal_time_ts,
+            cross_section,
+            signal_gate.active_symbols_for_strategy,
+            full_df=full_df,
+        )
     intent = build_spring_live_execution_intent(signal, account=account).to_dict() if signal else None
     local_state_snapshot = load_live_state(account, strategy_name="spring-sabc") if intent else None
     exchange_snapshot = collect_consumer_exchange_activity_snapshot(account) if intent and (verify_exchange or execute_live) else None
@@ -465,6 +478,7 @@ def run_once(
     if execute_live:
         if intent and dry_run_execution_plan:
             if (not bool(dry_run_execution_plan.get("ok_to_execute"))) or (
+                strategy_concurrency_scope == "account" and
                 isinstance(account_local_precheck, Mapping)
                 and bool(account_local_precheck.get("blockers"))
             ):
@@ -508,6 +522,7 @@ def run_once(
         "full_df_symbol_count": int(len(full_df)),
         "latest_close_symbol_count": int(len(latest_closes)),
         "configured_active_symbols": sorted(active_symbols),
+        "strategy_concurrency_scope": strategy_concurrency_scope,
         "active_symbols": sorted(signal_gate.active_symbols_for_strategy),
         "live_state_active_symbols": sorted(signal_gate.live_state_active_symbols),
         "cooldown_symbols": sorted(signal_gate.cooldown_symbols),

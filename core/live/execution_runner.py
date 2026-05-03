@@ -246,6 +246,8 @@ def validate_live_execution_config(
         raise ValueError("live execution config margin_type must be CROSSED")
     if _require_str(cfg, "precheck_scope") not in {"symbol", "account_flat"}:
         raise ValueError("live execution config precheck_scope must be symbol or account_flat")
+    if _require_str(cfg, "strategy_concurrency_scope") not in {"symbol", "account"}:
+        raise ValueError("live execution config strategy_concurrency_scope must be symbol or account")
     if _require_str(cfg, "stop_loss_failure_action") != "submit_market_flatten":
         raise ValueError("live execution config stop_loss_failure_action must be submit_market_flatten")
     _require_bool(cfg, "audit_enabled")
@@ -895,11 +897,14 @@ def _live_trade_projection_row(
         "entry_time_bj": closed_trade.get("entry_bj") or _fmt_bj_from_ms(entry_ts) if entry_ts else None,
         "entry_price": entry_price,
         "entry_price_source": closed_trade.get("entry_price_source"),
+        "pre_entry_price": _safe_float(closed_trade.get("pre_entry_price")),
+        "pre_entry_price_source": closed_trade.get("pre_entry_price_source"),
         "entry_qty": _safe_float(closed_trade.get("entry_qty")),
         "entry_notional_usdt": _safe_float(closed_trade.get("entry_notional_usdt")),
         "entry_client_order_id": closed_trade.get("entry_client_order_id"),
         "entry_exchange_order_id": closed_trade.get("entry_exchange_order_id"),
         "tp_price": _safe_float(closed_trade.get("tp_price")),
+        "resolved_tp_price_source": closed_trade.get("resolved_tp_price_source"),
         "tp_client_order_id": closed_trade.get("tp_order_client_id"),
         "tp_exchange_order_id": closed_trade.get("tp_order_exchange_id"),
         "sl_trigger_price": _safe_float(closed_trade.get("sl_trigger_price")),
