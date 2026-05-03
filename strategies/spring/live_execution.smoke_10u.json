@@ -16,7 +16,7 @@
   "margin_type": "CROSSED",
   "leverage": 5,
   "precheck_scope": "symbol",
-  "strategy_concurrency_scope": "account",
+  "strategy_concurrency_scope": "symbol",
   "require_local_state_precheck": true,
   "require_exchange_precheck": true,
   "require_symbol_filters": true,
