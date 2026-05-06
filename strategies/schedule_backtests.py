@@ -172,8 +172,22 @@ def supports_candidate_audit(strategy: str) -> bool:
     return str(strategy or '').strip() == 'snapback'
 
 
-def supports_spring_decision_audit(strategy: str) -> bool:
-    return str(strategy or '').strip() == 'spring-sabc'
+def decision_audit_file_stem(strategy: str) -> str:
+    key = str(strategy or '').strip()
+    if key == 'spring-sabc':
+        return 'spring_decision_audit'
+    if key == 'sweep-reclaim':
+        return 'sweep_reclaim_decision_audit'
+    return ''
+
+
+def decision_audit_label(strategy: str) -> str:
+    key = str(strategy or '').strip()
+    if key == 'spring-sabc':
+        return 'Spring审计'
+    if key == 'sweep-reclaim':
+        return 'SWR审计'
+    return '决策审计'
 
 
 def build_merge_meta(
@@ -230,14 +244,15 @@ def run_post_processing(
     signal_paths = [state_dir / f'sim_signals.{t.run_id}.jsonl' for t in tasks]
     candidate_audit_enabled = supports_candidate_audit(args.strategy)
     candidate_audit_paths = [state_dir / f'snapback_candidate_pool_audit.{t.run_id}.jsonl' for t in tasks] if candidate_audit_enabled else []
-    spring_decision_audit_enabled = supports_spring_decision_audit(args.strategy)
-    spring_decision_audit_paths = [state_dir / f'spring_decision_audit.{t.run_id}.jsonl' for t in tasks] if spring_decision_audit_enabled else []
+    decision_audit_stem = decision_audit_file_stem(args.strategy)
+    decision_audit_enabled = bool(decision_audit_stem)
+    decision_audit_paths = [state_dir / f'{decision_audit_stem}.{t.run_id}.jsonl' for t in tasks] if decision_audit_enabled else []
     viz_dirs = [state_dir / f'sim_viz_{t.run_id}' for t in tasks]
 
     merged_trades = state_dir / f'sim_trades.{runset}_ALL.jsonl'
     merged_signals = state_dir / f'sim_signals.{runset}_ALL.jsonl'
     merged_candidate_audit = state_dir / f'snapback_candidate_pool_audit.{runset}_ALL.jsonl' if candidate_audit_enabled else None
-    merged_spring_decision_audit = state_dir / f'spring_decision_audit.{runset}_ALL.jsonl' if spring_decision_audit_enabled else None
+    merged_decision_audit = state_dir / f'{decision_audit_stem}.{runset}_ALL.jsonl' if decision_audit_enabled else None
     merged_viz_dir = state_dir / f'sim_viz_{runset}_ALL'
     merged_merge_meta = state_dir / f'sim_merge_meta.{runset}_ALL.json'
     merged_summary = state_dir / f'sim_summary.{runset}_ALL.json'
@@ -251,10 +266,14 @@ def run_post_processing(
         if candidate_audit_enabled and merged_candidate_audit is not None:
             candidate_audit_count = merge_jsonl_files(candidate_audit_paths, merged_candidate_audit)
             artifacts['merged_candidate_audit'] = str(merged_candidate_audit)
-        spring_decision_audit_count = 0
-        if spring_decision_audit_enabled and merged_spring_decision_audit is not None:
-            spring_decision_audit_count = merge_jsonl_files(spring_decision_audit_paths, merged_spring_decision_audit)
-            artifacts['merged_spring_decision_audit'] = str(merged_spring_decision_audit)
+        decision_audit_count = 0
+        if decision_audit_enabled and merged_decision_audit is not None:
+            decision_audit_count = merge_jsonl_files(decision_audit_paths, merged_decision_audit)
+            artifacts['merged_decision_audit'] = str(merged_decision_audit)
+            if args.strategy == 'spring-sabc':
+                artifacts['merged_spring_decision_audit'] = str(merged_decision_audit)
+            elif args.strategy == 'sweep-reclaim':
+                artifacts['merged_sweep_reclaim_decision_audit'] = str(merged_decision_audit)
         viz_count = merge_viz_dirs(viz_dirs, merged_viz_dir)
         artifacts['merged_viz_dir'] = str(merged_viz_dir)
 
@@ -269,7 +288,9 @@ def run_post_processing(
             'trades_count': trades_count,
             'signals_count': signals_count,
             'candidate_audit_count': candidate_audit_count,
-            'spring_decision_audit_count': spring_decision_audit_count,
+            'decision_audit_count': decision_audit_count,
+            'spring_decision_audit_count': decision_audit_count if args.strategy == 'spring-sabc' else 0,
+            'sweep_reclaim_decision_audit_count': decision_audit_count if args.strategy == 'sweep-reclaim' else 0,
             'viz_png_count': viz_count,
         })
         with merged_merge_meta.open('w', encoding='utf-8') as f:
@@ -278,13 +299,13 @@ def run_post_processing(
 
         append_line(
             scheduler_log,
-            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} spring_decision_audits={spring_decision_audit_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
+            f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} decision_audits={decision_audit_count} viz_pngs={viz_count} merge_meta={merged_merge_meta}',
         )
-        print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} spring_decision_audits={spring_decision_audit_count} viz_pngs={viz_count}')
+        print(f'POST_MERGE_DONE runset={runset} trades={trades_count} signals={signals_count} candidate_audits={candidate_audit_count} decision_audits={decision_audit_count} viz_pngs={viz_count}')
         if candidate_audit_enabled:
             merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜候选池：{candidate_audit_count}｜图表：{viz_count}'
-        elif spring_decision_audit_enabled:
-            merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜Spring审计：{spring_decision_audit_count}｜图表：{viz_count}'
+        elif decision_audit_enabled:
+            merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜{decision_audit_label(args.strategy)}：{decision_audit_count}｜图表：{viz_count}'
         else:
             merge_notify = f'汇总完成｜{args.strategy}\n交易：{trades_count}｜信号：{signals_count}｜图表：{viz_count}'
         notify_message(notify_label, merge_notify)
@@ -488,7 +509,7 @@ def make_summary(args: argparse.Namespace, tasks: List[Task], finished: List[dic
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description='Minimal backtest batch scheduler with dynamic refill.')
-    ap.add_argument('--strategy', required=True, choices=['snapback', 'spring-sabc'])
+    ap.add_argument('--strategy', required=True, choices=['snapback', 'spring-sabc', 'sweep-reclaim'])
     ap.add_argument('--start', required=True, help='ISO8601 with timezone, e.g. 2025-04-18T00:00:00+00:00')
     ap.add_argument('--end', required=True, help='ISO8601 with timezone, e.g. 2026-04-18T00:00:00+00:00')
     ap.add_argument('--batch-days', type=int, required=True)

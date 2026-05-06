@@ -301,6 +301,8 @@ strategies/spring/config.json:
 6. `strategies/run_backtest.py` 已支持 `--strategy sweep-reclaim`，首版复用 Spring 强势 TopN decision audit 写法并输出 `sweep_reclaim_decision_audit.{run_id}.jsonl`。
 7. `core/engine/broker.py` 已允许 SWR 使用 Spring 同形的 sim exit policy 段：`max_hold_mins` / `time_stop_min_profit_pct` / `breakeven_guard`。
 8. `core/analysis/visualizer.py` 已将 SWR 复盘图文件名前缀改为 `SWR_`，Snapback 仍保持 `SNAP_`。
+9. `strategies/schedule_backtests.py` 已支持 `--strategy sweep-reclaim` 全量并行调度，并在 post-merge 阶段合并 `sweep_reclaim_decision_audit.{run_id}.jsonl` 为 `sweep_reclaim_decision_audit.{runset}_ALL.jsonl`。
+10. 本地已完成 SWR scheduler `--dry-run` 验证，能按 batch 生成 `strategies/run_backtest.py --strategy sweep-reclaim` 命令。
 
 当前语义事实：
 
@@ -348,7 +350,7 @@ strategies/sweep_reclaim/config.json:
 当前 pending：
 
 1. 本地工作区没有 `data/klines_1m`，因此当前只完成合成样本验证，尚未跑真实历史数据回测。
-2. 下一步应在有 1m parquet 数据的环境运行短窗口 SWR sim smoke，再跑正式参数实验。
+2. 下一步应在服务器运行 SWR scheduler dry-run，再启动正式 30D/P6 全量调度。
 3. 首版只做 sim 语义与回测，不启动 live，不触交易所。
 4. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
 
