@@ -28,7 +28,7 @@ from core.live.market_data_hub_store import (
 
 BJ = timezone(timedelta(hours=8))
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
-_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 2
+_CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 3
 
 
 def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
