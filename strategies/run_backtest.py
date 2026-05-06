@@ -728,7 +728,14 @@ def main():
     def _spring_audit_compact_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         keep = [
             "symbol",
+            "rank_chg_24h",
+            "rank_vol_24h",
             "score_order",
+            "selected_score_order",
+            "score_rank_all",
+            "score_top_n",
+            "selected_for_structure",
+            "universe_hard_gate_pass",
             "score",
             "chg_24h",
             "vol_24h",
@@ -772,6 +779,21 @@ def main():
             "fail_reason",
         ]
         return {k: _json_safe(candidate.get(k)) for k in keep if k in candidate}
+
+    def _spring_decision_scoreboard(audits: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows = [
+            _spring_audit_compact_candidate(rec)
+            for rec in audits.values()
+            if rec.get("score") is not None
+        ]
+        return sorted(
+            rows,
+            key=lambda row: (
+                row.get("score_rank_all") is None,
+                int(row.get("score_rank_all") or 10**9),
+                str(row.get("symbol") or ""),
+            ),
+        )
 
     def _write_spring_decision_audit_row(
         strategy: Any,
@@ -850,6 +872,7 @@ def main():
             "selected_symbols": selected_symbols,
             "universe_candidates": [_spring_audit_compact_candidate(x) for x in universe_candidates],
             "structure_candidates": [_spring_audit_compact_candidate(x) for x in structure_candidates],
+            "decision_scoreboard": _spring_decision_scoreboard(structure_audits or universe_audits),
             "selected_candidate_audits": selected_audits,
             "selected_cross_rows": selected_cross_rows,
             "signal": signal_digest,

@@ -249,8 +249,15 @@ def _audit_preview(audits: Mapping[str, Mapping[str, Any]], limit: int) -> list[
             "structure_pass": bool(rec.get("structure_pass", False)),
             "signal_emit": bool(rec.get("signal_emit", False)),
             "fail_reason": rec.get("signal_fail_reason") or rec.get("fail_reason"),
+            "rank_chg_24h": rec.get("rank_chg_24h"),
+            "rank_vol_24h": rec.get("rank_vol_24h"),
             "score": rec.get("score"),
+            "score_rank_all": rec.get("score_rank_all"),
             "score_order": rec.get("score_order"),
+            "selected_score_order": rec.get("selected_score_order"),
+            "score_top_n": rec.get("score_top_n"),
+            "selected_for_structure": rec.get("selected_for_structure"),
+            "universe_hard_gate_pass": rec.get("universe_hard_gate_pass"),
             "chg_24h": rec.get("chg_24h"),
             "vol_24h": rec.get("vol_24h"),
             "a_time_ms": rec.get("a_time_ms"),
@@ -262,6 +269,51 @@ def _audit_preview(audits: Mapping[str, Mapping[str, Any]], limit: int) -> list[
         if len(rows) >= limit:
             break
     return rows
+
+
+def _decision_audit(audits: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for symbol in sorted(audits.keys()):
+        rec = audits[symbol]
+        rows.append({
+            "symbol": str(symbol).upper().strip(),
+            "universe_pass": bool(rec.get("universe_pass", False)),
+            "universe_hard_gate_pass": rec.get("universe_hard_gate_pass"),
+            "structure_pass": bool(rec.get("structure_pass", False)),
+            "signal_emit": bool(rec.get("signal_emit", False)),
+            "fail_reason": rec.get("signal_fail_reason") or rec.get("fail_reason"),
+            "rank_chg_24h": rec.get("rank_chg_24h"),
+            "rank_vol_24h": rec.get("rank_vol_24h"),
+            "score": rec.get("score"),
+            "score_rank_all": rec.get("score_rank_all"),
+            "score_order": rec.get("score_order"),
+            "selected_score_order": rec.get("selected_score_order"),
+            "score_top_n": rec.get("score_top_n"),
+            "selected_for_structure": rec.get("selected_for_structure"),
+            "chg_24h": rec.get("chg_24h"),
+            "vol_24h": rec.get("vol_24h"),
+            "a_time_ms": rec.get("a_time_ms"),
+            "b_time_ms": rec.get("b_time_ms"),
+            "c_time_ms": rec.get("c_time_ms"),
+            "risk_pct": rec.get("risk_pct"),
+            "position_notional_usdt": rec.get("position_notional_usdt"),
+        })
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["score_rank_all"] is None,
+            int(row["score_rank_all"] or 10**9),
+            str(row["symbol"]),
+        ),
+    )
+
+
+def _decision_scoreboard(audits: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in _decision_audit(audits)
+        if row.get("score") is not None
+    ]
 
 
 def _blocked_execution_result(
@@ -335,6 +387,8 @@ def _not_ready_projection_row(
         "fail_reason_counts": {},
         "audit_preview_limit": int(audit_preview_limit),
         "audit_preview": [],
+        "decision_scoreboard": [],
+        "decision_audit": [],
         "signal_present": False,
         "signal_symbol": None,
         "signal": None,
@@ -533,6 +587,8 @@ def run_once(
         "fail_reason_counts": _fail_reason_counts(audits),
         "audit_preview_limit": int(audit_preview_limit),
         "audit_preview": _audit_preview(audits, audit_preview_limit),
+        "decision_scoreboard": _decision_scoreboard(audits),
+        "decision_audit": _decision_audit(audits),
         "signal_present": bool(signal),
         "signal_symbol": str((signal or {}).get("symbol") or "").upper().strip() or None,
         "signal": signal,

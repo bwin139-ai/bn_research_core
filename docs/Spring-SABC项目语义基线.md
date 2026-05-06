@@ -66,6 +66,27 @@ score 越小越优
 
 spring-sabc 的候选池不是“唯一龙一”，而是 score 前 N 名强势候选池。
 
+审计字段语义：
+
+```text
+rank_chg_24h：通过硬 universe 条件后，按 24h 涨幅降序得到的名次，数值越小越强。
+rank_vol_24h：通过硬 universe 条件后，按 24h 成交额降序得到的名次，数值越小越强。
+score：rank_chg_24h + rank_vol_24h，是综合分数，不是名次。
+score_rank_all：通过硬 universe 条件后的全候选综合排序名次，数值越小越靠前。
+selected_score_order：进入 score_top_n 后的 topN 内顺序；未进入 topN 时为 null。
+score_order：历史字段，当前语义等同 selected_score_order，不表示全候选排名。
+selected_for_structure：是否进入 score_top_n 并被送入 structure 检查。
+universe_hard_gate_pass：是否通过 24h 涨幅、24h 成交额、exclude_symbols 等 universe 硬条件。
+```
+
+因此：
+
+```text
+score=19 不表示第 19 名。
+score_order=null 不表示排序失败，只表示没有进入 score_top_n。
+判断是否靠前应看 score_rank_all；判断是否进入结构检查应看 selected_score_order / selected_for_structure。
+```
+
 5. Structure 总语义
 
 spring-sabc 的核心任务，是在强势候选池中识别 高质量洗盘后快速收回 的微观 1m 结构。

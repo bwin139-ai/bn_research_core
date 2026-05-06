@@ -187,10 +187,13 @@ class SpringSABCStrategy:
     def _empty_audit(self, fail_reason: str) -> Dict[str, Any]:
         return {
             "universe_pass": False,
+            "universe_hard_gate_pass": False,
             "structure_pass": False,
             "signal_emit": False,
             "fail_reason": fail_reason,
             "score_top_n": self.score_top_n,
+            "score_rank_all": None,
+            "selected_score_order": None,
         }
 
     def _build_universe_state(
@@ -223,6 +226,9 @@ class SpringSABCStrategy:
                 "in_active_symbols": symbol in normalized_active,
                 "is_excluded_symbol": symbol in self.exclude_symbols,
                 "score_top_n": self.score_top_n,
+                "universe_hard_gate_pass": False,
+                "score_rank_all": None,
+                "selected_score_order": None,
             }
             if record["chg_24h"] is None or record["vol_24h"] is None:
                 record["fail_reason"] = "cross_section_nan_metrics"
@@ -260,6 +266,15 @@ class SpringSABCStrategy:
         selected_symbols = set(selected.index.tolist())
 
         candidates: List[Dict[str, Any]] = []
+        score_rank_by_symbol = {
+            symbol: rank_idx
+            for rank_idx, symbol in enumerate(eligible_df.index.tolist(), start=1)
+        }
+        selected_score_order_by_symbol = {
+            symbol: order_idx
+            for order_idx, symbol in enumerate(selected.index.tolist(), start=1)
+        }
+
         for order_idx, (symbol, row) in enumerate(selected.iterrows(), start=1):
             candidate = {
                 "symbol": symbol,
@@ -268,8 +283,12 @@ class SpringSABCStrategy:
                 "rank_chg_24h": int(row["rank_chg_24h"]),
                 "rank_vol_24h": int(row["rank_vol_24h"]),
                 "score": int(row["score"]),
+                "score_rank_all": int(score_rank_by_symbol[symbol]),
+                "selected_score_order": int(order_idx),
                 "score_order": order_idx,
                 "score_top_n": self.score_top_n,
+                "selected_for_structure": True,
+                "universe_hard_gate_pass": True,
                 "in_active_symbols": symbol in normalized_active,
             }
             candidates.append(candidate)
@@ -279,11 +298,18 @@ class SpringSABCStrategy:
             rec["rank_chg_24h"] = int(row["rank_chg_24h"])
             rec["rank_vol_24h"] = int(row["rank_vol_24h"])
             rec["score"] = int(row["score"])
+            rec["score_rank_all"] = int(score_rank_by_symbol[symbol])
+            rec["selected_score_order"] = (
+                int(selected_score_order_by_symbol[symbol])
+                if symbol in selected_score_order_by_symbol
+                else None
+            )
+            rec["universe_hard_gate_pass"] = True
             rec["selected_for_structure"] = symbol in selected_symbols
             if symbol in selected_symbols:
                 rec["universe_pass"] = True
                 rec["fail_reason"] = "pending_structure_check"
-                rec["score_order"] = next(c["score_order"] for c in candidates if c["symbol"] == symbol)
+                rec["score_order"] = int(selected_score_order_by_symbol[symbol])
             else:
                 rec["fail_reason"] = "score_not_in_top_n"
 
@@ -882,7 +908,14 @@ class SpringSABCStrategy:
                 "base_order_notional_usdt": float(self.base_order_notional_usdt),
                 "context": {
                     "strategy_name": self.strategy_name,
+                    "rank_chg_24h": int(candidate.get("rank_chg_24h", 0)),
+                    "rank_vol_24h": int(candidate.get("rank_vol_24h", 0)),
+                    "score_rank_all": int(candidate.get("score_rank_all", 0)),
+                    "selected_score_order": int(candidate.get("selected_score_order", candidate.get("score_order", 0))),
                     "score_order": int(candidate.get("score_order", 0)),
+                    "score_top_n": int(candidate.get("score_top_n", self.score_top_n)),
+                    "selected_for_structure": bool(candidate.get("selected_for_structure", True)),
+                    "universe_hard_gate_pass": bool(candidate.get("universe_hard_gate_pass", True)),
                     "score": int(candidate.get("score", 0)),
                     "chg_24h": float(candidate.get("chg_24h", 0.0)),
                     "vol_24h": float(candidate.get("vol_24h", 0.0)),
