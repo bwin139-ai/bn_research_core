@@ -1232,6 +1232,7 @@ def _filter_symbols_by_universe(
     audit_label: str,
     ticker_map: dict[str, dict[str, Any]] | None = None,
     validate_metric_window: bool = True,
+    prefetch_errors: dict[str, str] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     vol_min, chg_min, chg_max = _require_universe_cfg(strategy_cfg)
     eligible: list[str] = []
@@ -1241,6 +1242,31 @@ def _filter_symbols_by_universe(
     signal_time_bj = _fmt_bj_from_ms(signal_time_ts)
     for symbol in symbols:
         metric_df = metric_frames.get(symbol)
+        metric_frame_rows = int(len(metric_df)) if isinstance(metric_df, pd.DataFrame) else None
+        metric_frame_index = (
+            sorted(int(x) for x in metric_df.index.tolist())
+            if isinstance(metric_df, pd.DataFrame) and not metric_df.empty
+            else []
+        )
+        metric_frame_min_ts = int(metric_frame_index[0]) if metric_frame_index else None
+        metric_frame_max_ts = int(metric_frame_index[-1]) if metric_frame_index else None
+        metric_audit = {
+            'metric_frame_present': isinstance(metric_df, pd.DataFrame),
+            'metric_frame_empty': (
+                bool(metric_df.empty)
+                if isinstance(metric_df, pd.DataFrame) else None
+            ),
+            'metric_frame_rows': metric_frame_rows,
+            'metric_frame_min_ts': metric_frame_min_ts,
+            'metric_frame_min_bj': _fmt_bj_from_ms(metric_frame_min_ts),
+            'metric_frame_max_ts': metric_frame_max_ts,
+            'metric_frame_max_bj': _fmt_bj_from_ms(metric_frame_max_ts),
+            'metric_frame_contains_c_bar': (
+                int(latest_closed_bar_ts) in metric_frame_index
+                if metric_frame_index else False
+            ),
+            'contract_metric_prefetch_error': (prefetch_errors or {}).get(symbol),
+        }
         metric_row, metric_reason = _latest_metric_row(
             metric_df,
             latest_closed_bar_ts,
@@ -1267,6 +1293,8 @@ def _filter_symbols_by_universe(
                 'ticker_chg_pct': ticker_chg_pct,
                 'universe_pass': False,
                 'universe_fail_reason': reason,
+                'contract_metric_reason': metric_reason,
+                **metric_audit,
             })
             continue
         quote_vol = _to_float(metric_row.get('vol_24h'))
@@ -1297,6 +1325,8 @@ def _filter_symbols_by_universe(
                 'ticker_chg_pct': ticker_chg_pct,
                 'universe_pass': False,
                 'universe_fail_reason': reason,
+                'contract_metric_reason': metric_reason,
+                **metric_audit,
             })
             continue
         eligible.append(symbol)
@@ -1315,6 +1345,8 @@ def _filter_symbols_by_universe(
             'ticker_chg_pct': ticker_chg_pct,
             'universe_pass': True,
             'universe_fail_reason': '',
+            'contract_metric_reason': metric_reason,
+            **metric_audit,
         })
     return eligible, errors
 
@@ -1698,6 +1730,7 @@ def build_live_inputs(
         latest_closed_bar_ts=latest_closed_bar_ts,
         audit_label=audit_label,
         ticker_map=ticker_map,
+        prefetch_errors=prefetch_errors,
     )
     if not eligible_symbols:
         return {'ok': False, 'reason': 'no eligible symbols after 24h universe filter', 'data': None, 'errors': prefetch_errors | universe_errors}
