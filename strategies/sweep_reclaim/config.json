@@ -51,7 +51,7 @@
     "score_top_n": 3
   },
   "structure": {
-    "support_window_mins": 120,
+    "support_window_mins": 180,
     "hb_drop": {
       "min": 0.06
     },
