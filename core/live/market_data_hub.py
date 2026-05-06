@@ -284,6 +284,69 @@ def _extract_closed_bar_snapshot(df: Any, c_bar_ts: int) -> dict[str, Any] | Non
     }
 
 
+def _cross_section_symbol_set(cross_section: Any) -> set[str]:
+    if cross_section is None:
+        return set()
+    try:
+        return {str(symbol).upper().strip() for symbol in cross_section.index}
+    except Exception:
+        return set()
+
+
+def _full_df_symbol_map(full_df: dict[str, Any]) -> dict[str, tuple[str, Any]]:
+    out: dict[str, tuple[str, Any]] = {}
+    for raw_symbol, df in (full_df or {}).items():
+        symbol = str(raw_symbol).upper().strip()
+        if symbol:
+            out[symbol] = (raw_symbol, df)
+    return out
+
+
+def _full_df_only_symbols(full_df: dict[str, Any], cross_section: Any) -> list[str]:
+    return sorted(set(_full_df_symbol_map(full_df).keys()) - _cross_section_symbol_set(cross_section))
+
+
+def _write_finalize_cross_section_missing_event(
+    account: str,
+    audit_enabled: bool,
+    *,
+    symbol: str,
+    current_time_ms: int,
+    current_time_bj: str,
+    c_bar_ts: int,
+    c_bar_bj: str,
+    round_probe_utc_ms: int,
+    round_probe_bj: str,
+    finalize_round: int,
+    reason: str,
+    refresh_res: dict[str, Any],
+    refresh_payload: dict[str, Any] | None,
+    refreshed_snapshot: dict[str, Any] | None,
+    exception: Exception | None = None,
+) -> None:
+    if not audit_enabled:
+        return
+    payload_errors = dict((refresh_payload or {}).get('errors') or {}) if isinstance(refresh_payload, dict) else {}
+    payload_stale_symbols = dict((refresh_payload or {}).get('stale_symbols') or {}) if isinstance(refresh_payload, dict) else {}
+    write_event(account, 'c_bar_finalize_cross_section_missing', {
+        'symbol': symbol,
+        'bar_ts': current_time_ms,
+        'bar_bj': current_time_bj,
+        'c_bar_ts': c_bar_ts,
+        'c_bar_bj': c_bar_bj,
+        'round_probe_utc_ms': round_probe_utc_ms,
+        'round_probe_bj': round_probe_bj,
+        'finalize_round': finalize_round,
+        'reason': reason,
+        'refresh_ok': bool(refresh_res.get('ok')),
+        'refresh_reason': refresh_res.get('reason'),
+        'refresh_error': payload_errors.get(symbol),
+        'refresh_stale_reason': payload_stale_symbols.get(symbol),
+        'refreshed_snapshot': refreshed_snapshot,
+        'exception': str(exception) if exception is not None else None,
+    })
+
+
 def _drop_symbol_from_cross_section(cross_section: Any, symbol: str) -> Any:
     if cross_section is None:
         return cross_section
@@ -394,6 +457,9 @@ def finalize_candidate_payload_via_hub(
     }
 
     if not pending_symbols:
+        finalize_full_df_only_symbols = _full_df_only_symbols(candidate_full_df, candidate_cross_section)
+        finalize_summary['full_df_only_symbol_count'] = int(len(finalize_full_df_only_symbols))
+        finalize_summary['full_df_only_symbols'] = finalize_full_df_only_symbols
         finalized_payload = _build_finalized_candidate_payload(candidate_payload, candidate_cross_section, candidate_full_df, finalize_cache_stats, finalize_summary)
         _write_finalize_snapshots(account, finalized_payload)
         return finalized_payload
@@ -460,7 +526,41 @@ def finalize_candidate_payload_via_hub(
                 try:
                     if refreshed_cross_section is not None and symbol in refreshed_cross_section.index:
                         candidate_cross_section.loc[symbol] = refreshed_cross_section.loc[symbol]
-                except Exception:
+                    else:
+                        _write_finalize_cross_section_missing_event(
+                            account,
+                            audit_enabled,
+                            symbol=symbol,
+                            current_time_ms=current_time_ms,
+                            current_time_bj=current_time_bj,
+                            c_bar_ts=c_bar_ts,
+                            c_bar_bj=c_bar_bj,
+                            round_probe_utc_ms=round_probe_utc_ms,
+                            round_probe_bj=round_probe_bj,
+                            finalize_round=int(finalize_summary['finalize_rounds']),
+                            reason='symbol_missing_from_refreshed_cross_section',
+                            refresh_res=refresh_res,
+                            refresh_payload=refresh_payload,
+                            refreshed_snapshot=refreshed_snapshot,
+                        )
+                except Exception as e:
+                    _write_finalize_cross_section_missing_event(
+                        account,
+                        audit_enabled,
+                        symbol=symbol,
+                        current_time_ms=current_time_ms,
+                        current_time_bj=current_time_bj,
+                        c_bar_ts=c_bar_ts,
+                        c_bar_bj=c_bar_bj,
+                        round_probe_utc_ms=round_probe_utc_ms,
+                        round_probe_bj=round_probe_bj,
+                        finalize_round=int(finalize_summary['finalize_rounds']),
+                        reason='cross_section_update_exception',
+                        refresh_res=refresh_res,
+                        refresh_payload=refresh_payload,
+                        refreshed_snapshot=refreshed_snapshot,
+                        exception=e,
+                    )
                     candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
                 if audit_enabled:
                     write_event(account, 'c_bar_finalize_passed', {
@@ -486,7 +586,41 @@ def finalize_candidate_payload_via_hub(
             try:
                 if refreshed_cross_section is not None and symbol in refreshed_cross_section.index:
                     candidate_cross_section.loc[symbol] = refreshed_cross_section.loc[symbol]
-            except Exception:
+                else:
+                    _write_finalize_cross_section_missing_event(
+                        account,
+                        audit_enabled,
+                        symbol=symbol,
+                        current_time_ms=current_time_ms,
+                        current_time_bj=current_time_bj,
+                        c_bar_ts=c_bar_ts,
+                        c_bar_bj=c_bar_bj,
+                        round_probe_utc_ms=round_probe_utc_ms,
+                        round_probe_bj=round_probe_bj,
+                        finalize_round=int(finalize_summary['finalize_rounds']),
+                        reason='symbol_missing_from_refreshed_cross_section',
+                        refresh_res=refresh_res,
+                        refresh_payload=refresh_payload,
+                        refreshed_snapshot=refreshed_snapshot,
+                    )
+            except Exception as e:
+                _write_finalize_cross_section_missing_event(
+                    account,
+                    audit_enabled,
+                    symbol=symbol,
+                    current_time_ms=current_time_ms,
+                    current_time_bj=current_time_bj,
+                    c_bar_ts=c_bar_ts,
+                    c_bar_bj=c_bar_bj,
+                    round_probe_utc_ms=round_probe_utc_ms,
+                    round_probe_bj=round_probe_bj,
+                    finalize_round=int(finalize_summary['finalize_rounds']),
+                    reason='cross_section_update_exception',
+                    refresh_res=refresh_res,
+                    refresh_payload=refresh_payload,
+                    refreshed_snapshot=refreshed_snapshot,
+                    exception=e,
+                )
                 candidate_cross_section = _drop_symbol_from_cross_section(candidate_cross_section, symbol)
 
             if symbol not in changed_symbols:
@@ -561,6 +695,9 @@ def finalize_candidate_payload_via_hub(
     finalize_summary['passed_symbols'] = passed_symbols
     finalize_summary['timeout_not_finalized_count'] = int(len(timeout_symbols))
     finalize_summary['timeout_not_finalized_symbols'] = timeout_symbols
+    finalize_full_df_only_symbols = _full_df_only_symbols(candidate_full_df, candidate_cross_section)
+    finalize_summary['full_df_only_symbol_count'] = int(len(finalize_full_df_only_symbols))
+    finalize_summary['full_df_only_symbols'] = finalize_full_df_only_symbols
     finalize_summary['last_valid_probe_utc_ms_by_symbol'] = dict(last_valid_probe_utc_ms_by_symbol)
     finalize_summary['last_valid_probe_bj_by_symbol'] = dict(last_valid_probe_bj_by_symbol)
 
