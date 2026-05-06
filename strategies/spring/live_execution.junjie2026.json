@@ -2,7 +2,7 @@
   "schema_version": 1,
   "strategy_name": "spring-sabc",
   "strategy_code": "SPR",
-  "account": "mybwin139",
+  "account": "junjie2026",
   "execution_mode": "live_once",
   "allow_live_order": true,
   "audit_enabled": true,

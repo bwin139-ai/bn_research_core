@@ -42,8 +42,35 @@ nohup /root/service_env/bin/python strategies/spring/run_live.py \
   --hub-max-age-secs 120 \
   --audit-preview-limit 30 \
   >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
-
 tail -n 200 -f output/live_projection/spring_live.mybwin139.log
+
+ACCOUNT=chen912
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.chen912.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
+tail -n 200 -f output/live_projection/spring_live.chen912.log
+
+ACCOUNT=junjie2026
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.junjie2026.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
+tail -n 200 -f output/live_projection/spring_live.junjie2026.log
 
 # ============== Spring-SABC 冒烟测试  ===============
 RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
