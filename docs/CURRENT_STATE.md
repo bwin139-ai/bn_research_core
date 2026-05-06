@@ -61,6 +61,7 @@ docs/README.md
 docs/PROJECT_BASELINE.md
 docs/STANDARD_PATCH_FRAMEWORK.md
 docs/CURRENT_STATE.md
+docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md
 ```
 
 新线程用户侧可复制模板：
@@ -179,6 +180,7 @@ market_data_hub_config.json:
 16. 2026-05-06 已增强 Snapback live stage2 universe 审计可观测性：`contract_24h_metric_empty` 等 24h metric 缺口不再只落归一化 fail reason，stage2 现在同时记录 `metric_frame_present`、`metric_frame_empty`、`metric_frame_rows`、`metric_frame_min/max_ts/bj`、`metric_frame_contains_c_bar`、`contract_metric_reason` 与 `contract_metric_prefetch_error`。该 patch 不改变 universe 过滤语义，仅用于后续 sim/live 一致性审计还原 per-symbol 合约 K 线 metric prefetch / frame 构建失败原因。
 17. 2026-05-06 已增强 Snapback live `finalized full_df -> candidate_cross_section -> stage4/stage5` 审计链：finalize summary 增加 `full_df_only_symbol_count/full_df_only_symbols`；当 finalize refresh 的 `full_df` 已有 symbol 但 `cross_section` 缺 symbol 时，写 `c_bar_finalize_cross_section_missing` event；进入策略逻辑前若仍存在 `full_df` 有、`cross_section` 无的 symbol，写 `candidate_cross_section_missing_after_finalize` event，并在 `stage4_input_snapshot` 与 `stage5_structure_audit` 中为该 symbol 落 `input_pass_to_logic=false`、`fail_reason=missing_from_cross_section_after_finalize`、C bar full_df 快照、candidate error/stale reason 与 finalize passed/delayed 标记。该 patch 不改变 Snapback 信号或交易语义，只用于避免 AIOTUSDT 这类 sim 有信号、live 无 stage4/stage5 现场时无法定位缺席边界。
 18. 2026-05-06 已将 data hub `finalized_candidate_inputs` 的 candidate finalize probe 间隔从 2 秒加固为 3 秒，仍保持两轮快照一致视为闭合、deadline 为 `signal_time+50s`。原因是 SKYAIUSDT 暴露出 `B=C` 同 bar 时 `c_index_low/b_index_price` 伪闭合会直接改变 `current_price > b_index_price`、`rebound_ratio` 与 SL，影响策略事实；本刀先用最小方式降低 index low 伪闭合概率，后续若继续复现再升级到三次一致或 near-deadline 关键字段复核。
+19. 2026-05-06 新增 `docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md` 作为 Snapback sim/live 一致性审计长期规格文档。后续新线程做 Snapback sim/live 审计时，应按该文档统一审计窗口、输入文件、signal/ABC 匹配、硬字段与降权字段、live-only/sim-only 分类、stage audit 定位顺序与 live trading lifecycle 检查口径；其中 `c_index_close` 默认记录但降权，`c_index_low/b_index_price` 在 `B=C` 同 bar 时为核心硬字段。
 
 当前配置事实：
 
