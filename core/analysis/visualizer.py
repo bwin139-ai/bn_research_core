@@ -463,7 +463,9 @@ class StrategyVisualizerMatplotlib:
                 spine.set_color("black")
 
         # 6. 保存图表
-        filename = f"SNAP_{entry_time_dt.strftime('%Y%m%d_%H%M')}_{symbol}_{exit_short}.png"
+        strategy_name = str((trade.get("context") or {}).get("strategy_name") or "").strip()
+        filename_prefix = "SWR" if strategy_name == "sweep-reclaim" else "SNAP"
+        filename = f"{filename_prefix}_{entry_time_dt.strftime('%Y%m%d_%H%M')}_{symbol}_{exit_short}.png"
         save_path = os.path.join(self.output_dir, filename)
         fig.savefig(save_path, dpi=100, pad_inches=0.25)
         plt.close(fig)

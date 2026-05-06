@@ -300,6 +300,7 @@ strategies/spring/config.json:
 5. `core/config_loader.py` 已新增 `sweep-reclaim` fail-fast 配置校验。
 6. `strategies/run_backtest.py` 已支持 `--strategy sweep-reclaim`，首版复用 Spring 强势 TopN decision audit 写法并输出 `sweep_reclaim_decision_audit.{run_id}.jsonl`。
 7. `core/engine/broker.py` 已允许 SWR 使用 Spring 同形的 sim exit policy 段：`max_hold_mins` / `time_stop_min_profit_pct` / `breakeven_guard`。
+8. `core/analysis/visualizer.py` 已将 SWR 复盘图文件名前缀改为 `SWR_`，Snapback 仍保持 `SNAP_`。
 
 当前语义事实：
 
