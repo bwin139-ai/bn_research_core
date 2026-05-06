@@ -51,12 +51,12 @@
     "score_top_n": 3
   },
   "structure": {
-    "support_window_mins": 240,
+    "support_window_mins": 120,
     "hb_drop": {
-      "min": 0.05
+      "min": 0.06
     },
     "rebound": {
-      "bc_rebound_min": 0.25,
+      "bc_rebound_min": 0.20,
       "bc_rebound_max": 0.4,
       "hb_bars_min": 3,
       "bc_bars_min": 1,
