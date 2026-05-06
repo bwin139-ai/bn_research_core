@@ -95,7 +95,7 @@ class VirtualBroker:
         self.breakeven_guard_trigger_r = 0.0
         self.breakeven_guard_floor_r = 0.0
 
-        if strategy_name == "spring-sabc":
+        if strategy_name in {"spring-sabc", "sweep-reclaim"}:
             exit_policy = self.config["exit_policy"]
             self.max_hold_mins = int(exit_policy["max_hold_mins"])
             self.time_stop_min_profit = float(exit_policy["time_stop_min_profit_pct"])

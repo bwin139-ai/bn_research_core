@@ -296,6 +296,10 @@ strategies/spring/config.json:
 1. 新增 Sweep-Reclaim / SWR 策略语义基线：`docs/Sweep-Reclaim项目语义基线.md`。
 2. 新增策略参数骨架：`strategies/sweep_reclaim/config.json`。
 3. 新增策略包目录：`strategies/sweep_reclaim/`。
+4. 新增 SWR sim 结构识别逻辑：`strategies/sweep_reclaim/logic.py`。
+5. `core/config_loader.py` 已新增 `sweep-reclaim` fail-fast 配置校验。
+6. `strategies/run_backtest.py` 已支持 `--strategy sweep-reclaim`，首版复用 Spring 强势 TopN decision audit 写法并输出 `sweep_reclaim_decision_audit.{run_id}.jsonl`。
+7. `core/engine/broker.py` 已允许 SWR 使用 Spring 同形的 sim exit policy 段：`max_hold_mins` / `time_stop_min_profit_pct` / `breakeven_guard`。
 
 当前语义事实：
 
@@ -342,9 +346,10 @@ strategies/sweep_reclaim/config.json:
 
 当前 pending：
 
-1. 实现 SWR sim 逻辑前，先审 Spring universe / decision audit 代码，确定强势 TopN 与审计字段复用边界。
-2. 首版实现只做 sim 语义与回测，不启动 live，不触交易所。
-3. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
+1. 本地工作区没有 `data/klines_1m`，因此当前只完成合成样本验证，尚未跑真实历史数据回测。
+2. 下一步应在有 1m parquet 数据的环境运行短窗口 SWR sim smoke，再跑正式参数实验。
+3. 首版只做 sim 语义与回测，不启动 live，不触交易所。
+4. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
 
 已确认 incident：
 

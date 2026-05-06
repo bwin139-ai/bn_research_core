@@ -268,6 +268,13 @@ def _spring_decision_audit_path(base_dir: str, run_id: str) -> str:
     return os.path.join(base_dir, "spring_decision_audit.jsonl")
 
 
+def _sweep_reclaim_decision_audit_path(base_dir: str, run_id: str) -> str:
+    rid = str(run_id or "").strip()
+    if rid:
+        return os.path.join(base_dir, f"sweep_reclaim_decision_audit.{rid}.jsonl")
+    return os.path.join(base_dir, "sweep_reclaim_decision_audit.jsonl")
+
+
 def _patch_candidate_pool_audit_writer(strategy: Any, audit_path: str) -> None:
     target_path = Path(audit_path)
 
@@ -632,7 +639,7 @@ def main():
     )
     parser.add_argument(
         "--strategy",
-        choices=["spring-sabc", "snapback"],
+        choices=["spring-sabc", "snapback", "sweep-reclaim"],
         default="snapback",
         help="选择要运行的策略大脑 (默认: snapback)",
     )
@@ -740,21 +747,30 @@ def main():
             "chg_24h",
             "vol_24h",
             "a_time_ms",
+            "h_time_ms",
             "b_time_ms",
             "c_time_ms",
             "gamma_time_ms",
+            "h_close",
             "a_close",
             "a_high",
             "b_close",
             "b_low",
             "c_close",
+            "bars_hb",
             "ab_bars",
             "bc_bars",
+            "hb_drop",
             "ab_chg_pct",
+            "bc_rebound",
             "rebound_ratio",
             "rebound_ratio_min",
             "rebound_ratio_max",
+            "bc_over_hb_bars",
             "bc_over_ab_bars",
+            "vol_climax",
+            "h_gamma_avg_vol",
+            "gamma_c_avg_vol",
             "vol_ratio",
             "vol_gamma_a",
             "vol_ac",
@@ -774,6 +790,7 @@ def main():
             "position_notional_usdt",
             "planned_sl_loss_usdt",
             "stop_loss_price",
+            "take_profit_r_multiple",
             "signal_fail_reason",
             "signal_emit",
             "fail_reason",
@@ -915,11 +932,17 @@ def main():
         if take_profit_mode == "risk_reward_1r":
             tp_price = entry_price + (entry_price - sl_price)
             tp_price_source = "sim_entry_price_rr_1r"
+        elif take_profit_mode == "risk_reward_r_multiple":
+            r_multiple = _safe_float(params.get("take_profit_r_multiple"), None)
+            if r_multiple is None or r_multiple <= 0:
+                raise ValueError("sim take_profit_r_multiple must be > 0")
+            tp_price = entry_price + (entry_price - sl_price) * float(r_multiple)
+            tp_price_source = "sim_entry_price_rr_multiple"
         elif take_profit_mode == "fixed_pct" and take_profit_pct is not None and take_profit_pct > 0:
             tp_price = entry_price * (1.0 + take_profit_pct)
             tp_price_source = "sim_entry_price_fixed_pct"
         else:
-            raise ValueError(f"spring sim unsupported take_profit_mode: {take_profit_mode!r}")
+            raise ValueError(f"sim unsupported take_profit_mode: {take_profit_mode!r}")
         if tp_price <= entry_price:
             raise ValueError(f"spring sim resolved TP must be above entry for LONG: tp={tp_price} entry={entry_price}")
 
@@ -955,6 +978,10 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     if args.strategy == "spring-sabc":
         spring_decision_audit_path = _spring_decision_audit_path(out_dir, args.run_id)
+        Path(spring_decision_audit_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(spring_decision_audit_path).write_text("", encoding="utf-8")
+    elif args.strategy == "sweep-reclaim":
+        spring_decision_audit_path = _sweep_reclaim_decision_audit_path(out_dir, args.run_id)
         Path(spring_decision_audit_path).parent.mkdir(parents=True, exist_ok=True)
         Path(spring_decision_audit_path).write_text("", encoding="utf-8")
     if audit_enabled:
@@ -1004,7 +1031,7 @@ def main():
                     config["runtime"]["max_history_window_mins"] / (24 * 60)
                 ),
             )
-        elif args.strategy == "spring-sabc":
+        elif args.strategy in {"spring-sabc", "sweep-reclaim"}:
             feeder_ndays_lowest = max(
                 1,
                 math.ceil(
@@ -1046,6 +1073,10 @@ def main():
 
         strategy = SpringSABCStrategy(config=config)
         _apply_spring_logging_hooks(strategy, broker)
+    elif args.strategy == "sweep-reclaim":
+        from strategies.sweep_reclaim.logic import SweepReclaimStrategy
+
+        strategy = SweepReclaimStrategy(config=config)
     else:
         logging.error(f"❌ 不支持的策略类型: {args.strategy}")
         sys.exit(1)
@@ -1070,8 +1101,8 @@ def main():
     for i, ts in enumerate(timestamps):
         cross_section = feeder.get_cross_section(ts)
 
-        # 4.1 驱动撮合引擎：snapback 保持原有顺序；spring-sabc 需要先在 CB 发单，再在同一 CB 撮合。
-        if args.strategy != "spring-sabc":
+        # 4.1 驱动撮合引擎：snapback 保持原有顺序；reclaim 类策略需要先在 CB 发单，再在同一 CB 撮合。
+        if args.strategy not in {"spring-sabc", "sweep-reclaim"}:
             broker.on_kline_close(ts, cross_section)
 
         # 4.2 获取当前活动标的，传给大脑做环境感知
@@ -1084,9 +1115,9 @@ def main():
             ts, cross_section, active_symbols, full_df=df_dict
         )
         signal_executable = True
-        if signal and args.strategy == "spring-sabc":
+        if signal and args.strategy in {"spring-sabc", "sweep-reclaim"}:
             signal_executable = _inject_spring_sim_execution_fields(signal, cross_section)
-        if args.strategy == "spring-sabc":
+        if args.strategy in {"spring-sabc", "sweep-reclaim"}:
             _write_spring_decision_audit_row(
                 strategy,
                 ts,
@@ -1153,10 +1184,12 @@ def main():
                     context["sizing_ratio"] = 1.0
             signals_history.append(signal)
             if not signal_executable:
-                if args.strategy == "spring-sabc":
+                if args.strategy in {"spring-sabc", "sweep-reclaim"}:
                     broker.on_kline_close(ts, cross_section)
                 continue
             if args.strategy == "spring-sabc":
+                logging.info(strategy.build_entry_log(signal))
+            elif args.strategy == "sweep-reclaim":
                 logging.info(strategy.build_entry_log(signal))
             # 4.4 回测入口作为"桥梁"，根据信号向撮合引擎发单
             # signal_time 已按策略语义记为 CB（观察/开仓发生时刻）
@@ -1178,7 +1211,7 @@ def main():
             order.base_order_notional_usdt = _safe_float(signal.get("base_order_notional_usdt"), None)
             broker.active_orders[signal["symbol"]] = order
 
-        if args.strategy == "spring-sabc":
+        if args.strategy in {"spring-sabc", "sweep-reclaim"}:
             broker.on_kline_close(ts, cross_section)
 
     # 5. 盘后结算与落盘

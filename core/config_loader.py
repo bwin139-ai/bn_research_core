@@ -85,6 +85,35 @@ class StrategyConfig:
         ("risk_controls", "full_notional_risk_pct"),
     ]
 
+    SWEEP_RECLAIM_REQUIRED_PATHS = [
+        ("strategy_name",),
+        ("runtime", "bar_interval"),
+        ("runtime", "max_history_window_mins"),
+        ("universe", "exclude_symbols"),
+        ("universe", "min_24h_chg_pct"),
+        ("universe", "min_24h_quote_volume"),
+        ("universe", "score_top_n"),
+        ("structure", "support_window_mins"),
+        ("structure", "hb_drop", "min"),
+        ("structure", "rebound", "bc_rebound_min"),
+        ("structure", "rebound", "bc_rebound_max"),
+        ("structure", "rebound", "hb_bars_min"),
+        ("structure", "rebound", "bc_bars_min"),
+        ("structure", "rebound", "bc_bars_max"),
+        ("structure", "rebound", "bc_over_hb_bars_max"),
+        ("structure", "vol_climax", "ratio_min"),
+        ("exit_policy", "stop_loss_anchor"),
+        ("exit_policy", "take_profit_r_multiple"),
+        ("exit_policy", "max_hold_mins"),
+        ("exit_policy", "time_stop_min_profit_pct"),
+        ("exit_policy", "breakeven_guard", "enabled"),
+        ("exit_policy", "breakeven_guard", "trigger_r"),
+        ("exit_policy", "breakeven_guard", "floor_r"),
+        ("risk_controls", "cooldown_hours"),
+        ("risk_controls", "base_order_notional_usdt"),
+        ("risk_controls", "full_notional_risk_pct"),
+    ]
+
     @staticmethod
     def _require_keys(raw_data: Dict[str, Any], keys: List[str]) -> None:
         for key in keys:
@@ -237,6 +266,102 @@ class StrategyConfig:
             raise ValueError('【铁律违背】structure.vol_climax.gamma_ac_vol_ratio_min 必须 > 0')
 
     @staticmethod
+    def _validate_sweep_reclaim(raw_data: Dict[str, Any]) -> None:
+        StrategyConfig._require_paths(raw_data, StrategyConfig.SWEEP_RECLAIM_REQUIRED_PATHS)
+        if raw_data["runtime"]["bar_interval"] != "1m":
+            raise ValueError('【铁律违背】runtime.bar_interval 目前只允许 "1m"')
+        exclude_symbols = raw_data["universe"]["exclude_symbols"]
+        if not isinstance(exclude_symbols, list):
+            raise ValueError('【铁律违背】universe.exclude_symbols 必须是 list')
+        if any(not isinstance(x, str) or not x.strip() for x in exclude_symbols):
+            raise ValueError('【铁律违背】universe.exclude_symbols 只允许非空字符串 symbol')
+        score_top_n = raw_data["universe"]["score_top_n"]
+        if not isinstance(score_top_n, int) or score_top_n <= 0:
+            raise ValueError('【铁律违背】universe.score_top_n 必须是正整数')
+
+        max_history_window_mins = raw_data["runtime"]["max_history_window_mins"]
+        support_window_mins = raw_data["structure"]["support_window_mins"]
+        if not isinstance(max_history_window_mins, int) or max_history_window_mins <= 0:
+            raise ValueError('【铁律违背】runtime.max_history_window_mins 必须是正整数')
+        if not isinstance(support_window_mins, int) or support_window_mins <= 0:
+            raise ValueError('【铁律违背】structure.support_window_mins 必须是正整数')
+        if max_history_window_mins < support_window_mins:
+            raise ValueError('【铁律违背】runtime.max_history_window_mins 必须 >= structure.support_window_mins')
+
+        stop_loss_anchor = str(raw_data["exit_policy"]["stop_loss_anchor"])
+        if stop_loss_anchor != "b_close":
+            raise ValueError('【铁律违背】exit_policy.stop_loss_anchor 目前只允许 "b_close"')
+        take_profit_r_multiple = raw_data["exit_policy"]["take_profit_r_multiple"]
+        if not isinstance(take_profit_r_multiple, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.take_profit_r_multiple 必须是 number')
+        if float(take_profit_r_multiple) <= 0:
+            raise ValueError('【铁律违背】exit_policy.take_profit_r_multiple 必须 > 0')
+
+        hb_drop_min = raw_data["structure"]["hb_drop"]["min"]
+        if not isinstance(hb_drop_min, (int, float)) or float(hb_drop_min) <= 0:
+            raise ValueError('【铁律违背】structure.hb_drop.min 必须是正 number')
+        rebound = raw_data["structure"]["rebound"]
+        bc_rebound_min = rebound["bc_rebound_min"]
+        bc_rebound_max = rebound["bc_rebound_max"]
+        if not isinstance(bc_rebound_min, (int, float)) or not isinstance(bc_rebound_max, (int, float)):
+            raise ValueError('【铁律违背】structure.rebound.bc_rebound_min/max 必须是 number')
+        if float(bc_rebound_min) <= 0 or float(bc_rebound_max) <= float(bc_rebound_min):
+            raise ValueError('【铁律违背】structure.rebound.bc_rebound 必须满足 0 < min < max')
+        hb_bars_min = rebound["hb_bars_min"]
+        bc_bars_min = rebound["bc_bars_min"]
+        bc_bars_max = rebound["bc_bars_max"]
+        if not isinstance(hb_bars_min, int) or hb_bars_min <= 0:
+            raise ValueError('【铁律违背】structure.rebound.hb_bars_min 必须是正整数')
+        if not isinstance(bc_bars_min, int) or bc_bars_min <= 0:
+            raise ValueError('【铁律违背】structure.rebound.bc_bars_min 必须是正整数')
+        if not isinstance(bc_bars_max, int) or bc_bars_max < bc_bars_min:
+            raise ValueError('【铁律违背】structure.rebound.bc_bars_max 必须 >= bc_bars_min')
+        bc_over_hb_bars_max = rebound["bc_over_hb_bars_max"]
+        if not isinstance(bc_over_hb_bars_max, (int, float)) or float(bc_over_hb_bars_max) <= 0:
+            raise ValueError('【铁律违背】structure.rebound.bc_over_hb_bars_max 必须是正 number')
+        vol_ratio_min = raw_data["structure"]["vol_climax"]["ratio_min"]
+        if not isinstance(vol_ratio_min, (int, float)) or float(vol_ratio_min) <= 0:
+            raise ValueError('【铁律违背】structure.vol_climax.ratio_min 必须是正 number')
+
+        max_hold_mins_cfg = raw_data["exit_policy"]["max_hold_mins"]
+        time_stop_min_profit_pct = raw_data["exit_policy"]["time_stop_min_profit_pct"]
+        if not isinstance(max_hold_mins_cfg, int) or max_hold_mins_cfg < 0:
+            raise ValueError('【铁律违背】exit_policy.max_hold_mins 必须是非负整数')
+        if not isinstance(time_stop_min_profit_pct, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.time_stop_min_profit_pct 必须是 number')
+        breakeven_guard = raw_data["exit_policy"]["breakeven_guard"]
+        if not isinstance(breakeven_guard.get("enabled"), bool):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.enabled 必须是 bool')
+        trigger_r = breakeven_guard.get("trigger_r")
+        floor_r = breakeven_guard.get("floor_r")
+        if not isinstance(trigger_r, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.trigger_r 必须是 number')
+        if not isinstance(floor_r, (int, float)):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须是 number')
+        if float(trigger_r) <= 0:
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.trigger_r 必须 > 0')
+        if float(floor_r) < 0:
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须 >= 0')
+        if float(floor_r) >= float(trigger_r):
+            raise ValueError('【铁律违背】exit_policy.breakeven_guard.floor_r 必须 < trigger_r')
+
+        cooldown_hours = raw_data["risk_controls"]["cooldown_hours"]
+        if not isinstance(cooldown_hours, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须是 number')
+        if float(cooldown_hours) < 0:
+            raise ValueError('【铁律违背】risk_controls.cooldown_hours 必须 >= 0')
+        base_order_notional_usdt = raw_data["risk_controls"]["base_order_notional_usdt"]
+        if not isinstance(base_order_notional_usdt, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须是 number')
+        if float(base_order_notional_usdt) <= 0:
+            raise ValueError('【铁律违背】risk_controls.base_order_notional_usdt 必须 > 0')
+        full_notional_risk_pct = raw_data["risk_controls"]["full_notional_risk_pct"]
+        if not isinstance(full_notional_risk_pct, (int, float)):
+            raise ValueError('【铁律违背】risk_controls.full_notional_risk_pct 必须是 number')
+        if float(full_notional_risk_pct) <= 0:
+            raise ValueError('【铁律违背】risk_controls.full_notional_risk_pct 必须 > 0')
+
+    @staticmethod
     def load(config_path: str) -> Dict[str, Any]:
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"配置文件缺失: {config_path}")
@@ -251,6 +376,8 @@ class StrategyConfig:
             StrategyConfig._validate_snapback(raw_data)
         elif strategy_name == "spring-sabc":
             StrategyConfig._validate_spring(raw_data)
+        elif strategy_name == "sweep-reclaim":
+            StrategyConfig._validate_sweep_reclaim(raw_data)
         else:
             raise KeyError(f"【铁律违背】未知 strategy_name: '{strategy_name}'")
 
