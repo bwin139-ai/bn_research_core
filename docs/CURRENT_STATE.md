@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-02
+更新时间：2026-05-06
 
 ## 0. 文档定位
 
@@ -40,8 +40,9 @@ bn_research_core
 1. `data_hub` 与 `live` 协同稳定化。
 2. `snapback-sabc` 的 live 观察与 sim/live/bn 审计闭环。
 3. `spring-sabc` 的主基线、结构过滤与审计工具完善。
-4. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
-5. Codex 多线程交接文档体系。
+4. `sweep-reclaim` 的新策略语义基线与参数骨架。
+5. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
+6. Codex 多线程交接文档体系。
 
 ### 1.3 当前阶段目标
 
@@ -62,6 +63,7 @@ docs/PROJECT_BASELINE.md
 docs/STANDARD_PATCH_FRAMEWORK.md
 docs/CURRENT_STATE.md
 docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md
+docs/Sweep-Reclaim项目语义基线.md
 ```
 
 新线程用户侧可复制模板：
@@ -76,6 +78,7 @@ docs/新Codex线程开场白.txt
 market_data_hub_config.json
 strategies/snapback/config.highfreq.json
 strategies/spring/config.json
+strategies/sweep_reclaim/config.json
 ```
 
 ### 2.3 live / audit 现场
@@ -285,6 +288,63 @@ strategies/spring/config.json:
 8. 当前 Spring smoke watcher 已停止；正式常驻前必须使用 Python 内置 loop lifecycle，不再依赖临时外层 shell watcher。
 9. 21:29 与 21:35 两笔 smoke 说明：live once 即时 post-entry reconcile 只能捕获“执行返回前已经离场”的情况；若 TP/SL 在返回后触发，需要后续 loop reconcile / exit monitor 清理。
 10. 已补账户级 Spring local active gate 与每轮 open_trade reconcile；后续再评估是否继续补 time-stop 主动提交/撤单能力。
+
+### 3.6 Sweep-Reclaim
+
+已完成：
+
+1. 新增 Sweep-Reclaim / SWR 策略语义基线：`docs/Sweep-Reclaim项目语义基线.md`。
+2. 新增策略参数骨架：`strategies/sweep_reclaim/config.json`。
+3. 新增策略包目录：`strategies/sweep_reclaim/`。
+
+当前语义事实：
+
+```text
+strategy_name = sweep-reclaim
+strategy_code = SWR
+LONG-only
+1m contract bars only
+C = HBs[0]
+CB = C + 1
+signal_time = entry_time = CB
+H -> gamma -> B -> C -> CB
+B = support_window 内最低 low，当前参数 support_window_mins = 240
+H = B 左侧最高 close 点
+hb_drop = (h_close - b_low) / h_close
+bc_rebound = (c_close - b_low) / (h_close - b_low)
+gamma = B - bars_bc
+vol_climax = avg_quote_volume(gamma, C] / avg_quote_volume(H, gamma]
+SL = b_close
+TP = entry_price + risk_distance * take_profit_r_multiple
+```
+
+当前配置事实：
+
+```text
+strategies/sweep_reclaim/config.json:
+- runtime.bar_interval = 1m
+- runtime.max_history_window_mins = 300
+- universe.min_24h_chg_pct = 30
+- universe.min_24h_quote_volume = 50000000
+- universe.score_top_n = 3
+- structure.support_window_mins = 240
+- structure.hb_drop.min = 0.05
+- structure.rebound.bc_rebound_min = 0.3
+- structure.rebound.bc_rebound_max = 1.2
+- structure.rebound.hb_bars_min = 3
+- structure.rebound.bc_bars_min = 1
+- structure.rebound.bc_bars_max = 30
+- structure.rebound.bc_over_hb_bars_max = 0.3
+- structure.vol_climax.ratio_min = 2.0
+- exit_policy.stop_loss_anchor = b_close
+- exit_policy.take_profit_r_multiple = 1.0
+```
+
+当前 pending：
+
+1. 实现 SWR sim 逻辑前，先审 Spring universe / decision audit 代码，确定强势 TopN 与审计字段复用边界。
+2. 首版实现只做 sim 语义与回测，不启动 live，不触交易所。
+3. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
 
 已确认 incident：
 

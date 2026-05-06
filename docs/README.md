@@ -26,6 +26,10 @@
   - Spring-SABC 的唯一活跃语义基线。
   - 涉及 Spring-SABC 时必须阅读。
 
+- `Sweep-Reclaim项目语义基线.md`
+  - Sweep-Reclaim / SWR 的唯一活跃语义基线。
+  - 涉及 Sweep-Reclaim 时必须阅读。
+
 ## 代码理解材料
 
 - `snapback-sabc_代码流程.md`
