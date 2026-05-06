@@ -56,15 +56,15 @@
       "min": 0.05
     },
     "rebound": {
-      "bc_rebound_min": 0.3,
-      "bc_rebound_max": 1.2,
-      "hb_bars_min": 90,
+      "bc_rebound_min": 0.25,
+      "bc_rebound_max": 0.4,
+      "hb_bars_min": 3,
       "bc_bars_min": 1,
       "bc_bars_max": 30,
       "bc_over_hb_bars_max": 0.3
     },
     "vol_climax": {
-      "ratio_min": 2.0
+      "ratio_min": 3
     }
   },
   "exit_policy": {
