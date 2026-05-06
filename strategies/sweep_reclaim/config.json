@@ -58,7 +58,7 @@
     "rebound": {
       "bc_rebound_min": 0.3,
       "bc_rebound_max": 1.2,
-      "hb_bars_min": 3,
+      "hb_bars_min": 90,
       "bc_bars_min": 1,
       "bc_bars_max": 30,
       "bc_over_hb_bars_max": 0.3

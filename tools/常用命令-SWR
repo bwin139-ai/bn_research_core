@@ -1,0 +1,32 @@
+# ============== Sweep-Reclaim 冒烟回测 ===============
+RUNSET="SWR_SmokeTest_V1_$(date +%m%dT%H%M)"
+PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/run_backtest.py \
+  --strategy sweep-reclaim \
+  --start 2026-04-26T08:00:00+08:00 \
+  --end   2026-05-06T10:30:00+08:00 \
+  --kline-window 60 \
+  --config sweep_reclaim/config.json \
+  --out-dir "output/SmokeTest" \
+  --run-id "${RUNSET}"
+
+# ========= Sweep-Reclaim 全量并行调度主进程 =========
+RUNSET="SWR_V1_30D_P6_$(date +%m%dT%H%M)"
+nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
+  --strategy sweep-reclaim \
+  --start 2025-04-18T00:00:00+08:00 \
+  --end 2026-05-06T10:00:00+08:00 \
+  --batch-days 30 \
+  --max-parallel 6 \
+  --kline-window 90 \
+  --config sweep_reclaim/config.json \
+  --out-dir output/state \
+  --logs-dir output/logs \
+  --run-prefix "'"$RUNSET"'" \
+  --notify-label admin \
+  --post-merge \
+  --build-equity' \
+> "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
+
+tail -f "output/logs/scheduler.${RUNSET}.console.log"
+
+

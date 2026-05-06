@@ -1,0 +1,79 @@
+# ============== Spring-SABC live  ===============
+ACCOUNT=mybwin139
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config.live_smoke_10u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.smoke_10u.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
+tail -n 200 -f output/live_projection/spring_live.mybwin139.log
+
+ACCOUNT=chen912
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.chen912.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
+tail -n 200 -f output/live_projection/spring_live.chen912.log
+
+ACCOUNT=junjie2026
+nohup /root/service_env/bin/python strategies/spring/run_live.py \
+  --config strategies/spring/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/spring/live_execution.junjie2026.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
+tail -n 200 -f output/live_projection/spring_live.junjie2026.log
+
+# ============== Spring-SABC 冒烟回测  ===============
+RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
+/root/service_env/bin/python strategies/run_backtest.py \
+  --strategy spring-sabc \
+  --start 2026-05-03T13:06:00+08:00 \
+  --end   2026-05-05T10:30:00+08:00 \
+  --kline-window 60 \
+  --config spring/config.live_smoke_10u.json \
+  --out-dir "output/SmokeTest" \
+  --run-id "${RUNSET}"
+
+# ========= Spring-SABC 全量并行调度主进程 =========
+RUNSET="SPRING_V1.5_30D_P6_$(date +%m%dT%H%M)"
+nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
+  --strategy spring-sabc \
+  --start 2025-04-18T00:00:00+08:00 \
+  --end 2026-05-02T11:45:00+08:00 \
+  --batch-days 30 \
+  --max-parallel 6 \
+  --kline-window 90 \
+  --config spring/config.json \
+  --out-dir output/state \
+  --logs-dir output/logs \
+  --run-prefix "'"$RUNSET"'" \
+  --notify-label admin \
+  --post-merge \
+  --build-equity' \
+> "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
+
+# ********** 拉 spring sim 审计数据 ********** 
+RUNID="SPRING_V1_30D_P6_0415T2250_ALL"
+DEST=~/ai_projects/bn_research_core/output/audit_spring
+mkdir -p "$DEST"
+scp -r \
+  "aliyun-bn:/root/bn_research_core/output/state/spring_loss_win_profile.${RUNID}" \
+  "$DEST"
