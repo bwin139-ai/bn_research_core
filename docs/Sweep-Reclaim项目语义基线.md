@@ -126,10 +126,10 @@ CB = C + 1
 structure.support_window_mins
 ```
 
-默认研究现场可使用：
+当前 performance baseline 使用：
 
 ```text
-support_window_mins = 240
+support_window_mins = 180
 ```
 
 成立条件：
@@ -352,4 +352,41 @@ risk_controls
 默认值兜底
 旧字段兼容
 用 Spring-SABC 的 A/B/C 连续下跌语义替代 SWR 的 H/gamma/B/C 语义
+```
+
+## 17. Performance Baseline
+
+当前 `sweep-reclaim` performance baseline：
+
+```text
+run_id = SWR_V1_30D_P6_0506T2125
+period = 2025-04-18T00:00:00+08:00 -> 2026-05-06T10:00:00+08:00
+scheduler = 30D / P6
+success_count = 13
+failed_count = 0
+trades = 405
+signals = 407
+skipped_signals = 2
+decision_audit_rows = 458822
+viz_png = 405
+return_simple_net_pct = 185.04
+return_compound_net_pct = 428.33
+max_drawdown_simple_net = 23.15U / 19.38%
+max_drawdown_compound_net = 52.40U / 17.36%
+```
+
+该 baseline 对应当前核心参数：
+
+```text
+support_window_mins = 180
+hb_drop.min = 0.06
+bc_rebound_min = 0.20
+bc_rebound_max = 0.40
+hb_bars_min = 3
+bc_bars_min = 1
+bc_bars_max = 30
+bc_over_hb_bars_max = 0.30
+vol_climax.ratio_min = 3.0
+score_top_n = 3
+take_profit_r_multiple = 1.0
 ```

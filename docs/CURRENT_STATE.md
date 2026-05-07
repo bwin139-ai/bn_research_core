@@ -315,7 +315,7 @@ C = HBs[0]
 CB = C + 1
 signal_time = entry_time = CB
 H -> gamma -> B -> C -> CB
-B = support_window 内最低 low，当前参数 support_window_mins = 240
+B = support_window 内最低 low，当前参数 support_window_mins = 180
 H = B 左侧最高 close 点
 hb_drop = (h_close - b_low) / h_close
 bc_rebound = (c_close - b_low) / (h_close - b_low)
@@ -334,25 +334,44 @@ strategies/sweep_reclaim/config.json:
 - universe.min_24h_chg_pct = 30
 - universe.min_24h_quote_volume = 50000000
 - universe.score_top_n = 3
-- structure.support_window_mins = 240
-- structure.hb_drop.min = 0.05
-- structure.rebound.bc_rebound_min = 0.3
-- structure.rebound.bc_rebound_max = 1.2
+- structure.support_window_mins = 180
+- structure.hb_drop.min = 0.06
+- structure.rebound.bc_rebound_min = 0.2
+- structure.rebound.bc_rebound_max = 0.4
 - structure.rebound.hb_bars_min = 3
 - structure.rebound.bc_bars_min = 1
 - structure.rebound.bc_bars_max = 30
 - structure.rebound.bc_over_hb_bars_max = 0.3
-- structure.vol_climax.ratio_min = 2.0
+- structure.vol_climax.ratio_min = 3.0
 - exit_policy.stop_loss_anchor = b_close
 - exit_policy.take_profit_r_multiple = 1.0
 ```
 
+当前 performance baseline：
+
+```text
+run_id = SWR_V1_30D_P6_0506T2125
+strategy = sweep-reclaim
+period = 2025-04-18T00:00:00+08:00 -> 2026-05-06T10:00:00+08:00
+scheduler = 30D / P6
+success_count = 13
+failed_count = 0
+trades = 405
+signals = 407
+skipped_signals = 2
+decision_audit_rows = 458822
+viz_png = 405
+return_simple_net_pct = 185.04
+return_compound_net_pct = 428.33
+max_drawdown_simple_net = 23.15U / 19.38%
+max_drawdown_compound_net = 52.40U / 17.36%
+```
+
 当前 pending：
 
-1. 本地工作区没有 `data/klines_1m`，因此当前只完成合成样本验证，尚未跑真实历史数据回测。
-2. 下一步应在服务器运行 SWR scheduler dry-run，再启动正式 30D/P6 全量调度。
-3. 首版只做 sim 语义与回测，不启动 live，不触交易所。
-4. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
+1. `SWR_V1_30D_P6_0506T2125` 已作为当前 performance baseline。
+2. 首版只做 sim 语义与回测，不启动 live，不触交易所。
+3. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
 
 已确认 incident：
 
