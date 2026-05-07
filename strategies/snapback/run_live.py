@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 import types
 
 from copy import deepcopy
@@ -171,21 +171,6 @@ def _json_safe_dumps(data: Any, *, sort_keys: bool = False, indent: int | None =
 
 def _json_sha256(data: Any) -> str:
     return _sha256_text(_json_safe_dumps(data, sort_keys=True, separators=(',', ':')))
-
-
-def _calc_market_total_24h_vol_from_payload(payload: Mapping[str, Any] | None) -> tuple[float | None, int]:
-    if not isinstance(payload, Mapping):
-        return None, 0
-    cross_section = payload.get('cross_section')
-    try:
-        if cross_section is None or cross_section.empty or 'vol_24h' not in cross_section.columns:
-            return None, 0
-        vol_series = pd.to_numeric(cross_section['vol_24h'], errors='coerce').dropna()
-        if vol_series.empty:
-            return None, 0
-        return float(vol_series.sum()), int(len(vol_series))
-    except Exception:
-        return None, 0
 
 
 def _read_text(path: str) -> str:
@@ -2220,39 +2205,6 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         extra_md_finished_utc_ms = _now_utc_ms()
 
     candidate_payload = candidate_md_res.get('data') if candidate_md_res.get('ok') else None
-    if candidate_payload is not None and market_total_24h_vol_status != 'ready_hub_owned_1m':
-        candidate_market_total_24h_vol = (
-            candidate_payload.get('market_total_24h_vol_1m_rollsum')
-            if isinstance(candidate_payload, Mapping)
-            and str(candidate_payload.get('market_total_24h_vol_status') or '').startswith('ready')
-            else None
-        )
-        candidate_market_total_24h_symbol_count = int((candidate_payload or {}).get('market_total_24h_symbol_count_1m_rollsum') or 0)
-        if candidate_market_total_24h_vol is None:
-            candidate_market_total_24h_vol, candidate_market_total_24h_symbol_count = _calc_market_total_24h_vol_from_payload(
-                candidate_payload
-            )
-        if candidate_market_total_24h_vol is not None and candidate_market_total_24h_symbol_count > 0:
-            previous_market_total_24h_vol_status = market_total_24h_vol_status
-            previous_market_total_24h_vol_source = market_total_24h_vol_source
-            market_total_24h_vol_snapshot = float(candidate_market_total_24h_vol)
-            market_total_24h_symbol_count_snapshot = int(candidate_market_total_24h_symbol_count)
-            market_total_24h_vol_status = str((candidate_payload or {}).get('market_total_24h_vol_status') or 'ready_candidate_cross_section_hbs')
-            market_total_24h_vol_source = str((candidate_payload or {}).get('market_total_24h_vol_source') or 'candidate_cross_section_hbs')
-            if audit_enabled:
-                write_event(account, 'market_total_24h_vol_payload_hbs_ready', {
-                    'bar_ts': current_time_ms,
-                    'bar_bj': current_time_bj,
-                    'c_bar_ts': c_bar_ts,
-                    'c_bar_bj': c_bar_bj,
-                    'market_total_24h_vol': market_total_24h_vol_snapshot,
-                    'market_total_24h_vol_min': market_total_24h_vol_min,
-                    'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
-                    'market_total_24h_vol_status': market_total_24h_vol_status,
-                    'market_total_24h_vol_source': market_total_24h_vol_source,
-                    'previous_market_total_24h_vol_status': previous_market_total_24h_vol_status,
-                    'previous_market_total_24h_vol_source': previous_market_total_24h_vol_source,
-                })
     if candidate_payload is not None:
         candidate_filter_res = filter_loaded_payload_by_universe(
             account,
@@ -2293,6 +2245,25 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols),
             })
         _emit_run_once_perf('no_live_inputs')
+        return
+
+    if market_total_24h_vol_status != 'ready_hub_owned_1m':
+        if audit_enabled:
+            write_event(account, 'market_total_24h_vol_not_ready_skip_after_payload', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'market_total_24h_vol': market_total_24h_vol_snapshot,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
+                'market_total_24h_vol_status': market_total_24h_vol_status,
+                'market_total_24h_vol_source': market_total_24h_vol_source,
+                'candidate_market_total_24h_vol_status': (candidate_payload or {}).get('market_total_24h_vol_status') if candidate_payload else None,
+                'candidate_market_total_24h_vol_source': (candidate_payload or {}).get('market_total_24h_vol_source') if candidate_payload else None,
+                'candidate_prefilter_source': (candidate_payload or {}).get('candidate_prefilter_source') if candidate_payload else None,
+            })
+        _emit_run_once_perf('market_total_24h_vol_not_ready')
         return
 
     market_total_24h_vol_below_min = market_total_24h_vol_snapshot < market_total_24h_vol_min

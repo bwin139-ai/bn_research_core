@@ -685,19 +685,6 @@ def _prefilter_symbols_by_quote_volume(
     return out
 
 
-def _market_total_24h_vol_from_cross_section(cross_section: Any) -> tuple[float, int]:
-    if cross_section is None:
-        return 0.0, 0
-    try:
-        if cross_section.empty or 'vol_24h' not in cross_section.columns:
-            return 0.0, 0
-        import pandas as pd  # type: ignore
-        vol_series = pd.to_numeric(cross_section['vol_24h'], errors='coerce').dropna()
-        return float(vol_series.sum()), int(len(vol_series))
-    except Exception:
-        return 0.0, 0
-
-
 def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
@@ -858,8 +845,8 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         )
         reason = 'hub_candidate_prefilter_empty'
     else:
-        prefilter_source = 'unfiltered_exchange_universe_market_rollsum_not_ready'
-        finalize_symbols = [str(symbol).upper().strip() for symbol in refresh_symbols if str(symbol).strip()]
+        prefilter_source = 'unfiltered_candidate_universe_market_rollsum_not_ready'
+        finalize_symbols = [str(symbol).upper().strip() for symbol in candidate_symbols if str(symbol).strip()]
         reason = 'hub_candidate_universe_empty_market_rollsum_not_ready'
         write_event(account, 'hub_candidate_inputs_market_total_not_ready_bypassed', {
             'bar_ts': signal_time_ts,
@@ -872,6 +859,8 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'market_total_24h_vol_source': market_total_24h_vol_source,
             'market_total_24h_vol_status': market_total_24h_vol_status,
             'prefilter_source': prefilter_source,
+            'candidate_symbol_count': len(candidate_symbols),
+            'refresh_symbol_count': len(refresh_symbols),
         })
     if not finalize_symbols:
         write_event(account, reason, {
@@ -940,26 +929,6 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'market_total_24h_vol_status': market_total_24h_vol_status,
         })
         return
-    if market_total_24h_vol_status != 'ready_hub_owned_1m':
-        candidate_market_total_24h_vol, candidate_market_total_24h_symbol_count = _market_total_24h_vol_from_cross_section(
-            candidate_payload.get('cross_section')
-        )
-        if candidate_market_total_24h_symbol_count > 0:
-            market_total_24h_vol_1m_rollsum = float(candidate_market_total_24h_vol)
-            market_total_24h_symbol_count_1m_rollsum = int(candidate_market_total_24h_symbol_count)
-            market_total_24h_vol_source = 'candidate_cross_section_hbs'
-            market_total_24h_vol_status = 'ready_candidate_cross_section_hbs'
-            write_event(account, 'hub_market_total_24h_vol_candidate_cross_section_ready', {
-                'bar_ts': signal_time_ts,
-                'bar_bj': signal_time_bj,
-                'latest_closed_bar_ts': latest_closed_bar_ts,
-                'latest_closed_bar_bj': latest_closed_bar_bj,
-                'market_total_24h_vol': market_total_24h_vol_1m_rollsum,
-                'market_total_24h_symbol_count': market_total_24h_symbol_count_1m_rollsum,
-                'previous_market_total_24h_vol_status': rollsum_view.get('market_total_24h_vol_status'),
-                'previous_market_total_24h_vol_source': rollsum_view.get('market_total_24h_vol_source'),
-                'prefilter_source': prefilter_source,
-            })
     candidate_payload['candidate_prefilter_source'] = prefilter_source
     candidate_payload['market_total_24h_vol_1m_rollsum'] = market_total_24h_vol_1m_rollsum
     candidate_payload['market_total_24h_symbol_count_1m_rollsum'] = market_total_24h_symbol_count_1m_rollsum

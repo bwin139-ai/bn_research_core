@@ -13,7 +13,8 @@ cross_section
 market_total_24h_vol
  - 全市场 24h 成交额聚合指标
  - 属于 signal 生产侧数据事实，必须和 cross_section / vol_24h 一样锚定同一个 C = HBs[0]
- - live 不允许把不同 symbol 的不同 latest_bar_ts rolling 结果混合成一个总量；允许来源是已证明覆盖同一 C 的 market-wide rolling state，或同一 finalized C-anchor HBs payload 中 `cross_section.vol_24h` 的全量聚合。
+ - live 不允许把不同 symbol 的不同 latest_bar_ts rolling 结果混合成一个总量；允许来源是已证明覆盖同一 C 的 market-wide rolling state，或显式标记为 market-wide 的同一 finalized C-anchor HBs payload 中 `cross_section.vol_24h` 全量聚合。
+ - 策略候选池 payload 的局部 `cross_section.vol_24h` 不能作为全市场总量兜底；若没有同 C 且 market-wide 的来源，Snapback live 只能维护交易生命周期并跳过新信号扫描。
 cs
  - 经过 universe 过滤后的横截面子集
  - cross_section 是原始横向总表
