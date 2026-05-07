@@ -46,12 +46,12 @@
       "ETCUSDT",
       "ONDOUSDT"
     ],
-    "min_24h_chg_pct": 30,
+    "min_24h_chg_pct": 20,
     "min_24h_quote_volume": 50000000,
     "score_top_n": 3
   },
   "structure": {
-    "support_window_mins": 240,
+    "support_window_mins": 180,
     "hb_drop": {
       "min": 0.06
     },
