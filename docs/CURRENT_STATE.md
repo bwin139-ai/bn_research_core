@@ -336,7 +336,7 @@ TP = entry_price + risk_distance * take_profit_r_multiple
 strategies/sweep_reclaim/config.json:
 - runtime.bar_interval = 1m
 - runtime.max_history_window_mins = 300
-- universe.min_24h_chg_pct = 20
+- universe.min_24h_chg_pct = 30
 - universe.min_24h_quote_volume = 50000000
 - universe.score_top_n = 3
 - structure.support_window_mins = 180
