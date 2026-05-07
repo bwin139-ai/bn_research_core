@@ -19,6 +19,7 @@ from core.live.audit_log import append_stage_record, write_event
 from core.live.market_data import (
     list_candidate_symbols,
     read_hub_owned_1m_rollsum_market_view,
+    read_hub_owned_1m_rollsum_prefilter_view,
     refresh_hub_owned_1m_rollsum_for_symbols,
 )
 from core.live.rate_limit_guard import read_binance_rest_quota_state
@@ -732,9 +733,6 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     market_total_24h_symbol_count_1m_rollsum = int(market_snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0)
     market_total_24h_vol_source = str(market_snapshot.get('market_total_24h_vol_source') or '')
     market_total_24h_vol_status = str(market_snapshot.get('market_total_24h_vol_1m_rollsum_status') or '')
-    # Keep strategy-facing candidate selection scoped by hub exclude_symbols, but
-    # refresh the hub-owned 1m rollsum on the full market universe so the market
-    # total 24h volume stays truly market-wide and comparable with Binance 24h API.
     refresh_symbols = list_candidate_symbols(account)
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=exclude_symbols)
     rollsum_refreshed_this_round = False
@@ -834,21 +832,17 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         )
     except Exception as e:
         logging.warning('[binance_rest_quota_stats] record_failed | account=%s | reason=%s', account, e)
-
-    prefilter_source = 'hub_owned_1m_rollsum'
     if market_total_24h_vol_status == 'ready_hub_owned_1m':
+        prefilter_source = 'hub_owned_1m_rollsum_c_anchor'
         symbol_24h_quote_volume_map = dict(rollsum_view.get('symbol_24h_quote_volume_1m') or {})
-        finalize_symbols = _prefilter_symbols_by_quote_volume(
-            candidate_symbols,
-            symbol_24h_quote_volume_map,
-            min_24h_quote_volume=min_24h_quote_volume,
-        )
-        reason = 'hub_candidate_prefilter_empty'
     else:
-        prefilter_source = 'unfiltered_candidate_universe_market_rollsum_not_ready'
-        finalize_symbols = [str(symbol).upper().strip() for symbol in candidate_symbols if str(symbol).strip()]
-        reason = 'hub_candidate_universe_empty_market_rollsum_not_ready'
-        write_event(account, 'hub_candidate_inputs_market_total_not_ready_bypassed', {
+        prefilter_source = 'hub_owned_1m_rollsum_prefilter'
+        prefilter_view = read_hub_owned_1m_rollsum_prefilter_view(
+            account,
+            dict(market_snapshot['ticker_map']),
+        )
+        symbol_24h_quote_volume_map = dict(prefilter_view.get('symbol_24h_quote_volume_1m') or {})
+        write_event(account, 'hub_candidate_inputs_market_total_not_ready_prefilter_only', {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
             'latest_closed_bar_ts': latest_closed_bar_ts,
@@ -860,9 +854,15 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'market_total_24h_vol_status': market_total_24h_vol_status,
             'prefilter_source': prefilter_source,
             'candidate_symbol_count': len(candidate_symbols),
-            'refresh_symbol_count': len(refresh_symbols),
+            'prefilter_symbol_map_count': len(symbol_24h_quote_volume_map),
         })
+    finalize_symbols = _prefilter_symbols_by_quote_volume(
+        candidate_symbols,
+        symbol_24h_quote_volume_map,
+        min_24h_quote_volume=min_24h_quote_volume,
+    )
     if not finalize_symbols:
+        reason = 'hub_candidate_prefilter_empty'
         write_event(account, reason, {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
@@ -924,16 +924,15 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'bar_bj': signal_time_bj,
             'reason': candidate_res.get('reason'),
             'errors': candidate_res.get('errors'),
-            'prefilter_source': prefilter_source,
-            'prefilter_symbol_count': len(finalize_symbols),
-            'market_total_24h_vol_status': market_total_24h_vol_status,
         })
         return
     candidate_payload['candidate_prefilter_source'] = prefilter_source
-    candidate_payload['market_total_24h_vol_1m_rollsum'] = market_total_24h_vol_1m_rollsum
-    candidate_payload['market_total_24h_symbol_count_1m_rollsum'] = market_total_24h_symbol_count_1m_rollsum
+    candidate_payload['market_total_24h_vol_1m_rollsum'] = float(market_total_24h_vol_1m_rollsum)
+    candidate_payload['market_total_24h_symbol_count_1m_rollsum'] = int(market_total_24h_symbol_count_1m_rollsum)
     candidate_payload['market_total_24h_vol_source'] = market_total_24h_vol_source
     candidate_payload['market_total_24h_vol_status'] = market_total_24h_vol_status
+    candidate_payload['market_total_24h_vol_anchor_ts'] = latest_closed_bar_ts
+    candidate_payload['market_total_24h_vol_anchor_bj'] = latest_closed_bar_bj
 
     finalized_payload = finalize_candidate_payload_via_hub(
         account,

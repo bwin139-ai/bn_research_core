@@ -2147,6 +2147,8 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
                 'market_total_24h_vol_source': market_total_24h_vol_source,
             })
 
+    market_total_24h_vol_below_min = False
+
     candidate_plan_perf_started = time.perf_counter()
     candidate_symbols = list_candidate_symbols(account, exclude_symbols=live_cfg.get('exclude_symbols') or [])
     reconcile_plan = build_consumer_reconcile_plan(account, candidate_symbols)
@@ -2247,31 +2249,16 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         _emit_run_once_perf('no_live_inputs')
         return
 
-    if market_total_24h_vol_status != 'ready_hub_owned_1m':
-        if audit_enabled:
-            write_event(account, 'market_total_24h_vol_not_ready_skip_after_payload', {
-                'bar_ts': current_time_ms,
-                'bar_bj': current_time_bj,
-                'c_bar_ts': c_bar_ts,
-                'c_bar_bj': c_bar_bj,
-                'market_total_24h_vol': market_total_24h_vol_snapshot,
-                'market_total_24h_vol_min': market_total_24h_vol_min,
-                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
-                'market_total_24h_vol_status': market_total_24h_vol_status,
-                'market_total_24h_vol_source': market_total_24h_vol_source,
-                'candidate_market_total_24h_vol_status': (candidate_payload or {}).get('market_total_24h_vol_status') if candidate_payload else None,
-                'candidate_market_total_24h_vol_source': (candidate_payload or {}).get('market_total_24h_vol_source') if candidate_payload else None,
-                'candidate_prefilter_source': (candidate_payload or {}).get('candidate_prefilter_source') if candidate_payload else None,
-            })
-        _emit_run_once_perf('market_total_24h_vol_not_ready')
-        return
-
-    market_total_24h_vol_below_min = market_total_24h_vol_snapshot < market_total_24h_vol_min
-
     c_bar_ts = int(payload['latest_closed_bar_ts'])
     c_bar_bj = payload['latest_closed_bar_bj']
     current_time_ms = int(payload.get('signal_time_ts') or (c_bar_ts + 60000))
     current_time_bj = str(payload.get('signal_time_bj') or _fmt_bj_from_ms(current_time_ms) or '')
+    if candidate_payload:
+        market_total_24h_vol_snapshot = float(candidate_payload.get('market_total_24h_vol_1m_rollsum') or market_total_24h_vol_snapshot)
+        market_total_24h_symbol_count_snapshot = int(candidate_payload.get('market_total_24h_symbol_count_1m_rollsum') or market_total_24h_symbol_count_snapshot)
+        market_total_24h_vol_status = str(candidate_payload.get('market_total_24h_vol_status') or market_total_24h_vol_status).strip()
+        market_total_24h_vol_source = str(candidate_payload.get('market_total_24h_vol_source') or market_total_24h_vol_source).strip()
+    market_total_24h_vol_below_min = market_total_24h_vol_snapshot < market_total_24h_vol_min
 
     if candidate_payload:
         candidate_symbol_count_before_finalize = int((candidate_payload or {}).get('symbol_count') or 0)
@@ -2446,6 +2433,32 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
         if str(symbol).strip()
     }
     active_symbols_count = len(active_symbols)
+    if market_total_24h_vol_status != 'ready_hub_owned_1m':
+        if audit_enabled:
+            write_event(account, 'market_total_24h_vol_not_ready_skip_after_payload', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'c_bar_ts': c_bar_ts,
+                'c_bar_bj': c_bar_bj,
+                'market_total_24h_vol': market_total_24h_vol_snapshot,
+                'market_total_24h_vol_min': market_total_24h_vol_min,
+                'market_total_24h_symbol_count': market_total_24h_symbol_count_snapshot,
+                'market_total_24h_vol_api': market_snapshot.get('market_total_24h_vol_api'),
+                'market_total_24h_vol_status': market_total_24h_vol_status,
+                'market_total_24h_vol_source': market_total_24h_vol_source,
+                'scan_blocked_after_reconcile': True,
+            })
+        finalize_consumer_loop_state(
+            account,
+            mode='scan_blocked',
+            current_time_ms=current_time_ms,
+            current_time_bj=current_time_bj,
+            symbols=list(merged_full_df.keys()),
+            audit_enabled=audit_enabled,
+            scan_gate=scan_gate,
+        )
+        _emit_run_once_perf('market_total_24h_vol_not_ready_after_payload')
+        return
     if market_total_24h_vol_below_min:
         if audit_enabled:
             write_event(account, 'market_total_24h_vol_below_min_skip', {

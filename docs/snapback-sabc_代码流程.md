@@ -9,12 +9,6 @@ cross_section
  - 横截面总表
  - 这一轮准备拿来给策略检查的一张“总表”。每一行是一个币种，每一列是这个币当前这一轮的横向指标。
  - 里面常见会有：close chg_24h vol_24h close_idx high_idx low_idx
- - signal 生产侧只能使用已闭合的 C = HBs[0] 数据；24h 指标必须锚定 C。
-market_total_24h_vol
- - 全市场 24h 成交额聚合指标
- - 属于 signal 生产侧数据事实，必须和 cross_section / vol_24h 一样锚定同一个 C = HBs[0]
- - live 不允许把不同 symbol 的不同 latest_bar_ts rolling 结果混合成一个总量；允许来源是已证明覆盖同一 C 的 market-wide rolling state，或显式标记为 market-wide 的同一 finalized C-anchor HBs payload 中 `cross_section.vol_24h` 全量聚合。
- - 策略候选池 payload 的局部 `cross_section.vol_24h` 不能作为全市场总量兜底；若没有同 C 且 market-wide 的来源，Snapback live 只能维护交易生命周期并跳过新信号扫描。
 cs
  - 经过 universe 过滤后的横截面子集
  - cross_section 是原始横向总表
@@ -27,6 +21,11 @@ latest_closed_bar_ts
  - 最近刚刚确认收盘的那根 bar 的时间戳
  - 意思是：当前这一轮 live / sim 所围绕的“最新已收盘 bar”的时间标记
  - 可以理解成：本轮判断到底是围绕哪一根刚收完的K线在工作
+market_total_24h_vol
+ - Snapback 的全市场 24h 成交额 gate
+ - live 侧只接受 hub-owned 1m rollsum 在同一个 latest_closed_bar_ts 上严格 C-anchor ready 的值
+ - 如果 strict C-anchor market_total 暂未 ready，data_hub 可以继续用旧 rollsum map 做候选预筛限流，但 Snapback 不能把该值当成 market_total ready 事实
+ - Snapback live 在这种情况下必须先完成 reconcile / finalized payload / open trade 生命周期维护，然后只阻断新扫描
 candidate_symbols
  - 本轮待扫描币种名单
  - 这名字非常容易误导，必须记住：它不是 candidates。它只是 live 入口层挑出来“本轮准备扫描”的一批币种名单。
