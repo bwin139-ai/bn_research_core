@@ -124,7 +124,8 @@ output/live_projection
 7. 增加 finalize quality stats 与 hub health stats，可用于现场观察。
 8. 增加 Binance REST quota / ban window / API stats 相关保护与观测。
 9. `market_data_hub` 的 candidate / finalized / market snapshot 已按账户与北京时间日期落盘到 `state/live_audit/market_data_hub/{account}/daily/YYYY-MM-DD/`，当前无需纳入 live audit 主文件分片 patch。
-10. 2026-05-08 修复严格 C-anchor 后的策略依赖分层：`data_hub` 不再用 Snapback 专属的 `market_total_24h_vol` market-wide ready gate 阻断 Spring / SWR 共享 finalized candidate 输入；当 market-wide rollsum 仍 warming 时，hub 不用 realtime ticker 24h 裁剪策略可见 universe，而是直接用交易所 TRADING universe 生产锚定 C 的已闭合 HBs `cross_section/full_df/finalize_summary`，由策略 `logic.py` 执行自身 24h 与结构过滤。Snapback 自身仍在 live 入口根据 `market_total_24h_vol_status` fail/skip。
+10. 2026-05-08 修复严格 C-anchor 后的策略依赖分层：`data_hub` 不再用 Snapback 专属的 `market_total_24h_vol` market-wide ready gate 阻断 Spring / SWR 共享 finalized candidate 输入；当 market-wide rollsum 仍 warming 时，hub 不用 realtime ticker 24h 裁剪策略可见 universe，而是直接用交易所 TRADING universe 生产锚定 C 的已闭合 HBs `cross_section/full_df/finalize_summary`，由策略 `logic.py` 执行自身 24h 与结构过滤。
+11. 2026-05-08 修复 `rollsum_refresh_batch_size=80` 与 strict C-anchor market-wide ready gate 的不可收敛问题：该 batch size 只作为 hub-owned rollsum 后台刷新节流参数，不再作为 Snapback `market_total_24h_vol` 的唯一 ready 路径。若 rollsum 未 ready，hub 从 finalized C-anchor HBs `cross_section.vol_24h` 聚合得到 `market_total_24h_vol_source=candidate_cross_section_hbs` / `status=ready_candidate_cross_section_hbs`，Snapback live 延后到读取 finalized payload 后再执行 market_total gate；DataHub 的 market_total / Binance REST quota 30 轮统计在 warming/not-ready 时也继续采样推送，并携带 status/source 与 missing/partial/stale/newly-listed counts。
 
 当前配置事实：
 
@@ -134,7 +135,8 @@ market_data_hub_config.json:
 - min_24h_quote_volume = 30000000
 - history_window_mins = 180
 - rollsum_refresh_batch_size = 80
-- exclude_symbols 已显式配置，包含大市值币与 TradFi 品种
+- rollsum_refresh_batch_size 仅为 hub-owned rollsum 后台刷新节流参数，不是全市场同锚 ready 语义保证
+- exclude_symbols 已显式配置，包含大市值币与 TradFi 品种；market-wide rollsum 未 ready 时，hub shared payload 会使用交易所 TRADING universe 生产 C-anchor HBs 输入，再由策略自身过滤
 ```
 
 当前 pending：
@@ -258,7 +260,7 @@ live_config.*.json:
 40. 2026-05-06 已补 Spring sim/live 决策审计排名字段：策略逻辑同源产出 `rank_chg_24h`、`rank_vol_24h`、`score_rank_all`、`selected_score_order`、`score_top_n`、`selected_for_structure`、`universe_hard_gate_pass`；sim `spring_decision_audit` 新增 `decision_scoreboard`，live `spring_live` projection 新增完整 `decision_audit` 与同口径 `decision_scoreboard`。`score` 是综合分数不是名次，历史 `score_order` 仅表示 topN 内顺序；后续 Spring sim/live 一致性审计应以 `score_rank_all` 判断全候选排名、以 `selected_score_order/selected_for_structure` 判断是否进入 structure 检查。
 41. 2026-05-07 Spring smoke `Spring_SmokeTest_V1_0507T1944` 与 `mybwin139` live 重叠审计确认：11/11 信号按 `(symbol, signal_time)` 匹配，结构字段一致；此前看到的 `chg_24h / vol_24h / rank / score` 差异来自 sim signal 文件记录了 CB cross_section，而 live 严格使用 `C=HBs[0]` finalized payload。进一步对表显示 live 24h 指标逐笔匹配 sim decision audit 的 C 行 scoreboard，不匹配 sim CB 行指标。
 42. 2026-05-07 已将公共语义明确为：所有策略的 `logic.py` / signal 生产层只能消费 HBs 数据，CB 数据只允许进入 signal 之后的执行撮合、entry price / pre-entry price 与最终 TP 解析。共享回测 runner 已修正 Spring/SWR 的策略逻辑投喂：`strategy.on_kline_close(signal_time=CB, cross_section=C)`，同时保留 CB cross_section 用于 sim 执行价注入和撮合。Snapback sim 已检查，其 logic 当前以 `current_time_ms=C` 运行并自行产出 `signal_time=C+1m`，本环节未发现同类 CB 投喂偏差。
-43. 2026-05-07 Snapback smoke `Snapback_SmokeTest_0507T2043` 与 `mybwin139` live 重叠审计确认：共同 16 条信号的单币 `vol_24h` 在 live stage4 输入与 sim parquet rolling 口径基本一致，但 `market_total_24h_vol` 16/16 存在差异。偏差源头是 live `hub_owned_1m_rollsum` 读取全市场总量时混用了不同 symbol 的不同 `latest_bar_ts`，没有证明同锚到 `C = HBs[0]`。已将公共 hub rollsum 读取修正为 C-anchor：Snapback 消费的 `market_total_24h_vol` 只能由覆盖同一 C 的 1440 根已闭合 1m 数据聚合；缺失、不完整或落后 C 的 symbol 会使状态保持 not-ready / warming，不再用混合快照兜底。Spring / SWR 只继承单币 24h / cross_section 的 C-anchor HBs 约束，不继承 Snapback 专属的 market-wide `market_total_24h_vol` ready gate。
+43. 2026-05-07 Snapback smoke `Snapback_SmokeTest_0507T2043` 与 `mybwin139` live 重叠审计确认：共同 16 条信号的单币 `vol_24h` 在 live stage4 输入与 sim parquet rolling 口径基本一致，但 `market_total_24h_vol` 16/16 存在差异。偏差源头是 live `hub_owned_1m_rollsum` 读取全市场总量时混用了不同 symbol 的不同 `latest_bar_ts`，没有证明同锚到 `C = HBs[0]`。公共 hub rollsum 读取已修正为 C-anchor；随后确认 `rollsum_refresh_batch_size=80` 与“全市场每分钟同 C ready”不可收敛，因此 Snapback live 的 `market_total_24h_vol` 可由同一 finalized C-anchor HBs payload 的 `cross_section.vol_24h` 聚合得到，`hub_owned_1m_rollsum` 保留为后台刷新/观测源。Spring / SWR 只继承单币 24h / cross_section 的 C-anchor HBs 约束，不继承 Snapback 专属的 market-wide `market_total_24h_vol` ready gate。
 
 当前配置事实：
 

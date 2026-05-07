@@ -26,9 +26,9 @@ PYTHONPATH=/root/bn_research_core \
 
 tail -n 20 -f output/logs/market_data_hub.console.log
 
-python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/market_snapshot.json
-python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/candidate_inputs.json
-python3 -m json.tool state/live_audit/market_data_hub/mybwin139/current/finalized_candidate_inputs.json
+python3 -m json.tool state/live_audit/market_data_hub/shared/current/market_snapshot.json
+python3 -m json.tool state/live_audit/market_data_hub/shared/current/candidate_inputs.json
+python3 -m json.tool state/live_audit/market_data_hub/shared/current/finalized_candidate_inputs.json
     
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
 RUNID="Spring_SmokeTest_V1_0416T1329"
@@ -192,4 +192,3 @@ Spring signal / Snapback signal / 第三套策略 signal
 intent -> execution_plan -> entry/SL/TP -> open_trade state
        -> reconcile / exit monitor / TP-SL-TS 成交识别
        -> state close / audit / live_trades projection / cooldown
-

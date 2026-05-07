@@ -18,8 +18,8 @@
 1.1.4 所有策略都必须在 **CB 时刻** 观察 **HBs**。  
 1.1.5 所有策略的 `logic.py` / signal 生产层只能读取 HBs 数据事实；不得读取或消费 CB 的 OHLCV、24h 指标、排名、结构字段或其它未闭合时态数据。  
 1.1.6 sim / live 上游投喂给策略逻辑的数据必须同样只包含 HBs；CB 数据只允许进入信号之后的执行、撮合、entry price / pre-entry price / 最终 TP 解析等执行生命周期。  
-1.1.7 所有 24h 指标与全市场 24h 聚合指标都属于 signal 生产侧数据事实，必须锚定 `C = HBs[0]`；live 侧 `market_total_24h_vol` 不得混用不同 symbol 的不同闭合分钟，不得用 CB / ticker 当前时态替代 C-anchor 的 1m rolling 聚合。若任一 symbol 的 24h rolling 窗口不能证明覆盖同一个 C，应 fail fast / not-ready，不得用旧锚点或混合快照兜底。  
-1.1.8 `data_hub` 必须区分策略实际消费的数据依赖：Snapback 消费 `market_total_24h_vol`，因此应由严格 C-anchor 的 market-wide rollsum ready gate 约束；Spring / SWR 不消费该全市场聚合字段，不能因 market-wide rollsum 未全量 ready 而阻断其共享 candidate / finalized HBs 输入生产。当 market-wide rollsum 未 ready 时，共享 candidate 不得用实时 ticker 24h 裁剪策略可见 universe，应直接使用交易所 TRADING universe 生产 C-anchor HBs 输入，再由各策略 `logic.py` 用锚定 C 的已闭合 24h、排名、结构与 cross_section 字段执行过滤。
+1.1.7 所有 24h 指标与全市场 24h 聚合指标都属于 signal 生产侧数据事实，必须锚定 `C = HBs[0]`；live 侧 `market_total_24h_vol` 不得混用不同 symbol 的不同闭合分钟，不得用 CB / ticker 当前时态替代 C-anchor 的 1m rolling 聚合。允许的 live 来源只能是已证明覆盖同一 C 的 market-wide 1m rolling state，或同一 finalized C-anchor HBs `cross_section.vol_24h` 的全量聚合；若数据源不能证明同锚到 C，应 fail fast / not-ready，不得用旧锚点或混合快照兜底。
+1.1.8 `data_hub` 必须区分策略实际消费的数据依赖：Snapback 消费 `market_total_24h_vol`，因此必须获得严格 C-anchor 的 market-wide 数据事实；Spring / SWR 不消费该全市场聚合字段，不能因 market-wide rollsum 未全量 ready 而阻断其共享 candidate / finalized HBs 输入生产。当 market-wide rollsum 未 ready 时，共享 candidate 不得用实时 ticker 24h 裁剪策略可见 universe，应直接使用交易所 TRADING universe 生产 C-anchor HBs 输入；Snapback 可从同一 finalized C-anchor HBs payload 聚合 `cross_section.vol_24h` 作为 `market_total_24h_vol`。`rollsum_refresh_batch_size` 只能作为 hub-owned rollsum 的后台刷新节流参数，不是全市场同锚 ready 的语义保证。
 
 ### 1.2 时间字段语义
 1.2.1 `signal_time` 只能表示信号生产时间。  
