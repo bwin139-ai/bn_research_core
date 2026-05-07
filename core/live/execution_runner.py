@@ -47,6 +47,7 @@ TERMINAL_ORDER_STATUSES = {"FILLED", "FINISHED", "CANCELED", "CANCELLED", "EXPIR
 DEFAULT_STRATEGY_NAME = "spring-sabc"
 DEFAULT_PROJECTION_DIR = "output/live_projection"
 SPRING_NOTIFY_LABEL = "spring"
+SWR_NOTIFY_LABEL = "swr"
 EXIT_REASON_TIME_STOP = "TIME_STOP"
 EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN = "SL_SUBMIT_FAILED_FLATTEN"
 LEG_SL_FAIL_FLATTEN = "SF"
@@ -126,6 +127,18 @@ def _extract_event_time_ms(*payloads: Any) -> int | None:
 
 def _spring_notify_header(account: str, event_time_ms: Any) -> str:
     return f"[{_fmt_hms_from_ms(event_time_ms)} 🌱 SPR] {account}"
+
+
+def _strategy_notify_label(strategy_name: Any) -> str:
+    if str(strategy_name or "").strip() == "sweep-reclaim":
+        return SWR_NOTIFY_LABEL
+    return SPRING_NOTIFY_LABEL
+
+
+def _strategy_notify_header(account: str, event_time_ms: Any, *, strategy_name: Any, strategy_code: Any) -> str:
+    if str(strategy_name or "").strip() == "sweep-reclaim":
+        return f"[{_fmt_hms_from_ms(event_time_ms)} SWR] {account}"
+    return _spring_notify_header(account, event_time_ms)
 
 
 def _require(payload: Mapping[str, Any], field: str) -> Any:
@@ -365,6 +378,15 @@ def _resolve_tp_price(intent: Mapping[str, Any], *, entry_price: float) -> tuple
             raise ValueError(f"LONG entry_price must be above sl_price for risk_reward_1r, got {entry_price} <= {sl_price}")
         tp_price = float(entry_price) + risk_distance
         source = "entry_fill_rr_1r"
+    elif take_profit_mode == "risk_reward_r_multiple":
+        risk_distance = float(entry_price) - sl_price
+        if risk_distance <= 0:
+            raise ValueError(f"LONG entry_price must be above sl_price for risk_reward_r_multiple, got {entry_price} <= {sl_price}")
+        r_multiple = float(intent["take_profit_r_multiple"])
+        if r_multiple <= 0:
+            raise ValueError(f"risk_reward_r_multiple TP requires positive take_profit_r_multiple, got {r_multiple}")
+        tp_price = float(entry_price) + risk_distance * r_multiple
+        source = f"entry_fill_rr_{r_multiple:g}r"
     elif take_profit_mode == "fixed_pct":
         take_profit_pct = float(intent["take_profit_pct"])
         if take_profit_pct <= 0:
@@ -516,19 +538,42 @@ def _cooldown_until(current_time_ms: int, cooldown_mins: int) -> tuple[int, str 
     return cooldown_until_ts, _fmt_bj_from_ms(cooldown_until_ts)
 
 
+def _strategy_name_from_exec_payload(payload: Mapping[str, Any]) -> str:
+    explicit = str(payload.get("strategy_name") or "").strip()
+    if explicit:
+        return explicit
+    source = str(payload.get("source") or "").strip().lower()
+    if source.startswith("sweep_reclaim") or source.startswith("swr"):
+        return "sweep-reclaim"
+    return DEFAULT_STRATEGY_NAME
+
+
+def _strategy_event_name(event: str, *, strategy_name: str) -> str:
+    if strategy_name == "sweep-reclaim" and event.startswith("spring_"):
+        return "sweep_reclaim_" + event[len("spring_"):]
+    return event
+
+
 def _write_exec_event(enabled: bool, account: str, event: str, payload: dict[str, Any]) -> None:
     if enabled:
         enriched = dict(payload)
         enriched["execution_contract"] = "live_execution"
-        write_strategy_event(account, "spring-sabc", event, enriched)
+        strategy_name = _strategy_name_from_exec_payload(enriched)
+        enriched["strategy_name"] = strategy_name
+        write_strategy_event(
+            account,
+            strategy_name,
+            _strategy_event_name(event, strategy_name=strategy_name),
+            enriched,
+        )
 
 
 def _notify_enabled(cfg: Mapping[str, Any], field: str) -> bool:
     return bool(_require_bool(cfg, "notify_enabled")) and bool(_require_bool(cfg, field))
 
 
-def _send_spring_notify(message: str) -> None:
-    send_to_bot(message, label=SPRING_NOTIFY_LABEL)
+def _send_spring_notify(message: str, *, strategy_name: Any = DEFAULT_STRATEGY_NAME) -> None:
+    send_to_bot(message, label=_strategy_notify_label(strategy_name))
 
 
 def _json_default(value: Any) -> Any:
@@ -603,10 +648,48 @@ def _spring_signal_message(account: str, intent: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _sweep_reclaim_signal_message(account: str, intent: Mapping[str, Any]) -> str:
+    signal = dict(intent.get("signal_snapshot") or {})
+    context = dict(signal.get("context") or {})
+    symbol = str(intent.get("symbol") or signal.get("symbol") or "").upper().strip()
+    lines = [
+        _strategy_notify_header(
+            account,
+            intent.get("signal_time"),
+            strategy_name="sweep-reclaim",
+            strategy_code="SWR",
+        ),
+        f"雷达锁定: {symbol}",
+        f"pre-entry价: {_fmt_notify_price(intent.get('pre_entry_price'))}",
+        f"H: {_fmt_short_bj_from_ms(context.get('h_time_ms'))} close={_fmt_notify_price(context.get('h_close'))}",
+        f"B: {_fmt_short_bj_from_ms(context.get('b_time_ms'))} low={_fmt_notify_price(context.get('b_low'))}",
+        f"C: {_fmt_short_bj_from_ms(context.get('c_time_ms'))} close={_fmt_notify_price(context.get('c_close'))}",
+        f"HB跌幅: {_fmt_notify_pct(context.get('hb_drop'))}",
+        f"修复: {_fmt_notify_pct(context.get('bc_rebound'))}",
+        f"速度: {_fmt_notify_float(context.get('bc_over_hb_bars'))}",
+        f"爆量: {_fmt_notify_float(context.get('vol_climax'))}",
+        f"开仓金额: {_safe_float(intent.get('position_notional_usdt'), 0.0):.2f}U",
+        f"TP: {_fmt_notify_float(intent.get('take_profit_r_multiple'))}R",
+        f"评分: {int(_safe_float(context.get('score'), 0.0) or 0)} (#{int(_safe_float(context.get('score_order'), 0.0) or 0)})",
+    ]
+    return "\n".join(lines)
+
+
+def _strategy_signal_message(account: str, intent: Mapping[str, Any]) -> str:
+    if str(intent.get("strategy_name") or "").strip() == "sweep-reclaim":
+        return _sweep_reclaim_signal_message(account, intent)
+    return _spring_signal_message(account, intent)
+
+
 def _spring_entry_message(account: str, open_trade: Mapping[str, Any], event_time_ms: Any) -> str:
     symbol = str(open_trade.get("symbol") or "").upper().strip()
     return "\n".join([
-        _spring_notify_header(account, event_time_ms or open_trade.get("entry_ts")),
+        _strategy_notify_header(
+            account,
+            event_time_ms or open_trade.get("entry_ts"),
+            strategy_name=open_trade.get("strategy_name"),
+            strategy_code=open_trade.get("strategy_code"),
+        ),
         f"开仓 {symbol}",
         f"entry≈{_fmt_notify_price(open_trade.get('entry_price'))}",
         f"TP={_fmt_notify_price(open_trade.get('tp_price'))}",
@@ -633,7 +716,12 @@ def _spring_exit_message(
         pnl_pct = exit_price / entry_price - 1.0
     symbol = str(closed_trade.get("symbol") or "").upper().strip()
     return "\n".join([
-        _spring_notify_header(account, event_time_ms),
+        _strategy_notify_header(
+            account,
+            event_time_ms,
+            strategy_name=closed_trade.get("strategy_name"),
+            strategy_code=closed_trade.get("strategy_code"),
+        ),
         f"离场 {symbol}",
         f"reason={exit_reason}",
         f"entry≈{_fmt_notify_price(entry_price)}",
@@ -1189,7 +1277,8 @@ def _finalize_closed_trade(
                 closed_trade,
                 exit_reason=exit_reason,
                 event_time_ms=exit_event_time_ms,
-            )
+            ),
+            strategy_name=state_strategy_name,
         )
     return {
         "ok": True,
@@ -2625,6 +2714,7 @@ def execute_live_execution_plan(
     account = intent_dict["account"]
     symbol = intent_dict["symbol"]
     state_strategy_name = str(intent_dict["strategy_name"])
+    notify_label = _strategy_notify_label(state_strategy_name)
     signal = deepcopy(intent_dict["signal_snapshot"])
     current_time_ms = int(intent_dict["signal_time"])
     current_time_bj = str(intent_dict["signal_time_bj"])
@@ -2756,7 +2846,10 @@ def execute_live_execution_plan(
             "pre_entry_price": float(pre_entry_price),
             "position_notional_usdt": float(notional),
         }
-        _send_spring_notify(_spring_signal_message(account, notify_intent))
+        _send_spring_notify(
+            _strategy_signal_message(account, notify_intent),
+            strategy_name=state_strategy_name,
+        )
 
     hedge_res = ensure_hedge_mode(account)
     if not hedge_res.get("ok"):
@@ -2781,7 +2874,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["entry_client_order_id"],
-        notify_label=SPRING_NOTIFY_LABEL,
+        notify_label=notify_label,
     )
     if not entry_res.get("ok"):
         mark_error(account, symbol, error_code="entry_submit_failed", error_message=entry_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
@@ -2823,7 +2916,7 @@ def execute_live_execution_plan(
             retry_delay_secs=retry_delay_secs,
             client_order_id=flatten_client_order_id,
             order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
-            notify_label=SPRING_NOTIFY_LABEL,
+            notify_label=notify_label,
         )
         open_trade = _open_trade_payload(
             intent=intent_dict,
@@ -2914,7 +3007,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["sl_client_order_id"],
-        notify_label=SPRING_NOTIFY_LABEL,
+        notify_label=notify_label,
     )
     _write_exec_event(audit_enabled, account, "spring_sl_submitted" if sl_res.get("ok") else "spring_sl_submit_failed", {
         "symbol": symbol,
@@ -2940,7 +3033,7 @@ def execute_live_execution_plan(
             retry_delay_secs=retry_delay_secs,
             client_order_id=flatten_client_order_id,
             order_role=EXIT_REASON_SL_SUBMIT_FAILED_FLATTEN,
-            notify_label=SPRING_NOTIFY_LABEL,
+            notify_label=notify_label,
         )
         open_trade = _open_trade_payload(
             intent=intent_dict,
@@ -3012,7 +3105,7 @@ def execute_live_execution_plan(
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
         client_order_id=order_ids["tp_client_order_id"],
-        notify_label=SPRING_NOTIFY_LABEL,
+        notify_label=notify_label,
     )
     _write_exec_event(audit_enabled, account, "spring_tp_submitted" if tp_res.get("ok") else "spring_tp_submit_failed", {
         "symbol": symbol,
@@ -3066,7 +3159,10 @@ def execute_live_execution_plan(
         "cooldown_until_bj": cooldown_until_bj,
     })
     if _notify_enabled(cfg, "notify_on_order_submit"):
-        _send_spring_notify(_spring_entry_message(account, open_trade, entry_event_time_ms))
+        _send_spring_notify(
+            _spring_entry_message(account, open_trade, entry_event_time_ms),
+            strategy_name=state_strategy_name,
+        )
     post_entry_reconcile = _post_entry_reconcile(
         account=account,
         symbol=symbol,

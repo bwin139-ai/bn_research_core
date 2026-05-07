@@ -303,6 +303,11 @@ strategies/spring/config.json:
 8. `core/analysis/visualizer.py` 已将 SWR 复盘图文件名前缀改为 `SWR_`，Snapback 仍保持 `SNAP_`。
 9. `strategies/schedule_backtests.py` 已支持 `--strategy sweep-reclaim` 全量并行调度，并在 post-merge 阶段合并 `sweep_reclaim_decision_audit.{run_id}.jsonl` 为 `sweep_reclaim_decision_audit.{runset}_ALL.jsonl`。
 10. 本地已完成 SWR scheduler `--dry-run` 验证，能按 batch 生成 `strategies/run_backtest.py --strategy sweep-reclaim` 命令。
+11. 2026-05-07 已新增 SWR live 侧代码入口：
+    - `strategies/sweep_reclaim/live_execution.py`
+    - `strategies/sweep_reclaim/run_live.py`
+    - `strategies/sweep_reclaim/live_execution.smoke_10u.json`
+12. 2026-05-07 公共 live execution intent 已支持 `risk_reward_r_multiple` / `take_profit_r_multiple`，用于表达 SWR 的 R 倍数止盈语义；Spring 原 `risk_reward_1r` / `fixed_pct` 语义保持不变。
 
 当前语义事实：
 
@@ -331,7 +336,7 @@ TP = entry_price + risk_distance * take_profit_r_multiple
 strategies/sweep_reclaim/config.json:
 - runtime.bar_interval = 1m
 - runtime.max_history_window_mins = 300
-- universe.min_24h_chg_pct = 30
+- universe.min_24h_chg_pct = 20
 - universe.min_24h_quote_volume = 50000000
 - universe.score_top_n = 3
 - structure.support_window_mins = 180
@@ -370,8 +375,9 @@ max_drawdown_compound_net = 52.40U / 17.36%
 当前 pending：
 
 1. `SWR_V1_30D_P6_0506T2125` 已作为当前 performance baseline。
-2. 首版只做 sim 语义与回测，不启动 live，不触交易所。
-3. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
+2. SWR live 侧已完成代码入口与本地 intent / dry-run plan 小样本验证，但尚未在服务器读取 hub payload 跑真实 live projection dry-run。
+3. SWR live 尚未启动真实下单；首次使用 `--execute-live` 前必须先做服务器 dry-run projection 与 exchange precheck 验证。
+4. 后续若调整 SWR 参数，必须同步更新语义文档或明确为实验配置。
 
 已确认 incident：
 

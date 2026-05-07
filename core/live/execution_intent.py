@@ -29,6 +29,7 @@ class ValidatedLiveExecutionIntent:
     signal_snapshot: dict[str, Any]
     c_bar_ts: int | None = None
     c_bar_bj: str | None = None
+    take_profit_r_multiple: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -125,10 +126,15 @@ def validate_live_execution_intent(payload: Mapping[str, Any]) -> ValidatedLiveE
     full_notional_risk_pct = _positive_float(payload, "full_notional_risk_pct")
     take_profit_mode = _non_empty_str(payload, "take_profit_mode")
     take_profit_pct = float(_require(payload, "take_profit_pct"))
-    if take_profit_mode not in {"risk_reward_1r", "fixed_pct"}:
+    if take_profit_mode not in {"risk_reward_1r", "risk_reward_r_multiple", "fixed_pct"}:
         _fail("take_profit_mode", f"unsupported mode: {take_profit_mode!r}")
     if take_profit_mode == "fixed_pct" and take_profit_pct <= 0:
         _fail("take_profit_pct", f"fixed_pct mode requires > 0, got {take_profit_pct}")
+    take_profit_r_multiple = None
+    if take_profit_mode == "risk_reward_1r":
+        take_profit_r_multiple = 1.0
+    elif take_profit_mode == "risk_reward_r_multiple":
+        take_profit_r_multiple = _positive_float(payload, "take_profit_r_multiple")
     max_hold_mins = _positive_int(payload, "max_hold_mins")
     time_stop_min_profit_pct = _non_negative_float(payload, "time_stop_min_profit_pct")
     signal_snapshot = _dict_field(payload, "signal_snapshot")
@@ -154,4 +160,5 @@ def validate_live_execution_intent(payload: Mapping[str, Any]) -> ValidatedLiveE
         signal_snapshot=signal_snapshot,
         c_bar_ts=c_bar_ts,
         c_bar_bj=c_bar_bj,
+        take_profit_r_multiple=take_profit_r_multiple,
     )
