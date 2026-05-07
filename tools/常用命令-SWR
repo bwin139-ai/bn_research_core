@@ -1,4 +1,5 @@
 # ============== Sweep-Reclaim 冒烟回测 ===============
+git pull --ff-only origin main
 RUNSET="SWR_SmokeTest_V1_$(date +%m%dT%H%M)"
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/run_backtest.py \
   --strategy sweep-reclaim \
@@ -10,6 +11,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/run_ba
   --run-id "${RUNSET}"
 
 # ========= Sweep-Reclaim 全量并行调度主进程 =========
+git pull --ff-only origin main
 RUNSET="SWR_V1_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
   --strategy sweep-reclaim \
@@ -28,5 +30,24 @@ nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /
 > "output/logs/scheduler.${RUNSET}.console.log" 2>&1 &
 
 tail -f "output/logs/scheduler.${RUNSET}.console.log"
+
+
+# ============== Sweep-Reclaim live 10U smoke ===============
+git pull --ff-only origin main
+ACCOUNT=mybwin139
+nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
+  --config strategies/sweep_reclaim/config_smoke_10u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/sweep_reclaim/live_execution.smoke_10u.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/sweep_reclaim_live.${ACCOUNT}.log" 2>&1 &
+
+tail -n 100 -f output/live_projection/sweep_reclaim_live.mybwin139.log
+
 
 
