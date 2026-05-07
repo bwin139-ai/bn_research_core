@@ -40,6 +40,7 @@ from core.engine.data_feeder import CrossSectionalFeeder  # noqa: E402
 BJ_TZ = timezone(timedelta(hours=8))
 EQUITY_INITIAL = 100.0
 DEFAULT_FEE_SIDE = 0.0005
+HBS_LOGIC_STRATEGIES = {"spring-sabc", "sweep-reclaim"}
 
 
 def setup_logging(log_file: str):
@@ -63,6 +64,20 @@ def _safe_float(v, default=None):
         return float(v)
     except Exception:
         return default
+
+
+def _require_hbs_cross_section(feeder: CrossSectionalFeeder, current_time_ms: int) -> tuple[int, pd.DataFrame]:
+    latest_closed_bar_ts = int(current_time_ms) - 60_000
+    cross_section = feeder.get_cross_section(latest_closed_bar_ts)
+    if cross_section is None or cross_section.empty:
+        current_bj = pd.to_datetime(int(current_time_ms), unit="ms") + pd.Timedelta(hours=8)
+        latest_closed_bj = pd.to_datetime(latest_closed_bar_ts, unit="ms") + pd.Timedelta(hours=8)
+        raise ValueError(
+            "HBs cross_section missing for strategy logic: "
+            f"signal_time={current_bj.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"latest_closed_bar={latest_closed_bj.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+    return latest_closed_bar_ts, cross_section
 
 
 def _extract_fee_side(config: Dict[str, Any]) -> float:
@@ -818,9 +833,12 @@ def main():
         cross_section: Any,
         active_symbols: set[str],
         signal: Optional[Dict[str, Any]],
+        *,
+        logic_data_anchor_ms: Optional[int] = None,
     ) -> None:
         if not spring_decision_audit_path:
             return
+        logic_anchor_ms = int(logic_data_anchor_ms if logic_data_anchor_ms is not None else current_time_ms)
 
         universe_candidates = list(getattr(strategy, "_last_universe_candidates", []) or [])
         structure_candidates = list(getattr(strategy, "_last_structure_candidates", []) or [])
@@ -882,6 +900,9 @@ def main():
             "strategy": args.strategy,
             "bar_ts": int(current_time_ms),
             "bar_bj": _bj_from_ms(int(current_time_ms)),
+            "logic_data_anchor_ts": logic_anchor_ms,
+            "logic_data_anchor_bj": _bj_from_ms(logic_anchor_ms),
+            "logic_data_semantics": "HBs_latest_closed_bar",
             "cross_section_symbol_count": int(len(cs.index)) if isinstance(cs, pd.DataFrame) else 0,
             "active_symbols": sorted(str(sym).upper().strip() for sym in (active_symbols or set()) if str(sym).strip()),
             "universe_candidate_count": len(universe_candidates),
@@ -1100,6 +1121,10 @@ def main():
     logging.info("引擎点火，开始时间步进...")
     for i, ts in enumerate(timestamps):
         cross_section = feeder.get_cross_section(ts)
+        logic_cross_section = cross_section
+        logic_data_anchor_ms = int(ts)
+        if args.strategy in HBS_LOGIC_STRATEGIES:
+            logic_data_anchor_ms, logic_cross_section = _require_hbs_cross_section(feeder, int(ts))
 
         # 4.1 驱动撮合引擎：snapback 保持原有顺序；reclaim 类策略需要先在 CB 发单，再在同一 CB 撮合。
         if args.strategy not in {"spring-sabc", "sweep-reclaim"}:
@@ -1112,7 +1137,7 @@ def main():
 
         # 4.3 大脑思考，输出信号快照 (若无信号则返回 None)
         signal = strategy.on_kline_close(
-            ts, cross_section, active_symbols, full_df=df_dict
+            ts, logic_cross_section, active_symbols, full_df=df_dict
         )
         signal_executable = True
         if signal and args.strategy in {"spring-sabc", "sweep-reclaim"}:
@@ -1121,16 +1146,17 @@ def main():
             _write_spring_decision_audit_row(
                 strategy,
                 ts,
-                cross_section,
+                logic_cross_section,
                 active_symbols,
                 signal,
+                logic_data_anchor_ms=logic_data_anchor_ms,
             )
 
         structure_audit_map = {}
         if audit_enabled and hasattr(strategy, "audit_symbols_at_kline_close"):
             structure_audit_map = strategy.audit_symbols_at_kline_close(
                 ts,
-                cross_section,
+                logic_cross_section,
                 active_symbols,
                 full_df=df_dict,
                 target_symbols=audit_symbols,
@@ -1151,20 +1177,24 @@ def main():
                 with open(audit_out_path, "a", encoding="utf-8") as f:
                     for audit_symbol in sorted(audit_symbols):
                         symbol_df = df_dict.get(audit_symbol)
-                        row = cross_section.loc[audit_symbol] if audit_symbol in cross_section.index else None
+                        row = logic_cross_section.loc[audit_symbol] if audit_symbol in logic_cross_section.index else None
+                        history_end_ms = logic_data_anchor_ms if args.strategy in HBS_LOGIC_STRATEGIES else int(ts)
                         forensic_row = {
                             "run_id": args.run_id,
                             "strategy": args.strategy,
                             "bar_ts": int(ts),
                             "bar_bj": _bj_from_ms(int(ts)),
+                            "logic_data_anchor_ts": logic_data_anchor_ms,
+                            "logic_data_anchor_bj": _bj_from_ms(logic_data_anchor_ms),
+                            "logic_data_semantics": "HBs_latest_closed_bar" if args.strategy in HBS_LOGIC_STRATEGIES else "strategy_current_bar",
                             "symbol": audit_symbol,
-                            "in_cross_section": bool(audit_symbol in cross_section.index),
+                            "in_cross_section": bool(audit_symbol in logic_cross_section.index),
                             "in_active_symbols": bool(audit_symbol in active_symbols),
                             "selected_signal_symbol": signal_symbol or None,
                             "selected_signal_digest": signal_digest,
                             "cross_snapshot": _series_snapshot(row),
                             "structure_audit": structure_audit_map.get(audit_symbol, {}),
-                            "history_bars": _history_records(symbol_df.loc[:ts], args.audit_history_window_bars) if symbol_df is not None else [],
+                            "history_bars": _history_records(symbol_df.loc[:history_end_ms], args.audit_history_window_bars) if symbol_df is not None else [],
                         }
                         f.write(json.dumps(forensic_row, ensure_ascii=False, cls=NumpyEncoder) + "\n")
 

@@ -59,6 +59,14 @@ CB = C + 1
 
 策略在 CB 时刻观察 HBs，并在 CB 产生信号与入场。
 
+投喂边界：
+
+```text
+strategy logic / signal 生产层只允许消费 HBs 数据。
+cross_section、24h_chg、24h_vol、rank、score、结构识别窗口全部锚定 C = HBs[0]。
+CB 数据只允许用于 signal 之后的执行撮合、entry price / pre-entry price 与最终 TP 解析。
+```
+
 禁止：
 
 ```text

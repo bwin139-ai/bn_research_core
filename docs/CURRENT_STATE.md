@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-06
+更新时间：2026-05-07
 
 ## 0. 文档定位
 
@@ -255,6 +255,8 @@ live_config.*.json:
 38. 2026-05-01 本地已推进 Spring loop finalized payload anchor wait patch：`strategies/spring/run_live.py` 的 loop 不再按 `--hub-max-age-secs` 单次读取任意 fresh finalized payload；每轮从 scheduled signal check epoch 推导 `expected_signal_time_ts` 与 `expected_latest_closed_bar_ts`，按 1s 轮询等待 finalized payload 精确匹配当前 C anchor 且包含 `finalize_summary`，deadline 对齐 Snapback 为 `expected_signal_time_ts + 50s`。deadline 前未等到时，本轮写 `finalized_candidate_payload_not_ready` projection/heartbeat 并继续下一轮，不消费旧 payload、不下单。`--signal-check-second` 默认值从 2 改为 5，对齐 Snapback live 起始检查秒。
 39. 2026-05-01 本地已推进 live 三段架构边界 patch：项目正式采用 `Live Data Gate -> Signal Generation -> Execution Lifecycle` 术语；新增 `core/live/live_data_gate.py` 承接信号生成前的公共 finalized payload anchor gate，Spring `strategies/spring/run_live.py` 改为复用该公共模块。`signal` 仍只表示策略计算后的信号结果，信号生成前的数据输入层统一称为 `Live Data Gate`，不得称为 `Signal Input`。
 40. 2026-05-06 已补 Spring sim/live 决策审计排名字段：策略逻辑同源产出 `rank_chg_24h`、`rank_vol_24h`、`score_rank_all`、`selected_score_order`、`score_top_n`、`selected_for_structure`、`universe_hard_gate_pass`；sim `spring_decision_audit` 新增 `decision_scoreboard`，live `spring_live` projection 新增完整 `decision_audit` 与同口径 `decision_scoreboard`。`score` 是综合分数不是名次，历史 `score_order` 仅表示 topN 内顺序；后续 Spring sim/live 一致性审计应以 `score_rank_all` 判断全候选排名、以 `selected_score_order/selected_for_structure` 判断是否进入 structure 检查。
+41. 2026-05-07 Spring smoke `Spring_SmokeTest_V1_0507T1944` 与 `mybwin139` live 重叠审计确认：11/11 信号按 `(symbol, signal_time)` 匹配，结构字段一致；此前看到的 `chg_24h / vol_24h / rank / score` 差异来自 sim signal 文件记录了 CB cross_section，而 live 严格使用 `C=HBs[0]` finalized payload。进一步对表显示 live 24h 指标逐笔匹配 sim decision audit 的 C 行 scoreboard，不匹配 sim CB 行指标。
+42. 2026-05-07 已将公共语义明确为：所有策略的 `logic.py` / signal 生产层只能消费 HBs 数据，CB 数据只允许进入 signal 之后的执行撮合、entry price / pre-entry price 与最终 TP 解析。共享回测 runner 已修正 Spring/SWR 的策略逻辑投喂：`strategy.on_kline_close(signal_time=CB, cross_section=C)`，同时保留 CB cross_section 用于 sim 执行价注入和撮合。Snapback sim 已检查，其 logic 当前以 `current_time_ms=C` 运行并自行产出 `signal_time=C+1m`，本环节未发现同类 CB 投喂偏差。
 
 当前配置事实：
 
@@ -662,7 +664,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 9. 公共 BN_EXEC 事件支持按调用方传入 `notify_label`；Spring execution runner 传 `spring`，避免 Spring 的 ENTRY/SL/TP/CANCEL 执行通知落到 `snapback` 队列。
 10. Spring pre-A 语义已从 pattern window 左边界漂移改为 A 点前固定窗口：`structure.pre_a.window_mins=60`。`pre_a_chg_pct`、pre-A range、high-to-A-close、close position、up/down 统计均锚定该固定 S→A 区间；`runtime.max_history_window_mins` 必须覆盖 `structure.pattern_window_mins + structure.pre_a.window_mins`，否则 fail-fast。
 11. Spring B 低点确认已从 A-B 区间最低 low 收紧为 A-C 区间最低 low：若 B 之后、C 之前出现任何低于 B_low 的 X 点，待定 B 失效，算法继续搜索其它 B；若无其它合法 B，本轮不产生信号。
-12. Spring 价格时态已拆开：`strategies/spring/logic.py` 不再从 HBs/cross_section 产出 `signal.current_price` 或最终 `tp_price`；sim 侧在 `signal_time=CB` 用 CB open 注入可复现执行价，live 侧在公共 execution lifecycle 中 entry 前读取并落盘 `pre_entry_price`，真实 entry fill 后再按 `risk_reward_1r` 重算 TP。执行层必须保证 LONG 的最终 TP 高于真实 entry，避免 BUSDT 23:21 这类 C_open 被误当 current price 后提交低于 entry 的 TP。
+12. Spring 价格时态已拆开：`strategies/spring/logic.py` 不再从 HBs/cross_section 产出 `signal.current_price` 或最终 `tp_price`；sim 侧策略逻辑只消费 `C=HBs[0]` 的 cross_section，并在 `signal_time=CB` 用 CB open 注入可复现执行价；live 侧在公共 execution lifecycle 中 entry 前读取并落盘 `pre_entry_price`，真实 entry fill 后再按 `risk_reward_1r` 重算 TP。执行层必须保证 LONG 的最终 TP 高于真实 entry，避免 BUSDT 23:21 这类 C_open 被误当 current price 后提交低于 entry 的 TP。
 13. live_trades 闭仓 projection 必须保留 entry 审计字段：`pre_entry_price`、`pre_entry_price_source`、`resolved_tp_price_source`，用于复盘真实 entry 前价格、真实 fill 与最终 TP 计算来源。
 14. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
