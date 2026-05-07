@@ -636,6 +636,26 @@ def _write_empty_hub_inputs_snapshot(
     write_shared_current_pickle(snapshot_name, dict(payload))
 
 
+def _prefilter_symbols_by_quote_volume(
+    symbols: list[str],
+    quote_volume_map: dict[str, Any],
+    *,
+    min_24h_quote_volume: float,
+) -> list[str]:
+    out: list[str] = []
+    for symbol in symbols:
+        symbol_key = str(symbol).upper().strip()
+        if not symbol_key:
+            continue
+        try:
+            quote_volume = float(quote_volume_map.get(symbol_key) or 0.0)
+        except Exception:
+            quote_volume = 0.0
+        if quote_volume >= float(min_24h_quote_volume):
+            out.append(symbol_key)
+    return out
+
+
 def _next_signal_check_epoch(now_epoch: float | None = None) -> float:
     if now_epoch is None:
         now_epoch = time.time()
@@ -729,37 +749,6 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'refresh_batch_size': int(refresh_res.get('batch_size') or 0),
             'refresh_elapsed_ms': int(refresh_res.get('refresh_elapsed_ms') or 0),
         })
-        if market_total_24h_vol_status != 'ready_hub_owned_1m':
-            reason = 'hub_owned_1m_rollsum_not_ready'
-            _write_empty_hub_inputs_snapshot(
-                account,
-                'candidate_inputs',
-                latest_closed_bar_ts=latest_closed_bar_ts,
-                latest_closed_bar_bj=latest_closed_bar_bj,
-                signal_time_ts=signal_time_ts,
-                signal_time_bj=signal_time_bj,
-                reason=reason,
-                min_24h_quote_volume=min_24h_quote_volume,
-                market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
-                market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
-                market_total_24h_vol_source=market_total_24h_vol_source,
-                market_total_24h_vol_status=market_total_24h_vol_status,
-            )
-            _write_empty_hub_inputs_snapshot(
-                account,
-                'finalized_candidate_inputs',
-                latest_closed_bar_ts=latest_closed_bar_ts,
-                latest_closed_bar_bj=latest_closed_bar_bj,
-                signal_time_ts=signal_time_ts,
-                signal_time_bj=signal_time_bj,
-                reason=reason,
-                min_24h_quote_volume=min_24h_quote_volume,
-                market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
-                market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
-                market_total_24h_vol_source=market_total_24h_vol_source,
-                market_total_24h_vol_status=market_total_24h_vol_status,
-            )
-            return
 
     rollsum_view = read_hub_owned_1m_rollsum_market_view(
         account,
@@ -806,9 +795,21 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         )
     except Exception as e:
         logging.warning('[binance_rest_quota_stats] record_failed | account=%s | reason=%s', account, e)
-    if market_total_24h_vol_status != 'ready_hub_owned_1m':
-        reason = 'hub_owned_1m_rollsum_regressed_not_ready'
-        write_event(account, reason, {
+
+    prefilter_source = 'hub_owned_1m_rollsum'
+    if market_total_24h_vol_status == 'ready_hub_owned_1m':
+        symbol_24h_quote_volume_map = dict(rollsum_view.get('symbol_24h_quote_volume_1m') or {})
+        finalize_symbols = _prefilter_symbols_by_quote_volume(
+            candidate_symbols,
+            symbol_24h_quote_volume_map,
+            min_24h_quote_volume=min_24h_quote_volume,
+        )
+        reason = 'hub_candidate_prefilter_empty'
+    else:
+        prefilter_source = 'unfiltered_exchange_universe_market_rollsum_not_ready'
+        finalize_symbols = [str(symbol).upper().strip() for symbol in candidate_symbols if str(symbol).strip()]
+        reason = 'hub_candidate_universe_empty_market_rollsum_not_ready'
+        write_event(account, 'hub_candidate_inputs_market_total_not_ready_bypassed', {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
             'latest_closed_bar_ts': latest_closed_bar_ts,
@@ -818,45 +819,9 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'market_total_24h_symbol_count_1m_rollsum': market_total_24h_symbol_count_1m_rollsum,
             'market_total_24h_vol_source': market_total_24h_vol_source,
             'market_total_24h_vol_status': market_total_24h_vol_status,
+            'prefilter_source': prefilter_source,
         })
-        _write_empty_hub_inputs_snapshot(
-            account,
-            'candidate_inputs',
-            latest_closed_bar_ts=latest_closed_bar_ts,
-            latest_closed_bar_bj=latest_closed_bar_bj,
-            signal_time_ts=signal_time_ts,
-            signal_time_bj=signal_time_bj,
-            reason=reason,
-            min_24h_quote_volume=min_24h_quote_volume,
-            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
-            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
-            market_total_24h_vol_source=market_total_24h_vol_source,
-            market_total_24h_vol_status=market_total_24h_vol_status,
-        )
-        _write_empty_hub_inputs_snapshot(
-            account,
-            'finalized_candidate_inputs',
-            latest_closed_bar_ts=latest_closed_bar_ts,
-            latest_closed_bar_bj=latest_closed_bar_bj,
-            signal_time_ts=signal_time_ts,
-            signal_time_bj=signal_time_bj,
-            reason=reason,
-            min_24h_quote_volume=min_24h_quote_volume,
-            market_total_24h_vol_1m_rollsum=market_total_24h_vol_1m_rollsum,
-            market_total_24h_symbol_count_1m_rollsum=market_total_24h_symbol_count_1m_rollsum,
-            market_total_24h_vol_source=market_total_24h_vol_source,
-            market_total_24h_vol_status=market_total_24h_vol_status,
-        )
-        return
-
-    prefilter_source = 'hub_owned_1m_rollsum'
-    symbol_24h_quote_volume_map = dict(rollsum_view.get('symbol_24h_quote_volume_1m') or {})
-    finalize_symbols = [
-        symbol for symbol in candidate_symbols
-        if float(symbol_24h_quote_volume_map.get(str(symbol).upper().strip()) or 0.0) >= min_24h_quote_volume
-    ]
     if not finalize_symbols:
-        reason = 'hub_candidate_prefilter_empty'
         write_event(account, reason, {
             'bar_ts': signal_time_ts,
             'bar_bj': signal_time_bj,
@@ -918,8 +883,16 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             'bar_bj': signal_time_bj,
             'reason': candidate_res.get('reason'),
             'errors': candidate_res.get('errors'),
+            'prefilter_source': prefilter_source,
+            'prefilter_symbol_count': len(finalize_symbols),
+            'market_total_24h_vol_status': market_total_24h_vol_status,
         })
         return
+    candidate_payload['candidate_prefilter_source'] = prefilter_source
+    candidate_payload['market_total_24h_vol_1m_rollsum'] = market_total_24h_vol_1m_rollsum
+    candidate_payload['market_total_24h_symbol_count_1m_rollsum'] = market_total_24h_symbol_count_1m_rollsum
+    candidate_payload['market_total_24h_vol_source'] = market_total_24h_vol_source
+    candidate_payload['market_total_24h_vol_status'] = market_total_24h_vol_status
 
     finalized_payload = finalize_candidate_payload_via_hub(
         account,

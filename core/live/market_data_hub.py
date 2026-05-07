@@ -731,6 +731,11 @@ def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -
         'symbol_count': int(finalized_payload.get('symbol_count') or 0),
         'bars_loaded_min': finalized_payload.get('bars_loaded_min'),
         'bars_loaded_max': finalized_payload.get('bars_loaded_max'),
+        'candidate_prefilter_source': finalized_payload.get('candidate_prefilter_source'),
+        'market_total_24h_vol_1m_rollsum': finalized_payload.get('market_total_24h_vol_1m_rollsum'),
+        'market_total_24h_symbol_count_1m_rollsum': finalized_payload.get('market_total_24h_symbol_count_1m_rollsum'),
+        'market_total_24h_vol_source': finalized_payload.get('market_total_24h_vol_source'),
+        'market_total_24h_vol_status': finalized_payload.get('market_total_24h_vol_status'),
         'finalize_summary': finalize_summary,
         'finalize_shared_symbol_bars_cache': finalized_payload.get('finalize_shared_symbol_bars_cache'),
     }
