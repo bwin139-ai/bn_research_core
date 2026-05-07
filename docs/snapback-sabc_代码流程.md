@@ -9,6 +9,11 @@ cross_section
  - 横截面总表
  - 这一轮准备拿来给策略检查的一张“总表”。每一行是一个币种，每一列是这个币当前这一轮的横向指标。
  - 里面常见会有：close chg_24h vol_24h close_idx high_idx low_idx
+ - signal 生产侧只能使用已闭合的 C = HBs[0] 数据；24h 指标必须锚定 C。
+market_total_24h_vol
+ - 全市场 24h 成交额聚合指标
+ - 属于 signal 生产侧数据事实，必须和 cross_section / vol_24h 一样锚定同一个 C = HBs[0]
+ - live 不允许把不同 symbol 的不同 latest_bar_ts rolling 结果混合成一个总量；若无法证明全市场 24h rolling 同锚到 C，则本轮应 not-ready / fail fast。
 cs
  - 经过 universe 过滤后的横截面子集
  - cross_section 是原始横向总表

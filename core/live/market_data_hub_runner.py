@@ -702,6 +702,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
         rollsum_view = read_hub_owned_1m_rollsum_market_view(
             account,
             dict(market_snapshot['ticker_map']),
+            latest_closed_bar_ts=latest_closed_bar_ts,
         )
         market_total_24h_vol_1m_rollsum = float(rollsum_view.get('market_total_24h_vol_1m_rollsum') or 0.0)
         market_total_24h_symbol_count_1m_rollsum = int(rollsum_view.get('market_total_24h_symbol_count_1m_rollsum') or 0)
@@ -763,6 +764,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     rollsum_view = read_hub_owned_1m_rollsum_market_view(
         account,
         dict(market_snapshot['ticker_map']),
+        latest_closed_bar_ts=latest_closed_bar_ts,
     )
     market_total_24h_vol_1m_rollsum = float(rollsum_view.get('market_total_24h_vol_1m_rollsum') or 0.0)
     market_total_24h_symbol_count_1m_rollsum = int(rollsum_view.get('market_total_24h_symbol_count_1m_rollsum') or 0)

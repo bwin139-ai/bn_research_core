@@ -64,6 +64,8 @@ CB = C + 1
 ```text
 strategy logic / signal 生产层只允许消费 HBs 数据。
 cross_section、24h_chg、24h_vol、rank、score、结构识别窗口全部锚定 C = HBs[0]。
+若使用全市场 24h 聚合指标，market_total_24h_vol 同样必须锚定同一个 C；
+live 不允许把不同 symbol 的不同 latest_bar_ts rolling 结果混成一个市场总量。
 CB 数据只允许用于 signal 之后的执行撮合、entry price / pre-entry price 与最终 TP 解析。
 ```
 

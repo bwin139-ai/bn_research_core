@@ -122,6 +122,8 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'market_snapshot_fetched_bj': snapshot['market_snapshot_fetched_bj'],
         'published_utc_ms': published_utc_ms,
         'published_bj': _fmt_bj_from_ms(published_utc_ms),
+        'market_total_24h_vol_anchor_ts': int(snapshot.get('market_total_24h_vol_anchor_ts') or 0),
+        'market_total_24h_vol_anchor_bj': str(snapshot.get('market_total_24h_vol_anchor_bj') or ''),
         'market_total_24h_vol_api': float(snapshot.get('market_total_24h_vol_api') or 0.0),
         'market_total_24h_symbol_count_api': int(snapshot.get('market_total_24h_symbol_count_api') or 0),
         'market_total_24h_vol_1m_rollsum': float(snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0),
@@ -133,6 +135,7 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'hub_owned_1m_rollsum_state_updated_bj': snapshot.get('hub_owned_1m_rollsum_state_updated_bj'),
         'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),
         'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
+        'stale_symbol_count_1m_rollsum': int(snapshot.get('stale_symbol_count_1m_rollsum') or 0),
         'newly_listed_symbol_count_1m_rollsum': int(snapshot.get('newly_listed_symbol_count_1m_rollsum') or 0),
     }
     write_shared_current_snapshot('market_snapshot', payload)

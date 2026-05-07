@@ -18,6 +18,7 @@
 1.1.4 所有策略都必须在 **CB 时刻** 观察 **HBs**。  
 1.1.5 所有策略的 `logic.py` / signal 生产层只能读取 HBs 数据事实；不得读取或消费 CB 的 OHLCV、24h 指标、排名、结构字段或其它未闭合时态数据。  
 1.1.6 sim / live 上游投喂给策略逻辑的数据必须同样只包含 HBs；CB 数据只允许进入信号之后的执行、撮合、entry price / pre-entry price / 最终 TP 解析等执行生命周期。  
+1.1.7 所有 24h 指标与全市场 24h 聚合指标都属于 signal 生产侧数据事实，必须锚定 `C = HBs[0]`；live 侧 `market_total_24h_vol` 不得混用不同 symbol 的不同闭合分钟，不得用 CB / ticker 当前时态替代 C-anchor 的 1m rolling 聚合。若任一 symbol 的 24h rolling 窗口不能证明覆盖同一个 C，应 fail fast / not-ready，不得用旧锚点或混合快照兜底。  
 
 ### 1.2 时间字段语义
 1.2.1 `signal_time` 只能表示信号生产时间。  
