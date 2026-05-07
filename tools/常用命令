@@ -7,7 +7,7 @@ ps aux | grep python
 ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[s]trategies/spring/run_live.py'
-
+ps aux | grep '[s]trategies/sweep_reclaim/run_live.py'
 
 # ========= git pull 阿里云拉最新代码 =========
  git fetch --all && git switch main && git pull --ff-only origin main
@@ -82,7 +82,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1000 \
-  --sleep-ms 2500 \
+  --sleep-ms 1500 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 tail -n 20 -f logs/klines_1m_sync.log
@@ -90,7 +90,7 @@ tail -n 20 -f logs/klines_1m_sync.log
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --limit 1000 \
-  --sleep-ms 2500 \
+  --sleep-ms 1500 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 tail -n 20 -f logs/klines_1m_augment_idx.log

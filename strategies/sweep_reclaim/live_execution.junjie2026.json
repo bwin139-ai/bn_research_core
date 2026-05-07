@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "strategy_name": "sweep-reclaim",
+  "strategy_code": "SWR",
+  "account": "junjie2026",
+  "execution_mode": "live_once",
+  "allow_live_order": true,
+  "audit_enabled": true,
+  "notify_enabled": true,
+  "notify_on_signal_locked": true,
+  "notify_on_order_submit": true,
+  "notify_on_exit_detected": true,
+  "notify_on_order_error": true,
+  "position_side": "LONG",
+  "position_mode": "HEDGE",
+  "margin_type": "CROSSED",
+  "leverage": 5,
+  "precheck_scope": "symbol",
+  "strategy_concurrency_scope": "symbol",
+  "require_local_state_precheck": true,
+  "require_exchange_precheck": true,
+  "require_symbol_filters": true,
+  "pre_entry_min_sl_distance_pct": 0.003,
+  "min_position_notional_usdt": 400,
+  "max_position_notional_usdt": 600,
+  "order_retry_max": 1,
+  "api_retry_delay_secs": 1.0,
+  "cooldown_mins": 240,
+  "stop_loss_failure_action": "submit_market_flatten",
+  "entry": {
+    "order_type": "MARKET"
+  },
+  "stop_loss": {
+    "order_type": "STOP_MARKET",
+    "working_type": "CONTRACT_PRICE",
+    "close_position": true
+  },
+  "take_profit": {
+    "order_type": "LIMIT",
+    "time_in_force": "GTC",
+    "working_type": "CONTRACT_PRICE"
+  },
+  "time_stop": {
+    "order_type": "MARKET"
+  }
+}

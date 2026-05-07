@@ -1,0 +1,86 @@
+{
+  "strategy_name": "sweep-reclaim",
+  "runtime": {
+    "bar_interval": "1m",
+    "max_history_window_mins": 300
+  },
+  "universe": {
+    "exclude_symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "BNBUSDT",
+      "SOLUSDT",
+      "XAUUSDT",
+      "XAGUSDT",
+      "XRPUSDT",
+      "DOGEUSDT",
+      "HYPEUSDT",
+      "1000PEPEUSDT",
+      "ADAUSDT",
+      "ENAUSDT",
+      "AVAXUSDT",
+      "LINKUSDT",
+      "SUIUSDT",
+      "DOTUSDT",
+      "WLDUSDT",
+      "AAVEUSDT",
+      "NEARUSDT",
+      "FILUSDT",
+      "LTCUSDT",
+      "BCHUSDT",
+      "TRXUSDT",
+      "XMRUSDT",
+      "CCUSDT",
+      "ZECUSDT",
+      "HBARUSDT",
+      "MUSDT",
+      "1000SHIBUSDT",
+      "TONUSDT",
+      "TAOUSDT",
+      "WLFIUSDT",
+      "PAXGUSDT",
+      "UNIUSDT",
+      "SKYUSDT",
+      "ASTERUSDT",
+      "ICPUSDT",
+      "ETCUSDT",
+      "ONDOUSDT"
+    ],
+    "min_24h_chg_pct": 30,
+    "min_24h_quote_volume": 50000000,
+    "score_top_n": 3
+  },
+  "structure": {
+    "support_window_mins": 180,
+    "hb_drop": {
+      "min": 0.06
+    },
+    "rebound": {
+      "bc_rebound_min": 0.20,
+      "bc_rebound_max": 0.4,
+      "hb_bars_min": 3,
+      "bc_bars_min": 1,
+      "bc_bars_max": 30,
+      "bc_over_hb_bars_max": 0.3
+    },
+    "vol_climax": {
+      "ratio_min": 3
+    }
+  },
+  "exit_policy": {
+    "stop_loss_anchor": "b_close",
+    "take_profit_r_multiple": 1.0,
+    "max_hold_mins": 60,
+    "time_stop_min_profit_pct": 0.005,
+    "breakeven_guard": {
+      "enabled": false,
+      "trigger_r": 0.8,
+      "floor_r": 0.0
+    }
+  },
+  "risk_controls": {
+    "cooldown_hours": 4,
+    "base_order_notional_usdt": 500,
+    "full_notional_risk_pct": 0.99
+  }
+}

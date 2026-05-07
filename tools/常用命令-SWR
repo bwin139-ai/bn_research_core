@@ -3,10 +3,10 @@ git pull --ff-only origin main
 RUNSET="SWR_SmokeTest_V1_$(date +%m%dT%H%M)"
 PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/run_backtest.py \
   --strategy sweep-reclaim \
-  --start 2026-04-26T08:00:00+08:00 \
-  --end   2026-05-06T10:30:00+08:00 \
+  --start 2026-05-07T09:00:00+08:00 \
+  --end   2026-05-07T19:00:00+08:00 \
   --kline-window 60 \
-  --config sweep_reclaim/config.json \
+  --config sweep_reclaim/config_smoke_10u.json \
   --out-dir "output/SmokeTest" \
   --run-id "${RUNSET}"
 
@@ -46,8 +46,35 @@ nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
   --hub-max-age-secs 120 \
   --audit-preview-limit 30 \
   >> "output/live_projection/sweep_reclaim_live.${ACCOUNT}.log" 2>&1 &
-
 tail -n 100 -f output/live_projection/sweep_reclaim_live.mybwin139.log
 
+git pull --ff-only origin main
+ACCOUNT=chen912
+nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
+  --config strategies/sweep_reclaim/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/sweep_reclaim/live_execution.chen912.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/sweep_reclaim_live.${ACCOUNT}.log" 2>&1 &
+tail -n 100 -f output/live_projection/sweep_reclaim_live.chen912.log
 
+git pull --ff-only origin main
+ACCOUNT=junjie2026
+nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
+  --config strategies/sweep_reclaim/config_500u.json \
+  --account "$ACCOUNT" \
+  --loop \
+  --signal-check-second 5 \
+  --dry-run-verify-exchange \
+  --execute-live \
+  --live-execution-config strategies/sweep_reclaim/live_execution.junjie2026.json \
+  --hub-max-age-secs 120 \
+  --audit-preview-limit 30 \
+  >> "output/live_projection/sweep_reclaim_live.${ACCOUNT}.log" 2>&1 &
+tail -n 100 -f output/live_projection/sweep_reclaim_live.junjie2026.log
 
