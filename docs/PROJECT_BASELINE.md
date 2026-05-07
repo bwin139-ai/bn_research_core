@@ -18,7 +18,9 @@
 1.1.4 所有策略都必须在 **CB 时刻** 观察 **HBs**。  
 1.1.5 所有策略的 `logic.py` / signal 生产层只能读取 HBs 数据事实；不得读取或消费 CB 的 OHLCV、24h 指标、排名、结构字段或其它未闭合时态数据。  
 1.1.6 sim / live 上游投喂给策略逻辑的数据必须同样只包含 HBs；CB 数据只允许进入信号之后的执行、撮合、entry price / pre-entry price / 最终 TP 解析等执行生命周期。  
-1.1.7 live `data_hub` 生产策略信号输入时，所有进入策略语义的 24h 指标、排名、结构字段与 `market_total_24h_vol` 必须锚定同一个最新闭合 bar `C=HBs[0]`；未证明 C-anchor 完整的全市场 rollsum 只能用于 data_hub 候选预筛/限流，不得作为策略 signal 字段或 Snapback 市场总量 gate 的 ready 事实。
+1.1.7 live `data_hub` 生产策略信号输入时，所有进入策略语义的 per-symbol 24h 指标、排名与结构字段必须锚定同一个最新闭合 bar `C=HBs[0]`。
+1.1.8 live `data_hub` 的公共候选初筛允许使用 Binance futures 24h ticker 的 `quoteVolume` 作为工程限流事实；该事实只决定是否构建 HBs payload，不得写入策略 `logic.py` 的 per-symbol 24h 指标、排名或结构字段。
+1.1.9 Snapback live `market_total_24h_vol` 使用 Binance futures 24h ticker API 计算，属于 live-only 市场总量 gate；该字段不再承诺与 sim 严格一致，sim/live 一致性审计必须将其标记为已知 live-source 例外，而不是 C-anchor 硬字段。
 
 ### 1.2 时间字段语义
 1.2.1 `signal_time` 只能表示信号生产时间。  

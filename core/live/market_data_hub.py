@@ -81,10 +81,10 @@ def load_market_snapshot_from_hub(account: str, *, max_age_secs: int = _HUB_SNAP
     payload = read_shared_current_pickle('market_snapshot')
     if not isinstance(payload, dict):
         raise RuntimeError(f'hub payload missing: account={account} name=market_snapshot')
-    if 'market_total_24h_vol_1m_rollsum_status' not in payload:
+    if 'market_total_24h_vol_status' not in payload:
         raise RuntimeError(
             'hub payload schema mismatch: '
-            f'account={account} name=market_snapshot missing=market_total_24h_vol_1m_rollsum_status'
+            f'account={account} name=market_snapshot missing=market_total_24h_vol_status'
         )
     return _clone_shared_payload_for_consumer(payload, account)
 
@@ -124,19 +124,10 @@ def build_market_snapshot_via_hub(account: str, *, audit_enabled: bool) -> dict[
         'published_bj': _fmt_bj_from_ms(published_utc_ms),
         'market_total_24h_vol_api': float(snapshot.get('market_total_24h_vol_api') or 0.0),
         'market_total_24h_symbol_count_api': int(snapshot.get('market_total_24h_symbol_count_api') or 0),
-        'market_total_24h_vol_1m_rollsum': float(snapshot.get('market_total_24h_vol_1m_rollsum') or 0.0),
-        'market_total_24h_symbol_count_1m_rollsum': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
-        'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count_1m_rollsum') or 0),
+        'market_total_24h_vol': float(snapshot.get('market_total_24h_vol') or 0.0),
+        'market_total_24h_symbol_count': int(snapshot.get('market_total_24h_symbol_count') or 0),
         'market_total_24h_vol_source': str(snapshot.get('market_total_24h_vol_source') or ''),
-        'market_total_24h_vol_1m_rollsum_status': str(snapshot.get('market_total_24h_vol_1m_rollsum_status') or ''),
-        'market_total_24h_vol_anchor_ts': snapshot.get('market_total_24h_vol_anchor_ts'),
-        'market_total_24h_vol_anchor_bj': snapshot.get('market_total_24h_vol_anchor_bj'),
-        'hub_owned_1m_rollsum_state_updated_utc_ms': snapshot.get('hub_owned_1m_rollsum_state_updated_utc_ms'),
-        'hub_owned_1m_rollsum_state_updated_bj': snapshot.get('hub_owned_1m_rollsum_state_updated_bj'),
-        'missing_symbol_count_1m_rollsum': int(snapshot.get('missing_symbol_count_1m_rollsum') or 0),
-        'partial_symbol_count_1m_rollsum': int(snapshot.get('partial_symbol_count_1m_rollsum') or 0),
-        'stale_symbol_count_1m_rollsum': int(snapshot.get('stale_symbol_count_1m_rollsum') or 0),
-        'newly_listed_symbol_count_1m_rollsum': int(snapshot.get('newly_listed_symbol_count_1m_rollsum') or 0),
+        'market_total_24h_vol_status': str(snapshot.get('market_total_24h_vol_status') or ''),
     }
     write_shared_current_snapshot('market_snapshot', payload)
     write_shared_current_pickle('market_snapshot', snapshot)
@@ -732,12 +723,10 @@ def _write_finalize_snapshots(account: str, finalized_payload: dict[str, Any]) -
         'bars_loaded_min': finalized_payload.get('bars_loaded_min'),
         'bars_loaded_max': finalized_payload.get('bars_loaded_max'),
         'candidate_prefilter_source': finalized_payload.get('candidate_prefilter_source'),
-        'market_total_24h_vol_1m_rollsum': float(finalized_payload.get('market_total_24h_vol_1m_rollsum') or 0.0),
-        'market_total_24h_symbol_count_1m_rollsum': int(finalized_payload.get('market_total_24h_symbol_count_1m_rollsum') or 0),
+        'market_total_24h_vol': float(finalized_payload.get('market_total_24h_vol') or 0.0),
+        'market_total_24h_symbol_count': int(finalized_payload.get('market_total_24h_symbol_count') or 0),
         'market_total_24h_vol_source': str(finalized_payload.get('market_total_24h_vol_source') or ''),
         'market_total_24h_vol_status': str(finalized_payload.get('market_total_24h_vol_status') or ''),
-        'market_total_24h_vol_anchor_ts': finalized_payload.get('market_total_24h_vol_anchor_ts'),
-        'market_total_24h_vol_anchor_bj': finalized_payload.get('market_total_24h_vol_anchor_bj'),
         'finalize_summary': finalize_summary,
         'finalize_shared_symbol_bars_cache': finalized_payload.get('finalize_shared_symbol_bars_cache'),
     }

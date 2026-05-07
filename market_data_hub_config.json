@@ -6,7 +6,6 @@
   "history_window_mins": 180,
   "publish_config_snapshot": true,
   "min_24h_quote_volume": 30000000,
-  "rollsum_refresh_batch_size": 80,
   "exclude_symbols": [
     "BTCUSDT",
     "ETHUSDT",

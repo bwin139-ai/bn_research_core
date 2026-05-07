@@ -120,12 +120,13 @@ output/live_projection
 3. hub snapshot 由 shared hub 集中管理。
 4. live 侧从 hub bars 获取 universe 指标，降低 live 与 hub 指标源漂移。
 5. 增加 finalized symbols 读取能力，审计工具可读取 shared hub finalized 结果。
-6. full universe rollsum refresh、shared bars 增量 refill、部分 rollsum window refill 已推进。
+6. shared bars 增量 refill 与 24h metric 预取能力已推进。
 7. 增加 finalize quality stats 与 hub health stats，可用于现场观察。
 8. 增加 Binance REST quota / ban window / API stats 相关保护与观测。
 9. `market_data_hub` 的 candidate / finalized / market snapshot 已按账户与北京时间日期落盘到 `state/live_audit/market_data_hub/{account}/daily/YYYY-MM-DD/`，当前无需纳入 live audit 主文件分片 patch。
-10. 2026-05-08 已将前序 24h C-anchor 修补重新收束为一刀 `LOGIC_ONLY`：`market_total_24h_vol` 只在 hub-owned 1m rollsum 对全市场同一 `C=latest_closed_bar_ts` 完整 ready 时作为策略语义事实；若严格 C-anchor market total 尚未 ready，data_hub 仍可使用旧 rollsum map 做候选预筛限流并继续产出 Spring/SWR 可消费的 C-anchor HBs payload，但 payload 会显式携带 `market_total_24h_vol_status`，Snapback 只在该状态 ready 时允许新扫描。
-11. 同一刀恢复 data_hub 稳定负载边界：候选 HBs 构建只对 `min_24h_quote_volume` 预筛后的 symbol 执行，不因 market-wide rollsum warming 扩张到全市场 492/529 个 symbol；`rollsum_refresh_batch_size` 继续只作为全市场 rollsum 后台轮转刷新批量，不参与本轮策略 HBs 候选集放大。
+10. 2026-05-08 已确认 hub-owned 全市场 1m rollsum 无法在当前每分钟 API/工程约束下收敛为全市场同一 C-anchor 事实；继续使用它会让 Snapback 新扫描长期 blocked，并污染 Spring/SWR 候选可见性。
+11. 2026-05-08 已将 live 主数据路径改回稳定模型：`data_hub` 候选初筛使用 Binance futures 24h ticker 的 `quoteVolume` 与 `min_24h_quote_volume=30000000`，只决定是否构建 HBs payload；策略 logic.py 消费的 per-symbol 24h 指标、排名和结构字段仍来自同一 C-anchor HBs payload。
+12. Snapback live `market_total_24h_vol` 改为直接使用 Binance futures 24h ticker API 汇总，作为 live-only 市场总量 gate；该字段不再承诺 sim/live 严格一致，后续一致性审计应标记为 live-source 例外。
 
 当前配置事实：
 
@@ -134,14 +135,13 @@ market_data_hub_config.json:
 - enabled = true
 - min_24h_quote_volume = 30000000
 - history_window_mins = 180
-- rollsum_refresh_batch_size = 80
 - exclude_symbols 已显式配置，包含大市值币与 TradFi 品种
 ```
 
 当前 pending：
 
 1. 继续观察是否长期无 `-1003` / ban window 风险。
-2. 部署 2026-05-08 收束 patch 后，需要重启 data_hub 与三套策略 live，再观察 Binance REST quota 30 轮统计是否回到升级前稳定区间，并确认 data_hub 不再出现 492/529 HBs 候选扩张。
+2. 部署 2026-05-08 live ticker patch 后，需要重启 data_hub 与三套策略 live，再观察 Binance REST quota 30 轮统计是否回到升级前稳定区间，并确认 data_hub 不再出现 492/529 HBs 候选扩张。
 3. 继续补齐人工审计可读性，例如 prefilter 原始名单与 snapshot 字段解释。
 
 ### 3.3 1m / idx 数据质量
@@ -186,7 +186,8 @@ market_data_hub_config.json:
 17. 2026-05-06 已增强 Snapback live `finalized full_df -> candidate_cross_section -> stage4/stage5` 审计链：finalize summary 增加 `full_df_only_symbol_count/full_df_only_symbols`；当 finalize refresh 的 `full_df` 已有 symbol 但 `cross_section` 缺 symbol 时，写 `c_bar_finalize_cross_section_missing` event；进入策略逻辑前若仍存在 `full_df` 有、`cross_section` 无的 symbol，写 `candidate_cross_section_missing_after_finalize` event，并在 `stage4_input_snapshot` 与 `stage5_structure_audit` 中为该 symbol 落 `input_pass_to_logic=false`、`fail_reason=missing_from_cross_section_after_finalize`、C bar full_df 快照、candidate error/stale reason 与 finalize passed/delayed 标记。该 patch 不改变 Snapback 信号或交易语义，只用于避免 AIOTUSDT 这类 sim 有信号、live 无 stage4/stage5 现场时无法定位缺席边界。
 18. 2026-05-06 已将 data hub `finalized_candidate_inputs` 的 candidate finalize probe 间隔从 2 秒加固为 3 秒，仍保持两轮快照一致视为闭合、deadline 为 `signal_time+50s`。原因是 SKYAIUSDT 暴露出 `B=C` 同 bar 时 `c_index_low/b_index_price` 伪闭合会直接改变 `current_price > b_index_price`、`rebound_ratio` 与 SL，影响策略事实；本刀先用最小方式降低 index low 伪闭合概率，后续若继续复现再升级到三次一致或 near-deadline 关键字段复核。
 19. 2026-05-06 新增 `docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md` 作为 Snapback sim/live 一致性审计长期规格文档。后续新线程做 Snapback sim/live 审计时，应按该文档统一审计窗口、输入文件、signal/ABC 匹配、硬字段与降权字段、live-only/sim-only 分类、stage audit 定位顺序与 live trading lifecycle 检查口径；其中 `c_index_close` 默认记录但降权，`c_index_low/b_index_price` 在 `B=C` 同 bar 时为核心硬字段。
-20. 2026-05-08 Snapback 的 `market_total_24h_vol` gate 改为“生命周期优先”：若 market snapshot 暂未 strict C-anchor ready，live 不再在 reconcile / finalized payload / loop gate 之前早退，而是先等待当前 C finalized payload、维护 pending/open/reconcile 生命周期；若 payload 后仍未 ready，则写 `market_total_24h_vol_not_ready_skip_after_payload` 并只阻断新扫描。
+20. 2026-05-08 Snapback 的 `market_total_24h_vol` gate 改为“生命周期优先”：低于市场总量阈值时，live 不再在 reconcile / finalized payload / loop gate 之前早退，而是先等待当前 C finalized payload、维护 pending/open/reconcile 生命周期，然后只阻断新扫描。
+21. 2026-05-08 Snapback live `market_total_24h_vol` 改为 Binance futures 24h ticker API 汇总；该字段是 live-only 市场总量 gate，不再作为 sim/live 严格一致审计字段。
 
 当前配置事实：
 
@@ -211,7 +212,7 @@ live_config.*.json:
 3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
 4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
 5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
-6. 部署 2026-05-08 C-anchor 收束 patch 后，需要重点验证 `Snapback_SmokeTest_0507T2043` 的 `market_total_24h_vol` 差异是否消失；若 strict market total 暂未 ready，应看到 Snapback 完成生命周期维护后跳过新扫描，而不是阻塞 data_hub 或扩大候选 HBs。
+6. 部署 2026-05-08 live ticker patch 后，需要重点验证 Snapback live 新扫描恢复；`market_total_24h_vol` 后续只审计为 live-source gate，不再要求与 sim 严格一致。
 7. 部署 live pre-entry SL distance guard 与 `SL_SUBMIT_FAILED_FLATTEN` 独立离场语义后，观察是否出现 `pre_entry_price_guard_skip`；若仍发生 SL submit fail，应确认落盘 reason / custom id / 通知不再混入正常 `TIME_STOP`。
 
 ### 3.5 Spring-SABC
@@ -647,7 +648,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 ```text
 1. 锁定一个 bar_ts / symbol 样本。
 2. 对齐 sim 输入、hub 输入、live stage 输入。
-3. 对比 24h_vol / market_total_24h_vol / stage5 fail reason / signal。
+3. 对比 per-symbol 24h_vol / stage5 fail reason / signal；market_total_24h_vol 仅记录为 live-source gate，不作为严格一致字段。
 4. 只在偏离事实明确后进入单问题 patch。
 ```
 

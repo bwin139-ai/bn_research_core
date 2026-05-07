@@ -23,9 +23,13 @@ latest_closed_bar_ts
  - 可以理解成：本轮判断到底是围绕哪一根刚收完的K线在工作
 market_total_24h_vol
  - Snapback 的全市场 24h 成交额 gate
- - live 侧只接受 hub-owned 1m rollsum 在同一个 latest_closed_bar_ts 上严格 C-anchor ready 的值
- - 如果 strict C-anchor market_total 暂未 ready，data_hub 可以继续用旧 rollsum map 做候选预筛限流，但 Snapback 不能把该值当成 market_total ready 事实
- - Snapback live 在这种情况下必须先完成 reconcile / finalized payload / open trade 生命周期维护，然后只阻断新扫描
+ - live 侧直接使用 Binance futures 24h ticker API 汇总
+ - 这是 live-only 市场总量 gate，不再作为 sim/live 严格一致字段
+ - 低于阈值时仍必须先完成 reconcile / finalized payload / open trade 生命周期维护，然后只阻断新扫描
+candidate_prefilter_source
+ - data_hub 的候选初筛来源
+ - 当前固定为 futures_ticker_live
+ - 只用于决定哪些 symbol 进入 HBs payload 构建，不进入策略 logic.py 的 per-symbol 24h 指标、排名或结构字段
 candidate_symbols
  - 本轮待扫描币种名单
  - 这名字非常容易误导，必须记住：它不是 candidates。它只是 live 入口层挑出来“本轮准备扫描”的一批币种名单。

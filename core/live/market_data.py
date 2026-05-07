@@ -76,8 +76,6 @@ _SHARED_SYMBOL_BARS_INCREMENTAL_MAX_LIMIT = 1000
 _SHARED_SYMBOL_BARS_INCREMENTAL_OVERLAP_BARS = 3
 _KLINES_1M_DIR = Path(PROJECT_ROOT) / 'data/klines_1m'
 _MARKET_24H_ROLLSUM_WINDOW_BARS = 1440
-_HUB_OWNED_1M_ROLLSUM_STATE_FILENAME = 'hub_owned_1m_rollsum_state.json'
-_SYMBOL_24H_QUOTE_VOLUME_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _shared_market_dir() -> Path:
@@ -120,10 +118,6 @@ def _exchange_info_snapshot_path() -> Path:
 
 def _ticker_snapshot_path() -> Path:
     return _shared_market_dir() / 'futures_ticker.shared.json'
-
-
-def _hub_owned_1m_rollsum_state_path() -> Path:
-    return _shared_market_dir() / _HUB_OWNED_1M_ROLLSUM_STATE_FILENAME
 
 
 def _latest_closed_bar_snapshot_path() -> Path:
@@ -681,530 +675,13 @@ def _load_or_refresh_ticker_rows(account: str) -> dict[str, Any]:
     return payload
 
 
-def _rollsum_refresh_limit_for_symbol(rec: dict[str, Any] | None, latest_closed_bar_ts: int) -> int:
-    if not isinstance(rec, dict):
-        return _MARKET_24H_ROLLSUM_WINDOW_BARS
-    window_size = _to_int(rec.get('window_size'), default=len(list(rec.get('rows') or [])))
-    if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(rec.get('is_ready_24h')):
-        return _MARKET_24H_ROLLSUM_WINDOW_BARS
-    last_bar_ts = _to_int(rec.get('latest_bar_ts'), default=0)
-    if last_bar_ts <= 0:
-        return _MARKET_24H_ROLLSUM_WINDOW_BARS
-    lag_bars = max(0, (int(latest_closed_bar_ts) - int(last_bar_ts)) // 60000)
-    if lag_bars <= 3:
-        return max(2, int(lag_bars) + 2)
-    if lag_bars <= 60:
-        return int(lag_bars) + 2
-    return _MARKET_24H_ROLLSUM_WINDOW_BARS
-
-
-
-def refresh_hub_owned_1m_rollsum_for_symbols(
-    account: str,
-    symbols: list[str],
-    *,
-    latest_closed_bar_ts: int,
-) -> dict[str, Any]:
-    symbol_list = [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()]
-    if not symbol_list:
-        return _load_hub_owned_1m_rollsum_state()
-
-    existing_state = _load_hub_owned_1m_rollsum_state()
-    existing_symbols_state = dict(existing_state.get('symbols') or {})
-    contract_frames: list[pd.DataFrame] = []
-    for symbol in symbol_list:
-        try:
-            refresh_limit = _rollsum_refresh_limit_for_symbol(
-                existing_symbols_state.get(symbol),
-                int(latest_closed_bar_ts),
-            )
-            rows = _fetch_symbol_klines(
-                account,
-                symbol,
-                refresh_limit,
-                required_latest_closed_bar_ts=latest_closed_bar_ts,
-            )
-            raw_df = _rows_to_raw_df(symbol, rows, latest_closed_bar_ts)
-            if raw_df.empty:
-                continue
-            contract_frames.append(raw_df[['symbol', 'open_time_ms', 'quote_asset_volume']].copy())
-        except Exception:
-            continue
-    return _merge_contract_frames_into_hub_owned_1m_rollsum_state(
-        contract_frames,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-    )
-
-
-
-
-def _empty_hub_owned_1m_rollsum_state() -> dict[str, Any]:
-    return {
-        'schema_version': 1,
-        'updated_utc_ms': None,
-        'updated_bj': None,
-        'symbols': {},
-    }
-
-
-def _load_hub_owned_1m_rollsum_state() -> dict[str, Any]:
-    path = _hub_owned_1m_rollsum_state_path()
-    data = _read_json_file(path)
-    if not isinstance(data, dict):
-        return _empty_hub_owned_1m_rollsum_state()
-    symbols = data.get('symbols')
-    if not isinstance(symbols, dict):
-        data['symbols'] = {}
-    data.setdefault('schema_version', 1)
-    data.setdefault('updated_utc_ms', None)
-    data.setdefault('updated_bj', None)
-    return data
-
-
-def _save_hub_owned_1m_rollsum_state(state: dict[str, Any]) -> None:
-    now_ms = int(time.time() * 1000)
-    payload = dict(state or {})
-    payload['schema_version'] = 1
-    payload['updated_utc_ms'] = now_ms
-    payload['updated_bj'] = _fmt_bj_from_ms(now_ms)
-    payload['symbols'] = dict(payload.get('symbols') or {})
-    _atomic_write_json(_hub_owned_1m_rollsum_state_path(), payload)
-
-
-def _normalize_symbol_rollsum_rows(rows: list[list[Any]], latest_closed_bar_ts: int) -> list[list[Any]]:
-    merged: dict[int, float] = {}
-    for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) < 2:
-            continue
-        ts = _to_int(row[0], default=0)
-        if ts <= 0 or ts > int(latest_closed_bar_ts):
-            continue
-        merged[int(ts)] = _to_float(row[1])
-    ordered = sorted(merged.items(), key=lambda x: x[0])
-    if len(ordered) > _MARKET_24H_ROLLSUM_WINDOW_BARS:
-        ordered = ordered[-_MARKET_24H_ROLLSUM_WINDOW_BARS:]
-    return [[int(ts), float(qav)] for ts, qav in ordered]
-
-
-def _merge_contract_frames_into_hub_owned_1m_rollsum_state(
-    frames: list[pd.DataFrame],
-    *,
-    latest_closed_bar_ts: int,
-) -> dict[str, Any]:
-    if not frames:
-        return _load_hub_owned_1m_rollsum_state()
-    state = _load_hub_owned_1m_rollsum_state()
-    symbols_state = dict(state.get('symbols') or {})
-    changed = False
-
-    for frame in frames:
-        if frame is None or frame.empty:
-            continue
-        cols = {str(c) for c in frame.columns}
-        if 'symbol' not in cols or 'open_time_ms' not in cols or 'quote_asset_volume' not in cols:
-            continue
-        symbol = str(frame.iloc[0]['symbol']).upper().strip()
-        existing_rows = list((symbols_state.get(symbol) or {}).get('rows') or [])
-        new_rows = [
-            [int(ts), float(qav)]
-            for ts, qav in frame[['open_time_ms', 'quote_asset_volume']].itertuples(index=False, name=None)
-            if _to_int(ts, default=0) > 0 and _to_int(ts, default=0) <= int(latest_closed_bar_ts)
-        ]
-        merged_rows = _normalize_symbol_rollsum_rows(existing_rows + new_rows, int(latest_closed_bar_ts))
-        if not merged_rows:
-            continue
-        changed = True
-        window_size = int(len(merged_rows))
-        coverage_info = _recent_window_coverage_info(
-            [int(row[0]) for row in merged_rows if isinstance(row, (list, tuple)) and len(row) >= 2],
-            latest_closed_bar_ts,
-            _MARKET_24H_ROLLSUM_WINDOW_BARS,
-        )
-        open_times = [int(row[0]) for row in merged_rows if isinstance(row, (list, tuple)) and len(row) >= 2]
-        is_newly_listed_24h = bool(
-            window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS
-            and _is_recent_prefix_continuous(open_times, int(latest_closed_bar_ts))
-        )
-        symbols_state[symbol] = {
-            'latest_bar_ts': int(merged_rows[-1][0]),
-            'rows': merged_rows,
-            'window_size': window_size,
-            'quote_volume_24h': float(sum(float(row[1]) for row in merged_rows)),
-            'is_continuous_24h': bool(coverage_info.get('ok')),
-            'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
-            'is_newly_listed_24h': is_newly_listed_24h,
-            'is_ready_24h': bool(coverage_info.get('ok')),
-        }
-
-    state['symbols'] = symbols_state
-    if changed:
-        _save_hub_owned_1m_rollsum_state(state)
-    return state
-
-
-def _quote_volume_24h_from_rollsum_rows_at_anchor(
-    rows: list[Any],
-    latest_closed_bar_ts: int,
-) -> dict[str, Any]:
-    anchor_ts = int(latest_closed_bar_ts)
-    normalized: dict[int, float] = {}
-    for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) < 2:
-            continue
-        ts = _to_int(row[0], default=0)
-        if ts <= 0 or ts > anchor_ts:
-            continue
-        normalized[int(ts)] = _to_float(row[1])
-    ordered = sorted(normalized.items(), key=lambda x: x[0])
-    if not ordered:
-        return {
-            'ok': False,
-            'reason': 'missing',
-            'quote_volume_24h': 0.0,
-            'latest_bar_ts': None,
-            'window_size': 0,
-            'is_newly_listed_24h': False,
-        }
-    window = ordered[-_MARKET_24H_ROLLSUM_WINDOW_BARS:]
-    open_times = [int(ts) for ts, _ in window]
-    latest_bar_ts = int(open_times[-1])
-    if latest_bar_ts < anchor_ts:
-        return {
-            'ok': False,
-            'reason': 'stale',
-            'quote_volume_24h': float(sum(float(v) for _, v in window)),
-            'latest_bar_ts': latest_bar_ts,
-            'window_size': int(len(window)),
-            'is_newly_listed_24h': False,
-        }
-    is_newly_listed_24h = bool(
-        len(window) < _MARKET_24H_ROLLSUM_WINDOW_BARS
-        and _is_recent_prefix_continuous(open_times, anchor_ts)
-    )
-    if is_newly_listed_24h:
-        return {
-            'ok': False,
-            'reason': 'newly_listed',
-            'quote_volume_24h': float(sum(float(v) for _, v in window)),
-            'latest_bar_ts': latest_bar_ts,
-            'window_size': int(len(window)),
-            'is_newly_listed_24h': True,
-        }
-    coverage_info = _recent_window_coverage_info(
-        open_times,
-        anchor_ts,
-        _MARKET_24H_ROLLSUM_WINDOW_BARS,
-    )
-    if len(window) < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(coverage_info.get('ok')):
-        return {
-            'ok': False,
-            'reason': 'partial',
-            'quote_volume_24h': float(sum(float(v) for _, v in window)),
-            'latest_bar_ts': latest_bar_ts,
-            'window_size': int(len(window)),
-            'is_newly_listed_24h': False,
-        }
-    return {
-        'ok': True,
-        'reason': '',
-        'quote_volume_24h': float(sum(float(v) for _, v in window)),
-        'latest_bar_ts': latest_bar_ts,
-        'window_size': int(len(window)),
-        'is_newly_listed_24h': False,
-    }
-
-
-def _market_total_24h_vol_from_hub_owned_1m_state(
-    account: str,
-    ticker_map: dict[str, dict[str, Any]],
-    *,
-    latest_closed_bar_ts: int | None = None,
-) -> dict[str, Any]:
-    info_snapshot = _load_or_refresh_exchange_info(account)
-    state = _load_hub_owned_1m_rollsum_state()
-    symbols_state = dict(state.get('symbols') or {})
-    ready_symbol_map: dict[str, float] = {}
-    api_symbol_map: dict[str, float] = {}
-    missing_symbols: list[str] = []
-    partial_symbols: list[str] = []
-    stale_symbols: list[str] = []
-    newly_listed_symbols: list[str] = []
-
-    for item in info_snapshot['data'].get('symbols', []):
-        if str(item.get('status')) != 'TRADING':
-            continue
-        if str(item.get('contractType')) != 'PERPETUAL':
-            continue
-        if str(item.get('quoteAsset')) != 'USDT':
-            continue
-        symbol = str(item.get('symbol', '')).upper().strip()
-        if not symbol:
-            continue
-        ticker = ticker_map.get(symbol)
-        if ticker:
-            api_symbol_map[symbol] = _to_float(ticker.get('quoteVolume'))
-        rec = symbols_state.get(symbol)
-        if not isinstance(rec, dict):
-            missing_symbols.append(symbol)
-            continue
-        if latest_closed_bar_ts is None:
-            rows = list(rec.get('rows') or [])
-            window_size = int(rec.get('window_size') or len(rows))
-            if bool(rec.get('is_newly_listed_24h')):
-                newly_listed_symbols.append(symbol)
-                continue
-            if window_size < _MARKET_24H_ROLLSUM_WINDOW_BARS or not bool(rec.get('is_ready_24h')):
-                partial_symbols.append(symbol)
-                continue
-            ready_symbol_map[symbol] = _to_float(rec.get('quote_volume_24h'))
-            continue
-        anchor_res = _quote_volume_24h_from_rollsum_rows_at_anchor(
-            list(rec.get('rows') or []),
-            int(latest_closed_bar_ts),
-        )
-        reason = str(anchor_res.get('reason') or '')
-        if bool(anchor_res.get('ok')):
-            ready_symbol_map[symbol] = _to_float(anchor_res.get('quote_volume_24h'))
-        elif reason == 'newly_listed':
-            newly_listed_symbols.append(symbol)
-        elif reason == 'stale':
-            stale_symbols.append(symbol)
-        elif reason == 'missing':
-            missing_symbols.append(symbol)
-        else:
-            partial_symbols.append(symbol)
-
-    total = float(sum(ready_symbol_map.values()))
-    ready_count = int(len(ready_symbol_map))
-    if ready_count <= 0:
-        status = 'not_ready_hub_owned_1m'
-    elif missing_symbols or partial_symbols or stale_symbols:
-        status = 'warming_hub_owned_1m'
-    else:
-        status = 'ready_hub_owned_1m'
-
-    return {
-        'market_total_24h_vol_1m_rollsum': total,
-        'market_total_24h_symbol_count_1m_rollsum': ready_count,
-        'symbol_24h_quote_volume_1m': ready_symbol_map,
-        'symbol_24h_quote_volume_api': api_symbol_map,
-        'missing_symbol_count_1m_rollsum': int(len(missing_symbols)),
-        'missing_symbols_1m_rollsum': missing_symbols,
-        'partial_symbol_count_1m_rollsum': int(len(partial_symbols)),
-        'partial_symbols_1m_rollsum': partial_symbols,
-        'stale_symbol_count_1m_rollsum': int(len(stale_symbols)),
-        'stale_symbols_1m_rollsum': stale_symbols,
-        'newly_listed_symbol_count_1m_rollsum': int(len(newly_listed_symbols)),
-        'newly_listed_symbols_1m_rollsum': newly_listed_symbols,
-        'market_total_24h_vol_source': 'hub_owned_1m_rollsum',
-        'market_total_24h_vol_status': status,
-        'market_total_24h_vol_anchor_ts': int(latest_closed_bar_ts) if latest_closed_bar_ts is not None else None,
-        'market_total_24h_vol_anchor_bj': _fmt_bj_from_ms(int(latest_closed_bar_ts)) if latest_closed_bar_ts is not None else None,
-        'hub_owned_1m_rollsum_state_updated_utc_ms': state.get('updated_utc_ms'),
-        'hub_owned_1m_rollsum_state_updated_bj': state.get('updated_bj'),
-    }
-
-
-def _symbol_kline_parquet_columns(path: Path) -> list[str]:
-    try:
-        import pyarrow.parquet as pq  # type: ignore
-        return [str(x) for x in pq.ParquetFile(path).schema.names]
-    except Exception:
-        return []
-
-
-def _pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
-    lookup = {str(x).strip(): str(x).strip() for x in columns if str(x).strip()}
-    for name in candidates:
-        if name in lookup:
-            return lookup[name]
-    return None
-
-
-def _normalize_open_time_ms_series(series: pd.Series) -> pd.Series:
-    s = series
-    if str(getattr(s, 'dtype', '')).startswith('datetime64'):
-        return (s.view('int64') // 1_000_000).astype('int64')
-    numeric = pd.to_numeric(s, errors='coerce')
-    if numeric.notna().sum() == 0:
-        parsed = pd.to_datetime(s, errors='coerce', utc=True)
-        return (parsed.view('int64') // 1_000_000).astype('int64')
-    max_abs = float(numeric.abs().max() or 0.0)
-    if max_abs >= 1e18:
-        return (numeric // 1_000_000).astype('int64')
-    if max_abs >= 1e15:
-        return (numeric // 1_000).astype('int64')
-    if max_abs >= 1e12:
-        return numeric.astype('int64')
-    return (numeric * 1000).astype('int64')
-
-
-def _read_symbol_quote_volume_frame(path: Path) -> pd.DataFrame | None:
-    columns = _symbol_kline_parquet_columns(path)
-    time_col = _pick_first_existing_column(columns, ['open_time_ms', 'open_time', 'open_ts', 'timestamp', 'ts'])
-    volume_col = _pick_first_existing_column(columns, ['quote_asset_volume', 'quoteVolume', 'quote_volume', 'qav'])
-    if time_col is None or volume_col is None:
-        try:
-            df = pd.read_parquet(path)
-        except Exception:
-            return None
-        cols = [str(x) for x in df.columns]
-        time_col = _pick_first_existing_column(cols, ['open_time_ms', 'open_time', 'open_ts', 'timestamp', 'ts'])
-        volume_col = _pick_first_existing_column(cols, ['quote_asset_volume', 'quoteVolume', 'quote_volume', 'qav'])
-        if time_col is None or volume_col is None:
-            return None
-        data = df[[time_col, volume_col]].copy()
-    else:
-        try:
-            data = pd.read_parquet(path, columns=[time_col, volume_col]).copy()
-        except Exception:
-            try:
-                data = pd.read_parquet(path)[[time_col, volume_col]].copy()
-            except Exception:
-                return None
-    data.columns = ['open_time_ms', 'quote_asset_volume']
-    if data.empty:
-        return None
-    data = data.dropna(subset=['open_time_ms']).copy()
-    if data.empty:
-        return None
-    data['open_time_ms'] = _normalize_open_time_ms_series(data['open_time_ms'])
-    data['quote_asset_volume'] = pd.to_numeric(data['quote_asset_volume'], errors='coerce').fillna(0.0)
-    data = data.dropna(subset=['open_time_ms'])
-    if data.empty:
-        return None
-    data['open_time_ms'] = data['open_time_ms'].astype('int64')
-    return data
-
-
-def _symbol_kline_parquet_path(symbol: str) -> Path:
-    return _KLINES_1M_DIR / f'{_safe_symbol_key(symbol)}.parquet'
-
-
-def _load_symbol_24h_quote_volume_from_parquet(symbol: str, latest_closed_bar_ts: int) -> dict[str, Any] | None:
-    symbol_key = _safe_symbol_key(symbol)
-    path = _symbol_kline_parquet_path(symbol_key)
-    if not path.exists():
-        return None
-    cache = _SYMBOL_24H_QUOTE_VOLUME_CACHE.get(symbol_key)
-    try:
-        file_mtime_ns = path.stat().st_mtime_ns
-    except Exception:
-        file_mtime_ns = None
-    if isinstance(cache, dict):
-        if cache.get('latest_closed_bar_ts') == int(latest_closed_bar_ts) and cache.get('file_mtime_ns') == file_mtime_ns:
-            return dict(cache)
-
-    df = _read_symbol_quote_volume_frame(path)
-    if df is None or df.empty:
-        return None
-
-    df = df[df['open_time_ms'] <= int(latest_closed_bar_ts)]
-    if df.empty:
-        return None
-
-    df = df.sort_values('open_time_ms').drop_duplicates(subset=['open_time_ms'], keep='last').tail(_MARKET_24H_ROLLSUM_WINDOW_BARS)
-    if df.empty:
-        return None
-
-    rows = [
-        (int(open_time_ms), float(quote_asset_volume))
-        for open_time_ms, quote_asset_volume in df[['open_time_ms', 'quote_asset_volume']].itertuples(index=False, name=None)
-    ]
-    total = float(sum(v for _, v in rows))
-    coverage_info = _recent_window_coverage_info(
-        [int(open_time_ms) for open_time_ms, _ in rows],
-        latest_closed_bar_ts,
-        _MARKET_24H_ROLLSUM_WINDOW_BARS,
-    )
-    out = {
-        'symbol': symbol_key,
-        'latest_closed_bar_ts': int(latest_closed_bar_ts),
-        'latest_bar_ts': int(rows[-1][0]),
-        'rows': rows,
-        'window_size': int(len(rows)),
-        'quote_volume_24h': float(total),
-        'is_continuous_24h': bool(coverage_info.get('ok')),
-        'missing_bar_count_24h': int(coverage_info.get('missing_count') or 0),
-        'is_newly_listed_24h': bool(
-            len(rows) < _MARKET_24H_ROLLSUM_WINDOW_BARS
-            and _is_recent_prefix_continuous([int(open_time_ms) for open_time_ms, _ in rows], int(latest_closed_bar_ts))
-        ),
-        'file_mtime_ns': file_mtime_ns,
-    }
-    _SYMBOL_24H_QUOTE_VOLUME_CACHE[symbol_key] = dict(out)
-    return out
-
-
-
-def _market_total_24h_vol_from_live_ticker_map(account: str, ticker_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    info_snapshot = _load_or_refresh_exchange_info(account)
-    total = 0.0
-    symbol_count = 0
-    symbol_map: dict[str, float] = {}
-    for item in info_snapshot['data'].get('symbols', []):
-        if str(item.get('status')) != 'TRADING':
-            continue
-        if str(item.get('contractType')) != 'PERPETUAL':
-            continue
-        if str(item.get('quoteAsset')) != 'USDT':
-            continue
-        symbol = str(item.get('symbol', '')).upper().strip()
-        if not symbol:
-            continue
-        ticker = ticker_map.get(symbol)
-        if not ticker:
-            continue
-        quote_vol = _to_float(ticker.get('quoteVolume'))
-        symbol_map[symbol] = quote_vol
-        total += quote_vol
-        symbol_count += 1
-    return {
-        'market_total_24h_vol_1m_rollsum': float(total),
-        'market_total_24h_symbol_count_1m_rollsum': int(symbol_count),
-        'symbol_24h_quote_volume_1m': symbol_map,
-        'missing_symbol_count_1m_rollsum': 0,
-        'missing_symbols_1m_rollsum': [],
-        'partial_symbol_count_1m_rollsum': 0,
-        'partial_symbols_1m_rollsum': [],
-        'newly_listed_symbol_count_1m_rollsum': 0,
-        'newly_listed_symbols_1m_rollsum': [],
-        'market_total_24h_vol_source': 'futures_ticker_live',
-        'market_total_24h_vol_status': 'ready_live_api',
-    }
-
-
-def read_hub_owned_1m_rollsum_market_view(
-    account: str,
-    ticker_map: dict[str, dict[str, Any]],
-    *,
-    latest_closed_bar_ts: int,
-) -> dict[str, Any]:
-    return _market_total_24h_vol_from_hub_owned_1m_state(
-        account,
-        ticker_map,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-    )
-
-
-def read_hub_owned_1m_rollsum_prefilter_view(
-    account: str,
-    ticker_map: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    return _market_total_24h_vol_from_hub_owned_1m_state(account, ticker_map)
-
-
 def build_market_snapshot(account: str) -> dict[str, Any]:
     latest_closed_bar_snapshot = _load_or_refresh_latest_closed_bar_snapshot(account)
     latest_closed_bar_ts = int(latest_closed_bar_snapshot['latest_closed_bar_ts'])
     ticker_map = _ticker_map(account)
     market_total_24h_payload_api = _market_total_24h_vol_from_ticker_map(account, ticker_map)
-    market_total_24h_payload_rollsum = _market_total_24h_vol_from_hub_owned_1m_state(
-        account,
-        ticker_map,
-        latest_closed_bar_ts=latest_closed_bar_ts,
-    )
-    market_total_24h_vol_1m_rollsum = float(market_total_24h_payload_rollsum.get('market_total_24h_vol_1m_rollsum') or 0.0)
+    market_total_24h_vol = float(market_total_24h_payload_api['market_total_24h_vol'])
+    market_total_24h_symbol_count = int(market_total_24h_payload_api['market_total_24h_symbol_count'])
     return {
         'latest_closed_bar_ts': latest_closed_bar_ts,
         'latest_closed_bar_bj': latest_closed_bar_snapshot['latest_closed_bar_bj'],
@@ -1213,27 +690,13 @@ def build_market_snapshot(account: str) -> dict[str, Any]:
         'market_snapshot_fetched_utc_ms': int(latest_closed_bar_snapshot['fetched_utc_ms']),
         'market_snapshot_fetched_bj': latest_closed_bar_snapshot['fetched_bj'],
         'ticker_map': ticker_map,
-        'market_total_24h_vol': market_total_24h_vol_1m_rollsum,
-        'market_total_24h_vol_api': float(market_total_24h_payload_api['market_total_24h_vol']),
-        'market_total_24h_symbol_count_api': int(market_total_24h_payload_api['market_total_24h_symbol_count']),
-        'market_total_24h_vol_1m_rollsum': market_total_24h_vol_1m_rollsum,
-        'market_total_24h_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('market_total_24h_symbol_count_1m_rollsum') or 0),
-        'symbol_24h_quote_volume_1m': dict(market_total_24h_payload_rollsum.get('symbol_24h_quote_volume_1m') or {}),
-        'symbol_24h_quote_volume_api': dict(market_total_24h_payload_rollsum.get('symbol_24h_quote_volume_api') or {}),
-        'missing_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('missing_symbol_count_1m_rollsum') or 0),
-        'missing_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('missing_symbols_1m_rollsum') or []),
-        'partial_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('partial_symbol_count_1m_rollsum') or 0),
-        'partial_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('partial_symbols_1m_rollsum') or []),
-        'stale_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('stale_symbol_count_1m_rollsum') or 0),
-        'stale_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('stale_symbols_1m_rollsum') or []),
-        'newly_listed_symbol_count_1m_rollsum': int(market_total_24h_payload_rollsum.get('newly_listed_symbol_count_1m_rollsum') or 0),
-        'newly_listed_symbols_1m_rollsum': list(market_total_24h_payload_rollsum.get('newly_listed_symbols_1m_rollsum') or []),
-        'market_total_24h_vol_source': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_source') or ''),
-        'market_total_24h_vol_1m_rollsum_status': str(market_total_24h_payload_rollsum.get('market_total_24h_vol_status') or ''),
-        'market_total_24h_vol_anchor_ts': market_total_24h_payload_rollsum.get('market_total_24h_vol_anchor_ts'),
-        'market_total_24h_vol_anchor_bj': market_total_24h_payload_rollsum.get('market_total_24h_vol_anchor_bj'),
-        'hub_owned_1m_rollsum_state_updated_utc_ms': market_total_24h_payload_rollsum.get('hub_owned_1m_rollsum_state_updated_utc_ms'),
-        'hub_owned_1m_rollsum_state_updated_bj': market_total_24h_payload_rollsum.get('hub_owned_1m_rollsum_state_updated_bj'),
+        'market_total_24h_vol': market_total_24h_vol,
+        'market_total_24h_symbol_count': market_total_24h_symbol_count,
+        'market_total_24h_vol_api': market_total_24h_vol,
+        'market_total_24h_symbol_count_api': market_total_24h_symbol_count,
+        'symbol_24h_quote_volume_api': dict(market_total_24h_payload_api['symbol_24h_quote_volume_api']),
+        'market_total_24h_vol_source': str(market_total_24h_payload_api['market_total_24h_vol_source']),
+        'market_total_24h_vol_status': str(market_total_24h_payload_api['market_total_24h_vol_status']),
     }
 
 
@@ -1297,6 +760,7 @@ def _market_total_24h_vol_from_ticker_map(account: str, ticker_map: dict[str, di
     info_snapshot = _load_or_refresh_exchange_info(account)
     total = 0.0
     symbol_count = 0
+    symbol_map: dict[str, float] = {}
     for item in info_snapshot['data'].get('symbols', []):
         if str(item.get('status')) != 'TRADING':
             continue
@@ -1310,11 +774,16 @@ def _market_total_24h_vol_from_ticker_map(account: str, ticker_map: dict[str, di
         ticker = ticker_map.get(symbol)
         if not ticker:
             continue
-        total += _to_float(ticker.get('quoteVolume'))
+        quote_volume = _to_float(ticker.get('quoteVolume'))
+        symbol_map[symbol] = quote_volume
+        total += quote_volume
         symbol_count += 1
     return {
         'market_total_24h_vol': float(total),
         'market_total_24h_symbol_count': int(symbol_count),
+        'symbol_24h_quote_volume_api': symbol_map,
+        'market_total_24h_vol_source': 'futures_ticker_live',
+        'market_total_24h_vol_status': 'ready_live_api',
     }
 
 
@@ -1707,7 +1176,6 @@ def _build_live_inputs_for_symbols(
     latest_closed_bar_ts: int,
     ticker_map: dict[str, dict[str, Any]],
     write_stage3: bool = True,
-    update_hub_owned_rollsum: bool = True,
     shared_symbol_bars_cache: dict[str, Any] | None = None,
     contract_metric_frames: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
@@ -1777,12 +1245,9 @@ def _build_live_inputs_for_symbols(
         except Exception as e:
             errors[symbol] = str(e)
 
-    if stage3_frames and (write_stage3 or update_hub_owned_rollsum):
+    if stage3_frames and write_stage3:
         stage3_df = pd.concat(stage3_frames, ignore_index=True)
-        if write_stage3:
-            _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, signal_time_ts, stage3_df)
-        if update_hub_owned_rollsum:
-            _merge_contract_frames_into_hub_owned_1m_rollsum_state(stage3_frames, latest_closed_bar_ts=latest_closed_bar_ts)
+        _write_stage3_parquet(account, audit_label, latest_closed_bar_ts, signal_time_ts, stage3_df)
 
     if not histories or not cross_rows:
         return {'ok': False, 'reason': 'no live symbol history loaded from binance', 'data': None, 'errors': errors | stale_symbols}
@@ -1891,7 +1356,6 @@ def build_live_inputs_full_market_light_refresh(
         latest_closed_bar_ts=latest_closed_bar_ts,
         ticker_map=ticker_map,
         write_stage3=False,
-        update_hub_owned_rollsum=False,
     )
 
 
