@@ -18,11 +18,11 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-from core.live.binance_client import get_client
-from core.live.rate_limit_guard import (
-    record_binance_rest_quota,
-    sleep_if_binance_rest_banned,
-    sleep_if_binance_rest_quota_near_limit,
+from core.live.binance_rest_gateway import (
+    REQUEST_PRIORITY_LOW,
+    REQUEST_PRIORITY_NORMAL,
+    call_client_method,
+    call_futures_public,
 )
 from core.runtime_state import get_state_dir
 
@@ -220,33 +220,38 @@ def load_config(path: str) -> dict[str, Any]:
     return out
 
 
-def _record_quota(account: str, source: str) -> None:
-    client = get_client(account)
-    response = getattr(client, "response", None)
-    record_binance_rest_quota(source=source, headers=getattr(response, "headers", None))
+def _call_client(
+    account: str,
+    source: str,
+    method_name: str,
+    *,
+    priority: str = REQUEST_PRIORITY_NORMAL,
+    **params: Any,
+) -> Any:
+    return call_client_method(
+        account,
+        source=source,
+        method_name=method_name,
+        priority=priority,
+        **params,
+    )
 
 
-def _call_client(account: str, source: str, method_name: str, **params: Any) -> Any:
-    sleep_if_binance_rest_banned(source=source)
-    sleep_if_binance_rest_quota_near_limit(source=source)
-    client = get_client(account)
-    method = getattr(client, method_name)
-    payload = method(**params)
-    _record_quota(account, source)
-    return payload
-
-
-def _futures_public_get(account: str, source: str, endpoint: str, params: Mapping[str, Any] | None = None) -> Any:
-    sleep_if_binance_rest_banned(source=source)
-    sleep_if_binance_rest_quota_near_limit(source=source)
-    client = get_client(account)
-    raw_method = getattr(client, "_request_futures_api", None)
-    if not callable(raw_method):
-        raise RuntimeError("python-binance client missing _request_futures_api")
-    data = {k: v for k, v in dict(params or {}).items() if v is not None}
-    payload = raw_method("get", endpoint, data=data)
-    _record_quota(account, source)
-    return payload
+def _futures_public_get(
+    account: str,
+    source: str,
+    endpoint: str,
+    params: Mapping[str, Any] | None = None,
+    *,
+    priority: str = REQUEST_PRIORITY_NORMAL,
+) -> Any:
+    return call_futures_public(
+        account,
+        source=source,
+        endpoint=endpoint,
+        params=params,
+        priority=priority,
+    )
 
 
 def _as_float(value: Any) -> float | None:
@@ -496,6 +501,7 @@ def _fetch_klines_history(
             account,
             "tvr_data_hub.futures_klines",
             "futures_klines",
+            priority=REQUEST_PRIORITY_LOW,
             symbol=symbol,
             interval=interval,
             startTime=cursor,
@@ -702,6 +708,7 @@ def _bootstrap_funding_history(
                 "endTime": now_ms,
                 "limit": int(funding_cfg["limit"]),
             },
+            priority=REQUEST_PRIORITY_LOW,
         )
         if not isinstance(payload, list):
             raise TypeError(f"fundingRate payload must be list: {symbol}")

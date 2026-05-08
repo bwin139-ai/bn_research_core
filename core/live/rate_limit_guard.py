@@ -7,11 +7,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _BJ = timezone(timedelta(hours=8))
 _SHARED_DIR = PROJECT_ROOT / 'output' / 'shared_market'
 _BAN_UNTIL_FILENAME = 'binance_rest_ban_until.shared.json'
 _QUOTA_STATE_FILENAME = 'binance_rest_quota.shared.json'
+_USAGE_LEDGER_DIRNAME = 'binance_rest_usage'
 _REQUEST_WEIGHT_LIMIT_1M = 2400
 _REQUEST_WEIGHT_GUARD_THRESHOLD_1M = 2200
 
@@ -34,6 +37,13 @@ def _ban_until_path() -> Path:
 def _quota_state_path() -> Path:
     _SHARED_DIR.mkdir(parents=True, exist_ok=True)
     return _SHARED_DIR / _QUOTA_STATE_FILENAME
+
+
+def _usage_ledger_path(day_bj: str | None = None) -> Path:
+    day_key = str(day_bj or '').strip() or _fmt_bj_from_ms(_now_ms())[:10]
+    path = _SHARED_DIR / _USAGE_LEDGER_DIRNAME / day_key / 'binance_rest_usage.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -74,6 +84,69 @@ def _extract_header_int(headers: Any, name: str) -> int | None:
     return None
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def append_binance_rest_usage_record(
+    *,
+    source: str,
+    request_status: str,
+    priority: str | None = None,
+    account: str | None = None,
+    method: str | None = None,
+    endpoint: str | None = None,
+    used_weight_1m: int | None = None,
+    used_weight_1m_delta: int | None = None,
+    order_count_10s: int | None = None,
+    order_count_1m: int | None = None,
+    minute_bucket_utc: int | None = None,
+    observed_utc_ms: int | None = None,
+    reject_code: str | None = None,
+    threshold: int | None = None,
+    weight_limit_1m: int | None = None,
+    reason: str | None = None,
+) -> Path | None:
+    now_ms = _now_ms()
+    record = {
+        'schema_version': 1,
+        'recorded_utc_ms': int(now_ms),
+        'recorded_bj': _fmt_bj_from_ms(int(now_ms)),
+        'observed_utc_ms': int(observed_utc_ms) if observed_utc_ms is not None else int(now_ms),
+        'observed_bj': _fmt_bj_from_ms(int(observed_utc_ms) if observed_utc_ms is not None else int(now_ms)),
+        'minute_bucket_utc': int(minute_bucket_utc) if minute_bucket_utc is not None else int((observed_utc_ms or now_ms) // 60000),
+        'source': str(source),
+        'request_status': str(request_status),
+        'priority': str(priority or ''),
+        'account': str(account or ''),
+        'method': str(method or ''),
+        'endpoint': str(endpoint or ''),
+        'used_weight_1m': int(used_weight_1m) if used_weight_1m is not None else None,
+        'used_weight_1m_delta': int(used_weight_1m_delta) if used_weight_1m_delta is not None else None,
+        'order_count_10s': int(order_count_10s) if order_count_10s is not None else None,
+        'order_count_1m': int(order_count_1m) if order_count_1m is not None else None,
+        'reject_code': str(reject_code or ''),
+        'threshold': int(threshold) if threshold is not None else None,
+        'weight_limit_1m': int(weight_limit_1m) if weight_limit_1m is not None else None,
+        'reason': str(reason or ''),
+    }
+    path = _usage_ledger_path(str(record['recorded_bj'])[:10])
+    try:
+        lock = FileLock(str(path) + '.lock')
+        with lock:
+            with path.open('a', encoding='utf-8') as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+        return path
+    except Exception:
+        return None
+
+
 def read_binance_rest_quota_state() -> dict[str, Any] | None:
     return _read_json_dict(_quota_state_path())
 
@@ -83,6 +156,11 @@ def record_binance_rest_quota(
     source: str,
     headers: Any,
     server_time_utc_ms: int | None = None,
+    priority: str | None = None,
+    account: str | None = None,
+    method: str | None = None,
+    endpoint: str | None = None,
+    request_status: str = 'ok',
 ) -> dict[str, Any] | None:
     used_weight_1m = _extract_header_int(headers, 'X-MBX-USED-WEIGHT-1M')
     order_count_10s = _extract_header_int(headers, 'X-MBX-ORDER-COUNT-10S')
@@ -133,6 +211,21 @@ def record_binance_rest_quota(
         _atomic_write_json(_quota_state_path(), payload)
     except Exception:
         return None
+    append_binance_rest_usage_record(
+        source=source,
+        request_status=request_status,
+        priority=priority,
+        account=account,
+        method=method,
+        endpoint=endpoint,
+        used_weight_1m=used_weight_1m,
+        used_weight_1m_delta=used_weight_1m_delta,
+        order_count_10s=order_count_10s,
+        order_count_1m=order_count_1m,
+        minute_bucket_utc=minute_bucket_utc,
+        observed_utc_ms=observed_ms,
+        weight_limit_1m=int(payload.get('weight_limit_1m') or _REQUEST_WEIGHT_LIMIT_1M),
+    )
     return payload
 
 

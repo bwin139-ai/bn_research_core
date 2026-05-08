@@ -635,7 +635,7 @@ strategies/tvr/config.data_hub.json:
 当前边界：
 
 ```text
-TVR data_hub 可以复用 Binance REST client、REST quota guard、北京时间转换和 JSONL 落盘。
+TVR data_hub 可以复用 Binance REST client、Binance REST Gateway、REST quota guard、北京时间转换和 JSONL 落盘。
 TVR 第一阶段不得复用现有 market_data_hub 的 HBs/finalized payload 语义。
 TVR 后续交易端必须继续遵守 LONG-only、maker-only、funding_rate_entry_max 与账户级限仓边界。
 ```
@@ -646,7 +646,53 @@ TVR 后续交易端必须继续遵守 LONG-only、maker-only、funding_rate_entr
 2. 若 Binance exchangeInfo 的 TradFi 分类字段继续变化，先以落盘事实修正 TVR universe 识别语义，不得硬编码品种兜底。
 3. 长期运行 TVR data_hub 积累 funding / price_24h / rolling stats 后，再人工确定 `entry_drop_pct`、`funding_rate_entry_max` 与 TVR live 交易端参数。
 
-### 3.8 audit tools / 目录治理
+### 3.8 Binance REST Gateway / API 额度治理
+
+当前定位：
+
+```text
+Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为“总电表 + 分级总电闸”。
+```
+
+已完成：
+
+1. 新增 `core/live/binance_rest_gateway.py`，定义 Binance REST 请求优先级：
+   - `LOW`
+   - `NORMAL`
+   - `HIGH`
+   - `CRITICAL`
+2. 第一版分级 gate 阈值：
+   - `LOW/NORMAL`: `used_weight_1m >= 2000` 时拒绝。
+   - `HIGH`: `used_weight_1m >= 2300` 时拒绝。
+   - `CRITICAL`: `used_weight_1m >= 2350` 时拒绝。
+   - Binance hard limit 仍按 `2400` 记录。
+3. 新增统一拒绝异常 `BinanceRestGatewayRejected`，拒绝码包括：
+   - `BN_REST_GATE_LOW_NORMAL_QUOTA_CLOSED`
+   - `BN_REST_GATE_HIGH_QUOTA_CLOSED`
+   - `BN_REST_GATE_CRITICAL_QUOTA_CLOSED`
+   - `BN_REST_GATE_BAN_WINDOW_ACTIVE`
+4. 增强 `core/live/rate_limit_guard.py`：`record_binance_rest_quota()` 除继续覆盖写 latest snapshot 外，同时 append 写 usage ledger。
+5. usage ledger 路径：
+   `output/shared_market/binance_rest_usage/YYYY-MM-DD/binance_rest_usage.jsonl`
+6. TVR data_hub 已迁移为第一批 Gateway consumer：
+   - universe / funding / ticker 当前事实为 `NORMAL`
+   - funding history / historical klines bootstrap 为 `LOW`
+
+当前边界：
+
+```text
+第一刀只迁移 TVR data_hub，不迁移正在运行的交易执行层。
+现有 live 主链路仍通过既有 rate_limit_guard 保护；凡调用 record_binance_rest_quota 的路径会自动写 usage ledger。
+后续若迁移 binance_exec.py，必须单独按 HIGH/CRITICAL 分类并做 live 风控回归验证。
+```
+
+当前 pending：
+
+1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
+2. 下一刀可迁移 `core/live/market_data.py` 的公共行情请求到 Binance REST Gateway。
+3. 后续若迁移 `core/live/binance_exec.py`，必须先按 endpoint 明确 `HIGH/CRITICAL` 优先级，不得让 quota gate 阻断必要风控动作。
+
+### 3.9 audit tools / 目录治理
 
 已完成：
 

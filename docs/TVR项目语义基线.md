@@ -86,7 +86,9 @@ min / max / mean / median / p1 / p5 / p10 / p20 / sample_count
 
 ```text
 Binance REST client
+Binance REST Gateway
 REST quota / ban guard
+REST usage ledger
 北京时间转换
 JSONL audit 落盘
 Telegram 消息推送
