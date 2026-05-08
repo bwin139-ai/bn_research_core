@@ -19,6 +19,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.live.rate_limit_guard import record_binance_rest_ban
+from core.live.binance_rest_gateway import (
+    REQUEST_PRIORITY_LOW,
+    REQUEST_PRIORITY_NORMAL,
+    request_futures_public,
+)
 
 try:
     import pyarrow as pa
@@ -422,17 +427,39 @@ def update_symbol_state(st: Dict, symbol: str, last_open_time_ms: int) -> None:
 # ----------------------------
 # binance REST
 # ----------------------------
+def _gateway_endpoint_from_url(url: str) -> str:
+    prefix = f"{BASE_URL}/fapi/v1/"
+    url_key = str(url or "").strip()
+    if not url_key.startswith(prefix):
+        raise ValueError(f"unsupported Binance futures URL: {url}")
+    endpoint = url_key[len(prefix):].strip()
+    if not endpoint:
+        raise ValueError(f"empty Binance futures endpoint: {url}")
+    return endpoint
+
+
 def http_get_json(
     session: requests.Session,
     url: str,
     params: Dict,
     timeout: int = 20,
     max_retry: int = 8,
+    priority: str = REQUEST_PRIORITY_LOW,
+    source: str | None = None,
 ):
     backoff = 1.0
+    endpoint = _gateway_endpoint_from_url(url)
+    source_key = str(source or f"klines_1m_store.{endpoint}").strip()
     for attempt in range(1, max_retry + 1):
         try:
-            r = session.get(url, params=params, timeout=timeout)
+            r = request_futures_public(
+                source=source_key,
+                endpoint=endpoint,
+                params=params,
+                priority=priority,
+                timeout=float(timeout),
+                session=session,
+            )
             if r.status_code == 418:
                 retry_after = r.headers.get("Retry-After")
                 sleep_s = float(retry_after) if retry_after else 600.0
@@ -519,7 +546,13 @@ def http_get_json(
 
 def fetch_exchange_info(session: requests.Session) -> Dict:
     url = f"{BASE_URL}/fapi/v1/exchangeInfo"
-    return http_get_json(session, url, params={})
+    return http_get_json(
+        session,
+        url,
+        params={},
+        priority=REQUEST_PRIORITY_NORMAL,
+        source="klines_1m_store.exchangeInfo",
+    )
 
 
 def require_usdt_symbols(symbols: List[str], source: str) -> List[str]:
@@ -583,7 +616,13 @@ def fetch_klines(
 
     if end_ms is not None:
         params["endTime"] = int(end_ms)
-    return http_get_json(session, url, params=params)
+    return http_get_json(
+        session,
+        url,
+        params=params,
+        priority=REQUEST_PRIORITY_LOW,
+        source=f"klines_1m_store.{price_source}.{url.rsplit('/', 1)[-1]}",
+    )
 
 
 # ----------------------------

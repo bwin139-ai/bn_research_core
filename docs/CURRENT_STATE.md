@@ -706,11 +706,18 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 本刀只改变普通 python-binance 写接口出口路径和优先级治理，不改变 entry/TP/time-stop payload、取消订单 payload、仓位模式/保证金/杠杆参数、订单归一化或策略语义。
 14. 2026-05-09 00:21 BJ，本地已完成执行层普通写操作 Gateway 静态验证：
     `core/live/binance_exec.py` 已无旧 `_call_client_with_retry` / `_record_client_quota` / `sleep_if_binance_rest_*` 写路径残留；普通写接口均通过 `_call_gateway_client_with_retry(... priority=CRITICAL)`。
+15. `strategies/klines_1m_store.py` 批量/补数公开 REST 已迁移为第六批 Gateway consumer：
+    - Gateway 新增 `request_futures_public()`，用于需要保留自定义 HTTP status/retry 语义的公开 futures REST 调用。
+    - `exchangeInfo` 标记为 `NORMAL`。
+    - contract/index 1m klines 标记为 `LOW`。
+    - 本刀保留 `klines_1m_store.py` 原有 418 ban 记录、429 退避、400 index price 静态错误处理、parquet/state 写入语义。
+16. 2026-05-09 00:31 BJ，本地已用真实 Binance 连接完成 `klines_1m_store.py` Gateway smoke：
+    `exchangeInfo` 成功返回 720 个 symbols，并以 `NORMAL/ok` 写入 usage ledger；`XAUUSDT` contract klines limit=2 成功返回 2 行，并以 `LOW/ok` 写入 usage ledger。
 
 当前边界：
 
 ```text
-TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed REST、执行层普通写操作已接入 Binance REST Gateway。
+TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed REST、执行层普通写操作、`klines_1m_store.py` 批量/补数公开 REST 已接入 Binance REST Gateway。
 执行层下单/撤单/仓位模式/保证金/杠杆写操作当前均为 CRITICAL。
 后续新增任何 Binance REST consumer 必须显式声明 priority，不得绕过 Gateway。
 ```
@@ -718,7 +725,7 @@ TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed R
 当前 pending：
 
 1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
-2. 后续迁移 `tools/bn_sync`、`strategies/klines_1m_store.py` 等批量/补数路径时，默认按 `LOW` 或 `NORMAL` 分类。
+2. `tools/bn_sync` 当前通过 `binance_exec.py` 间接接入 Gateway；后续若新增直接 Binance REST 请求，默认按 `LOW` 或 `NORMAL` 分类。
 3. 后续可增加脚本级审计，扫描新增 Binance REST 调用是否绕过 Gateway。
 
 ### 3.9 audit tools / 目录治理

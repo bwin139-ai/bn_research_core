@@ -405,6 +405,69 @@ def call_futures_signed(
     return data
 
 
+def request_futures_public(
+    *,
+    source: str,
+    endpoint: str,
+    params: Mapping[str, Any] | None = None,
+    priority: str | None = None,
+    account: str | None = None,
+    timeout: float = 20.0,
+    session: Any | None = None,
+) -> Any:
+    priority_key = normalize_priority(priority)
+    endpoint_key = str(endpoint or "").strip()
+    if not endpoint_key:
+        raise ValueError("futures public endpoint must not be empty")
+    endpoint_path = endpoint_key[1:] if endpoint_key.startswith("/") else endpoint_key
+    assert_gateway_allows_request(
+        source=source,
+        priority=priority_key,
+        account=account,
+        method="GET",
+        endpoint=endpoint_path,
+    )
+    requester = session if session is not None else requests
+    data = {k: v for k, v in dict(params or {}).items() if v is not None}
+    url = f"https://fapi.binance.com/fapi/v1/{endpoint_path}"
+    try:
+        resp = requester.get(url, params=data, timeout=float(timeout))
+    except Exception as exc:
+        append_binance_rest_usage_record(
+            source=source,
+            request_status="error",
+            priority=priority_key,
+            account=account,
+            method="GET",
+            endpoint=endpoint_path,
+            weight_limit_1m=_WEIGHT_LIMIT_1M,
+            reason=str(exc),
+        )
+        raise
+    request_status = "error" if int(getattr(resp, "status_code", 0) or 0) >= 400 else "ok"
+    recorded = record_binance_rest_quota(
+        source=source,
+        headers=getattr(resp, "headers", None),
+        priority=priority_key,
+        account=account,
+        method="GET",
+        endpoint=endpoint_path,
+        request_status=request_status,
+    )
+    if recorded is None and request_status != "ok":
+        append_binance_rest_usage_record(
+            source=source,
+            request_status=request_status,
+            priority=priority_key,
+            account=account,
+            method="GET",
+            endpoint=endpoint_path,
+            weight_limit_1m=_WEIGHT_LIMIT_1M,
+            reason=f"http_status={getattr(resp, 'status_code', '')}",
+        )
+    return resp
+
+
 def call_futures_public(
     account: str,
     *,
