@@ -697,25 +697,29 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 本刀只改变 signed REST 出口路径和优先级治理，不改变 SL algo 下单 payload、撤单 payload、订单归一化或策略语义。
 12. 2026-05-09 00:14 BJ，本地已用真实 Binance 连接完成 algo signed GET Gateway smoke：
     `GET /fapi/v1/openAlgoOrders` 因本机出口 IP/API 权限被 Binance 返回 `-2015`，但已以 `HIGH/error` 写入 usage ledger，并带出当时 `used_weight_1m`。
+13. 执行层普通写操作已迁移为第五批 Gateway consumer，统一标记为 `CRITICAL`：
+    - `futures_create_order`
+    - `futures_cancel_order`
+    - `futures_change_position_mode`
+    - `futures_change_margin_type`
+    - `futures_change_leverage`
+    - 本刀只改变普通 python-binance 写接口出口路径和优先级治理，不改变 entry/TP/time-stop payload、取消订单 payload、仓位模式/保证金/杠杆参数、订单归一化或策略语义。
+14. 2026-05-09 00:21 BJ，本地已完成执行层普通写操作 Gateway 静态验证：
+    `core/live/binance_exec.py` 已无旧 `_call_client_with_retry` / `_record_client_quota` / `sleep_if_binance_rest_*` 写路径残留；普通写接口均通过 `_call_gateway_client_with_retry(... priority=CRITICAL)`。
 
 当前边界：
 
 ```text
-TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed REST 已接入 Binance REST Gateway。
-执行层普通写操作尚未接入 Gateway，仍通过既有 rate_limit_guard 保护。
-后续迁移普通写操作必须先按 endpoint 明确 CRITICAL 优先级，不得让 quota gate 阻断必要风控动作。
+TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed REST、执行层普通写操作已接入 Binance REST Gateway。
+执行层下单/撤单/仓位模式/保证金/杠杆写操作当前均为 CRITICAL。
+后续新增任何 Binance REST consumer 必须显式声明 priority，不得绕过 Gateway。
 ```
 
 当前 pending：
 
 1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
-2. 下一刀可迁移 `core/live/binance_exec.py` 普通写操作：
-   - `futures_create_order`
-   - `futures_cancel_order`
-   - `futures_change_position_mode`
-   - `futures_change_margin_type`
-   - `futures_change_leverage`
-3. 后续迁移 `tools/bn_sync`、`strategies/klines_1m_store.py` 等批量/补数路径时，默认按 `LOW` 或 `NORMAL` 分类。
+2. 后续迁移 `tools/bn_sync`、`strategies/klines_1m_store.py` 等批量/补数路径时，默认按 `LOW` 或 `NORMAL` 分类。
+3. 后续可增加脚本级审计，扫描新增 Binance REST 调用是否绕过 Gateway。
 
 ### 3.9 audit tools / 目录治理
 
