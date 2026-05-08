@@ -41,8 +41,9 @@ bn_research_core
 2. `snapback-sabc` 的 live 观察与 sim/live/bn 审计闭环。
 3. `spring-sabc` 的主基线、结构过滤与审计工具完善。
 4. `sweep-reclaim` 的新策略语义基线与参数骨架。
-5. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
-6. Codex 多线程交接文档体系。
+5. `tvr` 的 TradFi Value Reclaim live-first 数据端建设。
+6. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
+7. Codex 多线程交接文档体系。
 
 ### 1.3 当前阶段目标
 
@@ -64,6 +65,7 @@ docs/STANDARD_PATCH_FRAMEWORK.md
 docs/CURRENT_STATE.md
 docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md
 docs/Sweep-Reclaim项目语义基线.md
+docs/TVR项目语义基线.md
 ```
 
 新线程用户侧可复制模板：
@@ -79,6 +81,7 @@ market_data_hub_config.json
 strategies/snapback/config.highfreq.json
 strategies/spring/config.json
 strategies/sweep_reclaim/config.json
+strategies/tvr/config.data_hub.json
 ```
 
 ### 2.3 live / audit 现场
@@ -587,7 +590,63 @@ strategies/spring/live_execution.smoke_10u.json:
 - 要求 local/exchange/symbol filters 均 verified
 ```
 
-### 3.6 audit tools / 目录治理
+### 3.7 TVR / TradFi Value Reclaim
+
+当前定位：
+
+```text
+TVR 是 Binance USD-M TradFi 永续合约的 LONG-only live-first 策略路线。
+它不复用山寨币三策略的结构语义，第一阶段只建设 data_hub，不下单。
+```
+
+已完成：
+
+1. 新增 `docs/TVR项目语义基线.md`，明确 TVR 是 TradFi Value Reclaim，面向黄金、白银、原油等 TradFi 映射合约。
+2. 明确 TVR 第一阶段不做传统 sim，先做 live-first data_hub，以 live facts 和历史价格统计校准后续入场参数。
+3. 新增 `strategies/tvr/config.data_hub.json` 与 `strategies/tvr/data_hub.py`。
+4. TVR data_hub 第一版只采集并落盘事实，不下单、不写 live state、不改现有三套策略语义。
+5. 当前事实流包括：
+   - 当前 TradFi universe snapshot：来自 Binance futures exchangeInfo / ticker，只记录 live 当前事实。
+   - 当前 funding snapshot：来自 `/fapi/v1/premiumIndex`，用于后续入场门禁事实。
+   - 历史 funding bootstrap：来自 `/fapi/v1/fundingRate`，只用于研究审计，不作为 live 入场依赖。
+   - rolling 24h stats：来自历史 contract klines，计算 `min/max/mean/median/p1/p5/p10/p20/latest`。
+6. TVR data_hub 落盘路径为 `state/live_audit/tvr/data_hub/{stream}/YYYY-MM-DD/tradfi_{stream}.jsonl`。
+7. 2026-05-08 22:44 BJ，本地已用真实 Binance 连接跑通一次最小采集：
+   `python3 strategies/tvr/data_hub.py --once --skip-price-history-bootstrap --skip-funding-history-bootstrap`。
+   本轮确认 `contractType=TRADIFI_PERPETUAL` + `underlyingSubType=TradFi` 可识别 34 个 TradFi 合约，并写入 universe / funding / price_24h 三类 snapshot。
+
+当前配置事实：
+
+```text
+strategies/tvr/config.data_hub.json:
+- account = mybwin139
+- universe.underlying_subtype = TradFi
+- universe.quote_asset = USDT
+- universe.contract_type = TRADIFI_PERPETUAL
+- universe.status = TRADING
+- collection.interval_secs = 60
+- funding_history.lookback_days = 90
+- price_history.interval = 1m
+- price_history.lookback_days = 90
+- price_history.minimum_history_days = 30
+- price_history.rolling_window_hours = 24
+```
+
+当前边界：
+
+```text
+TVR data_hub 可以复用 Binance REST client、REST quota guard、北京时间转换和 JSONL 落盘。
+TVR 第一阶段不得复用现有 market_data_hub 的 HBs/finalized payload 语义。
+TVR 后续交易端必须继续遵守 LONG-only、maker-only、funding_rate_entry_max 与账户级限仓边界。
+```
+
+当前 pending：
+
+1. 后续可在服务器常驻启动 TVR data_hub loop，并在首次启动时决定是否打开 funding history / price history bootstrap。
+2. 若 Binance exchangeInfo 的 TradFi 分类字段继续变化，先以落盘事实修正 TVR universe 识别语义，不得硬编码品种兜底。
+3. 长期运行 TVR data_hub 积累 funding / price_24h / rolling stats 后，再人工确定 `entry_drop_pct`、`funding_rate_entry_max` 与 TVR live 交易端参数。
+
+### 3.8 audit tools / 目录治理
 
 已完成：
 

@@ -30,6 +30,10 @@
   - Sweep-Reclaim / SWR 的唯一活跃语义基线。
   - 涉及 Sweep-Reclaim 时必须阅读。
 
+- `TVR项目语义基线.md`
+  - TradFi Value Reclaim / TVR 的唯一活跃语义基线。
+  - 涉及 TVR data_hub、TradFi funding、rolling 24h 或后续 TVR live 时必须阅读。
+
 ## 代码理解材料
 
 - `snapback-sabc_代码流程.md`

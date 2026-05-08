@@ -1,0 +1,115 @@
+# TVR 项目语义基线
+
+本文档是 TradFi Value Reclaim（简称 `TVR`）的唯一活跃语义基线。
+
+若本文档与项目公共基线冲突，以 `docs/PROJECT_BASELINE.md` 为准。
+
+## 1. 策略定位
+
+1. `TVR` 是 Binance USD-M TradFi 永续合约的 LONG-only 策略路线。
+2. `TVR` 的交易对象是 TradFi 映射合约，例如黄金、白银、原油、天然气、股票或指数类 USDT 永续。
+3. Binance USD-M 当前 TradFi 合约元数据事实为 `contractType=TRADIFI_PERPETUAL` 且 `underlyingSubType` 包含 `TradFi`。
+4. `TVR` 不属于山寨币短周期结构策略，不复用 Snapback / Spring / Sweep-Reclaim 的结构语义。
+5. `TVR` 的核心前提是 TradFi 标的存在相对明确的价值锚，允许在低杠杆、小仓位、账户级限仓前提下做价值回归。
+6. `TVR` 当前仍受项目 LONG-only 总规则约束，不定义 SHORT、对冲或双向 CTA 语义。
+
+## 2. live-first 边界
+
+1. `TVR` 不做传统历史回测 sim 作为第一阶段准入条件。
+2. `TVR` 采用 live-first 路线，以 live 交易所事实、live funding、live 盘口与真实 maker 成交作为事实源。
+3. live-first 不等于无验证；第一阶段必须先建设数据端，长期采集并落盘事实。
+4. 策略交易端可以频繁重启、调参、暂停；`TVR data_hub` 应稳定运行并持续积累数据。
+
+## 3. data_hub 语义
+
+`TVR data_hub` 第一版只采集和落盘事实，不下单，不写 live state，不生成交易 intent。
+
+第一版事实流分为：
+
+1. `universe`
+   - 只采集 live 当前 Binance exchangeInfo / ticker 事实。
+   - 不回填历史 universe。
+   - TradFi universe 必须由交易所当前合约元数据识别；识别不到时 fail-fast。
+
+2. `funding`
+   - 当前 funding 使用 Binance `/fapi/v1/premiumIndex` live fact。
+   - 历史 funding 可使用 Binance `/fapi/v1/fundingRate` bootstrap。
+   - 历史 funding 只用于研究、审计和分布分析，不作为 live 入场门禁依赖。
+
+3. `rolling_24h`
+   - 允许读取历史 contract klines 计算 rolling 24h return 分布。
+   - live 决策参数可以参考最近窗口统计，但第一版不让统计模块自动改写交易参数。
+   - 原始价格事实和统计结果必须落盘，供后续人工审计。
+
+## 4. 入场门禁草案
+
+交易端尚未实现。当前仅锁定后续 TVR live 入场语义草案：
+
+1. 只允许 LONG。
+2. 只允许 `POST_ONLY` maker 买入。
+3. 只允许 `POST_ONLY` maker 止盈卖出。
+4. 不设置价格止损。
+5. 必须设置账户级风险边界，包括单品种最大暴露和 TVR 总暴露。
+6. 必须设置 `funding_rate_entry_max`：
+   - 若入场时当前 funding rate 大于该阈值，禁止新开仓。
+   - 若 funding rate 缺失、不可读或字段异常，fail-fast，不入场。
+   - 入场后 funding 变化只落盘审计，不作为第一版持仓退出条件。
+
+## 5. rolling 24h 统计
+
+`rolling_24h_return` 定义为：
+
+```text
+current_price / price_24h_ago - 1
+```
+
+它不是自然日涨跌幅，而是每个采样点相对于 24 小时前同一采样点的滚动收益。
+
+第一版统计窗口：
+
+```text
+lookback_days = 90
+minimum_history_days = 30
+```
+
+统计项至少包含：
+
+```text
+min / max / mean / median / p1 / p5 / p10 / p20 / sample_count
+```
+
+其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_drop_pct`。
+
+## 6. 共享基础设施边界
+
+`TVR` 可以复用当前项目的公共基础设施：
+
+```text
+Binance REST client
+REST quota / ban guard
+北京时间转换
+JSONL audit 落盘
+Telegram 消息推送
+后续公共 Binance execution / state / reconcile 框架
+```
+
+`TVR` 第一版不得复用或污染：
+
+```text
+现有 market_data_hub 的 HBs/finalized payload 语义
+Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
+山寨币 universe 过滤规则
+任何 SHORT 或对冲语义
+```
+
+## 7. 当前第一阶段目标
+
+```text
+实现 TVR data_hub：
+1. 采集当前 TradFi universe snapshot。
+2. 采集当前 funding snapshot。
+3. 可选 bootstrap 历史 funding。
+4. 可选 bootstrap 历史 klines 并计算 rolling 24h 分布。
+5. 按 TVR 独立目录落盘 audit facts。
+6. 不下单，不写 live state，不影响现有三套策略。
+```

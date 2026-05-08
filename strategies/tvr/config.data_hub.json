@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "mybwin139",
+  "audit_enabled": true,
+  "universe": {
+    "underlying_subtype": "TradFi",
+    "quote_asset": "USDT",
+    "contract_type": "TRADIFI_PERPETUAL",
+    "status": "TRADING"
+  },
+  "collection": {
+    "interval_secs": 60,
+    "funding_history_bootstrap_enabled": true,
+    "price_history_bootstrap_enabled": true
+  },
+  "funding_history": {
+    "lookback_days": 90,
+    "limit": 1000
+  },
+  "price_history": {
+    "interval": "1m",
+    "lookback_days": 90,
+    "minimum_history_days": 30,
+    "rolling_window_hours": 24,
+    "kline_limit": 1500,
+    "max_symbols_per_run": 0
+  }
+}
