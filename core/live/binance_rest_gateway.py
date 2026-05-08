@@ -197,6 +197,42 @@ def assert_gateway_allows_request(
     }
 
 
+def _record_gateway_client_usage(
+    *,
+    client: Any,
+    source: str,
+    priority: str,
+    account: str,
+    method: str,
+    endpoint: str,
+    request_status: str,
+    server_time_utc_ms: int | None = None,
+    reason: str | None = None,
+) -> None:
+    response = getattr(client, "response", None)
+    recorded = record_binance_rest_quota(
+        source=source,
+        headers=getattr(response, "headers", None),
+        server_time_utc_ms=server_time_utc_ms,
+        priority=priority,
+        account=account,
+        method=method,
+        endpoint=endpoint,
+        request_status=request_status,
+    )
+    if recorded is None and request_status != "ok":
+        append_binance_rest_usage_record(
+            source=source,
+            request_status=request_status,
+            priority=priority,
+            account=account,
+            method=method,
+            endpoint=endpoint,
+            weight_limit_1m=_WEIGHT_LIMIT_1M,
+            reason=reason,
+        )
+
+
 def call_client_method(
     account: str,
     *,
@@ -218,8 +254,20 @@ def call_client_method(
 
     client = get_client(account)
     method = getattr(client, method_name)
-    payload = method(**params)
-    response = getattr(client, "response", None)
+    try:
+        payload = method(**params)
+    except Exception as exc:
+        _record_gateway_client_usage(
+            client=client,
+            source=source,
+            priority=priority_key,
+            account=account,
+            method=method_name,
+            endpoint=method_name,
+            request_status="error",
+            reason=str(exc),
+        )
+        raise
     server_time_utc_ms = None
     server_time_key = str(server_time_field or "").strip()
     if server_time_key and isinstance(payload, Mapping):
@@ -227,14 +275,15 @@ def call_client_method(
             server_time_utc_ms = int(payload.get(server_time_key) or 0) or None
         except Exception:
             server_time_utc_ms = None
-    record_binance_rest_quota(
+    _record_gateway_client_usage(
+        client=client,
         source=source,
-        headers=getattr(response, "headers", None),
-        server_time_utc_ms=server_time_utc_ms,
         priority=priority_key,
         account=account,
         method=method_name,
         endpoint=method_name,
+        request_status="ok",
+        server_time_utc_ms=server_time_utc_ms,
     )
     return payload
 
@@ -262,14 +311,27 @@ def call_futures_public(
     if not callable(raw_method):
         raise RuntimeError("python-binance client missing _request_futures_api")
     data = {k: v for k, v in dict(params or {}).items() if v is not None}
-    payload = raw_method("get", endpoint, data=data)
-    response = getattr(client, "response", None)
-    record_binance_rest_quota(
+    try:
+        payload = raw_method("get", endpoint, data=data)
+    except Exception as exc:
+        _record_gateway_client_usage(
+            client=client,
+            source=source,
+            priority=priority_key,
+            account=account,
+            method="GET",
+            endpoint=endpoint,
+            request_status="error",
+            reason=str(exc),
+        )
+        raise
+    _record_gateway_client_usage(
+        client=client,
         source=source,
-        headers=getattr(response, "headers", None),
         priority=priority_key,
         account=account,
         method="GET",
         endpoint=endpoint,
+        request_status="ok",
     )
     return payload

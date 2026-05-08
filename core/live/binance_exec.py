@@ -14,6 +14,10 @@ from urllib.parse import urlencode
 import requests
 
 from core.live.binance_client import get_client, load_account_secrets
+from core.live.binance_rest_gateway import (
+    REQUEST_PRIORITY_HIGH,
+    call_client_method,
+)
 from core.live.rate_limit_guard import (
     record_binance_rest_quota,
     sleep_if_binance_rest_banned,
@@ -332,6 +336,29 @@ def _call_client_with_retry(
     )
 
 
+def _call_gateway_client_with_retry(
+    account: str,
+    source: str,
+    method_name: str,
+    *,
+    priority: str = REQUEST_PRIORITY_HIGH,
+    payload: dict[str, Any] | None = None,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+):
+    return _call_with_retry(
+        lambda: call_client_method(
+            account,
+            source=source,
+            method_name=method_name,
+            priority=priority,
+            **dict(payload or {}),
+        ),
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+
+
 def _normalize_algo_order_row(raw: dict[str, Any]) -> dict[str, Any]:
     algo_status = str(raw.get("algoStatus") or raw.get("status") or "").upper()
     trigger_price = raw.get("triggerPrice", raw.get("stopPrice", 0.0))
@@ -552,8 +579,7 @@ def _normalize_income_row(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_account_status(account: str) -> dict[str, Any]:
-    client = get_client(account)
-    res = _call_client_with_retry(client, 'binance_exec.futures_account', client.futures_account)
+    res = _call_gateway_client_with_retry(account, 'binance_exec.futures_account', 'futures_account')
     if not res["ok"]:
         return res
     raw = res["data"]
@@ -569,8 +595,7 @@ def get_account_status(account: str) -> dict[str, Any]:
 
 
 def get_symbol_filters(account: str, symbol: str) -> dict[str, Any]:
-    client = get_client(account)
-    res = _call_client_with_retry(client, 'binance_exec.futures_exchange_info', client.futures_exchange_info)
+    res = _call_gateway_client_with_retry(account, 'binance_exec.futures_exchange_info', 'futures_exchange_info')
     if not res["ok"]:
         return res
     su = (symbol or "").upper().strip()
@@ -581,9 +606,13 @@ def get_symbol_filters(account: str, symbol: str) -> dict[str, Any]:
 
 
 def get_last_price(account: str, symbol: str) -> dict[str, Any]:
-    client = get_client(account)
     su = (symbol or "").upper().strip()
-    res = _call_client_with_retry(client, 'binance_exec.futures_symbol_ticker', lambda: client.futures_symbol_ticker(symbol=su))
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_symbol_ticker',
+        'futures_symbol_ticker',
+        payload={'symbol': su},
+    )
     if not res["ok"]:
         return res
     raw = res["data"]
@@ -591,9 +620,14 @@ def get_last_price(account: str, symbol: str) -> dict[str, Any]:
 
 
 def get_open_orders(account: str, symbol: str | None = None) -> dict[str, Any]:
-    client = get_client(account)
     su = (symbol or "").upper().strip()
-    base_res = _call_client_with_retry(client, 'binance_exec.futures_get_open_orders', lambda: client.futures_get_open_orders(symbol=su) if su else client.futures_get_open_orders())
+    payload = {'symbol': su} if su else {}
+    base_res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_get_open_orders',
+        'futures_get_open_orders',
+        payload=payload,
+    )
     if not base_res["ok"]:
         return base_res
     algo_res = _call_with_retry(lambda: _get_open_algo_orders(account, su if su else None))
@@ -615,22 +649,19 @@ def get_order(
 ) -> dict[str, Any]:
     if exchange_order_id is None and not client_order_id:
         return _err("查询订单必须提供 exchange_order_id 或 client_order_id")
-    client = get_client(account)
     su = (symbol or "").upper().strip()
     payload: dict[str, Any] = {"symbol": su}
     if exchange_order_id is not None:
         payload["orderId"] = int(exchange_order_id)
     if client_order_id:
         payload["origClientOrderId"] = client_order_id
-    res = _call_with_retry(
-        lambda: client.futures_get_order(**payload),
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_get_order',
+        'futures_get_order',
+        payload=payload,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
-        before_attempt=lambda: (
-            sleep_if_binance_rest_banned(source='binance_exec.futures_get_order'),
-            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_get_order'),
-        ),
-        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_get_order'),
     )
     if res["ok"]:
         return _ok(_normalize_order_row(res["data"]), attempts=res.get("attempts"))
@@ -669,8 +700,11 @@ def _normalize_position_snapshot_row(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_positions(account: str, symbol: str | None = None) -> dict[str, Any]:
-    client = get_client(account)
-    res = _call_client_with_retry(client, 'binance_exec.futures_position_information', client.futures_position_information)
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_position_information',
+        'futures_position_information',
+    )
     if not res["ok"]:
         return res
     su = (symbol or "").upper().strip()
@@ -711,14 +745,18 @@ def get_position(account: str, symbol: str, position_side: str) -> dict[str, Any
 
 
 def ensure_hedge_mode(account: str) -> dict[str, Any]:
-    client = get_client(account)
-    get_res = _call_client_with_retry(client, 'binance_exec.futures_get_position_mode', client.futures_get_position_mode)
+    get_res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_get_position_mode',
+        'futures_get_position_mode',
+    )
     if not get_res["ok"]:
         return get_res
     raw = get_res["data"]
     dual_side = bool(raw.get("dualSidePosition", False))
     if dual_side:
         return _ok({"position_side_mode": POSITION_MODE, "changed": False, "raw": raw})
+    client = get_client(account)
     set_res = _call_client_with_retry(client, 'binance_exec.futures_change_position_mode', lambda: client.futures_change_position_mode(dualSidePosition="true"))
     if not set_res["ok"]:
         return set_res
@@ -1264,7 +1302,6 @@ def get_all_orders(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
-    client = get_client(account)
     su = (symbol or "").upper().strip()
     payload: dict[str, Any] = {
         "symbol": su,
@@ -1274,15 +1311,13 @@ def get_all_orders(
         payload["startTime"] = int(start_time_ms)
     if end_time_ms is not None:
         payload["endTime"] = int(end_time_ms)
-    res = _call_with_retry(
-        lambda: client.futures_get_all_orders(**payload),
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_get_all_orders',
+        'futures_get_all_orders',
+        payload=payload,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
-        before_attempt=lambda: (
-            sleep_if_binance_rest_banned(source='binance_exec.futures_get_all_orders'),
-            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_get_all_orders'),
-        ),
-        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_get_all_orders'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1300,7 +1335,6 @@ def get_account_trades(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
-    client = get_client(account)
     su = (symbol or "").upper().strip()
     payload: dict[str, Any] = {
         "symbol": su,
@@ -1310,15 +1344,13 @@ def get_account_trades(
         payload["startTime"] = int(start_time_ms)
     if end_time_ms is not None:
         payload["endTime"] = int(end_time_ms)
-    res = _call_with_retry(
-        lambda: client.futures_account_trades(**payload),
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_account_trades',
+        'futures_account_trades',
+        payload=payload,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
-        before_attempt=lambda: (
-            sleep_if_binance_rest_banned(source='binance_exec.futures_account_trades'),
-            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_account_trades'),
-        ),
-        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_account_trades'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1336,7 +1368,6 @@ def get_income_history(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
-    client = get_client(account)
     payload: dict[str, Any] = {
         "limit": int(limit),
     }
@@ -1350,15 +1381,13 @@ def get_income_history(
         payload["startTime"] = int(start_time_ms)
     if end_time_ms is not None:
         payload["endTime"] = int(end_time_ms)
-    res = _call_with_retry(
-        lambda: client.futures_income_history(**payload),
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_income_history',
+        'futures_income_history',
+        payload=payload,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
-        before_attempt=lambda: (
-            sleep_if_binance_rest_banned(source='binance_exec.futures_income_history'),
-            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_income_history'),
-        ),
-        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_income_history'),
     )
     if not res["ok"]:
         return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
@@ -1374,16 +1403,12 @@ def get_position_snapshots(
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
-    client = get_client(account)
-    res = _call_with_retry(
-        client.futures_position_information,
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_position_information',
+        'futures_position_information',
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
-        before_attempt=lambda: (
-            sleep_if_binance_rest_banned(source='binance_exec.futures_position_information'),
-            sleep_if_binance_rest_quota_near_limit(source='binance_exec.futures_position_information'),
-        ),
-        on_success=lambda _result: _record_client_quota(client, 'binance_exec.futures_position_information'),
     )
     if not res["ok"]:
         return res
