@@ -11,7 +11,7 @@ ps aux | grep '[s]trategies/sweep_reclaim/run_live.py'
 
 # ========= git pull 阿里云拉最新代码 =========
  git fetch --all && git switch main && git pull --ff-only origin main
-git pull --ff-only origin main
+ git pull --ff-only origin main
 ```bash
 
 ```
@@ -25,10 +25,6 @@ PYTHONPATH=/root/bn_research_core \
 ' >> output/logs/market_data_hub.console.log 2>&1 &
 
 tail -n 20 -f output/logs/market_data_hub.console.log
-
-python3 -m json.tool state/live_audit/market_data_hub/shared/current/market_snapshot.json
-python3 -m json.tool state/live_audit/market_data_hub/shared/current/candidate_inputs.json
-python3 -m json.tool state/live_audit/market_data_hub/shared/current/finalized_candidate_inputs.json
     
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
 RUNID="Spring_SmokeTest_V1_0416T1329"
@@ -82,7 +78,7 @@ nohup /root/service_env/bin/python -u klines_1m_store.py backfill \
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --price-source contract \
   --limit 1000 \
-  --sleep-ms 1500 \
+  --sleep-ms 1000 \
   sync \
   >> logs/klines_1m_sync.log 2>&1 &
 tail -n 20 -f logs/klines_1m_sync.log
@@ -90,7 +86,7 @@ tail -n 20 -f logs/klines_1m_sync.log
 # *** 2.等1成功后 再运行 补 idx 列 ***
 nohup /root/service_env/bin/python -u strategies/klines_1m_store.py \
   --limit 1000 \
-  --sleep-ms 1500 \
+  --sleep-ms 1000 \
   augment-idx \
   >> logs/klines_1m_augment_idx.log 2>&1 &
 tail -n 20 -f logs/klines_1m_augment_idx.log
@@ -180,7 +176,7 @@ pkill -f "strategies/run_backtest.py|schedule_backtests.py"
 pkill -9 -f 'strategies/run_backtest.py --strategy snapback'
 pkill -9 -f 'schedule_backtests.py --strategy snapback'
 
-
+清理过期stage3数据
 /root/service_env/bin/python tools/cleanup_expired_stage3_run.py
 
 策略层：
