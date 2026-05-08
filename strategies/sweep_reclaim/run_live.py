@@ -152,7 +152,7 @@ def _strategy_concurrency_scope(live_execution_config: Mapping[str, Any] | None)
 
 
 def _notify_runner_started(*, notify_enabled: bool, account: str, run_id: str, mode: str) -> None:
-    message = f"[Sweep-Reclaim-Live] runner started | account={account} | run_id={run_id} | mode={mode}"
+    message = f"[📈 Sweep-Reclaim-Live] runner started | account={account} | run_id={run_id} | mode={mode}"
     logging.info(message)
     if notify_enabled:
         send_to_bot(message, label="swr")

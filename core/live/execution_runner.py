@@ -137,7 +137,7 @@ def _strategy_notify_label(strategy_name: Any) -> str:
 
 def _strategy_notify_header(account: str, event_time_ms: Any, *, strategy_name: Any, strategy_code: Any) -> str:
     if str(strategy_name or "").strip() == "sweep-reclaim":
-        return f"[{_fmt_hms_from_ms(event_time_ms)} SWR] {account}"
+        return f"[{_fmt_hms_from_ms(event_time_ms)} 📈 SWR] {account}"
     return _spring_notify_header(account, event_time_ms)
 
 

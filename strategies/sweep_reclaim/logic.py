@@ -71,7 +71,7 @@ class SweepReclaimStrategy(SpringSABCStrategy):
         context = dict(signal.get("context") or {})
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
-            f"[{signal_time_bj} BJ] SWR雷达锁定: {signal['symbol']}"
+            f"[{signal_time_bj} BJ] 📈 SWR雷达锁定: {signal['symbol']}"
             f" | H: {self._bj_short_from_ms(int(context['h_time_ms']))} close={self._price_text(context.get('h_close'))}"
             f" | B: {self._bj_short_from_ms(int(context['b_time_ms']))} low={self._price_text(context.get('b_low'))}"
             f" | C: {self._bj_short_from_ms(int(context['c_time_ms']))} close={self._price_text(context.get('c_close'))}"
@@ -85,7 +85,7 @@ class SweepReclaimStrategy(SpringSABCStrategy):
     def build_entry_log(self, signal: Dict[str, Any]) -> str:
         signal_time_bj = signal.get("signal_time_bj") or self._bj_from_ms(int(signal["signal_time"]))
         return (
-            f"[{signal_time_bj} BJ] SWR结构信号: {signal['symbol']}"
+            f"[{signal_time_bj} BJ] 📈 SWR结构信号: {signal['symbol']}"
             f" | 满额金额: {self._safe_float(signal.get('base_order_notional_usdt'), 0.0):.2f}U"
             f" | TP: {self.take_profit_r_multiple:.2f}R"
             f" | 止损: {self._price_text(signal.get('sl_price'))}"

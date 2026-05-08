@@ -78,6 +78,8 @@ def _strategy_code_from_client_order_id(client_order_id: str | None) -> str:
     cid = str(client_order_id or "").upper()
     if "_SPR_" in cid:
         return "SPR"
+    if "_SWR_" in cid:
+        return "SWR"
     if "_SNP_" in cid:
         return "SNP"
     return "BN"
@@ -88,6 +90,8 @@ def _strategy_icon(strategy_code: str) -> str:
         return "🦅"
     if strategy_code == "SPR":
         return "🌱"
+    if strategy_code == "SWR":
+        return "📈"
     return "BN"
 
 

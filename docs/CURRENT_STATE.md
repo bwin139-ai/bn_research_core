@@ -319,6 +319,7 @@ strategies/spring/config.json:
     - `strategies/sweep_reclaim/run_live.py`
     - `strategies/sweep_reclaim/live_execution.smoke_10u.json`
 12. 2026-05-07 公共 live execution intent 已支持 `risk_reward_r_multiple` / `take_profit_r_multiple`，用于表达 SWR 的 R 倍数止盈语义；Spring 原 `risk_reward_1r` / `fixed_pct` 语义保持不变。
+13. 2026-05-08 SWR live 日志与消息推送统一使用 `📈 SWR` 作为可观察标识；公共 BN_EXEC 会从 `SWR` client order id 识别并展示同一符号。
 
 当前语义事实：
 
