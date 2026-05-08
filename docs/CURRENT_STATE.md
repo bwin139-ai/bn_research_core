@@ -677,6 +677,12 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
 6. TVR data_hub 已迁移为第一批 Gateway consumer：
    - universe / funding / ticker 当前事实为 `NORMAL`
    - funding history / historical klines bootstrap 为 `LOW`
+7. 行情层已迁移为第二批 Gateway consumer：
+   - `core/live/market_data.py` 的 `futures_time / exchangeInfo / ticker / futures_klines` 走 Gateway。
+   - `core/live/binance_client.py` 的 `indexPriceKlines` helper 走 Gateway。
+   - 本刀只改变 Binance REST 出口路径，不改变 HBs/finalized payload、候选过滤或策略语义。
+8. 2026-05-08 23:58 BJ，本地已用真实 Binance 连接完成行情层 Gateway smoke：
+   `futures_time`、`futures_klines(XAUUSDT, limit=2)`、`indexPriceKlines(XAUUSDT, limit=2)` 均成功返回，并写入 usage ledger。
 
 当前边界：
 
@@ -689,8 +695,8 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
 当前 pending：
 
 1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
-2. 下一刀可迁移 `core/live/market_data.py` 的公共行情请求到 Binance REST Gateway。
-3. 后续若迁移 `core/live/binance_exec.py`，必须先按 endpoint 明确 `HIGH/CRITICAL` 优先级，不得让 quota gate 阻断必要风控动作。
+2. 下一刀可迁移 `core/live/binance_exec.py` 的只读账户/订单查询路径到 Binance REST Gateway，并统一标记为 `HIGH`。
+3. 后续若迁移 `core/live/binance_exec.py` 的写操作，必须先按 endpoint 明确 `CRITICAL` 优先级，不得让 quota gate 阻断必要风控动作。
 
 ### 3.9 audit tools / 目录治理
 

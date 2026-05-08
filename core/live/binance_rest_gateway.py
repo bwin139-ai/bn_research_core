@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
-from core.live.binance_client import get_client
 from core.live.rate_limit_guard import (
     append_binance_rest_usage_record,
     read_active_binance_rest_ban,
@@ -204,6 +203,7 @@ def call_client_method(
     source: str,
     method_name: str,
     priority: str | None = None,
+    server_time_field: str | None = None,
     **params: Any,
 ) -> Any:
     priority_key = normalize_priority(priority)
@@ -214,13 +214,23 @@ def call_client_method(
         method=method_name,
         endpoint=method_name,
     )
+    from core.live.binance_client import get_client
+
     client = get_client(account)
     method = getattr(client, method_name)
     payload = method(**params)
     response = getattr(client, "response", None)
+    server_time_utc_ms = None
+    server_time_key = str(server_time_field or "").strip()
+    if server_time_key and isinstance(payload, Mapping):
+        try:
+            server_time_utc_ms = int(payload.get(server_time_key) or 0) or None
+        except Exception:
+            server_time_utc_ms = None
     record_binance_rest_quota(
         source=source,
         headers=getattr(response, "headers", None),
+        server_time_utc_ms=server_time_utc_ms,
         priority=priority_key,
         account=account,
         method=method_name,
@@ -245,6 +255,8 @@ def call_futures_public(
         method="GET",
         endpoint=endpoint,
     )
+    from core.live.binance_client import get_client
+
     client = get_client(account)
     raw_method = getattr(client, "_request_futures_api", None)
     if not callable(raw_method):
