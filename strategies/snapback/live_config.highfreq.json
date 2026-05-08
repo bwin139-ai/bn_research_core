@@ -30,6 +30,8 @@
   "order_retry_max": 2,
   "api_retry_delay_secs": 2,
   "pre_entry_min_sl_distance_pct": 0.003,
+  "precheck_scope": "symbol",
+  "strategy_concurrency_scope": "symbol",
   "reconcile_positions_each_loop": true,
   "fail_fast_on_state_mismatch": true,
   "audit_enabled": true,

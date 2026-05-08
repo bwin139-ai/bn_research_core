@@ -188,6 +188,7 @@ market_data_hub_config.json:
 19. 2026-05-06 新增 `docs/SNAPBACK_SIM_LIVE_AUDIT_SPEC.md` 作为 Snapback sim/live 一致性审计长期规格文档。后续新线程做 Snapback sim/live 审计时，应按该文档统一审计窗口、输入文件、signal/ABC 匹配、硬字段与降权字段、live-only/sim-only 分类、stage audit 定位顺序与 live trading lifecycle 检查口径；其中 `c_index_close` 默认记录但降权，`c_index_low/b_index_price` 在 `B=C` 同 bar 时为核心硬字段。
 20. 2026-05-08 Snapback 的 `market_total_24h_vol` gate 改为“生命周期优先”：低于市场总量阈值时，live 不再在 reconcile / finalized payload / loop gate 之前早退，而是先等待当前 C finalized payload、维护 pending/open/reconcile 生命周期，然后只阻断新扫描。
 21. 2026-05-08 Snapback live `market_total_24h_vol` 改为 Binance futures 24h ticker API 汇总；该字段是 live-only 市场总量 gate，不再作为 sim/live 严格一致审计字段。
+22. 2026-05-08 Snapback live 新增显式 `precheck_scope` 与 `strategy_concurrency_scope`，对齐 Spring/SWR 的 live 并发语义。当前 live config 使用 `symbol + symbol`：其它策略在同账户其它 symbol 的持仓/挂单不再阻断 Snapback startup 或整轮 scan；这些交易所活动仍作为 active symbols 传入策略，防止同 symbol 重复交易。若将 `precheck_scope` 改为 `account_flat`，则保留账户级空仓/无挂单才允许启动、扫描和下单的保守语义。
 
 当前配置事实：
 
@@ -202,7 +203,10 @@ strategies/snapback/config.highfreq.json:
 - risk_controls.base_order_notional_usdt = 100
 live_config.*.json:
 - pre_entry_min_sl_distance_pct = 0.003
+- precheck_scope = symbol
+- strategy_concurrency_scope = symbol
 - `pre_entry_min_sl_distance_pct` 属于 live 执行风控配置，已由 `run_live.py` / `run_consumer.py` 的 live config loader 校验；`core/config_loader.py` 仅校验策略语义配置，不承接该字段。
+- `precheck_scope` 表达交易所下单前检查范围（`symbol` / `account_flat`）；`strategy_concurrency_scope` 表达 Snapback 策略自身并发约束（`symbol` / `account`）。
 ```
 
 当前 pending：
@@ -212,7 +216,7 @@ live_config.*.json:
 3. 继续明确 snapback sim `base_order_notional_usdt` 与 live `entry_notional_usdt` 的账户资金口径关系。
 4. 是否为 bn truth 增加条件委托 / algo 父单独立真相层，尚未决定。
 5. triplet audit 是否显式解释父单 ID 与基础子单 ID 差异，尚未决定。
-6. 部署 2026-05-08 live ticker patch 后，需要重点验证 Snapback live 新扫描恢复；`market_total_24h_vol` 后续只审计为 live-source gate，不再要求与 sim 严格一致。
+6. 部署 2026-05-08 live ticker 与 Snapback symbol-scope gate patch 后，需要重点验证 Snapback live 新扫描恢复；`market_total_24h_vol` 后续只审计为 live-source gate，不再要求与 sim 严格一致。
 7. 部署 live pre-entry SL distance guard 与 `SL_SUBMIT_FAILED_FLATTEN` 独立离场语义后，观察是否出现 `pre_entry_price_guard_skip`；若仍发生 SL submit fail，应确认落盘 reason / custom id / 通知不再混入正常 `TIME_STOP`。
 
 ### 3.5 Spring-SABC

@@ -15,6 +15,22 @@ from core.live.live_state import load_live_state, mark_order_reconcile, mark_pos
 
 
 FIXED_POSITION_SIDE = 'LONG'
+VALID_PRECHECK_SCOPES = {'symbol', 'account_flat'}
+VALID_STRATEGY_CONCURRENCY_SCOPES = {'symbol', 'account'}
+
+
+def require_consumer_precheck_scope(live_cfg: dict[str, Any]) -> str:
+    scope = str(live_cfg.get('precheck_scope') or '').strip()
+    if scope not in VALID_PRECHECK_SCOPES:
+        raise ValueError('live_config.precheck_scope must be symbol or account_flat')
+    return scope
+
+
+def require_consumer_strategy_concurrency_scope(live_cfg: dict[str, Any]) -> str:
+    scope = str(live_cfg.get('strategy_concurrency_scope') or '').strip()
+    if scope not in VALID_STRATEGY_CONCURRENCY_SCOPES:
+        raise ValueError('live_config.strategy_concurrency_scope must be symbol or account')
+    return scope
 
 
 def _normalize_scalar(value: Any) -> Any:
@@ -182,6 +198,47 @@ def precheck_exchange_blockers(account: str, symbol: str, snapshot: dict[str, An
         'orders': ord_res,
     }
 
+
+def precheck_exchange_account_flat_blockers(account: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    if snapshot is not None:
+        all_pos_res = snapshot.get('positions') or {'ok': False, 'reason': 'missing positions snapshot', 'data': None}
+        all_ord_res = snapshot.get('orders') or {'ok': False, 'reason': 'missing orders snapshot', 'data': None}
+    else:
+        all_pos_res = get_positions(account)
+        all_ord_res = get_open_orders(account)
+
+    all_positions = list(all_pos_res.get('data') or []) if all_pos_res.get('ok') else []
+    all_orders = list(all_ord_res.get('data') or []) if all_ord_res.get('ok') else []
+    long_position = None
+    for row in all_positions:
+        position_side = str(row.get('position_side') or '').upper().strip()
+        try:
+            qty = abs(float(row.get('qty') or 0.0))
+        except (TypeError, ValueError):
+            qty = 0.0
+        if position_side == FIXED_POSITION_SIDE and qty > 0:
+            long_position = row
+            break
+
+    return {
+        'position': {
+            'ok': bool(all_pos_res.get('ok')),
+            'reason': all_pos_res.get('reason'),
+            'data': long_position,
+        },
+        'positions_all_sides': {
+            'ok': bool(all_pos_res.get('ok')),
+            'reason': all_pos_res.get('reason'),
+            'data': all_positions,
+        },
+        'orders': {
+            'ok': bool(all_ord_res.get('ok')),
+            'reason': all_ord_res.get('reason'),
+            'data': all_orders,
+        },
+    }
+
+
 def has_position_or_orders(snapshot: dict[str, Any]) -> tuple[bool, str]:
     pos_res = snapshot['position']
     all_pos_res = snapshot.get('positions_all_sides') or {}
@@ -209,6 +266,7 @@ def audit_consumer_orphan_exchange_activity(
     source: str,
     audit_enabled: bool,
     snapshot: dict[str, Any] | None = None,
+    mark_reconcile: bool = True,
 ) -> list[dict[str, Any]]:
     audit_started_perf = time.perf_counter()
     findings: list[dict[str, Any]] = []
@@ -248,13 +306,14 @@ def audit_consumer_orphan_exchange_activity(
         exch = precheck_exchange_blockers(account, symbol, snapshot=snapshot)
         perf_precheck_elapsed_ms += _perf_elapsed_ms(precheck_started_perf)
 
-        mark_position_started_perf = time.perf_counter()
-        mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
-        perf_mark_position_elapsed_ms += _perf_elapsed_ms(mark_position_started_perf)
+        if mark_reconcile:
+            mark_position_started_perf = time.perf_counter()
+            mark_position_reconcile(account, symbol, reconcile_bj=current_time_bj)
+            perf_mark_position_elapsed_ms += _perf_elapsed_ms(mark_position_started_perf)
 
-        mark_order_started_perf = time.perf_counter()
-        mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
-        perf_mark_order_elapsed_ms += _perf_elapsed_ms(mark_order_started_perf)
+            mark_order_started_perf = time.perf_counter()
+            mark_order_reconcile(account, symbol, reconcile_bj=current_time_bj)
+            perf_mark_order_elapsed_ms += _perf_elapsed_ms(mark_order_started_perf)
 
         pos_res = exch.get('position') or {}
         ord_res = exch.get('orders') or {}
@@ -422,6 +481,8 @@ def evaluate_consumer_signal_scan_gate_impl(
 ) -> dict[str, Any]:
     scan_gate_started_perf = time.perf_counter()
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    precheck_scope = require_consumer_precheck_scope(live_cfg)
+    strategy_concurrency_scope = require_consumer_strategy_concurrency_scope(live_cfg)
     snapshot = dict(exchange_activity_snapshot or {})
     if audit_enabled and not snapshot.get('ok'):
         write_event(account, 'exchange_activity_snapshot_error', {
@@ -455,13 +516,17 @@ def evaluate_consumer_signal_scan_gate_impl(
         source=source,
         audit_enabled=audit_enabled,
         snapshot=snapshot,
+        mark_reconcile=(precheck_scope == 'account_flat'),
     )
     orphan_audit_elapsed_ms = _perf_elapsed_ms(orphan_audit_started_perf)
 
     pending_reconcile_error = bool(maintain_res.get('pending_reconcile_error'))
     open_trade_reconcile_error = bool(maintain_res.get('open_trade_reconcile_error'))
     active_state_errors = list(maintain_res.get('active_state_errors') or [])
-    required_reconcile_symbols = sorted(set(local_active_symbols) | set(exchange_activity_symbols))
+    required_reconcile_symbols = sorted(
+        set(local_active_symbols)
+        | (set(exchange_activity_symbols) if precheck_scope == 'account_flat' else set())
+    )
     latest_close_symbols = {str(symbol).upper().strip() for symbol in (latest_closes or {}).keys()}
     missing_reconcile_symbols = [symbol for symbol in required_reconcile_symbols if symbol not in latest_close_symbols]
 
@@ -484,16 +549,20 @@ def evaluate_consumer_signal_scan_gate_impl(
             required_reconcile_symbols_count=len(required_reconcile_symbols),
             missing_reconcile_symbols_count=len(missing_reconcile_symbols),
             active_state_errors_count=len(active_state_errors),
+            precheck_scope=precheck_scope,
+            strategy_concurrency_scope=strategy_concurrency_scope,
             skip_reason=payload.get('skip_reason'),
             ok_to_scan=bool(payload.get('ok_to_scan')),
         )
         return payload
 
-    if orphan_findings:
+    if orphan_findings and precheck_scope == 'account_flat':
         if audit_enabled:
             write_event(account, 'signal_scan_skipped_orphan_exchange_activity', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
                 'orphan_exchange_activity': orphan_findings,
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
@@ -507,6 +576,32 @@ def evaluate_consumer_signal_scan_gate_impl(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
+        })
+
+    if strategy_concurrency_scope == 'account' and local_active_symbols:
+        if audit_enabled:
+            write_event(account, 'signal_scan_skipped_strategy_account_active', {
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
+                'local_active_symbols': local_active_symbols,
+                'candidate_symbols_count': len(candidate_symbols or []),
+                'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
+            })
+        return _return({
+            'ok_to_scan': False,
+            'skip_reason': 'strategy_account_active',
+            'orphan_findings': orphan_findings,
+            'missing_reconcile_symbols': missing_reconcile_symbols,
+            'active_state_errors': active_state_errors,
+            'exchange_snapshot': snapshot,
+            'local_active_symbols': local_active_symbols,
+            'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
         })
 
     if pending_reconcile_error or open_trade_reconcile_error:
@@ -514,6 +609,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             write_event(account, 'signal_scan_skipped_reconcile_query_error', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
                 'pending_reconcile_error': pending_reconcile_error,
                 'open_trade_reconcile_error': open_trade_reconcile_error,
                 'candidate_symbols_count': len(candidate_symbols or []),
@@ -528,6 +625,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
         })
 
     if missing_reconcile_symbols:
@@ -535,6 +634,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             write_event(account, 'signal_scan_skipped_missing_reconcile_data', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
                 'missing_reconcile_symbols': missing_reconcile_symbols,
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
@@ -548,6 +649,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
         })
 
     if not snapshot.get('ok'):
@@ -555,6 +658,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             write_event(account, 'signal_scan_skipped_exchange_activity_query_error', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
                 'exchange_snapshot': {
@@ -571,6 +676,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
         })
 
     if active_state_errors:
@@ -578,6 +685,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             write_event(account, 'signal_scan_skipped_active_state_error', {
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
+                'precheck_scope': precheck_scope,
+                'strategy_concurrency_scope': strategy_concurrency_scope,
                 'active_state_errors': active_state_errors,
                 'candidate_symbols_count': len(candidate_symbols or []),
                 'extra_reconcile_symbols_count': len(extra_reconcile_symbols or []),
@@ -591,6 +700,8 @@ def evaluate_consumer_signal_scan_gate_impl(
             'exchange_snapshot': snapshot,
             'local_active_symbols': local_active_symbols,
             'exchange_activity_symbols': exchange_activity_symbols,
+            'precheck_scope': precheck_scope,
+            'strategy_concurrency_scope': strategy_concurrency_scope,
         })
 
     return _return({
@@ -602,6 +713,8 @@ def evaluate_consumer_signal_scan_gate_impl(
         'exchange_snapshot': snapshot,
         'local_active_symbols': local_active_symbols,
         'exchange_activity_symbols': exchange_activity_symbols,
+        'precheck_scope': precheck_scope,
+        'strategy_concurrency_scope': strategy_concurrency_scope,
     })
 
 
@@ -685,6 +798,8 @@ def bootstrap_consumer_gate_impl(
     source: str = 'startup',
 ) -> dict[str, Any]:
     audit_enabled = bool(live_cfg.get('audit_enabled', True))
+    precheck_scope = require_consumer_precheck_scope(live_cfg)
+    strategy_concurrency_scope = require_consumer_strategy_concurrency_scope(live_cfg)
     bootstrap_res = bootstrap_consumer_impl(
         account,
         strategy_cfg,
@@ -720,17 +835,22 @@ def bootstrap_consumer_gate_impl(
         source=source,
         audit_enabled=audit_enabled,
         snapshot=startup_snapshot,
+        mark_reconcile=(precheck_scope == 'account_flat'),
     )
     active_state_errors = list(bootstrap_res.get('active_state_errors') or [])
-    blocking = bool(bootstrap_res.get('blocking') or orphan_findings)
+    blocking_orphan_findings = orphan_findings if precheck_scope == 'account_flat' else []
+    blocking = bool(bootstrap_res.get('blocking') or blocking_orphan_findings)
     return {
         'blocking': blocking,
         'bar_ts': current_time_ms,
         'bar_bj': current_time_bj,
+        'precheck_scope': precheck_scope,
+        'strategy_concurrency_scope': strategy_concurrency_scope,
         'pending_reconcile_error': bool(bootstrap_res.get('pending_reconcile_error')),
         'open_trade_reconcile_error': bool(bootstrap_res.get('open_trade_reconcile_error')),
         'exchange_activity_snapshot_ok': bool(bootstrap_res.get('exchange_activity_snapshot_ok')),
         'orphan_findings': orphan_findings,
+        'blocking_orphan_findings': blocking_orphan_findings,
         'active_state_errors': active_state_errors,
         'exchange_snapshot': startup_snapshot,
         'local_active_symbols': list(bootstrap_res.get('local_active_symbols') or []),

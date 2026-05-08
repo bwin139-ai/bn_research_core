@@ -52,8 +52,10 @@ from strategies.snapback.current_ledger import (
     finalize_consumer_signal_none_impl as _ledger_finalize_consumer_signal_none_impl,
     has_position_or_orders,
     maintain_consumer_once_impl as _ledger_maintain_consumer_once_impl,
+    precheck_exchange_account_flat_blockers,
     precheck_exchange_blockers,
     prepare_consumer_loop_gate_impl as _ledger_prepare_consumer_loop_gate_impl,
+    require_consumer_precheck_scope,
 )
 
 BJ = timezone(timedelta(hours=8))
@@ -2937,7 +2939,11 @@ def _consume_signal_precheck_and_prepare(
             'reason': 'cooldown_active',
         }
 
-    exch = precheck_exchange_blockers(account, symbol, snapshot=exchange_snapshot)
+    precheck_scope = require_consumer_precheck_scope(live_cfg)
+    if precheck_scope == 'account_flat':
+        exch = precheck_exchange_account_flat_blockers(account, snapshot=exchange_snapshot)
+    else:
+        exch = precheck_exchange_blockers(account, symbol, snapshot=exchange_snapshot)
     mark_position_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     mark_order_reconcile(account, symbol, reconcile_bj=_now_bj_str())
     blocked, block_reason = has_position_or_orders(exch)
@@ -2956,6 +2962,7 @@ def _consume_signal_precheck_and_prepare(
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'reason': block_reason,
+                'precheck_scope': precheck_scope,
                 'exchange_snapshot': exch,
             })
             _write_stage_record(account, 'stage7_precheck', {
@@ -2963,6 +2970,7 @@ def _consume_signal_precheck_and_prepare(
                 'bar_ts': current_time_ms,
                 'bar_bj': current_time_bj,
                 'symbol': symbol,
+                'precheck_scope': precheck_scope,
                 'precheck_blocked': True,
                 'precheck_block_reason': block_reason,
                 'precheck_position_exists': bool((exch.get('position') or {}).get('data')),
@@ -2993,6 +3001,7 @@ def _consume_signal_precheck_and_prepare(
             'bar_ts': current_time_ms,
             'bar_bj': current_time_bj,
             'symbol': symbol,
+            'precheck_scope': precheck_scope,
             'precheck_blocked': False,
             'precheck_block_reason': '',
             'precheck_position_exists': bool((exch.get('position') or {}).get('data')),

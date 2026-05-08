@@ -46,12 +46,16 @@ def _load_json(path: str) -> dict[str, Any]:
 
 def _load_live_config(path: str) -> dict[str, Any]:
     data = _load_json(path)
-    required = ['enabled', 'account', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'pre_entry_min_sl_distance_pct', 'audit_enabled', 'notify_enabled']
+    required = ['enabled', 'account', 'exclude_symbols', 'entry_notional_usdt', 'leverage', 'cooldown_mins', 'order_retry_max', 'api_retry_delay_secs', 'pre_entry_min_sl_distance_pct', 'precheck_scope', 'strategy_concurrency_scope', 'audit_enabled', 'notify_enabled']
     for key in required:
         if key not in data:
             raise KeyError(f'live_config 缺少必要字段: {key}')
     if not isinstance(data.get('exclude_symbols'), list):
         raise TypeError('exclude_symbols 必须是 list')
+    if str(data.get('precheck_scope') or '').strip() not in {'symbol', 'account_flat'}:
+        raise ValueError('live_config.precheck_scope must be symbol or account_flat')
+    if str(data.get('strategy_concurrency_scope') or '').strip() not in {'symbol', 'account'}:
+        raise ValueError('live_config.strategy_concurrency_scope must be symbol or account')
     return data
 
 

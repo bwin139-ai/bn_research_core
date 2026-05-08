@@ -225,7 +225,17 @@ stage2 universe metric frame 缺失，例如 contract_24h_metric_empty。
 finalized full_df 有 symbol，但 candidate_cross_section 缺 symbol。
 live stage4/stage5 缺现场记录，但已有 audit gap event 解释缺席边界。
 live pre-entry guard 跳过执行，不应要求 sim 对齐该 live-only 执行保护。
+live config 使用 account 级 scope，因同账户其它策略或其它 symbol 的交易活动进入 scan_blocked。
 ```
+
+Snapback 当前 live config 的目标语义与 Spring/SWR 对齐：
+
+```text
+precheck_scope = symbol
+strategy_concurrency_scope = symbol
+```
+
+在该组合下，同账户其它策略在其它 symbol 的持仓/挂单不应导致整轮 `scan_blocked`；这些交易所活动只应作为 active symbols 传入策略，防止同 symbol 重复交易。若审计发现其它 symbol 的 Spring/SWR 持仓仍导致 Snapback `scan_blocked`，应优先按 live gate 作用域问题推进。
 
 ### 7.3 必须判为待修复的不一致
 
