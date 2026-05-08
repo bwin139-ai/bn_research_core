@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 from typing import Any, Mapping
+from urllib.parse import urlencode
+
+import requests
 
 from core.live.rate_limit_guard import (
     append_binance_rest_usage_record,
@@ -197,6 +202,14 @@ def assert_gateway_allows_request(
     }
 
 
+def _raise_api_error(data: Any) -> None:
+    if isinstance(data, dict):
+        code = data.get("code")
+        msg = data.get("msg") or data
+        if code is not None and str(code).startswith("-"):
+            raise RuntimeError(f"APIError(code={code}): {msg}")
+
+
 def _record_gateway_client_usage(
     *,
     client: Any,
@@ -286,6 +299,110 @@ def call_client_method(
         server_time_utc_ms=server_time_utc_ms,
     )
     return payload
+
+
+def call_futures_signed(
+    account: str,
+    *,
+    source: str,
+    method: str,
+    path: str,
+    params: Mapping[str, Any] | None = None,
+    priority: str | None = None,
+    timeout: float = 10.0,
+) -> Any:
+    priority_key = normalize_priority(priority)
+    method_upper = str(method or "GET").upper().strip()
+    path_key = str(path or "").strip()
+    if not path_key.startswith("/"):
+        raise ValueError(f"futures signed path must start with '/': {path!r}")
+    assert_gateway_allows_request(
+        source=source,
+        priority=priority_key,
+        account=account,
+        method=method_upper,
+        endpoint=path_key,
+    )
+    from core.live.binance_client import load_account_secrets
+
+    secrets = load_account_secrets(account)
+    request_params = {
+        str(k): v
+        for k, v in dict(params or {}).items()
+        if v is not None and v != ""
+    }
+    request_params["timestamp"] = int(time.time() * 1000)
+    query = urlencode(request_params, doseq=True)
+    signature = hmac.new(
+        str(secrets["api_secret"]).encode("utf-8"),
+        query.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    request_params["signature"] = signature
+    request_kwargs: dict[str, Any] = {
+        "headers": {"X-MBX-APIKEY": str(secrets["api_key"])},
+        "timeout": float(timeout),
+    }
+    if method_upper in {"GET", "DELETE"}:
+        request_kwargs["params"] = request_params
+    else:
+        request_kwargs["data"] = request_params
+    try:
+        resp = requests.request(method_upper, f"https://fapi.binance.com{path_key}", **request_kwargs)
+    except Exception as exc:
+        append_binance_rest_usage_record(
+            source=source,
+            request_status="error",
+            priority=priority_key,
+            account=account,
+            method=method_upper,
+            endpoint=path_key,
+            weight_limit_1m=_WEIGHT_LIMIT_1M,
+            reason=str(exc),
+        )
+        raise
+    request_status = "error" if int(resp.status_code) >= 400 else "ok"
+    recorded = record_binance_rest_quota(
+        source=source,
+        headers=getattr(resp, "headers", None),
+        priority=priority_key,
+        account=account,
+        method=method_upper,
+        endpoint=path_key,
+        request_status=request_status,
+    )
+    try:
+        data = resp.json()
+    except Exception:
+        if recorded is None and request_status != "ok":
+            append_binance_rest_usage_record(
+                source=source,
+                request_status=request_status,
+                priority=priority_key,
+                account=account,
+                method=method_upper,
+                endpoint=path_key,
+                weight_limit_1m=_WEIGHT_LIMIT_1M,
+                reason=f"non-json response status={resp.status_code}",
+            )
+        resp.raise_for_status()
+        raise RuntimeError(f"futures signed api non-json response status={resp.status_code}")
+    if resp.status_code >= 400:
+        if recorded is None:
+            append_binance_rest_usage_record(
+                source=source,
+                request_status=request_status,
+                priority=priority_key,
+                account=account,
+                method=method_upper,
+                endpoint=path_key,
+                weight_limit_1m=_WEIGHT_LIMIT_1M,
+                reason=str(data),
+            )
+        _raise_api_error(data)
+        raise RuntimeError(f"futures signed api http status={resp.status_code}: {data}")
+    _raise_api_error(data)
+    return data
 
 
 def call_futures_public(

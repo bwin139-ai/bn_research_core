@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import math
 import time
@@ -9,14 +7,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
-from urllib.parse import urlencode
 
-import requests
-
-from core.live.binance_client import get_client, load_account_secrets
+from core.live.binance_client import get_client
 from core.live.binance_rest_gateway import (
+    REQUEST_PRIORITY_CRITICAL,
     REQUEST_PRIORITY_HIGH,
     call_client_method,
+    call_futures_signed,
 )
 from core.live.rate_limit_guard import (
     record_binance_rest_quota,
@@ -250,64 +247,6 @@ def _call_with_retry(
     return _err(str(last_err or "unknown error"), attempts=attempts)
 
 
-def _algo_base_url() -> str:
-    return "https://fapi.binance.com"
-
-
-def _raise_api_error(data: Any) -> None:
-    if isinstance(data, dict):
-        code = data.get("code")
-        msg = data.get("msg") or data
-        if code is not None and str(code).startswith("-"):
-            raise RuntimeError(f"APIError(code={code}): {msg}")
-
-
-def _signed_futures_algo_request(account: str, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
-    secrets = load_account_secrets(account)
-    params = {
-        str(k): v
-        for k, v in dict(payload or {}).items()
-        if v is not None and v != ""
-    }
-    params["timestamp"] = int(time.time() * 1000)
-    query = urlencode(params, doseq=True)
-    signature = hmac.new(
-        str(secrets["api_secret"]).encode("utf-8"),
-        query.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    params["signature"] = signature
-    headers = {
-        "X-MBX-APIKEY": str(secrets["api_key"]),
-    }
-    request_kwargs: dict[str, Any] = {
-        "headers": headers,
-        "timeout": 10.0,
-    }
-    method_upper = str(method or "GET").upper()
-    if method_upper in {"GET", "DELETE"}:
-        request_kwargs["params"] = params
-    else:
-        request_kwargs["data"] = params
-    sleep_if_binance_rest_banned(source=f'binance_exec.algo:{path}')
-    sleep_if_binance_rest_quota_near_limit(source=f'binance_exec.algo:{path}')
-    resp = requests.request(method_upper, f"{_algo_base_url()}{path}", **request_kwargs)
-    record_binance_rest_quota(
-        source=f'binance_exec.algo:{path}',
-        headers=getattr(resp, 'headers', None),
-    )
-    try:
-        data = resp.json()
-    except Exception:
-        resp.raise_for_status()
-        raise RuntimeError(f"algo api non-json response status={resp.status_code}")
-    if resp.status_code >= 400:
-        _raise_api_error(data)
-        raise RuntimeError(f"algo api http status={resp.status_code}: {data}")
-    _raise_api_error(data)
-    return data
-
-
 def _record_client_quota(client: Any, source: str) -> None:
     response = getattr(client, 'response', None)
     record_binance_rest_quota(
@@ -408,7 +347,14 @@ def _get_open_algo_orders(account: str, symbol: str | None = None) -> list[dict[
     su = (symbol or "").upper().strip()
     if su:
         payload["symbol"] = su
-    data = _signed_futures_algo_request(account, "GET", "/fapi/v1/openAlgoOrders", payload)
+    data = call_futures_signed(
+        account,
+        source='binance_exec.algo:/fapi/v1/openAlgoOrders',
+        method="GET",
+        path="/fapi/v1/openAlgoOrders",
+        params=payload,
+        priority=REQUEST_PRIORITY_HIGH,
+    )
     if not isinstance(data, list):
         raise RuntimeError(f"unexpected openAlgoOrders payload: {data}")
     return data
@@ -422,7 +368,14 @@ def _query_algo_order(account: str, *, exchange_order_id: int | None = None, cli
         payload["clientAlgoId"] = client_order_id
     if not payload:
         raise ValueError("查询 algo 订单必须提供 algoId 或 clientAlgoId")
-    data = _signed_futures_algo_request(account, "GET", "/fapi/v1/algoOrder", payload)
+    data = call_futures_signed(
+        account,
+        source='binance_exec.algo:/fapi/v1/algoOrder',
+        method="GET",
+        path="/fapi/v1/algoOrder",
+        params=payload,
+        priority=REQUEST_PRIORITY_HIGH,
+    )
     if not isinstance(data, dict):
         raise RuntimeError(f"unexpected algoOrder payload: {data}")
     return data
@@ -436,7 +389,14 @@ def _cancel_algo_order(account: str, *, exchange_order_id: int | None = None, cl
         payload["clientAlgoId"] = client_order_id
     if not payload:
         raise ValueError("撤销 algo 订单必须提供 algoId 或 clientAlgoId")
-    data = _signed_futures_algo_request(account, "DELETE", "/fapi/v1/algoOrder", payload)
+    data = call_futures_signed(
+        account,
+        source='binance_exec.algo:/fapi/v1/algoOrder',
+        method="DELETE",
+        path="/fapi/v1/algoOrder",
+        params=payload,
+        priority=REQUEST_PRIORITY_CRITICAL,
+    )
     if not isinstance(data, dict):
         raise RuntimeError(f"unexpected cancel algo payload: {data}")
     return data
@@ -1137,7 +1097,14 @@ def place_sl_order(
         "clientAlgoId": cid,
     }
     res = _call_with_retry(
-        lambda: _signed_futures_algo_request(account, "POST", "/fapi/v1/algoOrder", payload),
+        lambda: call_futures_signed(
+            account,
+            source='binance_exec.algo:/fapi/v1/algoOrder',
+            method="POST",
+            path="/fapi/v1/algoOrder",
+            params=payload,
+            priority=REQUEST_PRIORITY_CRITICAL,
+        ),
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )

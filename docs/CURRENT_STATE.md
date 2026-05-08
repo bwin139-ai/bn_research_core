@@ -690,21 +690,32 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
 10. 2026-05-09 00:07 BJ，本地已用真实 Binance 连接完成执行层只读 Gateway smoke：
     - `futures_exchange_info(XAUUSDT)`、`futures_symbol_ticker(XAUUSDT)` 成功返回，并以 `HIGH/ok` 写入 usage ledger。
     - `futures_account`、`futures_get_open_orders(XAUUSDT)`、`futures_position_information` 因本机出口 IP/API 权限被 Binance 返回 `-2015`，但均以 `HIGH/error` 写入 usage ledger，并带出当时 `used_weight_1m`。
+11. 执行层 algo signed REST 已迁移为第四批 Gateway consumer：
+    - Gateway 新增 `call_futures_signed()`，统一处理 futures signed REST 的 gate、签名、请求、异常和 usage ledger。
+    - `GET /fapi/v1/openAlgoOrders`、`GET /fapi/v1/algoOrder` 标记为 `HIGH`。
+    - `POST /fapi/v1/algoOrder`、`DELETE /fapi/v1/algoOrder` 标记为 `CRITICAL`。
+    - 本刀只改变 signed REST 出口路径和优先级治理，不改变 SL algo 下单 payload、撤单 payload、订单归一化或策略语义。
+12. 2026-05-09 00:14 BJ，本地已用真实 Binance 连接完成 algo signed GET Gateway smoke：
+    `GET /fapi/v1/openAlgoOrders` 因本机出口 IP/API 权限被 Binance 返回 `-2015`，但已以 `HIGH/error` 写入 usage ledger，并带出当时 `used_weight_1m`。
 
 当前边界：
 
 ```text
-TVR data_hub、行情层、执行层普通只读查询已接入 Binance REST Gateway。
-执行层写操作和 algo signed REST 尚未接入 Gateway，仍通过既有 rate_limit_guard 保护。
-后续迁移写操作必须先按 endpoint 明确 HIGH/CRITICAL 优先级，不得让 quota gate 阻断必要风控动作。
+TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed REST 已接入 Binance REST Gateway。
+执行层普通写操作尚未接入 Gateway，仍通过既有 rate_limit_guard 保护。
+后续迁移普通写操作必须先按 endpoint 明确 CRITICAL 优先级，不得让 quota gate 阻断必要风控动作。
 ```
 
 当前 pending：
 
 1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
-2. 下一刀可为 Gateway 增加 signed REST 通道，并迁移 `core/live/binance_exec.py` 的 algo signed REST 查询/下单/撤单路径。
-3. 后续迁移 `core/live/binance_exec.py` 普通写操作时，必须先按 endpoint 明确 `CRITICAL` 优先级。
-4. 后续迁移 `tools/bn_sync`、`strategies/klines_1m_store.py` 等批量/补数路径时，默认按 `LOW` 或 `NORMAL` 分类。
+2. 下一刀可迁移 `core/live/binance_exec.py` 普通写操作：
+   - `futures_create_order`
+   - `futures_cancel_order`
+   - `futures_change_position_mode`
+   - `futures_change_margin_type`
+   - `futures_change_leverage`
+3. 后续迁移 `tools/bn_sync`、`strategies/klines_1m_store.py` 等批量/补数路径时，默认按 `LOW` 或 `NORMAL` 分类。
 
 ### 3.9 audit tools / 目录治理
 
