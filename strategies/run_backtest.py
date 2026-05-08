@@ -41,6 +41,7 @@ BJ_TZ = timezone(timedelta(hours=8))
 EQUITY_INITIAL = 100.0
 DEFAULT_FEE_SIDE = 0.0005
 HBS_LOGIC_STRATEGIES = {"spring-sabc", "sweep-reclaim"}
+HBS_LOGIC_PREFIX_MS = 60_000
 
 
 def setup_logging(log_file: str):
@@ -1062,14 +1063,25 @@ def main():
         else:
             raise KeyError(f"【铁律违背】不支持的策略类型: {args.strategy!r}")
 
+        feeder_start_ms = (
+            start_ms - HBS_LOGIC_PREFIX_MS
+            if args.strategy in HBS_LOGIC_STRATEGIES
+            else start_ms
+        )
         feeder = CrossSectionalFeeder(
             config=config,
             data_dir=data_dir,
-            start_time_ms=start_ms,
+            start_time_ms=feeder_start_ms,
             end_time_ms=end_ms,
             ndays_lowest=feeder_ndays_lowest,
         )
-        timestamps = feeder.get_timestamps()
+        timestamps = [
+            int(ts)
+            for ts in feeder.get_timestamps()
+            if start_ms <= int(ts) <= end_ms
+        ]
+        if not timestamps:
+            raise ValueError("没有找到任何实际回测时间段内的数据！")
         logging.info(
             f"数据加载完毕，时间范围: {start_dt} 至 {end_dt}，共 {len(timestamps)} 根K线"
         )
