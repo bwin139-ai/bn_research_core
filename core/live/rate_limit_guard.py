@@ -147,6 +147,144 @@ def append_binance_rest_usage_record(
         return None
 
 
+def _usage_ledger_paths_for_window(now_ms: int, window_minutes: int) -> list[Path]:
+    window_ms = max(1, int(window_minutes)) * 60_000
+    start_ms = int(now_ms) - window_ms
+    days: set[str] = set()
+    for ts_ms in (start_ms, int(now_ms)):
+        day_key = _fmt_bj_from_ms(ts_ms)[:10]
+        days.add(day_key)
+    return [_usage_ledger_path(day_key) for day_key in sorted(days)]
+
+
+def read_binance_rest_usage_summary(
+    *,
+    window_minutes: int = 30,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    current_ms = int(now_ms) if now_ms is not None else _now_ms()
+    window_mins = max(1, int(window_minutes))
+    start_ms = current_ms - window_mins * 60_000
+
+    rows: list[dict[str, Any]] = []
+    for path in _usage_ledger_paths_for_window(current_ms, window_mins):
+        if not path.exists():
+            continue
+        try:
+            with path.open('r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        recorded_ms = int(row.get('recorded_utc_ms') or 0)
+                    except Exception:
+                        recorded_ms = 0
+                    if recorded_ms < start_ms or recorded_ms > current_ms:
+                        continue
+                    rows.append(row)
+        except Exception:
+            continue
+
+    rows.sort(key=lambda x: int(x.get('recorded_utc_ms') or 0))
+    request_count = len(rows)
+    status_counts: dict[str, int] = {}
+    priority_counts: dict[str, int] = {}
+    method_counts: dict[str, int] = {}
+    endpoint_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    minute_weight_max: dict[int, int] = {}
+    minute_delta_sum: dict[int, int] = {}
+    latest_used_weight_1m: int | None = None
+    latest_observed_bj = ''
+    latest_source = ''
+    order_count_10s_max = 0
+    order_count_1m_max = 0
+
+    for row in rows:
+        status = str(row.get('request_status') or 'unknown')
+        priority = str(row.get('priority') or 'UNKNOWN')
+        method = str(row.get('method') or 'UNKNOWN')
+        endpoint = str(row.get('endpoint') or 'UNKNOWN')
+        source = str(row.get('source') or 'UNKNOWN')
+        status_counts[status] = status_counts.get(status, 0) + 1
+        priority_counts[priority] = priority_counts.get(priority, 0) + 1
+        method_counts[method] = method_counts.get(method, 0) + 1
+        endpoint_counts[endpoint] = endpoint_counts.get(endpoint, 0) + 1
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+        try:
+            minute_bucket = int(row.get('minute_bucket_utc'))
+        except Exception:
+            minute_bucket = int(int(row.get('recorded_utc_ms') or 0) // 60_000)
+
+        used_raw = row.get('used_weight_1m')
+        if used_raw is not None:
+            try:
+                used_value = int(used_raw)
+            except Exception:
+                used_value = None
+            if used_value is not None:
+                minute_weight_max[minute_bucket] = max(int(minute_weight_max.get(minute_bucket, 0)), used_value)
+                latest_used_weight_1m = used_value
+                latest_observed_bj = str(row.get('observed_bj') or '')
+                latest_source = source
+
+        delta_raw = row.get('used_weight_1m_delta')
+        if delta_raw is not None:
+            try:
+                minute_delta_sum[minute_bucket] = int(minute_delta_sum.get(minute_bucket, 0)) + max(0, int(delta_raw))
+            except Exception:
+                pass
+
+        try:
+            order_count_10s_max = max(order_count_10s_max, int(row.get('order_count_10s') or 0))
+        except Exception:
+            pass
+        try:
+            order_count_1m_max = max(order_count_1m_max, int(row.get('order_count_1m') or 0))
+        except Exception:
+            pass
+
+    def _top_counts(data: dict[str, int], limit: int = 8) -> list[dict[str, Any]]:
+        return [
+            {'key': key, 'count': int(count)}
+            for key, count in sorted(data.items(), key=lambda item: (-int(item[1]), str(item[0])))[:limit]
+        ]
+
+    minute_weights = list(minute_weight_max.values())
+    delta_values = list(minute_delta_sum.values())
+    return {
+        'schema_version': 1,
+        'window_minutes': int(window_mins),
+        'start_utc_ms': int(start_ms),
+        'start_bj': _fmt_bj_from_ms(int(start_ms)),
+        'end_utc_ms': int(current_ms),
+        'end_bj': _fmt_bj_from_ms(int(current_ms)),
+        'request_count': int(request_count),
+        'ok_count': int(status_counts.get('ok', 0)),
+        'error_count': int(status_counts.get('error', 0)),
+        'rejected_by_gateway_count': int(status_counts.get('rejected_by_gateway', 0)),
+        'status_counts': dict(sorted(status_counts.items())),
+        'priority_counts': dict(sorted(priority_counts.items())),
+        'method_counts_top': _top_counts(method_counts),
+        'endpoint_counts_top': _top_counts(endpoint_counts),
+        'source_counts_top': _top_counts(source_counts),
+        'observed_minute_count': int(len(minute_weight_max)),
+        'used_weight_1m_total_by_minute_max': int(sum(minute_weights)),
+        'used_weight_1m_peak': int(max(minute_weights)) if minute_weights else 0,
+        'used_weight_1m_delta_sum_observed': int(sum(delta_values)),
+        'latest_used_weight_1m': latest_used_weight_1m,
+        'latest_observed_bj': latest_observed_bj,
+        'latest_source': latest_source,
+        'order_count_10s_max': int(order_count_10s_max),
+        'order_count_1m_max': int(order_count_1m_max),
+    }
+
+
 def read_binance_rest_quota_state() -> dict[str, Any] | None:
     return _read_json_dict(_quota_state_path())
 

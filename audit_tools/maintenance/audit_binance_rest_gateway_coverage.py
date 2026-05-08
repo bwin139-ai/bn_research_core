@@ -11,13 +11,16 @@ from pathlib import Path
 
 GATEWAY_PATH = "core/live/binance_rest_gateway.py"
 CLIENT_PATH = "core/live/binance_client.py"
+AUDIT_PATH = "audit_tools/maintenance/audit_binance_rest_gateway_coverage.py"
 
 ALLOWED_BINANCE_HOST_REFERENCES = {
+    AUDIT_PATH,
     GATEWAY_PATH,
     "strategies/klines_1m_store.py",
 }
 
 ALLOWED_BINANCE_CLIENT_ACCESS = {
+    AUDIT_PATH,
     GATEWAY_PATH,
     CLIENT_PATH,
 }
@@ -121,7 +124,7 @@ def audit_file(root: Path, path: Path) -> list[Finding]:
                 ".get(url",
             )
         )
-        if direct_http and file_has_binance_host and rel != GATEWAY_PATH:
+        if direct_http and file_has_binance_host and rel not in {AUDIT_PATH, GATEWAY_PATH}:
             findings.append(
                 Finding(
                     kind="direct_binance_http_call",
@@ -156,7 +159,7 @@ def audit_file(root: Path, path: Path) -> list[Finding]:
                 )
             )
 
-        if "_request_futures_api" in line and rel != GATEWAY_PATH:
+        if "_request_futures_api" in line and rel not in {AUDIT_PATH, GATEWAY_PATH}:
             findings.append(
                 Finding(
                     kind="raw_python_binance_request",

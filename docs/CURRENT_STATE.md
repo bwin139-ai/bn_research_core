@@ -718,6 +718,11 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 扫描直接 Binance host 引用、直接 `requests/session` Binance HTTP 调用、绕过 Gateway 获取 `get_client/load_account_secrets`、直接 `_request_futures_api`、直接 `client.futures_*` 调用。
     - 当前允许 Gateway 自身、`core/live/binance_client.py` 的 client 构造、`strategies/klines_1m_store.py` 的 `BASE_URL` 常量。
     - 2026-05-09 本地执行结果：`findings=0`。
+18. 废除 DataHub 局部 `binance_rest_quota 30轮统计` 推送，改为 Gateway usage ledger 真实用量汇总：
+    - 新增 `read_binance_rest_usage_summary()`，从 `output/shared_market/binance_rest_usage/YYYY-MM-DD/binance_rest_usage.jsonl` 聚合窗口内所有 Gateway consumer 请求。
+    - 窗口真实 weight 口径为每个 UTC minute bucket 的 `max(used_weight_1m)`，再对窗口内 minute 求和；同时输出 `request_count`、`ok/error/rejected_by_gateway`、`priority_counts`、`peak_1m`、`latest_1m`、order count 峰值。
+    - `market_data_hub_runner.py` 不再发送 `[DataHub] binance_rest_quota 30轮统计`；新推送为 `[Gateway] Binance REST usage {N}m`。
+    - 本地 180m ledger smoke 成功：可聚合 request/priority/weight 峰值；该口径来自 Gateway usage ledger，不再是 DataHub 对 latest quota snapshot 的局部采样。
 
 当前边界：
 
@@ -729,7 +734,7 @@ TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed R
 
 当前 pending：
 
-1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
+1. 部署后观察 `[Gateway] Binance REST usage 30m` 推送是否覆盖所有 live/data_hub/bn_sync/klines consumer。
 2. `tools/bn_sync` 当前通过 `binance_exec.py` 间接接入 Gateway；后续若新增直接 Binance REST 请求，默认按 `LOW` 或 `NORMAL` 分类。
 3. 后续可把 `audit_tools/maintenance/audit_binance_rest_gateway_coverage.py` 纳入常规 pre-deploy / CI 检查。
 

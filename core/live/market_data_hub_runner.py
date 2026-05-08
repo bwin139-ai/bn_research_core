@@ -19,7 +19,7 @@ from core.live.audit_log import append_stage_record, write_event
 from core.live.market_data import (
     list_candidate_symbols,
 )
-from core.live.rate_limit_guard import read_binance_rest_quota_state
+from core.live.rate_limit_guard import read_binance_rest_usage_summary
 from core.live.market_data_hub_store import (
     write_shared_current_pickle,
     write_shared_current_snapshot,
@@ -37,8 +37,8 @@ _MARKET_TOTAL_24H_VOL_STATS_WINDOW = 30
 _MARKET_TOTAL_24H_VOL_ROLLING: dict[str, list[dict[str, Any]]] = {}
 _FINALIZE_QUALITY_STATS_WINDOW = 30
 _FINALIZE_QUALITY_ROLLING: dict[str, list[dict[str, Any]]] = {}
-_BINANCE_REST_QUOTA_STATS_WINDOW = 30
-_BINANCE_REST_QUOTA_ROLLING: dict[str, list[dict[str, Any]]] = {}
+_BINANCE_REST_USAGE_STATS_WINDOW = 30
+_BINANCE_REST_USAGE_ROLLING: dict[str, list[dict[str, Any]]] = {}
 
 
 def _extract_binance_ban_until_utc_ms(exc: Exception) -> int | None:
@@ -423,7 +423,7 @@ def _record_finalize_quality_sample(
     _notify(bool(notify_enabled), msg)
 
 
-def _record_binance_rest_quota_sample(
+def _record_binance_rest_usage_sample(
     account: str,
     *,
     notify_enabled: bool,
@@ -433,43 +433,26 @@ def _record_binance_rest_quota_sample(
     c_bar_ts: int,
     c_bar_bj: str,
 ) -> None:
-    quota = read_binance_rest_quota_state()
-    if not isinstance(quota, dict):
-        return
     account_key = str(account).strip() or 'unknown'
     sample = {
         'bar_ts': int(current_time_ms),
         'bar_bj': str(current_time_bj),
         'c_bar_ts': int(c_bar_ts),
         'c_bar_bj': str(c_bar_bj),
-        'used_weight_1m': int(quota.get('used_weight_1m') or 0),
-        'used_weight_1m_delta': int(quota.get('used_weight_1m_delta') or 0),
-        'order_count_10s': int(quota.get('order_count_10s') or 0),
-        'order_count_1m': int(quota.get('order_count_1m') or 0),
-        'guard_sleep_count_total': int(quota.get('guard_sleep_count_total') or 0),
-        'guard_sleep_secs_total': float(quota.get('guard_sleep_secs_total') or 0.0),
-        'ban_count_total': int(quota.get('ban_count_total') or 0),
-        'weight_limit_1m': int(quota.get('weight_limit_1m') or 0),
-        'weight_guard_threshold_1m': int(quota.get('weight_guard_threshold_1m') or 0),
-        'source': str(quota.get('source') or ''),
-        'observed_bj': str(quota.get('observed_bj') or ''),
     }
-    bucket = _BINANCE_REST_QUOTA_ROLLING.setdefault(account_key, [])
+    bucket = _BINANCE_REST_USAGE_ROLLING.setdefault(account_key, [])
     bucket.append(sample)
-    if len(bucket) < _BINANCE_REST_QUOTA_STATS_WINDOW:
+    if len(bucket) < _BINANCE_REST_USAGE_STATS_WINDOW:
         return
 
-    window = bucket[:_BINANCE_REST_QUOTA_STATS_WINDOW]
-    del bucket[:_BINANCE_REST_QUOTA_STATS_WINDOW]
+    window = bucket[:_BINANCE_REST_USAGE_STATS_WINDOW]
+    del bucket[:_BINANCE_REST_USAGE_STATS_WINDOW]
 
-    weight_values = [int(x['used_weight_1m']) for x in window]
-    delta_values = [int(x['used_weight_1m_delta']) for x in window]
-    order_10s_values = [int(x['order_count_10s']) for x in window]
-    order_1m_values = [int(x['order_count_1m']) for x in window]
-    sleep_count_delta = int(window[-1]['guard_sleep_count_total']) - int(window[0]['guard_sleep_count_total'])
-    sleep_secs_delta = float(window[-1]['guard_sleep_secs_total']) - float(window[0]['guard_sleep_secs_total'])
-    ban_count_delta = int(window[-1]['ban_count_total']) - int(window[0]['ban_count_total'])
-    payload = {
+    summary = read_binance_rest_usage_summary(window_minutes=_BINANCE_REST_USAGE_STATS_WINDOW)
+    if not isinstance(summary, dict):
+        return
+    payload = dict(summary)
+    payload.update({
         'account': account_key,
         'window_rounds': int(len(window)),
         'first_bar_ts': int(window[0]['bar_ts']),
@@ -480,40 +463,27 @@ def _record_binance_rest_quota_sample(
         'first_c_bar_bj': str(window[0]['c_bar_bj']),
         'last_c_bar_ts': int(window[-1]['c_bar_ts']),
         'last_c_bar_bj': str(window[-1]['c_bar_bj']),
-        'used_weight_1m_min_observed': int(min(weight_values)) if weight_values else 0,
-        'used_weight_1m_max_observed': int(max(weight_values)) if weight_values else 0,
-        'used_weight_1m_avg_observed': float(sum(weight_values) / float(len(weight_values))) if weight_values else 0.0,
-        'used_weight_1m_delta_max_observed': int(max(delta_values)) if delta_values else 0,
-        'order_count_10s_max_observed': int(max(order_10s_values)) if order_10s_values else 0,
-        'order_count_1m_max_observed': int(max(order_1m_values)) if order_1m_values else 0,
-        'guard_sleep_count_delta': int(max(0, sleep_count_delta)),
-        'guard_sleep_secs_delta': float(max(0.0, sleep_secs_delta)),
-        'ban_count_delta': int(max(0, ban_count_delta)),
-        'weight_limit_1m': int(window[-1]['weight_limit_1m']),
-        'weight_guard_threshold_1m': int(window[-1]['weight_guard_threshold_1m']),
-        'last_source': str(window[-1]['source']),
-        'last_observed_bj': str(window[-1]['observed_bj']),
-    }
+    })
 
     if audit_enabled:
-        _write_stage_record(account_key, 'binance_rest_quota_stats', payload)
+        _write_stage_record(account_key, 'binance_rest_gateway_usage_stats', payload)
 
     body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
-    logging.info('[binance_rest_quota_stats] %s', body)
+    logging.info('[binance_rest_gateway_usage_stats] %s', body)
 
     msg = (
-        f'[DataHub] binance_rest_quota 30轮统计 | account={account_key} | '
-        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
-        f'used_weight_1m(min/max/avg)='
-        f'{int(payload["used_weight_1m_min_observed"])}/'
-        f'{int(payload["used_weight_1m_max_observed"])}/'
-        f'{float(payload["used_weight_1m_avg_observed"]):.1f} | '
-        f'used_delta_max={int(payload["used_weight_1m_delta_max_observed"])} | '
-        f'order10s_max={int(payload["order_count_10s_max_observed"])} | '
-        f'order1m_max={int(payload["order_count_1m_max_observed"])} | '
-        f'guard_sleep_count={int(payload["guard_sleep_count_delta"])} | '
-        f'guard_sleep_secs={float(payload["guard_sleep_secs_delta"]):.1f} | '
-        f'ban_count={int(payload["ban_count_delta"])}'
+        f'[Gateway] Binance REST usage {int(payload["window_minutes"])}m | '
+        f'window={payload["start_bj"]} ~ {payload["end_bj"]} | '
+        f'requests={int(payload["request_count"])} '
+        f'ok/error/reject='
+        f'{int(payload["ok_count"])}/'
+        f'{int(payload["error_count"])}/'
+        f'{int(payload["rejected_by_gateway_count"])} | '
+        f'weight_total={int(payload["used_weight_1m_total_by_minute_max"])} | '
+        f'peak_1m={int(payload["used_weight_1m_peak"])} | '
+        f'latest_1m={payload["latest_used_weight_1m"] if payload["latest_used_weight_1m"] is not None else "NA"} | '
+        f'order10s/1m_max={int(payload["order_count_10s_max"])}/{int(payload["order_count_1m_max"])} | '
+        f'priority={_json_safe_dumps(payload["priority_counts"], sort_keys=True, separators=(",", ":"))}'
     )
     _notify(bool(notify_enabled), msg)
 
@@ -657,7 +627,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
     except Exception as e:
         logging.warning('[market_total_24h_vol_stats] record_failed | account=%s | reason=%s', account, e)
     try:
-        _record_binance_rest_quota_sample(
+        _record_binance_rest_usage_sample(
             account,
             notify_enabled=notify_enabled,
             audit_enabled=audit_enabled,
@@ -667,7 +637,7 @@ def _run_account_once(hub_cfg: dict[str, Any]) -> None:
             c_bar_bj=latest_closed_bar_bj,
         )
     except Exception as e:
-        logging.warning('[binance_rest_quota_stats] record_failed | account=%s | reason=%s', account, e)
+        logging.warning('[binance_rest_gateway_usage_stats] record_failed | account=%s | reason=%s', account, e)
     prefilter_source = 'futures_ticker_live'
     symbol_24h_quote_volume_map = dict(market_snapshot.get('symbol_24h_quote_volume_api') or {})
     finalize_symbols = _prefilter_symbols_by_quote_volume(
