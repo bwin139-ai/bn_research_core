@@ -84,6 +84,18 @@ def _extract_header_int(headers: Any, name: str) -> int | None:
     return None
 
 
+def _nonnegative_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -227,7 +239,7 @@ def read_binance_rest_usage_summary(
                 used_value = int(used_raw)
             except Exception:
                 used_value = None
-            if used_value is not None:
+            if used_value is not None and used_value >= 0:
                 minute_weight_max[minute_bucket] = max(int(minute_weight_max.get(minute_bucket, 0)), used_value)
                 latest_used_weight_1m = used_value
                 latest_observed_bj = str(row.get('observed_bj') or '')
@@ -300,9 +312,9 @@ def record_binance_rest_quota(
     endpoint: str | None = None,
     request_status: str = 'ok',
 ) -> dict[str, Any] | None:
-    used_weight_1m = _extract_header_int(headers, 'X-MBX-USED-WEIGHT-1M')
-    order_count_10s = _extract_header_int(headers, 'X-MBX-ORDER-COUNT-10S')
-    order_count_1m = _extract_header_int(headers, 'X-MBX-ORDER-COUNT-1M')
+    used_weight_1m = _nonnegative_int(_extract_header_int(headers, 'X-MBX-USED-WEIGHT-1M'))
+    order_count_10s = _nonnegative_int(_extract_header_int(headers, 'X-MBX-ORDER-COUNT-10S'))
+    order_count_1m = _nonnegative_int(_extract_header_int(headers, 'X-MBX-ORDER-COUNT-1M'))
     if used_weight_1m is None and order_count_10s is None and order_count_1m is None:
         return None
 
@@ -310,8 +322,8 @@ def record_binance_rest_quota(
     observed_ms = int(server_time_utc_ms) if server_time_utc_ms is not None else now_ms
     minute_bucket_utc = int(observed_ms // 60000)
     prev = read_binance_rest_quota_state() or {}
-    prev_used_weight_1m = prev.get('used_weight_1m')
-    prev_minute_bucket_utc = prev.get('minute_bucket_utc')
+    prev_used_weight_1m = _nonnegative_int(prev.get('used_weight_1m'))
+    prev_minute_bucket_utc = _nonnegative_int(prev.get('minute_bucket_utc'))
     used_weight_1m_delta = None
     if (
         used_weight_1m is not None
@@ -322,6 +334,9 @@ def record_binance_rest_quota(
             used_weight_1m_delta = max(0, int(used_weight_1m) - int(prev_used_weight_1m))
         except Exception:
             used_weight_1m_delta = None
+    state_used_weight_1m = used_weight_1m
+    if state_used_weight_1m is None and prev_minute_bucket_utc == minute_bucket_utc:
+        state_used_weight_1m = prev_used_weight_1m
 
     payload = {
         'schema_version': 1,
@@ -331,7 +346,7 @@ def record_binance_rest_quota(
         'observed_utc_ms': int(observed_ms),
         'observed_bj': _fmt_bj_from_ms(int(observed_ms)),
         'minute_bucket_utc': int(minute_bucket_utc),
-        'used_weight_1m': int(used_weight_1m) if used_weight_1m is not None else None,
+        'used_weight_1m': int(state_used_weight_1m) if state_used_weight_1m is not None else None,
         'used_weight_1m_delta': int(used_weight_1m_delta) if used_weight_1m_delta is not None else None,
         'order_count_10s': int(order_count_10s) if order_count_10s is not None else None,
         'order_count_1m': int(order_count_1m) if order_count_1m is not None else None,

@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-08
+更新时间：2026-05-09
 
 ## 0. 文档定位
 
@@ -723,6 +723,7 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 窗口真实 weight 口径为每个 UTC minute bucket 的 `max(used_weight_1m)`，再对窗口内 minute 求和；同时输出 `request_count`、`ok/error/rejected_by_gateway`、`priority_counts`、`peak_1m`、`latest_1m`、order count 峰值。
     - `market_data_hub_runner.py` 不再发送 `[DataHub] binance_rest_quota 30轮统计`；新推送为 `[Gateway] Binance REST usage {N}m`。
     - 本地 180m ledger smoke 成功：可聚合 request/priority/weight 峰值；该口径来自 Gateway usage ledger，不再是 DataHub 对 latest quota snapshot 的局部采样。
+19. 2026-05-09 部署后服务器 smoke 发现订单类 REST 响应可能带出 `used_weight_1m=-1`，会污染 Gateway latest/delta 记账。已在 `core/live/rate_limit_guard.py` 增加非负 weight 护栏：usage summary 忽略负数 weight；quota snapshot 遇到同一分钟无有效 weight 但有 order-count 的响应时保留上一条有效 weight，避免分级 gate 失去最近总用量事实。
 
 当前边界：
 
