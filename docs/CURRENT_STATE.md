@@ -713,6 +713,11 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 本刀保留 `klines_1m_store.py` 原有 418 ban 记录、429 退避、400 index price 静态错误处理、parquet/state 写入语义。
 16. 2026-05-09 00:31 BJ，本地已用真实 Binance 连接完成 `klines_1m_store.py` Gateway smoke：
     `exchangeInfo` 成功返回 720 个 symbols，并以 `NORMAL/ok` 写入 usage ledger；`XAUUSDT` contract klines limit=2 成功返回 2 行，并以 `LOW/ok` 写入 usage ledger。
+17. 新增 Binance REST Gateway coverage 审计护栏：
+    - 脚本：`audit_tools/maintenance/audit_binance_rest_gateway_coverage.py`
+    - 扫描直接 Binance host 引用、直接 `requests/session` Binance HTTP 调用、绕过 Gateway 获取 `get_client/load_account_secrets`、直接 `_request_futures_api`、直接 `client.futures_*` 调用。
+    - 当前允许 Gateway 自身、`core/live/binance_client.py` 的 client 构造、`strategies/klines_1m_store.py` 的 `BASE_URL` 常量。
+    - 2026-05-09 本地执行结果：`findings=0`。
 
 当前边界：
 
@@ -726,7 +731,7 @@ TVR data_hub、行情层、执行层普通只读查询、执行层 algo signed R
 
 1. 观察 usage ledger 是否能覆盖现有已调用 `record_binance_rest_quota()` 的 live 请求路径。
 2. `tools/bn_sync` 当前通过 `binance_exec.py` 间接接入 Gateway；后续若新增直接 Binance REST 请求，默认按 `LOW` 或 `NORMAL` 分类。
-3. 后续可增加脚本级审计，扫描新增 Binance REST 调用是否绕过 Gateway。
+3. 后续可把 `audit_tools/maintenance/audit_binance_rest_gateway_coverage.py` 纳入常规 pre-deploy / CI 检查。
 
 ### 3.9 audit tools / 目录治理
 
