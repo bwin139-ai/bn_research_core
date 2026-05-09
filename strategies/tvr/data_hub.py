@@ -1168,7 +1168,6 @@ def main() -> None:
             len(summary["paths"]),
         )
         include_funding_history = False
-        include_price_history = False
         if args.once:
             break
         if int(args.max_iterations) > 0 and iteration >= int(args.max_iterations):

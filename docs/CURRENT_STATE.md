@@ -646,7 +646,7 @@ TVR 后续交易端必须继续遵守 LONG-only、maker-only、funding_rate_entr
 
 当前 pending：
 
-1. 后续可在服务器常驻启动 TVR data_hub loop；price history 已按 cursor state 增量补齐，不应每次启动重拉完整决策窗口。
+1. 后续可在服务器常驻启动 TVR data_hub loop；price history sync 在 loop 中持续开启，并按 cursor state 增量补齐，不应每次启动重拉完整决策窗口。
 2. 若 Binance exchangeInfo 的 TradFi 分类字段继续变化，先以落盘事实修正 TVR universe 识别语义，不得硬编码品种兜底。
 3. 长期运行 TVR data_hub 积累 funding / price_24h / rolling stats 后，再人工确定 `entry_drop_pct`、`funding_rate_entry_max` 与 TVR live 交易端参数。
 4. 2026-05-09 已完成 TVR data_hub 工程化改造：price history 从研究型全量 bootstrap 改为 raw parquet store + per-symbol cursor + Gateway retry/backoff + decision window stats + archive 分流。
