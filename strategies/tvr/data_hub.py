@@ -14,11 +14,18 @@ from typing import Any, Iterable, Mapping
 
 from filelock import FileLock
 
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except Exception as e:
+    raise SystemExit("Missing dependency: pyarrow. Install with: pip install -U pyarrow") from e
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.live.binance_rest_gateway import (
+    BinanceRestGatewayRejected,
     REQUEST_PRIORITY_LOW,
     REQUEST_PRIORITY_NORMAL,
     call_client_method,
@@ -28,6 +35,19 @@ from core.runtime_state import get_state_dir
 
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
+DAY_MS = 24 * 60 * 60_000
+
+PRICE_HISTORY_RAW_SCHEMA = pa.schema(
+    [
+        ("open_time_ms", pa.int64()),
+        ("open", pa.float64()),
+        ("high", pa.float64()),
+        ("low", pa.float64()),
+        ("close", pa.float64()),
+        ("quote_asset_volume", pa.float64()),
+        ("close_time_ms", pa.int64()),
+    ]
+)
 
 
 def setup_logging() -> None:
@@ -85,12 +105,39 @@ def _append_jsonl(path: Path, record: Mapping[str, Any]) -> Path:
     return path
 
 
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp_path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, default=_json_default) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def _stream_path(stream: str, *, day_bj: str | None = None) -> Path:
     stream_key = str(stream).strip()
     if not stream_key:
         raise ValueError("stream must not be empty")
     day_key = str(day_bj or "").strip() or _bj_day_from_ms(None)
     return get_state_dir() / "live_audit" / "tvr" / "data_hub" / stream_key / day_key / f"tradfi_{stream_key}.jsonl"
+
+
+def _data_hub_dir() -> Path:
+    return get_state_dir() / "live_audit" / "tvr" / "data_hub"
+
+
+def _price_history_state_path() -> Path:
+    return _data_hub_dir() / "price_history_state.json"
+
+
+def _price_history_raw_path(symbol: str, month_key: str, *, archived: bool = False) -> Path:
+    symbol_key = str(symbol).upper().strip()
+    if not symbol_key:
+        raise ValueError("symbol must not be empty")
+    month = str(month_key).strip()
+    if not month:
+        raise ValueError("month_key must not be empty")
+    if archived:
+        return _data_hub_dir() / "archive" / "price_history" / "raw" / symbol_key / f"{month}.parquet"
+    return _data_hub_dir() / "price_history" / "raw" / symbol_key / f"{month}.parquet"
 
 
 def _base_record(run_id: str, event: str) -> dict[str, Any]:
@@ -196,7 +243,7 @@ def load_config(path: str) -> dict[str, Any]:
         "collection": {
             "interval_secs": _require_positive_int(collection, path, "interval_secs"),
             "funding_history_bootstrap_enabled": _require_bool(collection, path, "funding_history_bootstrap_enabled"),
-            "price_history_bootstrap_enabled": _require_bool(collection, path, "price_history_bootstrap_enabled"),
+            "price_history_sync_enabled": _require_bool(collection, path, "price_history_sync_enabled"),
         },
         "funding_history": {
             "lookback_days": _require_positive_int(funding_history, path, "lookback_days"),
@@ -204,15 +251,23 @@ def load_config(path: str) -> dict[str, Any]:
         },
         "price_history": {
             "interval": _require_non_empty_str(price_history, path, "interval"),
-            "lookback_days": _require_positive_int(price_history, path, "lookback_days"),
+            "decision_window_days": _require_positive_int(price_history, path, "decision_window_days"),
             "minimum_history_days": _require_positive_int(price_history, path, "minimum_history_days"),
             "rolling_window_hours": _require_positive_int(price_history, path, "rolling_window_hours"),
+            "initial_sync_lookback_days": _require_positive_int(price_history, path, "initial_sync_lookback_days"),
+            "stable_lag_minutes": _require_positive_int(price_history, path, "stable_lag_minutes"),
+            "archive_enabled": _require_bool(price_history, path, "archive_enabled"),
+            "archive_after_days": _require_positive_int(price_history, path, "archive_after_days"),
             "kline_limit": _require_positive_int(price_history, path, "kline_limit"),
             "max_symbols_per_run": _require_non_negative_int(price_history, path, "max_symbols_per_run"),
         },
     }
-    if int(out["price_history"]["lookback_days"]) < int(out["price_history"]["minimum_history_days"]):
-        raise ValueError(f"TVR price_history lookback_days must cover minimum_history_days | {path}")
+    if int(out["price_history"]["decision_window_days"]) < int(out["price_history"]["minimum_history_days"]):
+        raise ValueError(f"TVR price_history decision_window_days must cover minimum_history_days | {path}")
+    if int(out["price_history"]["initial_sync_lookback_days"]) < int(out["price_history"]["minimum_history_days"]):
+        raise ValueError(f"TVR price_history initial_sync_lookback_days must cover minimum_history_days | {path}")
+    if int(out["price_history"]["archive_after_days"]) < int(out["price_history"]["decision_window_days"]):
+        raise ValueError(f"TVR price_history archive_after_days must be >= decision_window_days | {path}")
     if int(out["funding_history"]["limit"]) > 1000:
         raise ValueError(f"TVR funding_history limit must be <= 1000 | {path}")
     if int(out["price_history"]["kline_limit"]) > 1500:
@@ -228,12 +283,15 @@ def _call_client(
     priority: str = REQUEST_PRIORITY_NORMAL,
     **params: Any,
 ) -> Any:
-    return call_client_method(
-        account,
+    return _call_with_gateway_retry(
+        lambda: call_client_method(
+            account,
+            source=source,
+            method_name=method_name,
+            priority=priority,
+            **params,
+        ),
         source=source,
-        method_name=method_name,
-        priority=priority,
-        **params,
     )
 
 
@@ -245,13 +303,45 @@ def _futures_public_get(
     *,
     priority: str = REQUEST_PRIORITY_NORMAL,
 ) -> Any:
-    return call_futures_public(
-        account,
+    return _call_with_gateway_retry(
+        lambda: call_futures_public(
+            account,
+            source=source,
+            endpoint=endpoint,
+            params=params,
+            priority=priority,
+        ),
         source=source,
-        endpoint=endpoint,
-        params=params,
-        priority=priority,
     )
+
+
+def _sleep_after_gateway_reject(exc: BinanceRestGatewayRejected, attempt: int) -> float:
+    if str(exc.code).endswith("_QUOTA_CLOSED"):
+        now_ms = _now_utc_ms()
+        next_minute_ms = int((now_ms // 60_000 + 1) * 60_000)
+        return max(1.0, (next_minute_ms - now_ms) / 1000.0 + 1.0)
+    return min(60.0, float(2 ** max(0, int(attempt) - 1)))
+
+
+def _call_with_gateway_retry(callable_obj, *, source: str, max_attempts: int = 8) -> Any:
+    for attempt in range(1, int(max_attempts) + 1):
+        try:
+            return callable_obj()
+        except BinanceRestGatewayRejected as exc:
+            if attempt >= int(max_attempts):
+                raise
+            sleep_s = _sleep_after_gateway_reject(exc, attempt)
+            logging.warning(
+                "TVR REST Gateway rejected | source=%s | attempt=%s/%s | code=%s | used=%s | threshold=%s | sleep=%.1fs",
+                source,
+                attempt,
+                max_attempts,
+                exc.code,
+                exc.used_weight_1m,
+                exc.threshold,
+                sleep_s,
+            )
+            time.sleep(float(sleep_s))
 
 
 def _as_float(value: Any) -> float | None:
@@ -533,6 +623,174 @@ def _fetch_klines_history(
     return [deduped[k] for k in sorted(deduped)]
 
 
+def _month_key_from_ms(ts_ms: int) -> str:
+    dt = datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc)
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def _rows_to_price_table(rows: Iterable[Mapping[str, Any]]) -> pa.Table:
+    ordered = sorted((dict(row) for row in rows), key=lambda x: int(x["open_time_ms"]))
+    return pa.Table.from_arrays(
+        [
+            pa.array([int(row["open_time_ms"]) for row in ordered], type=pa.int64()),
+            pa.array([float(row["open"]) for row in ordered], type=pa.float64()),
+            pa.array([float(row["high"]) for row in ordered], type=pa.float64()),
+            pa.array([float(row["low"]) for row in ordered], type=pa.float64()),
+            pa.array([float(row["close"]) for row in ordered], type=pa.float64()),
+            pa.array([float(row["quote_asset_volume"]) for row in ordered], type=pa.float64()),
+            pa.array([int(row["close_time_ms"]) for row in ordered], type=pa.int64()),
+        ],
+        schema=PRICE_HISTORY_RAW_SCHEMA,
+    )
+
+
+def _kline_to_price_row(row: list[Any]) -> dict[str, Any] | None:
+    open_time = _as_int(row[0] if len(row) > 0 else None)
+    open_price = _as_float(row[1] if len(row) > 1 else None)
+    high = _as_float(row[2] if len(row) > 2 else None)
+    low = _as_float(row[3] if len(row) > 3 else None)
+    close = _as_float(row[4] if len(row) > 4 else None)
+    quote_volume = _as_float(row[7] if len(row) > 7 else 0.0)
+    close_time = _as_int(row[6] if len(row) > 6 else None)
+    if open_time is None or open_price is None or high is None or low is None or close is None:
+        return None
+    return {
+        "open_time_ms": int(open_time),
+        "open": float(open_price),
+        "high": float(high),
+        "low": float(low),
+        "close": float(close),
+        "quote_asset_volume": float(quote_volume or 0.0),
+        "close_time_ms": int(close_time if close_time is not None else open_time + 59_999),
+    }
+
+
+def _read_price_parquet_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    table = pq.read_table(path, columns=PRICE_HISTORY_RAW_SCHEMA.names)
+    cols = {name: table.column(name).to_pylist() for name in PRICE_HISTORY_RAW_SCHEMA.names}
+    out: list[dict[str, Any]] = []
+    for i in range(table.num_rows):
+        out.append({name: cols[name][i] for name in PRICE_HISTORY_RAW_SCHEMA.names})
+    return out
+
+
+def _merge_write_price_parquet(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
+    incoming = {int(row["open_time_ms"]): dict(row) for row in rows}
+    if not incoming and not path.exists():
+        return 0
+    merged = {int(row["open_time_ms"]): row for row in _read_price_parquet_rows(path)}
+    merged.update(incoming)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = _rows_to_price_table(merged.values())
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    pq.write_table(table, tmp_path, compression="zstd")
+    os.replace(tmp_path, path)
+    return int(table.num_rows)
+
+
+def _replace_write_price_parquet(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
+    row_list = [dict(row) for row in rows]
+    if not row_list:
+        if path.exists():
+            path.unlink()
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = _rows_to_price_table(row_list)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    pq.write_table(table, tmp_path, compression="zstd")
+    os.replace(tmp_path, path)
+    return int(table.num_rows)
+
+
+def _write_price_history_rows(symbol: str, rows: Iterable[list[Any]], *, archive_cutoff_ms: int, archive_enabled: bool) -> int:
+    grouped: dict[tuple[bool, str], list[dict[str, Any]]] = {}
+    for raw in rows:
+        price_row = _kline_to_price_row(list(raw))
+        if price_row is None:
+            continue
+        archived = bool(archive_enabled and int(price_row["open_time_ms"]) < int(archive_cutoff_ms))
+        month_key = _month_key_from_ms(int(price_row["open_time_ms"]))
+        grouped.setdefault((archived, month_key), []).append(price_row)
+    written = 0
+    for (archived, month_key), month_rows in grouped.items():
+        _merge_write_price_parquet(_price_history_raw_path(symbol, month_key, archived=archived), month_rows)
+        written += len(month_rows)
+    return int(written)
+
+
+def _archive_old_price_history(symbol: str, *, archive_cutoff_ms: int, archive_enabled: bool) -> None:
+    if not archive_enabled:
+        return
+    raw_dir = _data_hub_dir() / "price_history" / "raw" / str(symbol).upper().strip()
+    if not raw_dir.exists():
+        return
+    for path in sorted(raw_dir.glob("*.parquet")):
+        rows = _read_price_parquet_rows(path)
+        keep_rows = [row for row in rows if int(row["open_time_ms"]) >= int(archive_cutoff_ms)]
+        archive_rows = [row for row in rows if int(row["open_time_ms"]) < int(archive_cutoff_ms)]
+        if not archive_rows:
+            continue
+        month_key = path.stem
+        _merge_write_price_parquet(_price_history_raw_path(symbol, month_key, archived=True), archive_rows)
+        _replace_write_price_parquet(path, keep_rows)
+
+
+def _read_decision_price_history(symbol: str, *, start_ms: int, end_ms: int) -> list[list[Any]]:
+    raw_dir = _data_hub_dir() / "price_history" / "raw" / str(symbol).upper().strip()
+    if not raw_dir.exists():
+        return []
+    rows: dict[int, list[Any]] = {}
+    for path in sorted(raw_dir.glob("*.parquet")):
+        for row in _read_price_parquet_rows(path):
+            open_time = int(row["open_time_ms"])
+            if int(start_ms) <= open_time <= int(end_ms):
+                rows[open_time] = [
+                    open_time,
+                    float(row["open"]),
+                    float(row["high"]),
+                    float(row["low"]),
+                    float(row["close"]),
+                    0.0,
+                    int(row["close_time_ms"]),
+                    float(row["quote_asset_volume"]),
+                ]
+    return [rows[k] for k in sorted(rows)]
+
+
+def _load_price_history_state() -> dict[str, Any]:
+    path = _price_history_state_path()
+    if not path.exists():
+        return {"schema_version": 1, "strategy_name": STRATEGY_NAME, "per_symbol": {}}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"TVR price history state must be object: {path}")
+    if int(payload.get("schema_version", 0)) != 1:
+        raise ValueError(f"TVR price history state schema_version must be 1: {path}")
+    per_symbol = payload.get("per_symbol")
+    if not isinstance(per_symbol, dict):
+        raise TypeError(f"TVR price history state missing per_symbol object: {path}")
+    return payload
+
+
+def _save_price_history_state(state: Mapping[str, Any]) -> None:
+    _atomic_write_json(_price_history_state_path(), dict(state))
+
+
+def _update_price_history_state(state: dict[str, Any], symbol: str, last_open_time_ms: int, *, row_count: int) -> None:
+    state.setdefault("per_symbol", {})
+    state["per_symbol"][str(symbol).upper().strip()] = {
+        "last_open_time_ms": int(last_open_time_ms),
+        "last_open_time_bj": _fmt_bj_from_ms(int(last_open_time_ms)),
+        "row_count_last_increment": int(row_count),
+        "updated_utc_ms": _now_utc_ms(),
+        "updated_bj": _fmt_bj_from_ms(_now_utc_ms()),
+    }
+    state["updated_utc_ms"] = _now_utc_ms()
+    state["updated_bj"] = _fmt_bj_from_ms(_now_utc_ms())
+
+
 def _percentile(sorted_values: list[float], pct: float) -> float | None:
     if not sorted_values:
         return None
@@ -598,7 +856,7 @@ def _rolling_24h_stats(rows: list[list[Any]], *, interval: str, rolling_window_h
     }
 
 
-def _bootstrap_price_history(
+def _sync_price_history(
     *,
     account: str,
     run_id: str,
@@ -616,20 +874,54 @@ def _bootstrap_price_history(
     now_ms = _now_utc_ms()
     interval = str(price_cfg["interval"])
     step_ms = _interval_ms(interval)
-    end_ms = (now_ms // step_ms) * step_ms - step_ms
-    start_ms = end_ms - int(price_cfg["lookback_days"]) * 24 * 60 * 60_000
-    min_required_bars = int(price_cfg["minimum_history_days"]) * 24 * 60 * 60_000 // step_ms
+    end_ms = (now_ms // step_ms) * step_ms - int(price_cfg["stable_lag_minutes"]) * step_ms
+    if end_ms <= 0:
+        raise RuntimeError("TVR price history stable end is not positive")
+    decision_start_ms = end_ms - int(price_cfg["decision_window_days"]) * DAY_MS + step_ms
+    archive_cutoff_ms = end_ms - int(price_cfg["archive_after_days"]) * DAY_MS + step_ms
+    min_required_bars = int(price_cfg["minimum_history_days"]) * DAY_MS // step_ms
+    initial_sync_start_ms = end_ms - int(price_cfg["initial_sync_lookback_days"]) * DAY_MS + step_ms
+    price_state = _load_price_history_state()
 
     rows_out: list[dict[str, Any]] = []
     for symbol in symbol_list:
-        rows = _fetch_klines_history(
-            account,
+        state_row = dict((price_state.get("per_symbol") or {}).get(symbol) or {})
+        state_last_open_time = _as_int(state_row.get("last_open_time_ms"))
+        if state_last_open_time is None:
+            fetch_start_ms = int(initial_sync_start_ms)
+            fetch_mode = "initial_sync"
+        else:
+            fetch_start_ms = int(state_last_open_time) + step_ms
+            fetch_mode = "incremental"
+        fetched_rows: list[list[Any]] = []
+        written_rows = 0
+        if fetch_start_ms <= end_ms:
+            fetched_rows = _fetch_klines_history(
+                account,
+                symbol,
+                interval=interval,
+                start_ms=fetch_start_ms,
+                end_ms=end_ms,
+                limit=int(price_cfg["kline_limit"]),
+            )
+            written_rows = _write_price_history_rows(
+                symbol,
+                fetched_rows,
+                archive_cutoff_ms=archive_cutoff_ms,
+                archive_enabled=bool(price_cfg["archive_enabled"]),
+            )
+            if fetched_rows:
+                last_open = _as_int(fetched_rows[-1][0])
+                if last_open is None:
+                    raise ValueError(f"TVR price history fetched row missing open_time: {symbol}")
+                _update_price_history_state(price_state, symbol, int(last_open), row_count=written_rows)
+                _save_price_history_state(price_state)
+        _archive_old_price_history(
             symbol,
-            interval=interval,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            limit=int(price_cfg["kline_limit"]),
+            archive_cutoff_ms=archive_cutoff_ms,
+            archive_enabled=bool(price_cfg["archive_enabled"]),
         )
+        rows = _read_decision_price_history(symbol, start_ms=decision_start_ms, end_ms=end_ms)
         if len(rows) < min_required_bars:
             stats = {
                 "sample_count": 0,
@@ -657,8 +949,19 @@ def _bootstrap_price_history(
         rows_out.append({
             "symbol": symbol,
             "interval": interval,
-            "lookback_days": int(price_cfg["lookback_days"]),
+            "decision_window_days": int(price_cfg["decision_window_days"]),
             "minimum_history_days": int(price_cfg["minimum_history_days"]),
+            "initial_sync_lookback_days": int(price_cfg["initial_sync_lookback_days"]),
+            "archive_enabled": bool(price_cfg["archive_enabled"]),
+            "archive_after_days": int(price_cfg["archive_after_days"]),
+            "stable_lag_minutes": int(price_cfg["stable_lag_minutes"]),
+            "fetch_mode": fetch_mode,
+            "fetch_start_time": int(fetch_start_ms) if fetch_start_ms <= end_ms else None,
+            "fetch_start_time_bj": _fmt_bj_from_ms(int(fetch_start_ms) if fetch_start_ms <= end_ms else None),
+            "fetch_end_time": int(end_ms),
+            "fetch_end_time_bj": _fmt_bj_from_ms(int(end_ms)),
+            "fetched_kline_count": len(fetched_rows),
+            "written_raw_row_count": int(written_rows),
             "history_sufficient": bool(history_sufficient),
             "insufficiency_reason": insufficiency_reason,
             "first_open_time": _as_int(rows[0][0]) if rows else None,
@@ -669,8 +972,10 @@ def _bootstrap_price_history(
             "rolling_24h": stats,
         })
         logging.info(
-            "TVR rolling_24h stats | symbol=%s | rows=%s | sufficient=%s | samples=%s",
+            "TVR price history | symbol=%s | mode=%s | fetched=%s | decision_rows=%s | sufficient=%s | samples=%s",
             symbol,
+            fetch_mode,
+            len(fetched_rows),
             len(rows),
             history_sufficient,
             stats["sample_count"],
@@ -679,8 +984,12 @@ def _bootstrap_price_history(
     payload = {
         **_base_record(run_id, "tradfi_rolling_24h_stats"),
         "account": account,
-        "source": "fapi/v1/klines",
+        "source": "local_price_history_raw",
         "symbol_count": len(rows_out),
+        "decision_window_days": int(price_cfg["decision_window_days"]),
+        "rolling_window_hours": int(price_cfg["rolling_window_hours"]),
+        "archive_included": False,
+        "price_history_state_path": str(_price_history_state_path()),
         "rows": rows_out,
     }
     return _append_jsonl(_stream_path("rolling_24h_stats"), payload)
@@ -788,7 +1097,7 @@ def run_once(
             cfg=cfg,
         ))
     if include_price_history:
-        price_path = _bootstrap_price_history(
+        price_path = _sync_price_history(
             account=account,
             run_id=run_id,
             symbols=symbols,
@@ -815,13 +1124,13 @@ def _build_run_id(account: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TVR data_hub: collect TradFi live facts and bootstrap rolling 24h stats")
+    parser = argparse.ArgumentParser(description="TVR data_hub: collect TradFi live facts and sync rolling 24h stats")
     parser.add_argument("--config", default="strategies/tvr/config.data_hub.json")
     parser.add_argument("--once", action="store_true", help="run one collection iteration")
     parser.add_argument("--loop", action="store_true", help="run collection loop")
     parser.add_argument("--max-iterations", type=int, default=0, help="loop iteration cap; 0 means unlimited")
     parser.add_argument("--skip-funding-history-bootstrap", action="store_true")
-    parser.add_argument("--skip-price-history-bootstrap", action="store_true")
+    parser.add_argument("--skip-price-history-sync", action="store_true")
     return parser.parse_args()
 
 
@@ -833,7 +1142,7 @@ def main() -> None:
     cfg = load_config(args.config)
     run_id = _build_run_id(str(cfg["account"]))
     include_funding_history = bool(cfg["collection"]["funding_history_bootstrap_enabled"]) and not args.skip_funding_history_bootstrap
-    include_price_history = bool(cfg["collection"]["price_history_bootstrap_enabled"]) and not args.skip_price_history_bootstrap
+    include_price_history = bool(cfg["collection"]["price_history_sync_enabled"]) and not args.skip_price_history_sync
 
     iteration = 0
     while True:

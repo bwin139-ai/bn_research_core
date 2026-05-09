@@ -37,9 +37,10 @@
    - 历史 funding 只用于研究、审计和分布分析，不作为 live 入场门禁依赖。
 
 3. `rolling_24h`
-   - 允许读取历史 contract klines 计算 rolling 24h return 分布。
+   - 使用 TVR data_hub 自有的原始 1m contract kline store 计算 rolling 24h return 分布。
+   - 原始 1m price history 必须支持按 symbol cursor 增量补齐；TVR data_hub 启动时不得一刀切重拉完整决策窗口。
    - live 决策参数可以参考最近窗口统计，但第一版不让统计模块自动改写交易参数。
-   - 原始价格事实和统计结果必须落盘，供后续人工审计。
+   - 原始价格事实、cursor state、统计结果和超过决策窗口的历史归档必须落盘，供后续人工审计。
 
 ## 4. 入场门禁草案
 
@@ -68,9 +69,14 @@ current_price / price_24h_ago - 1
 第一版统计窗口：
 
 ```text
-lookback_days = 90
-minimum_history_days = 30
+decision_window_days = 30
+minimum_history_days = 14
+initial_sync_lookback_days = 30
+rolling_window_hours = 24
+archive_after_days = 30
 ```
+
+只有 `decision_window_days` 内的数据参与当前 rolling 24h 统计和后续 TVR live 入场阈值校准；archive 数据只用于人工复盘、研究和审计，不参与当下决策。
 
 统计项至少包含：
 
@@ -111,7 +117,8 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 1. 采集当前 TradFi universe snapshot。
 2. 采集当前 funding snapshot。
 3. 可选 bootstrap 历史 funding。
-4. 可选 bootstrap 历史 klines 并计算 rolling 24h 分布。
-5. 按 TVR 独立目录落盘 audit facts。
-6. 不下单，不写 live state，不影响现有三套策略。
+4. 增量补齐 TVR 自有原始 1m price history store，并计算 decision window 内 rolling 24h 分布。
+5. 超过 decision window 的原始 price history 可归入 archive，不参与 live 决策统计。
+6. 按 TVR 独立目录落盘 audit facts。
+7. 不下单，不写 live state，不影响现有三套策略。
 ```

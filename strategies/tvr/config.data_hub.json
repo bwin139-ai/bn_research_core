@@ -12,7 +12,7 @@
   "collection": {
     "interval_secs": 60,
     "funding_history_bootstrap_enabled": true,
-    "price_history_bootstrap_enabled": true
+    "price_history_sync_enabled": true
   },
   "funding_history": {
     "lookback_days": 90,
@@ -20,9 +20,13 @@
   },
   "price_history": {
     "interval": "1m",
-    "lookback_days": 90,
-    "minimum_history_days": 30,
+    "decision_window_days": 30,
+    "minimum_history_days": 14,
     "rolling_window_hours": 24,
+    "initial_sync_lookback_days": 30,
+    "stable_lag_minutes": 3,
+    "archive_enabled": true,
+    "archive_after_days": 30,
     "kline_limit": 1500,
     "max_symbols_per_run": 0
   }
