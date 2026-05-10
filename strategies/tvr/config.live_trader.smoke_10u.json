@@ -9,7 +9,8 @@
     "required_order_submission_enabled": false
   },
   "collection": {
-    "interval_secs": 2
+    "interval_secs": 2,
+    "active_decision_interval_secs": 300
   },
   "logging": {
     "summary_interval_secs": 3600

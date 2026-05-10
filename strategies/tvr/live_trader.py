@@ -54,7 +54,12 @@ STRATEGY_CODE = "TVR"
 POSITION_SIDE_LONG = "LONG"
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 REPRICE_RETRY_ORDER_STATUSES = {"EXPIRED", "REJECTED"}
-QUIET_ENTRY_ACTIONS = {"entry_skipped_local_active_symbol", "entry_blocked_max_open_trades"}
+QUIET_ENTRY_ACTIONS = {
+    "entry_skipped_local_active_symbol",
+    "entry_blocked_max_open_trades",
+    "entry_skipped_no_candidate_symbols",
+    "entry_skipped_active_decision_interval",
+}
 QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "pending_entry_wait"}
 IMPORTANT_ENTRY_ACTIONS = {
     "dry_run_entry",
@@ -80,6 +85,7 @@ _ITERATION_LOG_STATE = {
     "quiet_entry_events": 0,
     "decision_selected_total": 0,
 }
+_DECISION_THROTTLE_STATE = {"last_decision_utc_ms": 0}
 
 
 def setup_logging() -> None:
@@ -276,6 +282,7 @@ def load_config(path: str) -> dict[str, Any]:
         },
         "collection": {
             "interval_secs": _require_int(collection, path, "interval_secs", positive=True),
+            "active_decision_interval_secs": _require_int(collection, path, "active_decision_interval_secs", positive=True),
         },
         "logging": {
             "summary_interval_secs": _require_int(logging_cfg, path, "summary_interval_secs", positive=True),
@@ -1047,6 +1054,27 @@ def _selected_intents(decision: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _decision_cfg_for_candidate_symbols(decision_cfg: Mapping[str, Any], candidate_symbols: list[str]) -> dict[str, Any]:
+    if not candidate_symbols:
+        raise ValueError("candidate_symbols must not be empty")
+    out = dict(decision_cfg)
+    universe = dict(out.get("universe") or {})
+    risk = dict(out.get("risk") or {})
+    symbol_notional = dict(risk.get("symbol_notional_usdt") or {})
+    max_symbol_notional = dict(risk.get("max_symbol_notional_usdt") or {})
+    for symbol in candidate_symbols:
+        if symbol not in symbol_notional:
+            raise KeyError(f"TVR decision risk symbol_notional_usdt missing candidate symbol: {symbol}")
+        if symbol not in max_symbol_notional:
+            raise KeyError(f"TVR decision risk max_symbol_notional_usdt missing candidate symbol: {symbol}")
+    universe["tradable_symbols"] = list(candidate_symbols)
+    risk["symbol_notional_usdt"] = {symbol: symbol_notional[symbol] for symbol in candidate_symbols}
+    risk["max_symbol_notional_usdt"] = {symbol: max_symbol_notional[symbol] for symbol in candidate_symbols}
+    out["universe"] = universe
+    out["risk"] = risk
+    return out
+
+
 def _count_actions(events: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for event in events:
@@ -1118,20 +1146,47 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
     decision_cfg = load_decision_audit_config(str(cfg["decision_audit"]["config_path"]))
     if str(decision_cfg.get("account") or "").strip() != account:
         raise ValueError("TVR embedded decision config account mismatch")
-    decision_run_id = _build_decision_run_id(account)
-    decision = build_decision_audit(decision_cfg, run_id=decision_run_id)
-    decision_path = write_decision_audit_record(decision) if bool(decision_cfg.get("audit_enabled")) else None
-    if str(decision.get("account") or "").strip() != account:
-        raise ValueError("TVR embedded decision account mismatch")
-    if bool(decision.get("order_submission_enabled")) != bool(cfg["decision_audit"]["required_order_submission_enabled"]):
-        raise ValueError("TVR decision audit order_submission_enabled does not match required value")
 
     reconcile_events = _reconcile_local_state(cfg, dry_run=dry_run)
     state = load_live_state(account, strategy_name=STRATEGY_NAME)
     active_symbols = _active_local_symbols(state)
     entry_events: list[dict[str, Any]] = []
-    if len(active_symbols) < int(cfg["execution"]["max_open_trades"]):
-        for intent in _selected_intents(decision):
+
+    decision: dict[str, Any] | None = None
+    decision_path: Path | None = None
+    decision_skip_reason: str | None = None
+    selected_intents: list[dict[str, Any]] = []
+    max_open_trades = int(cfg["execution"]["max_open_trades"])
+    if len(active_symbols) >= max_open_trades:
+        decision_skip_reason = "max_open_trades_reached"
+        entry_events.append({"action": "entry_blocked_max_open_trades", "active_symbols": active_symbols})
+    else:
+        active_set = set(active_symbols)
+        tradable_symbols = [str(symbol).upper().strip() for symbol in list(decision_cfg["universe"]["tradable_symbols"])]
+        candidate_symbols = [symbol for symbol in tradable_symbols if symbol and symbol not in active_set]
+        if not candidate_symbols:
+            decision_skip_reason = "no_candidate_symbols_after_active_filter"
+            entry_events.append({"action": "entry_skipped_no_candidate_symbols", "active_symbols": active_symbols})
+        elif active_symbols and _now_utc_ms() - int(_DECISION_THROTTLE_STATE["last_decision_utc_ms"] or 0) < int(cfg["collection"]["active_decision_interval_secs"]) * 1000:
+            decision_skip_reason = "active_decision_interval_wait"
+            entry_events.append({
+                "action": "entry_skipped_active_decision_interval",
+                "active_symbols": active_symbols,
+                "candidate_symbols": candidate_symbols,
+            })
+        else:
+            filtered_decision_cfg = _decision_cfg_for_candidate_symbols(decision_cfg, candidate_symbols)
+            decision_run_id = _build_decision_run_id(account)
+            decision = build_decision_audit(filtered_decision_cfg, run_id=decision_run_id)
+            _DECISION_THROTTLE_STATE["last_decision_utc_ms"] = _now_utc_ms()
+            decision_path = write_decision_audit_record(decision) if bool(filtered_decision_cfg.get("audit_enabled")) else None
+            if str(decision.get("account") or "").strip() != account:
+                raise ValueError("TVR embedded decision account mismatch")
+            if bool(decision.get("order_submission_enabled")) != bool(cfg["decision_audit"]["required_order_submission_enabled"]):
+                raise ValueError("TVR decision audit order_submission_enabled does not match required value")
+            selected_intents = _selected_intents(decision)
+
+        for intent in selected_intents:
             if len(entry_events) >= int(cfg["execution"]["max_new_entries_per_iteration"]):
                 break
             symbol = str(intent.get("symbol") or "").upper().strip()
@@ -1142,8 +1197,6 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
             entry_events.append(event)
             if event.get("action") in {"entry_submitted", "dry_run_entry"}:
                 active_symbols.append(symbol)
-    else:
-        entry_events.append({"action": "entry_blocked_max_open_trades", "active_symbols": active_symbols})
 
     record = {
         **_base_record(run_id, "tvr_live_trader_iteration"),
@@ -1153,12 +1206,13 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         "decision_mode": "embedded",
         "decision_config_path": str(cfg["decision_audit"]["config_path"]),
         "decision_audit_path": str(decision_path) if decision_path is not None else None,
-        "decision_audit_run_id": decision.get("run_id"),
-        "decision_collected_bj": decision.get("collected_bj"),
-        "decision_data_hub_inputs": dict(decision.get("data_hub_inputs") or {}),
-        "decision_eligible_count": decision.get("eligible_count"),
-        "decision_selected_count": decision.get("selected_count"),
-        "selected_symbols": list(decision.get("selected_symbols") or []),
+        "decision_skip_reason": decision_skip_reason,
+        "decision_audit_run_id": decision.get("run_id") if decision is not None else None,
+        "decision_collected_bj": decision.get("collected_bj") if decision is not None else None,
+        "decision_data_hub_inputs": dict(decision.get("data_hub_inputs") or {}) if decision is not None else {},
+        "decision_eligible_count": decision.get("eligible_count") if decision is not None else 0,
+        "decision_selected_count": decision.get("selected_count") if decision is not None else 0,
+        "selected_symbols": list(decision.get("selected_symbols") or []) if decision is not None else [],
         "active_symbols": list(active_symbols),
         "reconcile_events": reconcile_events,
         "entry_events": entry_events,
