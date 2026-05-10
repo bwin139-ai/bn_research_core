@@ -19,7 +19,7 @@
     "minimum_history_days": 14,
     "entry_percentiles": ["p1", "p5", "p10", "p20"],
     "take_profit_pcts": [0.005, 0.01],
-    "max_hold_hours": 168,
+    "max_hold_hours": 336,
     "entry_price_mode": "close",
     "max_symbols_per_run": 0
   }

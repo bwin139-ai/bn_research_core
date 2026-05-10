@@ -698,7 +698,7 @@ strategies/tvr/config.data_hub.json:
 - percentile_backtest.backtest.minimum_history_days = 14
 - percentile_backtest.backtest.entry_percentiles = p1, p5, p10, p20
 - percentile_backtest.backtest.take_profit_pcts = 0.005, 0.01
-- percentile_backtest.backtest.max_hold_hours = 168
+- percentile_backtest.backtest.max_hold_hours = 336
 ```
 
 当前边界：
