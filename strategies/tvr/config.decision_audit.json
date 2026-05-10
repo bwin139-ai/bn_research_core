@@ -17,13 +17,23 @@
     "entry_percentile": "p10",
     "percentile_refresh_secs": 3600,
     "funding_rate_entry_max": 0.0001,
-    "take_profit_pct": 0.01,
+    "take_profit_pct": 0.005,
     "max_candidates": 5,
     "min_quote_volume_24h": 0
   },
   "risk": {
-    "proposed_order_notional_usdt": 10,
-    "max_symbol_notional_usdt": 10,
+    "symbol_notional_usdt": {
+      "CLUSDT": 10,
+      "BZUSDT": 10,
+      "XAUUSDT": 10,
+      "XAGUSDT": 10
+    },
+    "max_symbol_notional_usdt": {
+      "CLUSDT": 10,
+      "BZUSDT": 10,
+      "XAUUSDT": 10,
+      "XAGUSDT": 10
+    },
     "max_total_notional_usdt": 40
   }
 }

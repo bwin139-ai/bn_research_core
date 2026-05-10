@@ -272,6 +272,8 @@ TVR live 后续生产形态固定为：
   保持 LONG-only、maker-only 和账户级敞口上限。
 ```
 
+当前三刀均已进入代码；后续多账户配置只应改显式 JSON，不应复制策略逻辑。
+
 第一刀 history backfill 的固定语义：
 
 ```text

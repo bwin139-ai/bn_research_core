@@ -208,6 +208,31 @@ def _require_symbol_list(cfg: Mapping[str, Any], path: str, key: str) -> list[st
     return out
 
 
+def _require_symbol_float_map(cfg: Mapping[str, Any], path: str, key: str) -> dict[str, float]:
+    if key not in cfg:
+        raise KeyError(f"TVR decision audit config missing required field: {key} | {path}")
+    value = cfg[key]
+    if not isinstance(value, dict) or not value:
+        raise TypeError(f"TVR decision audit config field must be non-empty object: {key} | {path}")
+    out: dict[str, float] = {}
+    for raw_symbol, raw_value in value.items():
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            raise ValueError(f"TVR decision audit config contains empty symbol key: {key} | {path}")
+        if symbol in out:
+            raise ValueError(f"TVR decision audit config duplicated symbol key: {symbol} | {path}")
+        if isinstance(raw_value, bool):
+            raise TypeError(f"TVR decision audit config symbol value must be number: {key}.{symbol} | {path}")
+        try:
+            num = float(raw_value)
+        except Exception as exc:
+            raise TypeError(f"TVR decision audit config symbol value must be number: {key}.{symbol} | {path}") from exc
+        if math.isnan(num) or math.isinf(num) or num <= 0:
+            raise ValueError(f"TVR decision audit config symbol value must be positive finite: {key}.{symbol} | {path}")
+        out[symbol] = float(num)
+    return out
+
+
 def load_config(path: str) -> dict[str, Any]:
     cfg = _load_json(path)
     if int(cfg.get("schema_version", 0)) != 1:
@@ -241,18 +266,26 @@ def load_config(path: str) -> dict[str, Any]:
             "min_quote_volume_24h": _require_float(decision, path, "min_quote_volume_24h", positive=False),
         },
         "risk": {
-            "proposed_order_notional_usdt": _require_float(risk, path, "proposed_order_notional_usdt", positive=True),
-            "max_symbol_notional_usdt": _require_float(risk, path, "max_symbol_notional_usdt", positive=True),
+            "symbol_notional_usdt": _require_symbol_float_map(risk, path, "symbol_notional_usdt"),
+            "max_symbol_notional_usdt": _require_symbol_float_map(risk, path, "max_symbol_notional_usdt"),
             "max_total_notional_usdt": _require_float(risk, path, "max_total_notional_usdt", positive=True),
         },
     }
-    proposed = float(out["risk"]["proposed_order_notional_usdt"])
-    symbol_cap = float(out["risk"]["max_symbol_notional_usdt"])
     total_cap = float(out["risk"]["max_total_notional_usdt"])
-    if proposed > symbol_cap:
-        raise ValueError(f"TVR proposed_order_notional_usdt must be <= max_symbol_notional_usdt | {path}")
-    if symbol_cap > total_cap:
-        raise ValueError(f"TVR max_symbol_notional_usdt must be <= max_total_notional_usdt | {path}")
+    tradable_set = set(out["universe"]["tradable_symbols"])
+    notional_set = set(out["risk"]["symbol_notional_usdt"])
+    cap_set = set(out["risk"]["max_symbol_notional_usdt"])
+    if notional_set != tradable_set:
+        raise ValueError(f"TVR symbol_notional_usdt keys must exactly match tradable_symbols | {path}")
+    if cap_set != tradable_set:
+        raise ValueError(f"TVR max_symbol_notional_usdt keys must exactly match tradable_symbols | {path}")
+    for symbol in sorted(tradable_set):
+        proposed = float(out["risk"]["symbol_notional_usdt"][symbol])
+        symbol_cap = float(out["risk"]["max_symbol_notional_usdt"][symbol])
+        if proposed > symbol_cap:
+            raise ValueError(f"TVR symbol_notional_usdt must be <= max_symbol_notional_usdt: {symbol} | {path}")
+        if symbol_cap > total_cap:
+            raise ValueError(f"TVR max_symbol_notional_usdt must be <= max_total_notional_usdt: {symbol} | {path}")
     return out
 
 
@@ -585,8 +618,8 @@ def _evaluate_symbol(
     if history_sufficient and selected_percentile_return is not None and current_24h_return > float(selected_percentile_return):
         _reject(reasons, "current_24h_return_above_selected_percentile")
 
-    proposed_notional = float(risk_cfg["proposed_order_notional_usdt"])
-    max_symbol_notional = float(risk_cfg["max_symbol_notional_usdt"])
+    proposed_notional = float(risk_cfg["symbol_notional_usdt"][symbol])
+    max_symbol_notional = float(risk_cfg["max_symbol_notional_usdt"][symbol])
     max_total_notional = float(risk_cfg["max_total_notional_usdt"])
     if proposed_notional > max_symbol_notional:
         _reject(reasons, "proposed_notional_above_symbol_cap")

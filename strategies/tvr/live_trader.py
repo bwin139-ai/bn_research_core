@@ -198,6 +198,31 @@ def _require_float(cfg: Mapping[str, Any], path: str, key: str, *, positive: boo
     return out
 
 
+def _require_symbol_float_map(cfg: Mapping[str, Any], path: str, key: str) -> dict[str, float]:
+    if key not in cfg:
+        raise KeyError(f"TVR live trader config missing required field: {key} | {path}")
+    value = cfg[key]
+    if not isinstance(value, dict) or not value:
+        raise TypeError(f"TVR live trader config field must be non-empty object: {key} | {path}")
+    out: dict[str, float] = {}
+    for raw_symbol, raw_value in value.items():
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            raise ValueError(f"TVR live trader config contains empty symbol key: {key} | {path}")
+        if symbol in out:
+            raise ValueError(f"TVR live trader config duplicated symbol key: {symbol} | {path}")
+        if isinstance(raw_value, bool):
+            raise TypeError(f"TVR live trader config symbol value must be number: {key}.{symbol} | {path}")
+        try:
+            num = float(raw_value)
+        except Exception as exc:
+            raise TypeError(f"TVR live trader config symbol value must be number: {key}.{symbol} | {path}") from exc
+        if math.isnan(num) or math.isinf(num) or num <= 0:
+            raise ValueError(f"TVR live trader config symbol value must be positive finite: {key}.{symbol} | {path}")
+        out[symbol] = float(num)
+    return out
+
+
 def load_config(path: str) -> dict[str, Any]:
     cfg = _load_json(path)
     if "schema_version" not in cfg:
@@ -225,8 +250,8 @@ def load_config(path: str) -> dict[str, Any]:
             "position_mode": _require_non_empty_str(execution, path, "position_mode").upper(),
             "margin_type": _require_non_empty_str(execution, path, "margin_type").upper(),
             "leverage": _require_int(execution, path, "leverage", positive=True),
-            "order_notional_usdt": _require_float(execution, path, "order_notional_usdt", positive=True),
-            "max_entry_notional_usdt": _require_float(execution, path, "max_entry_notional_usdt", positive=True),
+            "symbol_notional_usdt": _require_symbol_float_map(execution, path, "symbol_notional_usdt"),
+            "max_entry_notional_usdt": _require_symbol_float_map(execution, path, "max_entry_notional_usdt"),
             "max_open_trades": _require_int(execution, path, "max_open_trades", positive=True),
             "max_new_entries_per_iteration": _require_int(execution, path, "max_new_entries_per_iteration", positive=True),
             "entry_price_mode": _require_non_empty_str(execution, path, "entry_price_mode").upper(),
@@ -254,8 +279,11 @@ def load_config(path: str) -> dict[str, Any]:
         raise ValueError(f"TVR live trader post_only_time_in_force must be GTX | {path}")
     if exec_cfg["entry_price_mode"] != "BEST_BID":
         raise ValueError(f"TVR live trader entry_price_mode must be BEST_BID | {path}")
-    if float(exec_cfg["order_notional_usdt"]) > float(exec_cfg["max_entry_notional_usdt"]):
-        raise ValueError(f"TVR order_notional_usdt must be <= max_entry_notional_usdt | {path}")
+    if set(exec_cfg["symbol_notional_usdt"]) != set(exec_cfg["max_entry_notional_usdt"]):
+        raise ValueError(f"TVR symbol_notional_usdt keys must match max_entry_notional_usdt keys | {path}")
+    for symbol in sorted(exec_cfg["symbol_notional_usdt"]):
+        if float(exec_cfg["symbol_notional_usdt"][symbol]) > float(exec_cfg["max_entry_notional_usdt"][symbol]):
+            raise ValueError(f"TVR symbol_notional_usdt must be <= max_entry_notional_usdt: {symbol} | {path}")
     return out
 
 
@@ -430,7 +458,7 @@ def _normalize_order_size(account: str, symbol: str, *, notional_usdt: float, li
     return {"qty": float(qty), "price": float(price), "notional_usdt": float(notional), "filters": filters}
 
 
-def _entry_price_from_best_bid(account: str, symbol: str, cfg: Mapping[str, Any]) -> dict[str, Any]:
+def _entry_price_from_best_bid(account: str, symbol: str, cfg: Mapping[str, Any], *, order_notional_usdt: float) -> dict[str, Any]:
     bid = _best_bid_price(account, symbol)
     filters_res = get_symbol_filters(account, symbol)
     if not filters_res.get("ok"):
@@ -441,7 +469,7 @@ def _entry_price_from_best_bid(account: str, symbol: str, cfg: Mapping[str, Any]
     price = _round_to_tick(raw_price, filters.get("tick_size"))
     if price <= 0:
         raise ValueError(f"TVR best-bid entry price invalid after rounding: {raw_price}")
-    qty = _floor_to_step(float(cfg["execution"]["order_notional_usdt"]) / price, filters.get("step_size"))
+    qty = _floor_to_step(float(order_notional_usdt) / price, filters.get("step_size"))
     notional = qty * price
     if qty <= 0:
         raise ValueError("TVR quantity non-positive after best-bid step rounding")
@@ -456,6 +484,22 @@ def _entry_price_from_best_bid(account: str, symbol: str, cfg: Mapping[str, Any]
         "best_bid": bid,
         "filters": filters,
     }
+
+
+def _symbol_order_notional(cfg: Mapping[str, Any], symbol: str) -> float:
+    symbol_key = str(symbol).upper().strip()
+    notional_by_symbol = dict(cfg["execution"]["symbol_notional_usdt"])
+    if symbol_key not in notional_by_symbol:
+        raise KeyError(f"TVR live trader symbol_notional_usdt missing symbol: {symbol_key}")
+    return float(notional_by_symbol[symbol_key])
+
+
+def _symbol_max_entry_notional(cfg: Mapping[str, Any], symbol: str) -> float:
+    symbol_key = str(symbol).upper().strip()
+    cap_by_symbol = dict(cfg["execution"]["max_entry_notional_usdt"])
+    if symbol_key not in cap_by_symbol:
+        raise KeyError(f"TVR live trader max_entry_notional_usdt missing symbol: {symbol_key}")
+    return float(cap_by_symbol[symbol_key])
 
 
 def _active_local_symbols(state: Mapping[str, Any]) -> list[str]:
@@ -519,11 +563,15 @@ def _place_entry_from_intent(
     if not symbol:
         raise ValueError("TVR selected intent missing symbol")
     proposed = _as_float(intent.get("proposed_order_notional_usdt"))
-    order_notional = float(cfg["execution"]["order_notional_usdt"])
+    order_notional = _symbol_order_notional(cfg, symbol)
     if proposed is None or not math.isclose(float(proposed), order_notional, rel_tol=0.0, abs_tol=1e-9):
         raise ValueError(f"TVR intent proposed notional mismatch: {proposed} vs config {order_notional}")
-    if order_notional > float(cfg["execution"]["max_entry_notional_usdt"]):
-        raise ValueError("TVR order_notional_usdt exceeds max_entry_notional_usdt")
+    if order_notional > _symbol_max_entry_notional(cfg, symbol):
+        raise ValueError(f"TVR symbol_notional_usdt exceeds max_entry_notional_usdt: {symbol}")
+    intent_tp = _as_float(intent.get("take_profit_pct"))
+    config_tp = float(cfg["execution"]["take_profit_pct"])
+    if intent_tp is None or not math.isclose(float(intent_tp), config_tp, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError(f"TVR intent take_profit_pct mismatch: {intent_tp} vs config {config_tp}")
 
     order_ids = _client_order_ids()
 
@@ -560,7 +608,7 @@ def _place_entry_from_intent(
         if now_ms > attempt_deadline_ms:
             break
         try:
-            size = _entry_price_from_best_bid(account, symbol, cfg)
+            size = _entry_price_from_best_bid(account, symbol, cfg, order_notional_usdt=order_notional)
             attempt_client_order_id = build_client_order_id(
                 strat=STRATEGY_CODE,
                 leg=f"E{attempt_index}",
