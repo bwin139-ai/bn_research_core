@@ -23,6 +23,7 @@ if PROJECT_ROOT not in sys.path:
 from core.config_loader import StrategyConfig
 from core.live.audit_log import append_stage_record, get_live_audit_dir, write_event, write_runner_heartbeat, write_runner_started
 from core.live.live_data_gate import record_finalized_payload_not_ready_event
+from core.live.live_data_gate import wait_finalized_candidate_inputs_for_snapshot
 from core.live.live_state import (
     load_cooldown_map,
     mark_loop_heartbeat,
@@ -34,7 +35,6 @@ from core.live.market_data import (
 )
 from core.live.market_data_hub import (
     build_live_inputs_via_hub,
-    load_finalized_candidate_inputs_from_hub,
     load_market_snapshot_from_hub,
 )
 from core.message_bridge import send_to_bot
@@ -54,7 +54,6 @@ _MARKET_DATA_LOGGERS: dict[str, logging.Logger] = {}
 _MARKET_DATA_LOG_DIR = Path('output/logs')
 _CANDIDATE_FINALIZE_CB_DEADLINE_SECS = 50
 _CANDIDATE_FINALIZE_PROBE_INTERVAL_SECS = 1
-_FINALIZED_PAYLOAD_WAIT_POLL_SECS = 1.0
 _MARKET_TOTAL_24H_VOL_STATS_WINDOW = 30
 _MARKET_TOTAL_24H_VOL_ROLLING: dict[str, list[dict[str, Any]]] = {}
 _FINALIZE_QUALITY_STATS_WINDOW = 30
@@ -1842,121 +1841,6 @@ def _sleep_until_next_signal_check(target_epoch: float | None) -> float:
     return target_epoch
 
 
-def _payload_int(payload: dict[str, Any] | None, key: str) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    raw = payload.get(key)
-    if raw in (None, ''):
-        return None
-    try:
-        return int(raw)
-    except Exception:
-        return None
-
-
-def _finalized_payload_mismatch_reason(
-    payload: dict[str, Any] | None,
-    *,
-    expected_latest_closed_bar_ts: int,
-    expected_signal_time_ts: int,
-) -> str:
-    if not isinstance(payload, dict):
-        return 'payload_missing'
-    payload_latest_closed_bar_ts = _payload_int(payload, 'latest_closed_bar_ts')
-    if payload_latest_closed_bar_ts != int(expected_latest_closed_bar_ts):
-        return (
-            'latest_closed_bar_ts_mismatch'
-            f'(payload={payload_latest_closed_bar_ts},expected={int(expected_latest_closed_bar_ts)})'
-        )
-    payload_signal_time_ts = _payload_int(payload, 'signal_time_ts')
-    if payload_signal_time_ts != int(expected_signal_time_ts):
-        return (
-            'signal_time_ts_mismatch'
-            f'(payload={payload_signal_time_ts},expected={int(expected_signal_time_ts)})'
-        )
-    finalize_summary = payload.get('finalize_summary')
-    if not isinstance(finalize_summary, dict):
-        return 'finalize_summary_missing'
-    return ''
-
-
-def _wait_finalized_candidate_inputs_for_snapshot(
-    account: str,
-    *,
-    expected_latest_closed_bar_ts: int,
-    expected_signal_time_ts: int,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    deadline_utc_ms = int(expected_signal_time_ts) + int(_CANDIDATE_FINALIZE_CB_DEADLINE_SECS * 1000)
-    attempts = 0
-    first_attempt_utc_ms: int | None = None
-    last_attempt_utc_ms: int | None = None
-    last_reason = ''
-    last_payload_latest_closed_bar_ts: int | None = None
-    last_payload_signal_time_ts: int | None = None
-    last_payload_published_bj: str | None = None
-    expected_latest_closed_bar_ts = int(expected_latest_closed_bar_ts)
-    expected_signal_time_ts = int(expected_signal_time_ts)
-
-    while True:
-        attempts += 1
-        attempt_utc_ms = _now_utc_ms()
-        if first_attempt_utc_ms is None:
-            first_attempt_utc_ms = attempt_utc_ms
-        last_attempt_utc_ms = attempt_utc_ms
-        try:
-            payload = load_finalized_candidate_inputs_from_hub(account, max_age_secs=None)
-            last_payload_latest_closed_bar_ts = _payload_int(payload, 'latest_closed_bar_ts')
-            last_payload_signal_time_ts = _payload_int(payload, 'signal_time_ts')
-            last_payload_published_bj = str(payload.get('published_bj') or '') if isinstance(payload, dict) else None
-            last_reason = _finalized_payload_mismatch_reason(
-                payload,
-                expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
-                expected_signal_time_ts=expected_signal_time_ts,
-            )
-            if not last_reason:
-                return payload, {
-                    'ok': True,
-                    'attempts': int(attempts),
-                    'first_attempt_utc_ms': first_attempt_utc_ms,
-                    'first_attempt_bj': _fmt_bj_from_ms(first_attempt_utc_ms),
-                    'last_attempt_utc_ms': last_attempt_utc_ms,
-                    'last_attempt_bj': _fmt_bj_from_ms(last_attempt_utc_ms),
-                    'deadline_utc_ms': int(deadline_utc_ms),
-                    'deadline_bj': _fmt_bj_from_ms(deadline_utc_ms),
-                    'last_reason': '',
-                    'expected_latest_closed_bar_ts': expected_latest_closed_bar_ts,
-                    'expected_signal_time_ts': expected_signal_time_ts,
-                    'last_payload_latest_closed_bar_ts': last_payload_latest_closed_bar_ts,
-                    'last_payload_signal_time_ts': last_payload_signal_time_ts,
-                    'last_payload_published_bj': last_payload_published_bj,
-                }
-        except Exception as e:
-            last_reason = f'hub_candidate_payload_unavailable: {e}'
-
-        now_ms = _now_utc_ms()
-        if now_ms >= deadline_utc_ms:
-            return None, {
-                'ok': False,
-                'attempts': int(attempts),
-                'first_attempt_utc_ms': first_attempt_utc_ms,
-                'first_attempt_bj': _fmt_bj_from_ms(first_attempt_utc_ms),
-                'last_attempt_utc_ms': last_attempt_utc_ms,
-                'last_attempt_bj': _fmt_bj_from_ms(last_attempt_utc_ms),
-                'deadline_utc_ms': int(deadline_utc_ms),
-                'deadline_bj': _fmt_bj_from_ms(deadline_utc_ms),
-                'last_reason': last_reason,
-                'expected_latest_closed_bar_ts': expected_latest_closed_bar_ts,
-                'expected_signal_time_ts': expected_signal_time_ts,
-                'last_payload_latest_closed_bar_ts': last_payload_latest_closed_bar_ts,
-                'last_payload_signal_time_ts': last_payload_signal_time_ts,
-                'last_payload_published_bj': last_payload_published_bj,
-            }
-
-        sleep_secs = min(float(_FINALIZED_PAYLOAD_WAIT_POLL_SECS), max(0.0, (deadline_utc_ms - now_ms) / 1000.0))
-        if sleep_secs > 0:
-            time.sleep(sleep_secs)
-
-
 def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_signal_check_epoch: float | None = None) -> None:
     account = str(live_cfg['account']).strip()
     notify_enabled = bool(live_cfg.get('notify_enabled', False))
@@ -2155,10 +2039,11 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
     candidate_md_started_utc_ms = _now_utc_ms()
     candidate_md_perf_started = time.perf_counter()
     try:
-        candidate_payload_from_hub, candidate_payload_wait_diag = _wait_finalized_candidate_inputs_for_snapshot(
+        candidate_payload_from_hub, candidate_payload_wait_diag = wait_finalized_candidate_inputs_for_snapshot(
             account,
             expected_latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
             expected_signal_time_ts=current_time_ms,
+            deadline_secs=_CANDIDATE_FINALIZE_CB_DEADLINE_SECS,
         )
         if candidate_payload_from_hub is None:
             candidate_md_res = {
