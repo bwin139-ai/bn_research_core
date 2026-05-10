@@ -221,6 +221,22 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 第三刀：按 backtest 语义修正 TVR decision_audit / live_trader 实盘入场逻辑。
 ```
 
+第一刀 history backfill 的固定语义：
+
+```text
+1. 独立脚本：strategies/tvr/history_backfill.py。
+2. 独立配置：strategies/tvr/config.history_backfill.json。
+3. 只写 research history store，不修改 live decision store。
+4. 只采集 contract 1m klines，不采集 index klines。
+5. 当前 universe 来自 Binance futures exchangeInfo 的 TradFi active symbols。
+6. 每个 symbol 的起点使用 exchangeInfo.onboardDate。
+7. 每个 symbol 必须维护 cursor，重启后从 last_open_time_ms + interval 继续。
+8. 所有 Binance 请求必须通过 Binance REST Gateway，并使用 LOW/NORMAL 优先级。
+9. 落盘路径为 state/research/tvr/klines_1m/{symbol}/{YYYY-MM}.parquet。
+10. cursor 路径为 state/research/tvr/history_backfill_state.json。
+11. audit 路径为 state/research/tvr/audit/history_backfill/YYYY-MM-DD/tvr_history_backfill.jsonl。
+```
+
 ## 9. 已实现组件目标
 
 ```text

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "mybwin139",
+  "audit_enabled": true,
+  "universe": {
+    "underlying_subtype": "TradFi",
+    "quote_asset": "USDT",
+    "contract_type": "TRADIFI_PERPETUAL",
+    "status": "TRADING",
+    "symbols": []
+  },
+  "collection": {
+    "interval_secs": 60
+  },
+  "history": {
+    "interval": "1m",
+    "stable_lag_minutes": 3,
+    "kline_limit": 1500,
+    "max_symbols_per_run": 0,
+    "max_requests_per_run": 120,
+    "max_batches_per_symbol_per_run": 1,
+    "request_sleep_secs": 0.1,
+    "dry_run_preview_days": 7
+  }
+}
