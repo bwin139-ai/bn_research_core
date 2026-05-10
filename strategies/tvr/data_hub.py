@@ -192,6 +192,25 @@ def _require_non_empty_str(cfg: Mapping[str, Any], path: str, key: str) -> str:
     return value
 
 
+def _require_symbol_list(cfg: Mapping[str, Any], path: str, key: str) -> list[str]:
+    if key not in cfg:
+        raise KeyError(f"TVR data_hub config missing required field: {key} | {path}")
+    value = cfg[key]
+    if not isinstance(value, list):
+        raise TypeError(f"TVR data_hub config field must be list: {key} | {path}")
+    symbols: list[str] = []
+    for item in value:
+        symbol = str(item).upper().strip()
+        if not symbol:
+            raise ValueError(f"TVR data_hub config symbols must not contain empty value | {path}")
+        symbols.append(symbol)
+    if not symbols:
+        raise ValueError(f"TVR data_hub config symbols must not be empty: {key} | {path}")
+    if len(symbols) != len(set(symbols)):
+        raise ValueError(f"TVR data_hub config symbols contain duplicates: {key} | {path}")
+    return symbols
+
+
 def _require_positive_int(cfg: Mapping[str, Any], path: str, key: str) -> int:
     if key not in cfg:
         raise KeyError(f"TVR data_hub config missing required field: {key} | {path}")
@@ -241,6 +260,7 @@ def load_config(path: str) -> dict[str, Any]:
             "quote_asset": _require_non_empty_str(universe, path, "quote_asset").upper(),
             "contract_type": _require_non_empty_str(universe, path, "contract_type").upper(),
             "status": _require_non_empty_str(universe, path, "status").upper(),
+            "symbols": _require_symbol_list(universe, path, "symbols"),
         },
         "collection": {
             "interval_secs": _require_positive_int(collection, path, "interval_secs"),
@@ -384,6 +404,7 @@ def _tradfi_symbols(exchange_info: Mapping[str, Any], cfg: Mapping[str, Any]) ->
     quote_asset = str(universe_cfg["quote_asset"]).upper()
     contract_type = str(universe_cfg["contract_type"]).upper()
     status = str(universe_cfg["status"]).upper()
+    configured_symbols = set(universe_cfg["symbols"])
     raw_symbols = exchange_info.get("symbols")
     if not isinstance(raw_symbols, list):
         raise TypeError("futures_exchange_info symbols must be list")
@@ -404,6 +425,8 @@ def _tradfi_symbols(exchange_info: Mapping[str, Any], cfg: Mapping[str, Any]) ->
         symbol = str(item.get("symbol") or "").upper().strip()
         if not symbol:
             raise ValueError("TradFi exchangeInfo matched empty symbol")
+        if symbol not in configured_symbols:
+            continue
         out.append({
             "symbol": symbol,
             "pair": item.get("pair"),
@@ -419,6 +442,10 @@ def _tradfi_symbols(exchange_info: Mapping[str, Any], cfg: Mapping[str, Any]) ->
             "quantity_precision": item.get("quantityPrecision"),
         })
     out.sort(key=lambda x: str(x["symbol"]))
+    found = {str(x["symbol"]) for x in out}
+    missing = sorted(configured_symbols - found)
+    if missing:
+        raise RuntimeError(f"TVR data_hub configured symbols not found in TradFi exchangeInfo: {missing}")
     if not out:
         raise RuntimeError(
             "No TradFi symbols matched exchangeInfo filters: "

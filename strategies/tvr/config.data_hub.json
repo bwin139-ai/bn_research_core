@@ -8,7 +8,8 @@
     "underlying_subtype": "TradFi",
     "quote_asset": "USDT",
     "contract_type": "TRADIFI_PERPETUAL",
-    "status": "TRADING"
+    "status": "TRADING",
+    "symbols": ["CLUSDT", "BZUSDT", "XAUUSDT", "XAGUSDT"]
   },
   "collection": {
     "interval_secs": 60,

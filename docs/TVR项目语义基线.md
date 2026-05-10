@@ -31,6 +31,7 @@
    - 只采集 live 当前 Binance exchangeInfo / ticker 事实。
    - 不回填历史 universe。
    - TradFi universe 必须由交易所当前合约元数据识别；识别不到时 fail-fast。
+   - TVR data_hub 只采集显式配置的 live 交易白名单 symbol；白名单为空、重复或包含当前 TradFi exchangeInfo 不存在的品种时必须 fail-fast。
 
 2. `funding`
    - 当前 funding 使用 Binance `/fapi/v1/premiumIndex` live fact。
@@ -76,9 +77,9 @@ research history store:
    - 触发条件为 `current_24h_return <= selected_percentile_return`。
 8. 第一版 `decision_audit` 必须要求 `history_sufficient=true`，否则该 symbol 禁入并落盘原因。
 9. 第一版 `decision_audit` 必须由 JSON 显式配置 `tradable_symbols` 白名单：
-   - DataHub 继续采集全部 TradFi universe。
-   - 策略侧只允许白名单品种产生候选 intent。
-   - 非白名单品种必须落盘 `symbol_not_in_tradable_symbols` 拒绝原因。
+   - DataHub 只采集其显式配置的 live 交易白名单品种。
+   - 策略侧只允许 `tradable_symbols` 白名单品种产生候选 intent。
+   - `tradable_symbols` 必须被 DataHub universe 覆盖；缺失时必须 fail-fast。
    - 白名单为空、重复或包含 DataHub universe 不存在的品种时必须 fail-fast。
 10. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力由 `live_trader` 承担。
 
