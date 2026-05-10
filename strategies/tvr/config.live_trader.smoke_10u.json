@@ -15,7 +15,7 @@
     "position_side": "LONG",
     "position_mode": "HEDGE",
     "margin_type": "CROSSED",
-    "leverage": 1,
+    "leverage": 5,
     "symbol_notional_usdt": {
       "CLUSDT": 10,
       "BZUSDT": 10,
@@ -23,13 +23,13 @@
       "XAGUSDT": 10
     },
     "max_entry_notional_usdt": {
-      "CLUSDT": 11,
-      "BZUSDT": 11,
-      "XAUUSDT": 11,
-      "XAGUSDT": 11
+      "CLUSDT": 15,
+      "BZUSDT": 15,
+      "XAUUSDT": 15,
+      "XAGUSDT": 15
     },
-    "max_open_trades": 1,
-    "max_new_entries_per_iteration": 1,
+    "max_open_trades": 4,
+    "max_new_entries_per_iteration": 4,
     "entry_price_mode": "BEST_BID",
     "entry_best_bid_offset_ticks": 0,
     "entry_attempt_window_secs": 30,

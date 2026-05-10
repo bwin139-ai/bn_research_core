@@ -4,10 +4,15 @@ ssh aliyun-bn
  cd /root/bn_research_core
 
 ps aux | grep python
+
 ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[s]trategies/spring/run_live.py'
 ps aux | grep '[s]trategies/sweep_reclaim/run_live.py'
+
+ps aux | grep '[s]trategies/tvr/data_hub.py'
+ps aux | grep '[s]trategies/tvr/live_trader.py'
+ps aux | grep '[s]trategies/tvr/history_backfill.py'
 
 # ========= git pull 阿里云拉最新代码 =========
  git fetch --all && git switch main && git pull --ff-only origin main
@@ -16,7 +21,7 @@ ps aux | grep '[s]trategies/sweep_reclaim/run_live.py'
 
 ```
 
-# ============== data hub 进程  ===============
+# ============== Market dataHub 进程  ===============
 nohup bash -lc '
 cd /root/bn_research_core &&
 PYTHONPATH=/root/bn_research_core \
@@ -25,7 +30,49 @@ PYTHONPATH=/root/bn_research_core \
 ' >> output/logs/market_data_hub.console.log 2>&1 &
 
 tail -n 20 -f output/logs/market_data_hub.console.log
-    
+
+# ============== TVR dataHub 进程  ===============
+mkdir -p output/tvr
+nohup /root/service_env/bin/python -u strategies/tvr/data_hub.py \
+  --config strategies/tvr/config.data_hub.json \
+  --loop \
+  >> output/tvr/data_hub.global.log 2>&1 &
+tail -n 20 -f output/tvr/data_hub.global.log
+
+# ============== TVR live 进程  ===============
+nohup /root/service_env/bin/python -u strategies/tvr/live_trader.py \
+  --config strategies/tvr/config.live_trader.smoke_10u.json \
+  --loop \
+  >> output/tvr/live_trader.mybwin139.log 2>&1 &
+
+
+# ============== TVR history_backfill 进程  ===============
+nohup /root/service_env/bin/python -u strategies/tvr/history_backfill.py \
+  --config strategies/tvr/config.history_backfill.json \
+  --loop \
+  >> output/logs/tvr_history_backfill.log 2>&1 &
+tail -n 50 -f output/logs/tvr_history_backfill.log
+
+# ============== TVR sim 回测 进程  ===============
+/root/service_env/bin/python strategies/tvr/percentile_tp_backtest.py \
+  --config strategies/tvr/config.percentile_backtest.json \
+  --symbols CLUSDT,BZUSDT,XAUUSDT,XAGUSDT
+
+# *************** tail 日志 ***************
+tail -n 100 -F \
+  output/logs/snapback_live.console.chen912.log \
+  output/logs/snapback_live.console.junjie2026.log \
+  output/live_projection/spring_live.chen912.log \
+  output/live_projection/spring_live.junjie2026.log \
+  output/live_projection/sweep_reclaim_live.chen912.log \
+  output/live_projection/sweep_reclaim_live.junjie2026.log
+
+tail -n 100 -F \
+  output/logs/snapback_live.console.highfreq.log \
+  output/live_projection/spring_live.mybwin139.log \
+  output/live_projection/sweep_reclaim_live.mybwin139.log
+
+
 # *****download*****  拉 冒烟 sim 数据 *****download***** 
 RUNID="Spring_SmokeTest_V1_0416T1329"
 DEST=~/ai_projects/bn_research_core/output/sim_smoke

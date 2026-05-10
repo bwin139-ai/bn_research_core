@@ -1,3 +1,7 @@
+# ============== snapback 实盘运行 ===============
+ nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.highfreq.json --live-config strategies/snapback/live_config.highfreq.json' >> /root/bn_research_core/output/logs/snapback_live.console.highfreq.log 2>&1 &
+ nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.junjie2026.json' >> /root/bn_research_core/output/logs/snapback_live.console.junjie2026.log 2>&1 &
+ nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.chen912.json' >> /root/bn_research_core/output/logs/snapback_live.console.chen912.log 2>&1 &
 
 # ========= snapback-SABC 全量并行调度主进程 =========
 RUNSET="SNAP_V10.1_30D_P6_$(date +%m%dT%H%M)"
@@ -33,16 +37,7 @@ PYTHONPATH=/root/bn_research_core /root/service_env/bin/python core/analysis/sim
   --kline-root data/klines_1m \
   --initial-equity 100 \
   --fee-side 0.0005
-
-# ============== snapback 实盘运行 ===============
- nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.highfreq.json --live-config strategies/snapback/live_config.highfreq.json' >> /root/bn_research_core/output/logs/snapback_live.console.highfreq.log 2>&1 &
- nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.junjie2026.json' >> /root/bn_research_core/output/logs/snapback_live.console.junjie2026.log 2>&1 &
- nohup bash -lc 'PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u strategies/snapback/run_live.py --config strategies/snapback/config.profit.json --live-config strategies/snapback/live_config.chen912.json' >> /root/bn_research_core/output/logs/snapback_live.console.chen912.log 2>&1 &
  
- tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.highfreq.log
- tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.junjie2026.log
- tail -n 100 -f /root/bn_research_core/output/logs/snapback_live.console.chen912.log
-
 # *************** snapback 同步币安数据 **************
  nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py >> output/logs/bn_sync.console.log 2>&1' &
  nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python -u tools/bn_sync/run_bn_sync.py --account mybwin139 --symbols BTCUSDT,ETHUSDT >> output/logs/bn_sync.console.log 2>&1' &

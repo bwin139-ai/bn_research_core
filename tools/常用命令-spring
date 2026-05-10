@@ -38,10 +38,6 @@ nohup /root/service_env/bin/python strategies/spring/run_live.py \
   --audit-preview-limit 30 \
   >> "output/live_projection/spring_live.${ACCOUNT}.log" 2>&1 &
 
-tail -n 100 -f output/live_projection/spring_live.mybwin139.log
-tail -n 100 -f output/live_projection/spring_live.chen912.log
-tail -n 100 -f output/live_projection/spring_live.junjie2026.log
-
 # ============== Spring-SABC 冒烟回测  ===============
 RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
 /root/service_env/bin/python strategies/run_backtest.py \

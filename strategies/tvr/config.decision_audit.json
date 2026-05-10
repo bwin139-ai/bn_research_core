@@ -29,10 +29,10 @@
       "XAGUSDT": 10
     },
     "max_symbol_notional_usdt": {
-      "CLUSDT": 10,
-      "BZUSDT": 10,
-      "XAUUSDT": 10,
-      "XAGUSDT": 10
+      "CLUSDT": 15,
+      "BZUSDT": 15,
+      "XAUUSDT": 15,
+      "XAGUSDT": 15
     },
     "max_total_notional_usdt": 40
   }
