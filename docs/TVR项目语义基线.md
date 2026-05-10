@@ -98,6 +98,8 @@ research history store:
 9. 目标实盘入场价格不应由历史目标价长期挂单等待；触发后应读取实时盘口，使用 best bid 或 best bid 减一 tick 提交 `BUY LIMIT GTX`，以降低动态撤单重挂复杂度。
 10. 若 `BUY LIMIT GTX` 因盘口下移或 post-only 约束直接 `EXPIRED/REJECTED`，该结果视为有利方向上的 maker 重定价机会；在本次 entry attempt window 内只重读 best bid 并重试，不重新判断 `current_24h_return`。
 11. entry attempt 必须有显式生命周期和次数上限，防止无限重试和 API 额度失控。
+12. TVR 实盘下单必须复用公共 Binance execution / Gateway 体系，保留统一 quota、ban guard、BN_EXEC 日志和 bot 执行通知，不得在 `live_trader` 私有绕过公共执行入口直接调用 Binance 下单。
+13. open trade 必须进入完整生命周期 reconcile：同时查询 TP 订单与 LONG position；TP 成交时清理本策略 state 并输出 EXIT；position 已关闭但 TP 未成交时按外部 `POSITION_CLOSED` 清理并取消残留 TP；position 仍存在但 TP 查询失败、缺失或终态未成交时必须 CRITICAL + fail-fast。
 
 ## 5. rolling 24h 统计
 
@@ -326,7 +328,8 @@ TVR live 后续生产形态固定为：
 1. 每轮内部构建本账户 decision_audit selected_intents，并按原 decision audit 路径落盘审计。
 2. 校验 account、audit-only intent 与 notional 一致性。
 3. 查询本地 TVR live state 与交易所 symbol position/open orders，防止重复开仓。
-4. 提交 post-only maker entry。
-5. entry 成交后提交 post-only maker TP。
+4. 通过公共 BN_EXEC / Binance REST Gateway 提交 post-only maker entry。
+5. entry 成交后通过公共 BN_EXEC / Binance REST Gateway 提交 post-only maker TP。
 6. 写入 TVR 独立 live audit 与 TVR live state。
+7. 对 open_trade 执行 TP order + position 双事实 reconcile，完成 OPEN / EXIT / CRITICAL 生命周期日志与 bot 输出。
 ```

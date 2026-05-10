@@ -27,15 +27,20 @@ from core.live.binance_exec import (
     get_order,
     get_position,
     get_symbol_filters,
+    place_limit_order,
 )
-from core.live.binance_rest_gateway import REQUEST_PRIORITY_CRITICAL, REQUEST_PRIORITY_HIGH, call_client_method
+from core.live.binance_rest_gateway import REQUEST_PRIORITY_HIGH, call_client_method
 from core.live.custom_id import build_client_order_id, make_order_root
 from core.live.live_state import (
     load_live_state,
+    mark_error,
     mark_loop_heartbeat,
+    mark_order_reconcile,
+    mark_position_reconcile,
     set_open_trade,
     set_pending_entry_order,
 )
+from core.message_bridge import send_to_bot
 from core.runtime_state import get_state_dir
 from strategies.tvr.decision_audit import (
     build_decision_audit,
@@ -324,27 +329,6 @@ def _round_to_tick(value: float, tick: float | None) -> float:
     return float((dec_value / dec_tick).to_integral_value(rounding=ROUND_DOWN) * dec_tick)
 
 
-def _extract_order_row(raw: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "symbol": raw.get("symbol"),
-        "order_id": raw.get("orderId"),
-        "client_order_id": raw.get("clientOrderId"),
-        "side": raw.get("side"),
-        "position_side": raw.get("positionSide"),
-        "type": raw.get("type"),
-        "time_in_force": raw.get("timeInForce"),
-        "status": str(raw.get("status") or "").upper(),
-        "price": float(raw.get("price", 0.0) or 0.0),
-        "orig_qty": float(raw.get("origQty", raw.get("quantity", 0.0)) or 0.0),
-        "executed_qty": float(raw.get("executedQty", 0.0) or 0.0),
-        "avg_price": float(raw.get("avgPrice", 0.0) or 0.0),
-        "cum_quote": float(raw.get("cumQuote", 0.0) or 0.0),
-        "update_time_ms": raw.get("updateTime"),
-        "time_ms": raw.get("time"),
-        "raw": dict(raw),
-    }
-
-
 def _fill_price(order: Mapping[str, Any], *, fallback_price: float) -> float:
     avg_price = _as_float(order.get("avg_price"))
     if avg_price is not None and avg_price > 0:
@@ -357,6 +341,20 @@ def _fill_price(order: Mapping[str, Any], *, fallback_price: float) -> float:
     if fallback <= 0:
         raise RuntimeError("TVR fill price unavailable")
     return fallback
+
+
+def _fmt_num(value: Any, *, digits: int = 6) -> str:
+    num = _as_float(value)
+    if num is None:
+        return "NA"
+    text = f"{num:.{digits}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _notify_tvr(account: str, title: str, lines: list[str]) -> None:
+    now_bj = datetime.now(BJ).strftime("%H:%M:%S")
+    message = "\n".join([f"[{now_bj} TVR] {account}", str(title), *lines])
+    send_to_bot(message, label="tvr")
 
 
 def _client_order_ids() -> dict[str, str]:
@@ -378,27 +376,28 @@ def _submit_post_only_limit(
     price: float,
     client_order_id: str,
     time_in_force: str,
+    notify_on_error: bool = True,
+    notify_on_success: bool = True,
 ) -> dict[str, Any]:
-    payload = {
-        "symbol": str(symbol).upper().strip(),
-        "side": str(side).upper().strip(),
-        "positionSide": str(position_side).upper().strip(),
-        "type": "LIMIT",
-        "timeInForce": str(time_in_force).upper().strip(),
-        "quantity": float(quantity),
-        "price": float(price),
-        "newClientOrderId": str(client_order_id).strip(),
-    }
-    raw = call_client_method(
+    role = "ENTRY" if str(side).upper().strip() == "BUY" else "TP"
+    result = place_limit_order(
         account,
-        source="tvr_live_trader.futures_create_order",
-        method_name="futures_create_order",
-        priority=REQUEST_PRIORITY_CRITICAL,
-        **payload,
+        symbol,
+        position_side,
+        side,
+        float(quantity),
+        float(price),
+        order_role=role,
+        time_in_force=time_in_force,
+        client_order_id=client_order_id,
+        notify_label="tvr",
+        notify_on_error=notify_on_error,
+        notify_on_success=notify_on_success,
+        notify_order_statuses={"NEW", "PARTIALLY_FILLED", "FILLED"},
     )
-    if not isinstance(raw, dict):
-        raise RuntimeError(f"unexpected futures_create_order payload: {raw}")
-    return _extract_order_row(raw)
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("reason") or "TVR post-only limit order failed"))
+    return dict(result.get("data") or {})
 
 
 def _is_post_only_reprice_exception(exc: Exception) -> bool:
@@ -623,6 +622,8 @@ def _place_entry_from_intent(
                 price=size["price"],
                 client_order_id=attempt_client_order_id,
                 time_in_force=str(cfg["execution"]["post_only_time_in_force"]),
+                notify_on_error=False,
+                notify_on_success=True,
             )
             status = str(entry_order.get("status") or "").upper()
             order_ids["entry_client_order_id"] = attempt_client_order_id
@@ -696,6 +697,8 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
         price=float(size["price"]),
         client_order_id=str(pending["tp_client_order_id"]),
         time_in_force=str(cfg["execution"]["post_only_time_in_force"]),
+        notify_on_error=True,
+        notify_on_success=True,
     )
     tp_status = str(tp_order.get("status") or "").upper()
     if tp_status in TERMINAL_ORDER_STATUSES and tp_status != "FILLED":
@@ -723,7 +726,206 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
     }
     set_open_trade(account, symbol, open_trade, strategy_name=STRATEGY_NAME)
     set_pending_entry_order(account, symbol, None, strategy_name=STRATEGY_NAME)
+    logging.info(
+        "TVR OPEN established | account=%s | symbol=%s | entry=%s | tp=%s | qty=%s",
+        account,
+        symbol,
+        _fmt_num(entry_price),
+        _fmt_num(size["price"]),
+        _fmt_num(size["qty"]),
+    )
+    _notify_tvr(
+        account,
+        "OPEN",
+        [
+            f"symbol={symbol}",
+            f"entry={_fmt_num(entry_price)} | tp={_fmt_num(size['price'])} | qty={_fmt_num(size['qty'])}",
+            f"entry_order={pending.get('entry_client_order_id')}",
+            f"tp_order={tp_order.get('client_order_id')}",
+        ],
+    )
     return {"action": "tp_submitted", "symbol": symbol, "open_trade": open_trade}
+
+
+def _query_open_trade_tp(account: str, symbol: str, open_trade: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
+    exchange_order_id = _as_int(open_trade.get("tp_exchange_order_id"))
+    client_order_id = str(open_trade.get("tp_client_order_id") or "").strip()
+    if exchange_order_id is None and not client_order_id:
+        raise ValueError(f"TVR open_trade missing TP order identity: {symbol}")
+    return get_order(
+        account,
+        symbol,
+        exchange_order_id=exchange_order_id,
+        client_order_id=client_order_id,
+        retry_max=int(cfg["execution"]["order_retry_max"]),
+        retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
+    )
+
+
+def _position_qty(position: Any) -> float:
+    if not isinstance(position, Mapping):
+        return 0.0
+    return float(position.get("qty") or 0.0)
+
+
+def _order_executed_qty(order: Mapping[str, Any] | None) -> float:
+    if not isinstance(order, Mapping):
+        return 0.0
+    return float(order.get("executed_qty") or 0.0)
+
+
+def _order_status(order: Mapping[str, Any] | None) -> str:
+    if not isinstance(order, Mapping):
+        return ""
+    return str(order.get("status") or "").upper().strip()
+
+
+def _finalize_open_trade_exit(
+    *,
+    account: str,
+    symbol: str,
+    open_trade: Mapping[str, Any],
+    exit_reason: str,
+    tp_order: Mapping[str, Any] | None,
+    position_snapshot: Mapping[str, Any] | None,
+    cleanup_cancel: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    exit_price = None
+    if isinstance(tp_order, Mapping) and (_order_status(tp_order) == "FILLED" or _order_executed_qty(tp_order) > 0):
+        exit_price = _as_float(tp_order.get("avg_price")) or _as_float(tp_order.get("price"))
+    if exit_price is None and exit_reason == "TAKE_PROFIT":
+        exit_price = _as_float(open_trade.get("tp_price"))
+    entry_price = _as_float(open_trade.get("entry_price"))
+    pnl_pct = None
+    if entry_price is not None and entry_price > 0 and exit_price is not None and exit_price > 0:
+        pnl_pct = exit_price / entry_price - 1.0
+
+    closed_trade = dict(open_trade)
+    now_ms = _now_utc_ms()
+    closed_trade.update({
+        "status": "CLOSED",
+        "exit_reason": exit_reason,
+        "exit_price": exit_price,
+        "exit_pnl_pct": pnl_pct,
+        "closed_utc_ms": now_ms,
+        "closed_bj": _fmt_bj_from_ms(now_ms),
+        "tp_exit_order_snapshot": dict(tp_order or {}),
+        "position_close_snapshot": dict(position_snapshot or {}),
+        "cleanup_cancel": dict(cleanup_cancel or {}),
+    })
+    set_open_trade(account, symbol, None, strategy_name=STRATEGY_NAME)
+    mark_position_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
+    mark_order_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
+    logging.info(
+        "TVR EXIT detected | account=%s | symbol=%s | reason=%s | entry=%s | exit=%s | pnl_pct=%s",
+        account,
+        symbol,
+        exit_reason,
+        _fmt_num(entry_price),
+        _fmt_num(exit_price),
+        _fmt_num(pnl_pct, digits=4),
+    )
+    _notify_tvr(
+        account,
+        f"EXIT {exit_reason}",
+        [
+            f"symbol={symbol}",
+            f"entry={_fmt_num(entry_price)} | exit={_fmt_num(exit_price)} | pnl={_fmt_num(pnl_pct, digits=4)}",
+            f"tp_status={_order_status(tp_order)} | tp_executed={_fmt_num(_order_executed_qty(tp_order))}",
+        ],
+    )
+    return {
+        "action": "open_trade_exit_detected",
+        "symbol": symbol,
+        "exit_reason": exit_reason,
+        "closed_trade": closed_trade,
+    }
+
+
+def _reconcile_open_trade(
+    account: str,
+    symbol: str,
+    open_trade: Mapping[str, Any],
+    cfg: Mapping[str, Any],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    now_bj = _fmt_bj_from_ms(_now_utc_ms())
+    tp_res = _query_open_trade_tp(account, symbol, open_trade, cfg)
+    tp_order = dict(tp_res.get("data") or {}) if tp_res.get("ok") else None
+    tp_status = _order_status(tp_order)
+    position_res = get_position(account, symbol, POSITION_SIDE_LONG)
+    if not position_res.get("ok"):
+        raise RuntimeError(f"TVR open_trade position query failed: {symbol} | {position_res.get('reason')}")
+    position_snapshot = position_res.get("data") if isinstance(position_res.get("data"), Mapping) else None
+    position_qty = _position_qty(position_snapshot)
+
+    if dry_run:
+        return {
+            "action": "dry_run_open_trade_reconcile",
+            "symbol": symbol,
+            "tp_query_ok": bool(tp_res.get("ok")),
+            "tp_status": tp_status,
+            "position_qty": position_qty,
+        }
+
+    mark_position_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
+    mark_order_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
+
+    if position_qty <= 0:
+        cleanup_cancel = None
+        exit_reason = "TAKE_PROFIT" if tp_status == "FILLED" else "POSITION_CLOSED"
+        if tp_res.get("ok") and tp_status and tp_status not in TERMINAL_ORDER_STATUSES:
+            cleanup_cancel = cancel_order(
+                account,
+                symbol,
+                exchange_order_id=_as_int(open_trade.get("tp_exchange_order_id")),
+                client_order_id=str(open_trade.get("tp_client_order_id") or ""),
+                retry_max=int(cfg["execution"]["order_retry_max"]),
+                retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
+                notify_label="tvr",
+            )
+        return _finalize_open_trade_exit(
+            account=account,
+            symbol=symbol,
+            open_trade=open_trade,
+            exit_reason=exit_reason,
+            tp_order=tp_order,
+            position_snapshot=position_snapshot,
+            cleanup_cancel=cleanup_cancel,
+        )
+
+    if not tp_res.get("ok"):
+        reason = f"TVR open position TP query failed: {symbol} | {tp_res.get('reason')}"
+        mark_error(account, symbol, error_code="tvr_tp_query_failed", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+        _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+        raise RuntimeError(reason)
+
+    if not tp_status:
+        reason = f"TVR open position TP status missing: {symbol}"
+        mark_error(account, symbol, error_code="tvr_tp_status_missing", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+        _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+        raise RuntimeError(reason)
+
+    if tp_status == "FILLED":
+        reason = f"TVR TP filled but LONG position still open: {symbol} | qty={position_qty}"
+        mark_error(account, symbol, error_code="tvr_tp_filled_position_open", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+        _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+        raise RuntimeError(reason)
+
+    if tp_status in TERMINAL_ORDER_STATUSES:
+        reason = f"TVR open position lost active TP: {symbol} | tp_status={tp_status}"
+        mark_error(account, symbol, error_code="tvr_open_position_tp_terminal", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+        _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+        raise RuntimeError(reason)
+
+    return {
+        "action": "open_trade_wait",
+        "symbol": symbol,
+        "position_qty": position_qty,
+        "tp_status": tp_status,
+        "tp_executed_qty": _order_executed_qty(tp_order),
+    }
 
 
 def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dict[str, Any]]:
@@ -793,10 +995,7 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
             events.append({"action": "pending_entry_wait", "symbol": symbol_key, "status": status, "order": order})
         open_trade = symbol_state.get("open_trade")
         if isinstance(open_trade, Mapping):
-            position_res = get_position(account, symbol_key, POSITION_SIDE_LONG)
-            if position_res.get("ok") and not position_res.get("data"):
-                set_open_trade(account, symbol_key, None, strategy_name=STRATEGY_NAME)
-                events.append({"action": "open_trade_position_closed_cleared", "symbol": symbol_key, "trade": dict(open_trade)})
+            events.append(_reconcile_open_trade(account, symbol_key, open_trade, cfg, dry_run=dry_run))
     return events
 
 

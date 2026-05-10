@@ -71,6 +71,8 @@ def _extract_order_event_time_ms(*payloads: Any) -> int | None:
 
 def _strategy_code_from_client_order_id(client_order_id: str | None) -> str:
     cid = str(client_order_id or "").upper()
+    if "_TVR_" in cid:
+        return "TVR"
     if "_SPR_" in cid:
         return "SPR"
     if "_SWR_" in cid:
@@ -87,6 +89,8 @@ def _strategy_icon(strategy_code: str) -> str:
         return "🌱"
     if strategy_code == "SWR":
         return "📈"
+    if strategy_code == "TVR":
+        return "TVR"
     return "BN"
 
 
@@ -900,6 +904,8 @@ def place_entry_order(
         },
         attempts=res.get("attempts"),
     )
+
+
 def place_tp_order(
     account: str,
     symbol: str,
@@ -1016,6 +1022,140 @@ def place_tp_order(
         },
         attempts=res.get("attempts"),
     )
+
+
+def place_limit_order(
+    account: str,
+    symbol: str,
+    position_side: str,
+    side: str,
+    quantity: float,
+    limit_price: float,
+    *,
+    order_role: str,
+    time_in_force: str,
+    retry_max: int = 0,
+    retry_delay_secs: float = 1.0,
+    client_order_id: str | None = None,
+    notify_label: str = "snapback",
+    notify_on_error: bool = True,
+    notify_on_success: bool = True,
+    notify_order_statuses: set[str] | None = None,
+) -> dict[str, Any]:
+    su = (symbol or "").upper().strip()
+    pos = _normalize_position_side(position_side)
+    side_value = str(side or "").upper().strip()
+    if side_value not in {"BUY", "SELL"}:
+        return _err(f"unsupported LIMIT side: {side}")
+    role = str(order_role or "LIMIT").upper().strip() or "LIMIT"
+    tif = str(time_in_force or "").upper().strip()
+    if not tif:
+        return _err("time_in_force is required")
+    qty_res = _normalize_quantity(account, su, quantity)
+    if not qty_res["ok"]:
+        if notify_on_error:
+            _emit_trade_event(
+                role,
+                "fail",
+                account=account,
+                symbol=su,
+                position_side=pos,
+                side=side_value,
+                client_order_id=client_order_id,
+                reason=qty_res["reason"],
+                attempts=qty_res.get("attempts"),
+                notify_label=notify_label,
+            )
+        return qty_res
+    filters = qty_res["data"]["filters"]
+    px = _normalize_price(limit_price, filters["tick_size"])
+    if px <= 0:
+        reason = f"limit_price 非法: {limit_price}"
+        if notify_on_error:
+            _emit_trade_event(
+                role,
+                "fail",
+                account=account,
+                symbol=su,
+                position_side=pos,
+                side=side_value,
+                qty=qty_res["data"]["qty"],
+                client_order_id=client_order_id,
+                reason=reason,
+                notify_label=notify_label,
+            )
+        return _err(reason)
+    cid = client_order_id or _gen_client_order_id(role[:3], su)
+    payload = {
+        "symbol": su,
+        "side": side_value,
+        "positionSide": pos,
+        "type": TAKE_PROFIT_ORDER_TYPE,
+        "timeInForce": tif,
+        "quantity": qty_res["data"]["qty"],
+        "price": px,
+        "newClientOrderId": cid,
+    }
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_create_order',
+        'futures_create_order',
+        priority=REQUEST_PRIORITY_CRITICAL,
+        payload=payload,
+        retry_max=retry_max,
+        retry_delay_secs=retry_delay_secs,
+    )
+    if not res["ok"]:
+        if notify_on_error:
+            _emit_trade_event(
+                role,
+                "fail",
+                account=account,
+                symbol=su,
+                position_side=pos,
+                side=side_value,
+                qty=qty_res["data"]["qty"],
+                price=px,
+                client_order_id=cid,
+                reason=res["reason"],
+                attempts=res.get("attempts"),
+                notify_label=notify_label,
+            )
+        return _err(res["reason"], payload=payload, attempts=res.get("attempts"))
+    raw = res["data"]
+    normalized = _normalize_order_row(raw)
+    normalized_status = str(normalized.get("status") or "").upper()
+    allowed_notify_statuses = (
+        {str(x).upper() for x in notify_order_statuses}
+        if notify_order_statuses is not None
+        else None
+    )
+    if notify_on_success and (allowed_notify_statuses is None or normalized_status in allowed_notify_statuses):
+        _emit_trade_event(
+            role,
+            "ok",
+            account=account,
+            symbol=su,
+            position_side=pos,
+            side=side_value,
+            qty=qty_res["data"]["qty"],
+            price=px,
+            client_order_id=raw.get("clientOrderId", cid),
+            exchange_order_id=raw.get("orderId"),
+            order_status=raw.get("status"),
+            attempts=res.get("attempts"),
+            event_time_ms=_extract_order_event_time_ms(normalized, raw),
+            notify_label=notify_label,
+        )
+    normalized.update({
+        "order_role": role,
+        "order_type": TAKE_PROFIT_ORDER_TYPE,
+        "time_in_force": tif,
+        "payload": payload,
+    })
+    return _ok(normalized, attempts=res.get("attempts"))
+
+
 def place_sl_order(
     account: str,
     symbol: str,
