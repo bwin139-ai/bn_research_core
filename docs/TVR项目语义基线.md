@@ -100,6 +100,7 @@ research history store:
 11. entry attempt 必须有显式生命周期和次数上限，防止无限重试和 API 额度失控。
 12. TVR 实盘下单必须复用公共 Binance execution / Gateway 体系，保留统一 quota、ban guard、BN_EXEC 日志和 bot 执行通知，不得在 `live_trader` 私有绕过公共执行入口直接调用 Binance 下单。
 13. open trade 必须进入完整生命周期 reconcile：同时查询 TP 订单与 LONG position；TP 成交时清理本策略 state 并输出 EXIT；position 已关闭但 TP 未成交时按外部 `POSITION_CLOSED` 清理并取消残留 TP；position 仍存在但 TP 查询失败、缺失或终态未成交时必须 CRITICAL + fail-fast。
+14. live stdout 只输出真实动作、异常和显式周期 heartbeat；普通 wait/skip 事件必须继续落 audit，但不得每轮刷 INFO 日志。
 
 ## 5. rolling 24h 统计
 
@@ -332,4 +333,5 @@ TVR live 后续生产形态固定为：
 5. entry 成交后通过公共 BN_EXEC / Binance REST Gateway 提交 post-only maker TP。
 6. 写入 TVR 独立 live audit 与 TVR live state。
 7. 对 open_trade 执行 TP order + position 双事实 reconcile，完成 OPEN / EXIT / CRITICAL 生命周期日志与 bot 输出。
+8. 通过 `logging.summary_interval_secs` 聚合普通循环观测，避免 `open_trade_wait` / `entry_skipped_local_active_symbol` 每 2 秒刷屏。
 ```

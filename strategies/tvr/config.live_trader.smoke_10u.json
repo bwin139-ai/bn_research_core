@@ -11,6 +11,9 @@
   "collection": {
     "interval_secs": 2
   },
+  "logging": {
+    "summary_interval_secs": 3600
+  },
   "execution": {
     "position_side": "LONG",
     "position_mode": "HEDGE",

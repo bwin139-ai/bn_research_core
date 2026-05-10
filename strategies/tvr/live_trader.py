@@ -54,6 +54,32 @@ STRATEGY_CODE = "TVR"
 POSITION_SIDE_LONG = "LONG"
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 REPRICE_RETRY_ORDER_STATUSES = {"EXPIRED", "REJECTED"}
+QUIET_ENTRY_ACTIONS = {"entry_skipped_local_active_symbol", "entry_blocked_max_open_trades"}
+QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "pending_entry_wait"}
+IMPORTANT_ENTRY_ACTIONS = {
+    "dry_run_entry",
+    "entry_submitted",
+    "entry_terminal_without_pending",
+    "entry_attempt_failed",
+    "entry_blocked",
+}
+IMPORTANT_RECONCILE_ACTIONS = {
+    "tp_submitted",
+    "open_trade_exit_detected",
+    "pending_entry_query_failed",
+    "dry_run_pending_entry_filled",
+    "partial_entry_cancel_remaining",
+    "pending_entry_terminal_cleared",
+    "dry_run_pending_entry_ttl_reached",
+    "pending_entry_ttl_cancel",
+}
+_ITERATION_LOG_STATE = {
+    "last_summary_utc_ms": 0,
+    "iterations": 0,
+    "quiet_reconcile_events": 0,
+    "quiet_entry_events": 0,
+    "decision_selected_total": 0,
+}
 
 
 def setup_logging() -> None:
@@ -237,6 +263,7 @@ def load_config(path: str) -> dict[str, Any]:
     decision_audit = _require_mapping(cfg, path, "decision_audit")
     collection = _require_mapping(cfg, path, "collection")
     execution = _require_mapping(cfg, path, "execution")
+    logging_cfg = _require_mapping(cfg, path, "logging")
     out = {
         "schema_version": 1,
         "enabled": _require_bool(cfg, path, "enabled"),
@@ -249,6 +276,9 @@ def load_config(path: str) -> dict[str, Any]:
         },
         "collection": {
             "interval_secs": _require_int(collection, path, "interval_secs", positive=True),
+        },
+        "logging": {
+            "summary_interval_secs": _require_int(logging_cfg, path, "summary_interval_secs", positive=True),
         },
         "execution": {
             "position_side": _require_non_empty_str(execution, path, "position_side").upper(),
@@ -1017,6 +1047,69 @@ def _selected_intents(decision: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _count_actions(events: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        action = str(event.get("action") or "").strip()
+        if not action:
+            action = "unknown"
+        counts[action] = counts.get(action, 0) + 1
+    return counts
+
+
+def _has_interesting_actions(reconcile_events: list[dict[str, Any]], entry_events: list[dict[str, Any]]) -> bool:
+    reconcile_actions = {str(event.get("action") or "") for event in reconcile_events if isinstance(event, Mapping)}
+    entry_actions = {str(event.get("action") or "") for event in entry_events if isinstance(event, Mapping)}
+    if reconcile_actions & IMPORTANT_RECONCILE_ACTIONS:
+        return True
+    if entry_actions & IMPORTANT_ENTRY_ACTIONS:
+        return True
+    noisy_reconcile = reconcile_actions - QUIET_RECONCILE_ACTIONS
+    noisy_entry = entry_actions - QUIET_ENTRY_ACTIONS
+    return bool(noisy_reconcile or noisy_entry)
+
+
+def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) -> None:
+    reconcile_events = [dict(x) for x in list(record.get("reconcile_events") or []) if isinstance(x, Mapping)]
+    entry_events = [dict(x) for x in list(record.get("entry_events") or []) if isinstance(x, Mapping)]
+    reconcile_counts = _count_actions(reconcile_events)
+    entry_counts = _count_actions(entry_events)
+    now_ms = _now_utc_ms()
+    _ITERATION_LOG_STATE["iterations"] = int(_ITERATION_LOG_STATE["iterations"]) + 1
+    _ITERATION_LOG_STATE["quiet_reconcile_events"] = int(_ITERATION_LOG_STATE["quiet_reconcile_events"]) + sum(
+        count for action, count in reconcile_counts.items() if action in QUIET_RECONCILE_ACTIONS
+    )
+    _ITERATION_LOG_STATE["quiet_entry_events"] = int(_ITERATION_LOG_STATE["quiet_entry_events"]) + sum(
+        count for action, count in entry_counts.items() if action in QUIET_ENTRY_ACTIONS
+    )
+    _ITERATION_LOG_STATE["decision_selected_total"] = int(_ITERATION_LOG_STATE["decision_selected_total"]) + int(record.get("decision_selected_count") or 0)
+
+    interval_ms = int(cfg["logging"]["summary_interval_secs"]) * 1000
+    elapsed = now_ms - int(_ITERATION_LOG_STATE["last_summary_utc_ms"] or 0)
+    important = _has_interesting_actions(reconcile_events, entry_events)
+    if not important and elapsed < interval_ms:
+        return
+
+    logging.info(
+        "TVR live heartbeat | dry_run=%s | selected=%s | active=%s | reconcile=%s | entry_events=%s | quiet_reconcile_events=%s | quiet_entry_events=%s | iterations=%s",
+        bool(record.get("dry_run")),
+        list(record.get("selected_symbols") or []),
+        list(record.get("active_symbols") or []),
+        reconcile_counts,
+        entry_counts,
+        int(_ITERATION_LOG_STATE["quiet_reconcile_events"]),
+        int(_ITERATION_LOG_STATE["quiet_entry_events"]),
+        int(_ITERATION_LOG_STATE["iterations"]),
+    )
+    _ITERATION_LOG_STATE["last_summary_utc_ms"] = now_ms
+    _ITERATION_LOG_STATE["iterations"] = 0
+    _ITERATION_LOG_STATE["quiet_reconcile_events"] = 0
+    _ITERATION_LOG_STATE["quiet_entry_events"] = 0
+    _ITERATION_LOG_STATE["decision_selected_total"] = 0
+
+
 def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | None:
     if not bool(cfg["enabled"]):
         raise RuntimeError("TVR live trader config enabled=false")
@@ -1066,16 +1159,11 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         "decision_eligible_count": decision.get("eligible_count"),
         "decision_selected_count": decision.get("selected_count"),
         "selected_symbols": list(decision.get("selected_symbols") or []),
+        "active_symbols": list(active_symbols),
         "reconcile_events": reconcile_events,
         "entry_events": entry_events,
     }
-    logging.info(
-        "TVR live trader | dry_run=%s | selected=%s | reconcile=%s | entries=%s",
-        dry_run,
-        record["selected_symbols"],
-        len(reconcile_events),
-        len(entry_events),
-    )
+    _log_iteration_summary(cfg, record)
     if not bool(cfg["audit_enabled"]):
         return None
     return _append_jsonl(_audit_path(), record)
@@ -1117,9 +1205,9 @@ def main() -> None:
     iteration = 0
     while True:
         iteration += 1
-        logging.info("TVR live trader iteration started | run_id=%s | iteration=%s | dry_run=%s", run_id, iteration, args.dry_run)
+        logging.debug("TVR live trader iteration started | run_id=%s | iteration=%s | dry_run=%s", run_id, iteration, args.dry_run)
         path = run_once(cfg, run_id=run_id, dry_run=bool(args.dry_run))
-        logging.info("TVR live trader iteration finished | run_id=%s | iteration=%s | path=%s", run_id, iteration, path)
+        logging.debug("TVR live trader iteration finished | run_id=%s | iteration=%s | path=%s", run_id, iteration, path)
         if args.once:
             break
         if int(args.max_iterations) > 0 and iteration >= int(args.max_iterations):
