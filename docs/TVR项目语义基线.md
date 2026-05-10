@@ -15,10 +15,11 @@
 
 ## 2. live-first 边界
 
-1. `TVR` 不做传统历史回测 sim 作为第一阶段准入条件。
+1. `TVR` 不做山寨币结构策略式传统 sim 作为第一阶段准入条件。
 2. `TVR` 采用 live-first 路线，以 live 交易所事实、live funding、live 盘口与真实 maker 成交作为事实源。
 3. live-first 不等于无验证；第一阶段必须先建设数据端，长期采集并落盘事实。
 4. 策略交易端可以频繁重启、调参、暂停；`TVR data_hub` 应稳定运行并持续积累数据。
+5. `TVR` 必须建设 percentile reclaim backtest，用完整历史 1m 数据验证各入场分位与固定 TP 的命中率和耗时。
 
 ## 3. data_hub 语义
 
@@ -42,6 +43,19 @@
    - live 决策参数可以参考最近窗口统计，但第一版不让统计模块自动改写交易参数。
    - 原始价格事实、cursor state、统计结果和超过决策窗口的历史归档必须落盘，供后续人工审计。
 
+`TVR` 价格历史必须分为两类语义：
+
+```text
+live decision store:
+  只服务当前实盘决策，例如最近 30 天。
+  要求轻量、稳定、可增量、可被 data_hub loop 持续维护。
+
+research history store:
+  服务 TVR backtest / 参数研究。
+  必须尽量保存所有 TradFi 品种上市以来的完整 1m contract kline。
+  必须支持断点续传、按 symbol cursor 增量补齐、长期归档和审计。
+```
+
 ## 4. 入场门禁草案
 
 当前已实现第一版策略侧 `decision_audit`，只读取 TVR data_hub facts 并落盘 audit-only intent，不下单，不写交易 live state。后续真实交易端必须继续遵守以下入场语义：
@@ -55,7 +69,11 @@
    - 若入场时当前 funding rate 大于该阈值，禁止新开仓。
    - 若 funding rate 缺失、不可读或字段异常，fail-fast，不入场。
    - 入场后 funding 变化只落盘审计，不作为第一版持仓退出条件。
-7. 第一版 `decision_audit` 使用 data_hub 的 `rolling_24h.latest` 与显式配置的 `entry_drop_pct` 判断当前跌幅是否触发。
+7. 目标入场语义必须使用当前滚动 24h return 与历史低位分位比较：
+   - `current_24h_return = priceChangePercent / 100`
+   - 等价于 Binance `/fapi/v1/ticker/24hr` 的 `lastPrice / openPrice - 1`
+   - `selected_percentile_return` 必须来自历史 rolling 24h return 的 `p1/p5/p10/p20` 之一。
+   - 触发条件为 `current_24h_return <= selected_percentile_return`。
 8. 第一版 `decision_audit` 必须要求 `history_sufficient=true`，否则该 symbol 禁入并落盘原因。
 9. 第一版 `decision_audit` 必须由 JSON 显式配置 `tradable_symbols` 白名单：
    - DataHub 继续采集全部 TradFi universe。
@@ -76,6 +94,7 @@
 6. 第一版不设置价格止损，不做 SHORT，不做对冲，不自动加仓。
 7. 第一版只允许小仓位 smoke notional，并要求本地 state / 交易所 symbol 维度无 pending、无 open position、无 open orders 后才提交新 entry。
 8. 若 entry 部分成交，第一版会尝试撤销剩余 entry，并对已成交数量挂 TP。
+9. 目标实盘入场价格不应由历史目标价长期挂单等待；触发后应读取实时盘口，使用 best bid 或 best bid 减一 tick 提交 `BUY LIMIT GTX`，以降低动态撤单重挂复杂度。
 
 ## 5. rolling 24h 统计
 
@@ -106,6 +125,40 @@ min / max / mean / median / p1 / p5 / p10 / p20 / sample_count
 ```
 
 其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_drop_pct`。
+
+后续字段命名应避免使用孤立 `latest` 表达涨跌幅语义，优先使用：
+
+```text
+rolling_24h_return_latest
+rolling_24h_return_p1
+rolling_24h_return_p5
+rolling_24h_return_p10
+rolling_24h_return_p20
+```
+
+## 5.1 percentile reclaim backtest 语义
+
+`TVR` backtest 不是山寨币结构策略 sim，而是 percentile reclaim backtest。
+
+第一版 backtest 必须回答：
+
+```text
+1. p1 / p5 / p10 / p20 触发后，固定 TP 0.5% / 1% 的命中率。
+2. 达到 TP 的最短时间、最长时间、平均时间和中位时间。
+3. max_hold 窗口内未达到 TP 的样本数和比例。
+4. 不同 symbol、不同分位、不同 TP 的横向比较。
+```
+
+第一版 backtest 口径：
+
+```text
+1. 每个时刻只能使用该时刻之前的历史样本计算 p1/p5/p10/p20，禁止未来函数。
+2. 触发条件为 current_24h_return <= selected_percentile_return。
+3. 第一版 entry_price 可使用当前 1m close，并明确标记为 signal-level backtest。
+4. TP 判定使用后续 K 线 high 是否触达 entry_price * (1 + take_profit_pct)。
+5. 同一 symbol 在一笔样本结束前不得重复入场。
+6. 样本结束条件为达到 TP 或超过 max_hold。
+```
 
 ## 6. 共享基础设施边界
 
@@ -144,7 +197,31 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 7. 不下单，不写 live state，不影响现有三套策略。
 ```
 
-## 8. 策略侧第一刀目标
+## 8. 当前三件事与 patch 顺序
+
+当前 TVR 后续工程固定为三件事：
+
+```text
+1. 完整历史数据落盘：
+   对所有 TradFi 品种尽量补齐上市以来完整 1m contract kline，写入 research history store。
+
+2. 完整 TVR percentile reclaim backtest：
+   读取 research history store，评估 p1/p5/p10/p20 与 TP 0.5%/1% 的命中率和耗时。
+
+3. 完整 TVR 实盘逻辑：
+   根据 backtest 选择 entry_percentile；live 决策使用 current_24h_return <= selected_percentile_return；
+   触发后按实时盘口 best bid 侧提交 post-only maker entry，成交后固定 TP。
+```
+
+代码 patch 顺序必须优先按 `3 -> 2 -> 1` 的工程依赖倒序推进：
+
+```text
+第一刀：完整历史数据落盘。
+第二刀：TVR percentile reclaim backtest。
+第三刀：按 backtest 语义修正 TVR decision_audit / live_trader 实盘入场逻辑。
+```
+
+## 9. 已实现组件目标
 
 ```text
 实现 TVR decision_audit：
