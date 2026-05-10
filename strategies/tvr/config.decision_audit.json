@@ -21,8 +21,8 @@
     "min_quote_volume_24h": 0
   },
   "risk": {
-    "proposed_order_notional_usdt": 1000,
-    "max_symbol_notional_usdt": 1000,
-    "max_total_notional_usdt": 10000
+    "proposed_order_notional_usdt": 10,
+    "max_symbol_notional_usdt": 10,
+    "max_total_notional_usdt": 40
   }
 }

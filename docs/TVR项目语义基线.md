@@ -62,7 +62,20 @@
    - 策略侧只允许白名单品种产生候选 intent。
    - 非白名单品种必须落盘 `symbol_not_in_tradable_symbols` 拒绝原因。
    - 白名单为空、重复或包含 DataHub universe 不存在的品种时必须 fail-fast。
-10. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力必须另起后续 patch 接入。
+10. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力由 `live_trader` 承担。
+
+## 4.1 实盘执行第一版
+
+当前已实现第一版 `live_trader` 小资金实盘执行层：
+
+1. 只读取最新 `decision_audit.selected_intents`，不重新计算信号。
+2. 必须显式配置 `allow_live_order=true` 才允许提交真实订单。
+3. 只支持 `LONG` / hedge mode / crossed margin。
+4. 入场只允许 `LIMIT + GTX` post-only maker BUY。
+5. 入场成交后只允许 `LIMIT + GTX` post-only maker SELL 止盈。
+6. 第一版不设置价格止损，不做 SHORT，不做对冲，不自动加仓。
+7. 第一版只允许小仓位 smoke notional，并要求本地 state / 交易所 symbol 维度无 pending、无 open position、无 open orders 后才提交新 entry。
+8. 若 entry 部分成交，第一版会尝试撤销剩余 entry，并对已成交数量挂 TP。
 
 ## 5. rolling 24h 统计
 
@@ -142,4 +155,14 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 5. 生成 audit-only maker LONG intent，不提交订单。
 6. 按 TVR 独立 decision audit 目录落盘候选、拒绝原因和 selected_intents。
 7. 不查询 Binance 账户，不接执行层，不写交易 live state。
+```
+
+```text
+实现 TVR live_trader：
+1. 读取最新 decision_audit selected_intents。
+2. 校验 decision_audit 新鲜度、account、audit-only intent 与 notional 一致性。
+3. 查询本地 TVR live state 与交易所 symbol position/open orders，防止重复开仓。
+4. 提交 post-only maker entry。
+5. entry 成交后提交 post-only maker TP。
+6. 写入 TVR 独立 live audit 与 TVR live state。
 ```

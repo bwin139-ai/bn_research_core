@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "mybwin139",
+  "allow_live_order": true,
+  "audit_enabled": true,
+  "decision_audit": {
+    "max_age_secs": 300,
+    "required_order_submission_enabled": false
+  },
+  "collection": {
+    "interval_secs": 20
+  },
+  "execution": {
+    "position_side": "LONG",
+    "position_mode": "HEDGE",
+    "margin_type": "CROSSED",
+    "leverage": 1,
+    "order_notional_usdt": 10,
+    "max_entry_notional_usdt": 11,
+    "max_open_trades": 1,
+    "max_new_entries_per_iteration": 1,
+    "entry_price_offset_pct": 0.0005,
+    "take_profit_pct": 0.01,
+    "post_only_time_in_force": "GTX",
+    "order_retry_max": 1,
+    "api_retry_delay_secs": 1.0,
+    "require_symbol_flat": true,
+    "require_no_symbol_open_orders": true
+  }
+}
