@@ -95,6 +95,8 @@ research history store:
 7. 第一版只允许小仓位 smoke notional，并要求本地 state / 交易所 symbol 维度无 pending、无 open position、无 open orders 后才提交新 entry。
 8. 若 entry 部分成交，第一版会尝试撤销剩余 entry，并对已成交数量挂 TP。
 9. 目标实盘入场价格不应由历史目标价长期挂单等待；触发后应读取实时盘口，使用 best bid 或 best bid 减一 tick 提交 `BUY LIMIT GTX`，以降低动态撤单重挂复杂度。
+10. 若 `BUY LIMIT GTX` 因盘口下移或 post-only 约束直接 `EXPIRED/REJECTED`，该结果视为有利方向上的 maker 重定价机会；在本次 entry attempt window 内只重读 best bid 并重试，不重新判断 `current_24h_return`。
+11. entry attempt 必须有显式生命周期和次数上限，防止无限重试和 API 额度失控。
 
 ## 5. rolling 24h 统计
 
@@ -124,7 +126,7 @@ archive_after_days = 30
 min / max / mean / median / p1 / p5 / p10 / p20 / sample_count
 ```
 
-其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_drop_pct`。
+其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_percentile`。
 
 后续字段命名应避免使用孤立 `latest` 表达涨跌幅语义，优先使用：
 
@@ -221,6 +223,19 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 第三刀：按 backtest 语义修正 TVR decision_audit / live_trader 实盘入场逻辑。
 ```
 
+第三刀 live 逻辑的固定语义：
+
+```text
+1. selected_percentile_return 低频刷新，默认 percentile_refresh_secs = 3600。
+2. 当前价格/24h return 高频监控，默认 decision_audit.collection.interval_secs = 2。
+3. current_24h_return 使用 Binance 24h ticker 的 priceChangePercent / 100。
+4. 触发条件为 current_24h_return <= selected_percentile_return。
+5. 触发后 live_trader 读取 best bid 并提交 BUY LIMIT GTX。
+6. entry attempt window 内若 post-only 失败，重读 best bid 并继续重试，不重新判断 24h return。
+7. entry attempt window 默认 30 秒，最大 30 次尝试。
+8. entry pending order 默认 TTL 为 120 秒，超时未成交则撤单并清理 pending。
+```
+
 第一刀 history backfill 的固定语义：
 
 ```text
@@ -257,9 +272,9 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 
 ```text
 实现 TVR decision_audit：
-1. 读取最新 universe / funding / price_24h / rolling_24h_stats data_hub facts。
+1. 读取最新 universe / funding / rolling_24h_stats data_hub facts，并按白名单 symbol 高频读取 live 24h ticker。
 2. 校验 data_hub facts 新鲜度、account、symbol 覆盖和字段可读性。
-3. 应用 LONG-only、history_sufficient、funding_rate_entry_max、entry_drop_pct、risk notional cap。
+3. 应用 LONG-only、history_sufficient、funding_rate_entry_max、entry_percentile 分位阈值、risk notional cap。
 4. 应用 JSON `tradable_symbols` 白名单，非白名单品种只落盘拒绝原因。
 5. 生成 audit-only maker LONG intent，不提交订单。
 6. 按 TVR 独立 decision audit 目录落盘候选、拒绝原因和 selected_intents。

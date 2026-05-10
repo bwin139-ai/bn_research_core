@@ -18,6 +18,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 from core.runtime_state import get_state_dir
+from core.live.binance_rest_gateway import (
+    BinanceRestGatewayRejected,
+    REQUEST_PRIORITY_LOW,
+    call_client_method,
+)
 
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
@@ -81,6 +86,10 @@ def _append_jsonl(path: Path, record: Mapping[str, Any]) -> Path:
 def _audit_path(*, day_bj: str | None = None) -> Path:
     day_key = str(day_bj or "").strip() or _bj_day_from_ms(None)
     return get_state_dir() / "live_audit" / "tvr" / "decision" / day_key / "tvr_decision_audit.jsonl"
+
+
+def _percentile_state_path() -> Path:
+    return get_state_dir() / "live_audit" / "tvr" / "decision" / "percentile_threshold_state.json"
 
 
 def _base_record(run_id: str, event: str) -> dict[str, Any]:
@@ -170,6 +179,13 @@ def _require_float(cfg: Mapping[str, Any], path: str, key: str, *, positive: boo
     return out
 
 
+def _require_percentile(cfg: Mapping[str, Any], path: str, key: str) -> str:
+    value = _require_non_empty_str(cfg, path, key).lower()
+    if value not in {"p1", "p5", "p10", "p20"}:
+        raise ValueError(f"TVR decision audit unsupported percentile: {value} | {path}")
+    return value
+
+
 def _require_symbol_list(cfg: Mapping[str, Any], path: str, key: str) -> list[str]:
     if key not in cfg:
         raise KeyError(f"TVR decision audit config missing required field: {key} | {path}")
@@ -216,7 +232,8 @@ def load_config(path: str) -> dict[str, Any]:
             "interval_secs": _require_int(collection, path, "interval_secs", positive=True),
         },
         "decision": {
-            "entry_drop_pct": _require_float(decision, path, "entry_drop_pct", positive=True),
+            "entry_percentile": _require_percentile(decision, path, "entry_percentile"),
+            "percentile_refresh_secs": _require_int(decision, path, "percentile_refresh_secs", positive=True),
             "funding_rate_entry_max": _require_float(decision, path, "funding_rate_entry_max", positive=True),
             "take_profit_pct": _require_float(decision, path, "take_profit_pct", positive=True),
             "max_candidates": _require_int(decision, path, "max_candidates", positive=True),
@@ -236,6 +253,13 @@ def load_config(path: str) -> dict[str, Any]:
     if symbol_cap > total_cap:
         raise ValueError(f"TVR max_symbol_notional_usdt must be <= max_total_notional_usdt | {path}")
     return out
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp_path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, default=_json_default) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def _data_hub_stream_path(stream: str, *, day_bj: str) -> Path:
@@ -331,7 +355,7 @@ def _load_inputs(cfg: Mapping[str, Any]) -> dict[str, Any]:
     streams = {}
     sources = {}
     ages = {}
-    for stream in ("universe", "funding", "price_24h", "rolling_24h_stats"):
+    for stream in ("universe", "funding", "rolling_24h_stats"):
         record, path = _load_latest_jsonl_record(stream)
         _require_account(record, stream=stream, account=account)
         ages[stream] = _require_record_age(record, stream=stream, max_age_secs=max_age_secs)
@@ -366,12 +390,158 @@ def _reject(reasons: list[str], reason: str) -> None:
         reasons.append(reason)
 
 
+def _call_client(account: str, source: str, method_name: str, **params: Any) -> Any:
+    for attempt in range(1, 5):
+        try:
+            return call_client_method(
+                account,
+                source=source,
+                method_name=method_name,
+                priority=REQUEST_PRIORITY_LOW,
+                **params,
+            )
+        except BinanceRestGatewayRejected as exc:
+            if attempt >= 4:
+                raise
+            if str(exc.code).endswith("_QUOTA_CLOSED"):
+                now_ms = _now_utc_ms()
+                next_minute_ms = int((now_ms // 60_000 + 1) * 60_000)
+                sleep_s = max(1.0, (next_minute_ms - now_ms) / 1000.0 + 1.0)
+            else:
+                sleep_s = min(30.0, float(2 ** (attempt - 1)))
+            logging.warning(
+                "TVR decision REST Gateway rejected | source=%s | attempt=%s/4 | code=%s | sleep=%.1fs",
+                source,
+                attempt,
+                exc.code,
+                sleep_s,
+            )
+            time.sleep(float(sleep_s))
+
+
+def _load_percentile_state() -> dict[str, Any] | None:
+    path = _percentile_state_path()
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"TVR percentile threshold state must be object: {path}")
+    if int(payload.get("schema_version", 0)) != 1:
+        raise ValueError(f"TVR percentile threshold state schema_version must be 1: {path}")
+    thresholds = payload.get("thresholds")
+    if not isinstance(thresholds, dict):
+        raise TypeError(f"TVR percentile threshold state missing thresholds object: {path}")
+    return payload
+
+
+def _save_percentile_state(state: Mapping[str, Any]) -> None:
+    _atomic_write_json(_percentile_state_path(), dict(state))
+
+
+def _build_percentile_state(
+    *,
+    cfg: Mapping[str, Any],
+    rolling_by_symbol: Mapping[str, Mapping[str, Any]],
+    force_refresh: bool,
+) -> dict[str, Any]:
+    now_ms = _now_utc_ms()
+    refresh_secs = int(cfg["decision"]["percentile_refresh_secs"])
+    entry_percentile = str(cfg["decision"]["entry_percentile"])
+    existing = _load_percentile_state()
+    if not force_refresh and isinstance(existing, dict):
+        updated = _as_int(existing.get("updated_utc_ms"))
+        if updated is not None and now_ms - int(updated) <= refresh_secs * 1000:
+            existing_thresholds = existing.get("thresholds")
+            existing_symbols = set(existing_thresholds.keys()) if isinstance(existing_thresholds, dict) else set()
+            tradable_symbols = set(str(x).upper().strip() for x in cfg["universe"]["tradable_symbols"])
+            if str(existing.get("entry_percentile") or "") == entry_percentile and tradable_symbols.issubset(existing_symbols):
+                return existing
+
+    thresholds: dict[str, dict[str, Any]] = {}
+    for symbol in cfg["universe"]["tradable_symbols"]:
+        rolling = dict(rolling_by_symbol.get(symbol) or {})
+        if not rolling:
+            raise KeyError(f"TVR rolling_24h_stats missing tradable symbol: {symbol}")
+        rolling_stats = rolling.get("rolling_24h")
+        if not isinstance(rolling_stats, dict):
+            raise TypeError(f"TVR rolling_24h stats missing object: {symbol}")
+        if not bool(rolling.get("history_sufficient")):
+            thresholds[symbol] = {
+                "history_sufficient": False,
+                "insufficiency_reason": str(rolling.get("insufficiency_reason") or ""),
+                "selected_percentile_return": None,
+                "rolling_24h_sample_count": _as_int(rolling_stats.get("sample_count")),
+            }
+            continue
+        selected = _as_float(rolling_stats.get(entry_percentile))
+        if selected is None:
+            raise ValueError(f"TVR rolling_24h {entry_percentile} missing/unreadable: {symbol}")
+        thresholds[symbol] = {
+            "history_sufficient": True,
+            "insufficiency_reason": "",
+            "entry_percentile": entry_percentile,
+            "selected_percentile_return": float(selected),
+            "rolling_24h_p1": _as_float(rolling_stats.get("p1")),
+            "rolling_24h_p5": _as_float(rolling_stats.get("p5")),
+            "rolling_24h_p10": _as_float(rolling_stats.get("p10")),
+            "rolling_24h_p20": _as_float(rolling_stats.get("p20")),
+            "rolling_24h_sample_count": _as_int(rolling_stats.get("sample_count")),
+        }
+    state = {
+        "schema_version": 1,
+        "strategy_name": STRATEGY_NAME,
+        "entry_percentile": entry_percentile,
+        "percentile_refresh_secs": int(refresh_secs),
+        "updated_utc_ms": int(now_ms),
+        "updated_bj": _fmt_bj_from_ms(now_ms),
+        "thresholds": thresholds,
+    }
+    _save_percentile_state(state)
+    return state
+
+
+def _fetch_live_ticker(account: str, symbol: str) -> dict[str, Any]:
+    payload = _call_client(
+        account,
+        "tvr_decision_audit.futures_ticker",
+        "futures_ticker",
+        symbol=str(symbol).upper().strip(),
+    )
+    if not isinstance(payload, dict):
+        raise TypeError(f"TVR futures_ticker payload must be object: {symbol}")
+    return dict(payload)
+
+
+def _non_tradable_symbol_row(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": str(symbol).upper().strip(),
+        "eligible": False,
+        "reject_reasons": ["symbol_not_in_tradable_symbols"],
+        "intent": None,
+        "last_price": None,
+        "quote_volume_24h": None,
+        "price_change_pct_24h_percent": None,
+        "current_24h_return": None,
+        "entry_percentile": None,
+        "selected_percentile_return": None,
+        "funding_rate": None,
+        "funding_rate_entry_max": None,
+        "history_sufficient": None,
+        "insufficiency_reason": "",
+        "rolling_24h_p1": None,
+        "rolling_24h_p5": None,
+        "rolling_24h_p10": None,
+        "rolling_24h_p20": None,
+        "rolling_24h_sample_count": None,
+    }
+
+
 def _evaluate_symbol(
     symbol: str,
     *,
     funding: Mapping[str, Any],
-    price_24h: Mapping[str, Any],
-    rolling: Mapping[str, Any],
+    ticker: Mapping[str, Any],
+    threshold: Mapping[str, Any],
     cfg: Mapping[str, Any],
 ) -> dict[str, Any]:
     decision_cfg = cfg["decision"]
@@ -388,27 +558,29 @@ def _evaluate_symbol(
     if funding_rate > float(decision_cfg["funding_rate_entry_max"]):
         _reject(reasons, "funding_rate_above_entry_max")
 
-    last_price = _as_float(price_24h.get("last_price"))
+    last_price = _as_float(ticker.get("lastPrice"))
     if last_price is None or last_price <= 0:
-        raise ValueError(f"TVR price_24h last_price missing/unreadable: {symbol}")
-    quote_volume_24h = _as_float(price_24h.get("quote_volume_24h"))
+        raise ValueError(f"TVR live ticker lastPrice missing/unreadable: {symbol}")
+    quote_volume_24h = _as_float(ticker.get("quoteVolume"))
     if quote_volume_24h is None:
-        raise ValueError(f"TVR price_24h quote_volume_24h missing/unreadable: {symbol}")
+        raise ValueError(f"TVR live ticker quoteVolume missing/unreadable: {symbol}")
     if quote_volume_24h < float(decision_cfg["min_quote_volume_24h"]):
         _reject(reasons, "quote_volume_24h_below_min")
 
-    history_sufficient = bool(rolling.get("history_sufficient"))
-    insufficiency_reason = str(rolling.get("insufficiency_reason") or "")
-    rolling_stats = rolling.get("rolling_24h")
-    if not isinstance(rolling_stats, dict):
-        raise TypeError(f"TVR rolling_24h stats missing object: {symbol}")
-    rolling_latest = _as_float(rolling_stats.get("latest"))
+    history_sufficient = bool(threshold.get("history_sufficient"))
+    insufficiency_reason = str(threshold.get("insufficiency_reason") or "")
+    selected_percentile_return = _as_float(threshold.get("selected_percentile_return"))
     if not history_sufficient:
         _reject(reasons, "history_not_sufficient")
-    elif rolling_latest is None:
-        raise ValueError(f"TVR rolling_24h latest missing/unreadable for sufficient history: {symbol}")
-    elif rolling_latest > -float(decision_cfg["entry_drop_pct"]):
-        _reject(reasons, "entry_drop_not_reached")
+    elif selected_percentile_return is None:
+        raise ValueError(f"TVR selected_percentile_return missing/unreadable: {symbol}")
+
+    price_change_pct_24h_percent = _as_float(ticker.get("priceChangePercent"))
+    if price_change_pct_24h_percent is None:
+        raise ValueError(f"TVR live ticker priceChangePercent missing/unreadable: {symbol}")
+    current_24h_return = float(price_change_pct_24h_percent) / 100.0
+    if history_sufficient and selected_percentile_return is not None and current_24h_return > float(selected_percentile_return):
+        _reject(reasons, "current_24h_return_above_selected_percentile")
 
     proposed_notional = float(risk_cfg["proposed_order_notional_usdt"])
     max_symbol_notional = float(risk_cfg["max_symbol_notional_usdt"])
@@ -418,7 +590,6 @@ def _evaluate_symbol(
     if proposed_notional > max_total_notional:
         _reject(reasons, "proposed_notional_above_total_cap")
 
-    current_drop_pct = abs(float(rolling_latest)) if rolling_latest is not None and rolling_latest < 0 else 0.0
     estimated_qty = proposed_notional / float(last_price)
     eligible = not reasons
     intent = None
@@ -433,10 +604,12 @@ def _evaluate_symbol(
             "estimated_entry_price": float(last_price),
             "estimated_order_qty": float(estimated_qty),
             "take_profit_pct": float(decision_cfg["take_profit_pct"]),
+            "entry_percentile": str(decision_cfg["entry_percentile"]),
+            "selected_percentile_return": float(selected_percentile_return),
+            "current_24h_return": float(current_24h_return),
             "take_profit_order_intent": "POST_ONLY_MAKER_SELL_AUDIT_ONLY",
         }
 
-    price_change_pct_24h_percent = _as_float(price_24h.get("price_change_pct_24h"))
     return {
         "symbol": symbol,
         "eligible": bool(eligible),
@@ -445,27 +618,27 @@ def _evaluate_symbol(
         "last_price": float(last_price),
         "quote_volume_24h": float(quote_volume_24h),
         "price_change_pct_24h_percent": price_change_pct_24h_percent,
+        "current_24h_return": float(current_24h_return),
+        "entry_percentile": str(decision_cfg["entry_percentile"]),
+        "selected_percentile_return": selected_percentile_return,
         "funding_rate": float(funding_rate),
         "funding_rate_entry_max": float(decision_cfg["funding_rate_entry_max"]),
         "history_sufficient": bool(history_sufficient),
         "insufficiency_reason": insufficiency_reason,
-        "rolling_24h_latest": rolling_latest,
-        "current_drop_pct": float(current_drop_pct),
-        "entry_drop_pct": float(decision_cfg["entry_drop_pct"]),
-        "rolling_24h_p1": _as_float(rolling_stats.get("p1")),
-        "rolling_24h_p5": _as_float(rolling_stats.get("p5")),
-        "rolling_24h_p10": _as_float(rolling_stats.get("p10")),
-        "rolling_24h_p20": _as_float(rolling_stats.get("p20")),
-        "rolling_24h_sample_count": _as_int(rolling_stats.get("sample_count")),
+        "rolling_24h_p1": _as_float(threshold.get("rolling_24h_p1")),
+        "rolling_24h_p5": _as_float(threshold.get("rolling_24h_p5")),
+        "rolling_24h_p10": _as_float(threshold.get("rolling_24h_p10")),
+        "rolling_24h_p20": _as_float(threshold.get("rolling_24h_p20")),
+        "rolling_24h_sample_count": _as_int(threshold.get("rolling_24h_sample_count")),
     }
 
 
 def _selected_key(row: Mapping[str, Any]) -> tuple[float, float, float, str]:
-    latest = _as_float(row.get("rolling_24h_latest"))
+    current_return = _as_float(row.get("current_24h_return"))
     funding = _as_float(row.get("funding_rate"))
     quote_volume = _as_float(row.get("quote_volume_24h"))
     return (
-        float(latest if latest is not None else 0.0),
+        float(current_return if current_return is not None else 0.0),
         float(funding if funding is not None else 0.0),
         -float(quote_volume if quote_volume is not None else 0.0),
         str(row.get("symbol") or ""),
@@ -484,22 +657,30 @@ def build_decision_audit(cfg: Mapping[str, Any], *, run_id: str) -> dict[str, An
     if missing_tradable:
         raise RuntimeError(f"TVR tradable_symbols not found in data_hub universe: {missing_tradable}")
     funding_by_symbol = _map_rows(records["funding"].get("rows"), stream="funding")
-    price_by_symbol = _map_rows(records["price_24h"].get("rows"), stream="price_24h")
     rolling_by_symbol = _map_rows(records["rolling_24h_stats"].get("rows"), stream="rolling_24h_stats")
+    percentile_state = _build_percentile_state(
+        cfg=cfg,
+        rolling_by_symbol=rolling_by_symbol,
+        force_refresh=False,
+    )
+    thresholds_by_symbol = dict(percentile_state["thresholds"])
 
     rows: list[dict[str, Any]] = []
+    tradable_symbol_set = set(tradable_symbols)
     for symbol in universe_symbols:
+        if symbol not in tradable_symbol_set:
+            rows.append(_non_tradable_symbol_row(symbol))
+            continue
         if symbol not in funding_by_symbol:
             raise KeyError(f"TVR funding snapshot missing universe symbol: {symbol}")
-        if symbol not in price_by_symbol:
-            raise KeyError(f"TVR price_24h snapshot missing universe symbol: {symbol}")
-        if symbol not in rolling_by_symbol:
-            raise KeyError(f"TVR rolling_24h_stats missing universe symbol: {symbol}")
+        if symbol not in thresholds_by_symbol:
+            raise KeyError(f"TVR percentile threshold missing tradable symbol: {symbol}")
+        ticker = _fetch_live_ticker(str(cfg["account"]), symbol)
         rows.append(_evaluate_symbol(
             symbol,
             funding=funding_by_symbol[symbol],
-            price_24h=price_by_symbol[symbol],
-            rolling=rolling_by_symbol[symbol],
+            ticker=ticker,
+            threshold=thresholds_by_symbol[symbol],
             cfg=cfg,
         ))
 
@@ -516,6 +697,8 @@ def build_decision_audit(cfg: Mapping[str, Any], *, run_id: str) -> dict[str, An
         "data_hub_inputs": {
             "paths": dict(inputs["paths"]),
             "age_ms": dict(inputs["age_ms"]),
+            "percentile_threshold_state_path": str(_percentile_state_path()),
+            "percentile_threshold_updated_bj": percentile_state.get("updated_bj"),
             "collected_bj": {
                 key: value.get("collected_bj")
                 for key, value in dict(records).items()

@@ -23,13 +23,12 @@ from core.live.binance_exec import (
     ensure_cross_margin,
     ensure_hedge_mode,
     ensure_leverage,
-    get_last_price,
     get_open_orders,
     get_order,
     get_position,
     get_symbol_filters,
 )
-from core.live.binance_rest_gateway import REQUEST_PRIORITY_CRITICAL, call_client_method
+from core.live.binance_rest_gateway import REQUEST_PRIORITY_CRITICAL, REQUEST_PRIORITY_HIGH, call_client_method
 from core.live.custom_id import build_client_order_id, make_order_root
 from core.live.live_state import (
     load_live_state,
@@ -44,6 +43,7 @@ STRATEGY_NAME = "tvr"
 STRATEGY_CODE = "TVR"
 POSITION_SIDE_LONG = "LONG"
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
+REPRICE_RETRY_ORDER_STATUSES = {"EXPIRED", "REJECTED"}
 
 
 def setup_logging() -> None:
@@ -224,7 +224,12 @@ def load_config(path: str) -> dict[str, Any]:
             "max_entry_notional_usdt": _require_float(execution, path, "max_entry_notional_usdt", positive=True),
             "max_open_trades": _require_int(execution, path, "max_open_trades", positive=True),
             "max_new_entries_per_iteration": _require_int(execution, path, "max_new_entries_per_iteration", positive=True),
-            "entry_price_offset_pct": _require_float(execution, path, "entry_price_offset_pct", positive=True),
+            "entry_price_mode": _require_non_empty_str(execution, path, "entry_price_mode").upper(),
+            "entry_best_bid_offset_ticks": _require_int(execution, path, "entry_best_bid_offset_ticks", positive=False),
+            "entry_attempt_window_secs": _require_float(execution, path, "entry_attempt_window_secs", positive=True),
+            "entry_retry_sleep_secs": _require_float(execution, path, "entry_retry_sleep_secs", positive=True),
+            "entry_max_attempts": _require_int(execution, path, "entry_max_attempts", positive=True),
+            "entry_order_ttl_secs": _require_float(execution, path, "entry_order_ttl_secs", positive=True),
             "take_profit_pct": _require_float(execution, path, "take_profit_pct", positive=True),
             "post_only_time_in_force": _require_non_empty_str(execution, path, "post_only_time_in_force").upper(),
             "order_retry_max": _require_int(execution, path, "order_retry_max", positive=False),
@@ -242,6 +247,8 @@ def load_config(path: str) -> dict[str, Any]:
         raise ValueError(f"TVR live trader margin_type must be CROSSED | {path}")
     if exec_cfg["post_only_time_in_force"] != "GTX":
         raise ValueError(f"TVR live trader post_only_time_in_force must be GTX | {path}")
+    if exec_cfg["entry_price_mode"] != "BEST_BID":
+        raise ValueError(f"TVR live trader entry_price_mode must be BEST_BID | {path}")
     if float(exec_cfg["order_notional_usdt"]) > float(exec_cfg["max_entry_notional_usdt"]):
         raise ValueError(f"TVR order_notional_usdt must be <= max_entry_notional_usdt | {path}")
     return out
@@ -395,6 +402,44 @@ def _submit_post_only_limit(
     return _extract_order_row(raw)
 
 
+def _is_post_only_reprice_exception(exc: Exception) -> bool:
+    text = str(exc)
+    if "APIError(code=-5022)" in text:
+        return True
+    upper = text.upper()
+    return (
+        "GTX" in upper
+        or "POST ONLY" in upper
+        or "POST-ONLY" in upper
+        or "COULD NOT BE EXECUTED AS MAKER" in upper
+        or "WOULD BE IMMEDIATELY MATCHED" in upper
+    )
+
+
+def _best_bid_price(account: str, symbol: str) -> dict[str, Any]:
+    raw = call_client_method(
+        account,
+        source="tvr_live_trader.futures_order_book",
+        method_name="futures_order_book",
+        priority=REQUEST_PRIORITY_HIGH,
+        symbol=str(symbol).upper().strip(),
+        limit=5,
+    )
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"unexpected futures_order_book payload: {raw}")
+    bids = raw.get("bids")
+    if not isinstance(bids, list) or not bids:
+        raise RuntimeError(f"futures_order_book bids missing: {symbol}")
+    first = bids[0]
+    if not isinstance(first, (list, tuple)) or len(first) < 2:
+        raise RuntimeError(f"futures_order_book best bid malformed: {symbol}")
+    price = _as_float(first[0])
+    qty = _as_float(first[1])
+    if price is None or price <= 0:
+        raise RuntimeError(f"futures_order_book best bid price invalid: {symbol}")
+    return {"price": float(price), "qty": qty, "raw": raw}
+
+
 def _normalize_order_size(account: str, symbol: str, *, notional_usdt: float, limit_price: float) -> dict[str, Any]:
     filters_res = get_symbol_filters(account, symbol)
     if not filters_res.get("ok"):
@@ -412,6 +457,34 @@ def _normalize_order_size(account: str, symbol: str, *, notional_usdt: float, li
     if filters.get("min_notional") and notional < float(filters["min_notional"]):
         raise ValueError(f"TVR notional below exchange min_notional: {notional} < {filters['min_notional']}")
     return {"qty": float(qty), "price": float(price), "notional_usdt": float(notional), "filters": filters}
+
+
+def _entry_price_from_best_bid(account: str, symbol: str, cfg: Mapping[str, Any]) -> dict[str, Any]:
+    bid = _best_bid_price(account, symbol)
+    filters_res = get_symbol_filters(account, symbol)
+    if not filters_res.get("ok"):
+        raise RuntimeError(f"symbol filters query failed: {filters_res.get('reason')}")
+    filters = dict(filters_res["data"])
+    tick_size = _as_float(filters.get("tick_size")) or 0.0
+    raw_price = float(bid["price"]) - int(cfg["execution"]["entry_best_bid_offset_ticks"]) * float(tick_size)
+    price = _round_to_tick(raw_price, filters.get("tick_size"))
+    if price <= 0:
+        raise ValueError(f"TVR best-bid entry price invalid after rounding: {raw_price}")
+    qty = _floor_to_step(float(cfg["execution"]["order_notional_usdt"]) / price, filters.get("step_size"))
+    notional = qty * price
+    if qty <= 0:
+        raise ValueError("TVR quantity non-positive after best-bid step rounding")
+    if filters.get("min_qty") and qty < float(filters["min_qty"]):
+        raise ValueError(f"TVR quantity below exchange min_qty: {qty} < {filters['min_qty']}")
+    if filters.get("min_notional") and notional < float(filters["min_notional"]):
+        raise ValueError(f"TVR notional below exchange min_notional: {notional} < {filters['min_notional']}")
+    return {
+        "qty": float(qty),
+        "price": float(price),
+        "notional_usdt": float(notional),
+        "best_bid": bid,
+        "filters": filters,
+    }
 
 
 def _active_local_symbols(state: Mapping[str, Any]) -> list[str]:
@@ -487,12 +560,13 @@ def _place_entry_from_intent(
         estimated_price = _as_float(intent.get("estimated_entry_price"))
         if estimated_price is None or estimated_price <= 0:
             raise ValueError(f"TVR selected intent missing estimated_entry_price: {symbol}")
-        entry_limit_price = estimated_price * (1.0 - float(cfg["execution"]["entry_price_offset_pct"]))
+        entry_limit_price = estimated_price
         estimated_qty = order_notional / entry_limit_price
         return {
             "action": "dry_run_entry",
             "symbol": symbol,
             "current_price": estimated_price,
+            "entry_price_mode": str(cfg["execution"]["entry_price_mode"]),
             "entry_limit_price": entry_limit_price,
             "qty": estimated_qty,
             "notional_usdt": order_notional,
@@ -500,27 +574,66 @@ def _place_entry_from_intent(
             "decision_run_id": decision.get("run_id"),
         }
 
-    price_res = get_last_price(account, symbol)
-    if not price_res.get("ok"):
-        raise RuntimeError(f"last price query failed: {price_res.get('reason')}")
-    current_price = float(price_res["data"]["price"])
-    entry_limit_price = current_price * (1.0 - float(cfg["execution"]["entry_price_offset_pct"]))
-    size = _normalize_order_size(account, symbol, notional_usdt=order_notional, limit_price=entry_limit_price)
     precheck = _ensure_symbol_is_flat(account, symbol, cfg)
     if not precheck["ok"]:
         return {"action": "entry_blocked", "symbol": symbol, "precheck": precheck}
     env = _ensure_execution_env(account, symbol, cfg)
-    entry_order = _submit_post_only_limit(
-        account=account,
-        symbol=symbol,
-        side="BUY",
-        position_side=POSITION_SIDE_LONG,
-        quantity=size["qty"],
-        price=size["price"],
-        client_order_id=order_ids["entry_client_order_id"],
-        time_in_force=str(cfg["execution"]["post_only_time_in_force"]),
-    )
-    status = str(entry_order.get("status") or "").upper()
+    attempt_started_ms = _now_utc_ms()
+    attempt_deadline_ms = attempt_started_ms + int(float(cfg["execution"]["entry_attempt_window_secs"]) * 1000)
+    attempts: list[dict[str, Any]] = []
+    entry_order: dict[str, Any] | None = None
+    size: dict[str, Any] | None = None
+    status = ""
+    for attempt_index in range(1, int(cfg["execution"]["entry_max_attempts"]) + 1):
+        now_ms = _now_utc_ms()
+        if now_ms > attempt_deadline_ms:
+            break
+        try:
+            size = _entry_price_from_best_bid(account, symbol, cfg)
+            attempt_client_order_id = build_client_order_id(
+                strat=STRATEGY_CODE,
+                leg=f"E{attempt_index}",
+                root=order_ids["order_root"],
+            )
+            entry_order = _submit_post_only_limit(
+                account=account,
+                symbol=symbol,
+                side="BUY",
+                position_side=POSITION_SIDE_LONG,
+                quantity=size["qty"],
+                price=size["price"],
+                client_order_id=attempt_client_order_id,
+                time_in_force=str(cfg["execution"]["post_only_time_in_force"]),
+            )
+            status = str(entry_order.get("status") or "").upper()
+            order_ids["entry_client_order_id"] = attempt_client_order_id
+            attempts.append({
+                "attempt": attempt_index,
+                "entry_limit_price": float(size["price"]),
+                "qty": float(size["qty"]),
+                "status": status,
+                "order_id": entry_order.get("order_id"),
+                "client_order_id": entry_order.get("client_order_id"),
+            })
+            if status not in REPRICE_RETRY_ORDER_STATUSES:
+                break
+        except Exception as exc:
+            if not _is_post_only_reprice_exception(exc):
+                raise
+            attempts.append({"attempt": attempt_index, "exception": str(exc), "status": "POST_ONLY_REPRICE_RETRY"})
+            status = "EXCEPTION"
+        if _now_utc_ms() >= attempt_deadline_ms:
+            break
+        time.sleep(float(cfg["execution"]["entry_retry_sleep_secs"]))
+
+    if entry_order is None or size is None:
+        return {
+            "action": "entry_attempt_failed",
+            "symbol": symbol,
+            "env": env,
+            "attempts": attempts,
+            "attempt_window_secs": float(cfg["execution"]["entry_attempt_window_secs"]),
+        }
     payload = {
         "symbol": symbol,
         "strategy_name": STRATEGY_NAME,
@@ -539,9 +652,10 @@ def _place_entry_from_intent(
         "created_bj": _fmt_bj_from_ms(_now_utc_ms()),
         "order_status": status,
         "raw_order": entry_order,
+        "entry_attempts": attempts,
     }
     if status in TERMINAL_ORDER_STATUSES and status != "FILLED":
-        return {"action": "entry_terminal_without_pending", "symbol": symbol, "entry_order": entry_order, "env": env}
+        return {"action": "entry_terminal_without_pending", "symbol": symbol, "entry_order": entry_order, "env": env, "attempts": attempts}
     if status not in TERMINAL_ORDER_STATUSES or status == "FILLED":
         set_pending_entry_order(account, symbol, payload, strategy_name=STRATEGY_NAME)
     return {"action": "entry_submitted", "symbol": symbol, "entry_order": entry_order, "env": env, "pending_entry_order": payload}
@@ -638,6 +752,24 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
             if status in TERMINAL_ORDER_STATUSES:
                 set_pending_entry_order(account, symbol_key, None, strategy_name=STRATEGY_NAME)
                 events.append({"action": "pending_entry_terminal_cleared", "symbol": symbol_key, "status": status, "order": order})
+                continue
+            created_ms = _as_int(pending.get("created_utc_ms"))
+            if created_ms is not None and _now_utc_ms() - int(created_ms) > int(float(cfg["execution"]["entry_order_ttl_secs"]) * 1000):
+                if dry_run:
+                    events.append({"action": "dry_run_pending_entry_ttl_reached", "symbol": symbol_key, "status": status, "order": order})
+                else:
+                    cancel_res = cancel_order(
+                        account,
+                        symbol_key,
+                        exchange_order_id=_as_int(pending.get("entry_exchange_order_id")),
+                        client_order_id=str(pending.get("entry_client_order_id") or ""),
+                        retry_max=int(cfg["execution"]["order_retry_max"]),
+                        retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
+                        notify_label="tvr",
+                    )
+                    if cancel_res.get("ok"):
+                        set_pending_entry_order(account, symbol_key, None, strategy_name=STRATEGY_NAME)
+                    events.append({"action": "pending_entry_ttl_cancel", "symbol": symbol_key, "status": status, "cancel": cancel_res})
                 continue
             events.append({"action": "pending_entry_wait", "symbol": symbol_key, "status": status, "order": order})
         open_trade = symbol_state.get("open_trade")

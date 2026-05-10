@@ -9,7 +9,7 @@
     "required_order_submission_enabled": false
   },
   "collection": {
-    "interval_secs": 20
+    "interval_secs": 2
   },
   "execution": {
     "position_side": "LONG",
@@ -20,7 +20,12 @@
     "max_entry_notional_usdt": 11,
     "max_open_trades": 1,
     "max_new_entries_per_iteration": 1,
-    "entry_price_offset_pct": 0.0005,
+    "entry_price_mode": "BEST_BID",
+    "entry_best_bid_offset_ticks": 0,
+    "entry_attempt_window_secs": 30,
+    "entry_retry_sleep_secs": 0.5,
+    "entry_max_attempts": 30,
+    "entry_order_ttl_secs": 120,
     "take_profit_pct": 0.01,
     "post_only_time_in_force": "GTX",
     "order_retry_max": 1,
