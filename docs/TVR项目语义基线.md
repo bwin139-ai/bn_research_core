@@ -236,6 +236,42 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 8. entry pending order 默认 TTL 为 120 秒，超时未成交则撤单并清理 pending。
 ```
 
+## 9. TVR live 多账户目标架构
+
+TVR live 后续生产形态固定为：
+
+```text
+全局唯一 TVR data_hub -> 每账户一个 TVR live_trader
+```
+
+目标边界：
+
+1. `TVR data_hub` 是全局公共事实源，只启动一个进程。
+2. `TVR data_hub` 可以配置 `gateway_account` 用于 Binance REST Gateway 调用身份，但落盘 facts 不属于任何交易账户。
+3. `TVR live_trader` 每个账户只启动一个进程；实盘常驻时不应再要求单独启动 `decision_audit` 进程。
+4. `decision_audit.py` 可保留为只读审计/debug 工具，但 live 交易主路径应由 `live_trader` 内部构建本账户 decision。
+5. 不同账户必须复用同一套 TVR 入场/离场逻辑；账户差异只能来自显式配置，例如账户名、是否允许实盘、每 symbol 开仓金额和账户级最大敞口。
+6. 开仓金额必须支持按 symbol 显式配置，不得用单一账户级金额隐式套用全部 TradFi 品种。
+
+后续 patch 顺序：
+
+```text
+第一刀 ARCH_ONLY:
+  将 TVR data_hub 改为全局公共 facts source；
+  移除 decision_audit 对 data_hub account 的强绑定；
+  不合并 decision/live，不改下单金额语义。
+
+第二刀 ARCH_ONLY:
+  将 decision 构建能力并入 live_trader 常驻主路径；
+  live_trader 每轮直接读取全局 data_hub facts 并构建本账户 intent；
+  decision_audit.py 仅作为审计/debug 工具保留。
+
+第三刀 LOGIC_ONLY:
+  将 fixed order_notional_usdt 改为 per-symbol notional；
+  同步配置 p10 + TP 0.5%；
+  保持 LONG-only、maker-only 和账户级敞口上限。
+```
+
 第一刀 history backfill 的固定语义：
 
 ```text
@@ -272,8 +308,8 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 
 ```text
 实现 TVR decision_audit：
-1. 读取最新 universe / funding / rolling_24h_stats data_hub facts，并按白名单 symbol 高频读取 live 24h ticker。
-2. 校验 data_hub facts 新鲜度、account、symbol 覆盖和字段可读性。
+1. 读取最新 universe / funding / rolling_24h_stats 全局 data_hub facts，并按白名单 symbol 高频读取 live 24h ticker。
+2. 校验 data_hub facts 新鲜度、`data_scope=global`、producer、symbol 覆盖和字段可读性。
 3. 应用 LONG-only、history_sufficient、funding_rate_entry_max、entry_percentile 分位阈值、risk notional cap。
 4. 应用 JSON `tradable_symbols` 白名单，非白名单品种只落盘拒绝原因。
 5. 生成 audit-only maker LONG intent，不提交订单。

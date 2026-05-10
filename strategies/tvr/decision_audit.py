@@ -26,6 +26,7 @@ from core.live.binance_rest_gateway import (
 
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
+DATA_HUB_PRODUCER = "tvr_data_hub"
 
 
 def setup_logging() -> None:
@@ -327,10 +328,13 @@ def _require_record_age(record: Mapping[str, Any], *, stream: str, max_age_secs:
     return int(age_ms)
 
 
-def _require_account(record: Mapping[str, Any], *, stream: str, account: str) -> None:
-    value = str(record.get("account") or "").strip()
-    if value != str(account).strip():
-        raise ValueError(f"TVR data_hub {stream} account mismatch: {value!r} vs {account!r}")
+def _require_global_data_hub(record: Mapping[str, Any], *, stream: str) -> None:
+    data_scope = str(record.get("data_scope") or "").strip().lower()
+    if data_scope != "global":
+        raise ValueError(f"TVR data_hub {stream} data_scope must be global: {data_scope!r}")
+    producer = str(record.get("producer") or "").strip()
+    if producer != DATA_HUB_PRODUCER:
+        raise ValueError(f"TVR data_hub {stream} producer mismatch: {producer!r}")
 
 
 def _map_rows(rows: Any, *, stream: str) -> dict[str, dict[str, Any]]:
@@ -350,14 +354,13 @@ def _map_rows(rows: Any, *, stream: str) -> dict[str, dict[str, Any]]:
 
 
 def _load_inputs(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    account = str(cfg["account"]).strip()
     max_age_secs = int(cfg["data_hub"]["max_age_secs"])
     streams = {}
     sources = {}
     ages = {}
     for stream in ("universe", "funding", "rolling_24h_stats"):
         record, path = _load_latest_jsonl_record(stream)
-        _require_account(record, stream=stream, account=account)
+        _require_global_data_hub(record, stream=stream)
         ages[stream] = _require_record_age(record, stream=stream, max_age_secs=max_age_secs)
         streams[stream] = record
         sources[stream] = str(path)

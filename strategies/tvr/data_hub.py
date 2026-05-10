@@ -35,6 +35,7 @@ from core.runtime_state import get_state_dir
 
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
+DATA_HUB_PRODUCER = "tvr_data_hub"
 DAY_MS = 24 * 60 * 60_000
 
 PRICE_HISTORY_RAW_SCHEMA = pa.schema(
@@ -232,7 +233,8 @@ def load_config(path: str) -> dict[str, Any]:
     out = {
         "schema_version": 1,
         "enabled": _require_bool(cfg, path, "enabled"),
-        "account": _require_non_empty_str(cfg, path, "account"),
+        "data_scope": _require_non_empty_str(cfg, path, "data_scope"),
+        "gateway_account": _require_non_empty_str(cfg, path, "gateway_account"),
         "audit_enabled": _require_bool(cfg, path, "audit_enabled"),
         "universe": {
             "underlying_subtype": _require_non_empty_str(universe, path, "underlying_subtype"),
@@ -272,6 +274,8 @@ def load_config(path: str) -> dict[str, Any]:
         raise ValueError(f"TVR funding_history limit must be <= 1000 | {path}")
     if int(out["price_history"]["kline_limit"]) > 1500:
         raise ValueError(f"TVR price_history kline_limit must be <= 1500 | {path}")
+    if str(out["data_scope"]).strip().lower() != "global":
+        raise ValueError(f"TVR data_hub data_scope must be global | {path}")
     return out
 
 
@@ -455,7 +459,8 @@ def _premium_map(premium_payload: Any) -> dict[str, dict[str, Any]]:
 
 def _write_universe_snapshot(
     *,
-    account: str,
+    gateway_account: str,
+    data_scope: str,
     run_id: str,
     symbols: list[dict[str, Any]],
     ticker_by_symbol: Mapping[str, Mapping[str, Any]],
@@ -475,7 +480,9 @@ def _write_universe_snapshot(
         })
     payload = {
         **_base_record(run_id, "tradfi_universe_snapshot"),
-        "account": account,
+        "data_scope": data_scope,
+        "producer": DATA_HUB_PRODUCER,
+        "gateway_account": gateway_account,
         "symbol_count": len(records),
         "symbols": records,
     }
@@ -484,7 +491,8 @@ def _write_universe_snapshot(
 
 def _write_funding_snapshot(
     *,
-    account: str,
+    gateway_account: str,
+    data_scope: str,
     run_id: str,
     symbols: Iterable[str],
     premium_by_symbol: Mapping[str, Mapping[str, Any]],
@@ -508,7 +516,9 @@ def _write_funding_snapshot(
         })
     payload = {
         **_base_record(run_id, "tradfi_funding_snapshot"),
-        "account": account,
+        "data_scope": data_scope,
+        "producer": DATA_HUB_PRODUCER,
+        "gateway_account": gateway_account,
         "symbol_count": len(rows),
         "source": "fapi/v1/premiumIndex",
         "rows": rows,
@@ -518,7 +528,8 @@ def _write_funding_snapshot(
 
 def _write_price_24h_snapshot(
     *,
-    account: str,
+    gateway_account: str,
+    data_scope: str,
     run_id: str,
     symbols: Iterable[str],
     ticker_by_symbol: Mapping[str, Mapping[str, Any]],
@@ -546,7 +557,9 @@ def _write_price_24h_snapshot(
         })
     payload = {
         **_base_record(run_id, "tradfi_price_24h_snapshot"),
-        "account": account,
+        "data_scope": data_scope,
+        "producer": DATA_HUB_PRODUCER,
+        "gateway_account": gateway_account,
         "symbol_count": len(rows),
         "source": "fapi/v1/ticker/24hr",
         "rows": rows,
@@ -983,7 +996,9 @@ def _sync_price_history(
 
     payload = {
         **_base_record(run_id, "tradfi_rolling_24h_stats"),
-        "account": account,
+        "data_scope": str(cfg["data_scope"]).strip(),
+        "producer": DATA_HUB_PRODUCER,
+        "gateway_account": account,
         "source": "local_price_history_raw",
         "symbol_count": len(rows_out),
         "decision_window_days": int(price_cfg["decision_window_days"]),
@@ -1035,7 +1050,9 @@ def _bootstrap_funding_history(
             })
         record = {
             **_base_record(run_id, "tradfi_funding_history_bootstrap"),
-            "account": account,
+            "data_scope": str(cfg["data_scope"]).strip(),
+            "producer": DATA_HUB_PRODUCER,
+            "gateway_account": account,
             "source": "fapi/v1/fundingRate",
             "lookback_days": int(funding_cfg["lookback_days"]),
             "symbol": symbol,
@@ -1056,34 +1073,38 @@ def run_once(
 ) -> dict[str, Any]:
     if not bool(cfg["enabled"]):
         raise RuntimeError("TVR data_hub config enabled=false")
-    account = str(cfg["account"]).strip()
-    exchange_info = _call_client(account, "tvr_data_hub.futures_exchange_info", "futures_exchange_info")
+    gateway_account = str(cfg["gateway_account"]).strip()
+    data_scope = str(cfg["data_scope"]).strip()
+    exchange_info = _call_client(gateway_account, "tvr_data_hub.futures_exchange_info", "futures_exchange_info")
     if not isinstance(exchange_info, dict):
         raise TypeError("futures_exchange_info payload must be object")
     tradfi = _tradfi_symbols(exchange_info, cfg)
     symbols = [str(x["symbol"]) for x in tradfi]
 
-    ticker_payload = _call_client(account, "tvr_data_hub.futures_ticker", "futures_ticker")
+    ticker_payload = _call_client(gateway_account, "tvr_data_hub.futures_ticker", "futures_ticker")
     ticker_by_symbol = _ticker_map(ticker_payload)
-    premium_payload = _futures_public_get(account, "tvr_data_hub.premium_index", "premiumIndex")
+    premium_payload = _futures_public_get(gateway_account, "tvr_data_hub.premium_index", "premiumIndex")
     premium_by_symbol = _premium_map(premium_payload)
 
     paths: list[str] = []
     if bool(cfg["audit_enabled"]):
         paths.append(str(_write_universe_snapshot(
-            account=account,
+            gateway_account=gateway_account,
+            data_scope=data_scope,
             run_id=run_id,
             symbols=tradfi,
             ticker_by_symbol=ticker_by_symbol,
         )))
         paths.append(str(_write_funding_snapshot(
-            account=account,
+            gateway_account=gateway_account,
+            data_scope=data_scope,
             run_id=run_id,
             symbols=symbols,
             premium_by_symbol=premium_by_symbol,
         )))
         paths.append(str(_write_price_24h_snapshot(
-            account=account,
+            gateway_account=gateway_account,
+            data_scope=data_scope,
             run_id=run_id,
             symbols=symbols,
             ticker_by_symbol=ticker_by_symbol,
@@ -1091,14 +1112,14 @@ def run_once(
 
     if include_funding_history:
         paths.extend(str(x) for x in _bootstrap_funding_history(
-            account=account,
+            account=gateway_account,
             run_id=run_id,
             symbols=symbols,
             cfg=cfg,
         ))
     if include_price_history:
         price_path = _sync_price_history(
-            account=account,
+            account=gateway_account,
             run_id=run_id,
             symbols=symbols,
             cfg=cfg,
@@ -1108,19 +1129,17 @@ def run_once(
 
     return {
         "run_id": run_id,
-        "account": account,
+        "data_scope": data_scope,
+        "gateway_account": gateway_account,
         "symbol_count": len(symbols),
         "symbols": symbols,
         "paths": paths,
     }
 
 
-def _build_run_id(account: str) -> str:
+def _build_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    account_key = str(account).upper().strip()
-    if not account_key:
-        raise ValueError("account must not be empty")
-    return f"TVR_DATA_HUB_{account_key}_{ts}"
+    return f"TVR_DATA_HUB_GLOBAL_{ts}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -1140,7 +1159,7 @@ def main() -> None:
     if args.once == args.loop:
         raise ValueError("exactly one of --once or --loop is required")
     cfg = load_config(args.config)
-    run_id = _build_run_id(str(cfg["account"]))
+    run_id = _build_run_id()
     include_funding_history = bool(cfg["collection"]["funding_history_bootstrap_enabled"]) and not args.skip_funding_history_bootstrap
     include_price_history = bool(cfg["collection"]["price_history_sync_enabled"]) and not args.skip_price_history_sync
 
