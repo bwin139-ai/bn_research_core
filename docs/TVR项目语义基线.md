@@ -237,6 +237,22 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 11. audit 路径为 state/research/tvr/audit/history_backfill/YYYY-MM-DD/tvr_history_backfill.jsonl。
 ```
 
+第二刀 percentile reclaim backtest 的固定语义：
+
+```text
+1. 独立脚本：strategies/tvr/percentile_tp_backtest.py。
+2. 独立配置：strategies/tvr/config.percentile_backtest.json。
+3. 只读取 research history store，不访问 Binance API。
+4. 每个时刻只能使用该时刻之前的 rolling 24h return 样本计算 p1/p5/p10/p20。
+5. 触发条件为 current_24h_return <= selected_percentile_return。
+6. 第一版 entry_price 使用当前 1m close，并标记为 signal-level backtest。
+7. TP 判定使用后续 K 线 high 是否触达 entry_price * (1 + take_profit_pct)。
+8. 同一 symbol 在一笔样本 TP 或 max_hold 结束前不得重复入场。
+9. summary CSV 路径为 state/research/tvr/backtest/percentile_reclaim/YYYY-MM-DD/{run_id}.summary.csv。
+10. sample CSV 路径为 state/research/tvr/backtest/percentile_reclaim/YYYY-MM-DD/{run_id}.samples.csv。
+11. audit 路径为 state/research/tvr/backtest/percentile_reclaim/YYYY-MM-DD/tvr_percentile_reclaim_backtest.jsonl。
+```
+
 ## 9. 已实现组件目标
 
 ```text

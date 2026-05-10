@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "audit_enabled": true,
+  "universe": {
+    "symbols": []
+  },
+  "history_store": {
+    "root": "research/tvr/klines_1m"
+  },
+  "output": {
+    "root": "research/tvr/backtest/percentile_reclaim",
+    "write_samples": true
+  },
+  "backtest": {
+    "interval": "1m",
+    "rolling_window_hours": 24,
+    "lookback_days": 30,
+    "minimum_history_days": 14,
+    "entry_percentiles": ["p1", "p5", "p10", "p20"],
+    "take_profit_pcts": [0.005, 0.01],
+    "max_hold_hours": 168,
+    "entry_price_mode": "close",
+    "max_symbols_per_run": 0
+  }
+}
