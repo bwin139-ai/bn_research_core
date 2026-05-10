@@ -37,6 +37,11 @@ from core.live.live_state import (
     set_pending_entry_order,
 )
 from core.runtime_state import get_state_dir
+from strategies.tvr.decision_audit import (
+    build_decision_audit,
+    load_config as load_decision_audit_config,
+    write_decision_audit_record,
+)
 
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
@@ -209,7 +214,7 @@ def load_config(path: str) -> dict[str, Any]:
         "allow_live_order": _require_bool(cfg, path, "allow_live_order"),
         "audit_enabled": _require_bool(cfg, path, "audit_enabled"),
         "decision_audit": {
-            "max_age_secs": _require_int(decision_audit, path, "max_age_secs", positive=True),
+            "config_path": _require_non_empty_str(decision_audit, path, "config_path"),
             "required_order_submission_enabled": _require_bool(decision_audit, path, "required_order_submission_enabled"),
         },
         "collection": {
@@ -254,28 +259,6 @@ def load_config(path: str) -> dict[str, Any]:
     return out
 
 
-def _decision_files() -> list[Path]:
-    root = get_state_dir() / "live_audit" / "tvr" / "decision"
-    if not root.exists():
-        return []
-    return sorted(root.glob("*/tvr_decision_audit.jsonl"), key=lambda p: (p.stat().st_mtime, str(p)))
-
-
-def _load_latest_decision() -> tuple[dict[str, Any], Path]:
-    files = _decision_files()
-    if not files:
-        raise FileNotFoundError("TVR decision audit file missing")
-    for path in reversed(files):
-        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not lines:
-            continue
-        payload = json.loads(lines[-1])
-        if not isinstance(payload, dict):
-            raise TypeError(f"TVR decision audit latest record must be object: {path}")
-        return payload, path
-    raise RuntimeError("TVR decision audit files have no records")
-
-
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -295,18 +278,6 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
-
-
-def _require_decision_age(record: Mapping[str, Any], *, max_age_secs: int) -> int:
-    collected = _as_int(record.get("collected_utc_ms"))
-    if collected is None or collected <= 0:
-        raise ValueError("TVR decision audit latest record missing collected_utc_ms")
-    age_ms = _now_utc_ms() - int(collected)
-    if age_ms < 0:
-        raise ValueError("TVR decision audit latest record collected_utc_ms is in the future")
-    if age_ms > int(max_age_secs) * 1000:
-        raise RuntimeError(f"TVR decision audit stale: age_secs={age_ms / 1000.0:.1f} max_age_secs={max_age_secs}")
-    return int(age_ms)
 
 
 def _floor_to_step(value: float, step: float | None) -> float:
@@ -804,10 +775,14 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         raise RuntimeError("TVR live trader config enabled=false")
     account = str(cfg["account"]).strip()
     mark_loop_heartbeat(account, runner_pid=os.getpid(), strategy_name=STRATEGY_NAME)
-    decision, decision_path = _load_latest_decision()
+    decision_cfg = load_decision_audit_config(str(cfg["decision_audit"]["config_path"]))
+    if str(decision_cfg.get("account") or "").strip() != account:
+        raise ValueError("TVR embedded decision config account mismatch")
+    decision_run_id = _build_decision_run_id(account)
+    decision = build_decision_audit(decision_cfg, run_id=decision_run_id)
+    decision_path = write_decision_audit_record(decision) if bool(decision_cfg.get("audit_enabled")) else None
     if str(decision.get("account") or "").strip() != account:
-        raise ValueError("TVR decision audit account mismatch")
-    decision_age_ms = _require_decision_age(decision, max_age_secs=int(cfg["decision_audit"]["max_age_secs"]))
+        raise ValueError("TVR embedded decision account mismatch")
     if bool(decision.get("order_submission_enabled")) != bool(cfg["decision_audit"]["required_order_submission_enabled"]):
         raise ValueError("TVR decision audit order_submission_enabled does not match required value")
 
@@ -835,9 +810,14 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         "account": account,
         "dry_run": bool(dry_run),
         "allow_live_order": bool(cfg["allow_live_order"]),
-        "decision_audit_path": str(decision_path),
+        "decision_mode": "embedded",
+        "decision_config_path": str(cfg["decision_audit"]["config_path"]),
+        "decision_audit_path": str(decision_path) if decision_path is not None else None,
         "decision_audit_run_id": decision.get("run_id"),
-        "decision_age_ms": int(decision_age_ms),
+        "decision_collected_bj": decision.get("collected_bj"),
+        "decision_data_hub_inputs": dict(decision.get("data_hub_inputs") or {}),
+        "decision_eligible_count": decision.get("eligible_count"),
+        "decision_selected_count": decision.get("selected_count"),
         "selected_symbols": list(decision.get("selected_symbols") or []),
         "reconcile_events": reconcile_events,
         "entry_events": entry_events,
@@ -860,6 +840,14 @@ def _build_run_id(account: str) -> str:
         raise ValueError("account must not be empty")
     ts_utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"TVR_LIVE_TRADER_{account_key}_{ts_utc}"
+
+
+def _build_decision_run_id(account: str) -> str:
+    account_key = str(account).upper().strip()
+    if not account_key:
+        raise ValueError("account must not be empty")
+    ts_utc = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"TVR_LIVE_DECISION_{account_key}_{ts_utc}_{_now_utc_ms()}"
 
 
 def parse_args() -> argparse.Namespace:

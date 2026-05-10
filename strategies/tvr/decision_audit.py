@@ -738,6 +738,10 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str) -> Path | None:
     )
     if not bool(cfg["audit_enabled"]):
         return None
+    return write_decision_audit_record(record)
+
+
+def write_decision_audit_record(record: Mapping[str, Any]) -> Path:
     return _append_jsonl(_audit_path(), record)
 
 

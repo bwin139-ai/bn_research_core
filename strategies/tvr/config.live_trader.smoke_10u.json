@@ -5,7 +5,7 @@
   "allow_live_order": true,
   "audit_enabled": true,
   "decision_audit": {
-    "max_age_secs": 300,
+    "config_path": "strategies/tvr/config.decision_audit.json",
     "required_order_submission_enabled": false
   },
   "collection": {

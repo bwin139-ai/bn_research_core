@@ -86,7 +86,7 @@ research history store:
 
 当前已实现第一版 `live_trader` 小资金实盘执行层：
 
-1. 只读取最新 `decision_audit.selected_intents`，不重新计算信号。
+1. 每轮通过 `decision_audit` 同源构建函数读取全局 data_hub facts，生成本账户 audit-only selected intents；不依赖单独常驻 `decision_audit` 进程。
 2. 必须显式配置 `allow_live_order=true` 才允许提交真实订单。
 3. 只支持 `LONG` / hedge mode / crossed margin。
 4. 入场只允许 `LIMIT + GTX` post-only maker BUY。
@@ -319,8 +319,8 @@ TVR live 后续生产形态固定为：
 
 ```text
 实现 TVR live_trader：
-1. 读取最新 decision_audit selected_intents。
-2. 校验 decision_audit 新鲜度、account、audit-only intent 与 notional 一致性。
+1. 每轮内部构建本账户 decision_audit selected_intents，并按原 decision audit 路径落盘审计。
+2. 校验 account、audit-only intent 与 notional 一致性。
 3. 查询本地 TVR live state 与交易所 symbol position/open orders，防止重复开仓。
 4. 提交 post-only maker entry。
 5. entry 成交后提交 post-only maker TP。
