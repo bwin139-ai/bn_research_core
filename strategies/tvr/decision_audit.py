@@ -182,7 +182,7 @@ def _require_float(cfg: Mapping[str, Any], path: str, key: str, *, positive: boo
 
 def _require_percentile(cfg: Mapping[str, Any], path: str, key: str) -> str:
     value = _require_non_empty_str(cfg, path, key).lower()
-    if value not in {"p1", "p5", "p10", "p20"}:
+    if value not in {"p1", "p5", "p10", "p20", "p50"}:
         raise ValueError(f"TVR decision audit unsupported percentile: {value} | {path}")
     return value
 
@@ -521,6 +521,7 @@ def _build_percentile_state(
             "rolling_24h_p5": _as_float(rolling_stats.get("p5")),
             "rolling_24h_p10": _as_float(rolling_stats.get("p10")),
             "rolling_24h_p20": _as_float(rolling_stats.get("p20")),
+            "rolling_24h_p50": _as_float(rolling_stats.get("p50")),
             "rolling_24h_sample_count": _as_int(rolling_stats.get("sample_count")),
         }
     state = {
@@ -568,6 +569,7 @@ def _non_tradable_symbol_row(symbol: str) -> dict[str, Any]:
         "rolling_24h_p5": None,
         "rolling_24h_p10": None,
         "rolling_24h_p20": None,
+        "rolling_24h_p50": None,
         "rolling_24h_sample_count": None,
     }
 
@@ -665,6 +667,7 @@ def _evaluate_symbol(
         "rolling_24h_p5": _as_float(threshold.get("rolling_24h_p5")),
         "rolling_24h_p10": _as_float(threshold.get("rolling_24h_p10")),
         "rolling_24h_p20": _as_float(threshold.get("rolling_24h_p20")),
+        "rolling_24h_p50": _as_float(threshold.get("rolling_24h_p50")),
         "rolling_24h_sample_count": _as_int(threshold.get("rolling_24h_sample_count")),
     }
 

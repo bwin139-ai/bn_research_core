@@ -879,6 +879,7 @@ def _rolling_24h_stats(rows: list[list[Any]], *, interval: str, rolling_window_h
             "p5": None,
             "p10": None,
             "p20": None,
+            "p50": None,
             "latest": None,
         }
     return {
@@ -892,6 +893,7 @@ def _rolling_24h_stats(rows: list[list[Any]], *, interval: str, rolling_window_h
         "p5": _percentile(ordered, 5),
         "p10": _percentile(ordered, 10),
         "p20": _percentile(ordered, 20),
+        "p50": _percentile(ordered, 50),
         "latest": float(returns[-1]),
     }
 
@@ -974,6 +976,7 @@ def _sync_price_history(
                 "p5": None,
                 "p10": None,
                 "p20": None,
+                "p50": None,
                 "latest": None,
             }
             history_sufficient = False

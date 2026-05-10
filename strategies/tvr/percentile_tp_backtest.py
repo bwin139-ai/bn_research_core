@@ -237,7 +237,7 @@ def _require_percentiles(cfg: Mapping[str, Any], path: str, key: str) -> list[st
     if not isinstance(value, list) or not value:
         raise TypeError(f"TVR percentile backtest config field must be non-empty list: {key} | {path}")
     out = [str(x).lower().strip() for x in value if str(x).strip()]
-    allowed = {"p1", "p5", "p10", "p20"}
+    allowed = {"p1", "p5", "p10", "p20", "p50"}
     bad = [x for x in out if x not in allowed]
     if bad:
         raise ValueError(f"TVR percentile backtest unsupported entry_percentiles: {bad} | {path}")

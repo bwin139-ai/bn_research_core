@@ -73,7 +73,7 @@ research history store:
 7. 目标入场语义必须使用当前滚动 24h return 与历史低位分位比较：
    - `current_24h_return = priceChangePercent / 100`
    - 等价于 Binance `/fapi/v1/ticker/24hr` 的 `lastPrice / openPrice - 1`
-   - `selected_percentile_return` 必须来自历史 rolling 24h return 的 `p1/p5/p10/p20` 之一。
+   - `selected_percentile_return` 必须来自历史 rolling 24h return 的 `p1/p5/p10/p20/p50` 之一。
    - 触发条件为 `current_24h_return <= selected_percentile_return`。
 8. 第一版 `decision_audit` 必须要求 `history_sufficient=true`，否则该 symbol 禁入并落盘原因。
 9. 第一版 `decision_audit` 必须由 JSON 显式配置 `tradable_symbols` 白名单：
@@ -124,10 +124,10 @@ archive_after_days = 30
 统计项至少包含：
 
 ```text
-min / max / mean / median / p1 / p5 / p10 / p20 / sample_count
+min / max / mean / median / p1 / p5 / p10 / p20 / p50 / sample_count
 ```
 
-其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_percentile`。
+其中 `p1/p5/p10/p20` 表示 rolling 24h return 的低位百分位，用于人工校准 `entry_percentile`；`p50` 只用于 smoke / 观察期提高触发频率，不作为默认生产档位。
 
 后续字段命名应避免使用孤立 `latest` 表达涨跌幅语义，优先使用：
 
@@ -137,6 +137,7 @@ rolling_24h_return_p1
 rolling_24h_return_p5
 rolling_24h_return_p10
 rolling_24h_return_p20
+rolling_24h_return_p50
 ```
 
 ## 5.1 percentile reclaim backtest 语义
@@ -146,7 +147,7 @@ rolling_24h_return_p20
 第一版 backtest 必须回答：
 
 ```text
-1. p1 / p5 / p10 / p20 触发后，固定 TP 0.5% / 1% 的命中率。
+1. p1 / p5 / p10 / p20 / p50 触发后，固定 TP 0.5% / 1% 的命中率。
 2. 达到 TP 的最短时间、最长时间、平均时间和中位时间。
 3. max_hold 窗口内未达到 TP 的样本数和比例。
 4. 不同 symbol、不同分位、不同 TP 的横向比较。
@@ -155,7 +156,7 @@ rolling_24h_return_p20
 第一版 backtest 口径：
 
 ```text
-1. 每个时刻只能使用该时刻之前的历史样本计算 p1/p5/p10/p20，禁止未来函数。
+1. 每个时刻只能使用该时刻之前的历史样本计算 p1/p5/p10/p20/p50，禁止未来函数。
 2. 触发条件为 current_24h_return <= selected_percentile_return。
 3. 第一版 entry_price 可使用当前 1m close，并明确标记为 signal-level backtest。
 4. TP 判定使用后续 K 线 high 是否触达 entry_price * (1 + take_profit_pct)。
@@ -209,7 +210,7 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
    对所有 TradFi 品种尽量补齐上市以来完整 1m contract kline，写入 research history store。
 
 2. 完整 TVR percentile reclaim backtest：
-   读取 research history store，评估 p1/p5/p10/p20 与 TP 0.5%/1% 的命中率和耗时。
+   读取 research history store，评估 p1/p5/p10/p20/p50 与 TP 0.5%/1% 的命中率和耗时。
 
 3. 完整 TVR 实盘逻辑：
    根据 backtest 选择 entry_percentile；live 决策使用 current_24h_return <= selected_percentile_return；
@@ -297,7 +298,7 @@ TVR live 后续生产形态固定为：
 1. 独立脚本：strategies/tvr/percentile_tp_backtest.py。
 2. 独立配置：strategies/tvr/config.percentile_backtest.json。
 3. 只读取 research history store，不访问 Binance API。
-4. 每个时刻只能使用该时刻之前的 rolling 24h return 样本计算 p1/p5/p10/p20。
+4. 每个时刻只能使用该时刻之前的 rolling 24h return 样本计算 p1/p5/p10/p20/p50。
 5. 触发条件为 current_24h_return <= selected_percentile_return。
 6. 第一版 entry_price 使用当前 1m close，并标记为 signal-level backtest。
 7. TP 判定使用后续 K 线 high 是否触达 entry_price * (1 + take_profit_pct)。

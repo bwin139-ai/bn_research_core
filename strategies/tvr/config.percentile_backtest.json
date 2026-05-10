@@ -17,7 +17,7 @@
     "rolling_window_hours": 24,
     "lookback_days": 30,
     "minimum_history_days": 14,
-    "entry_percentiles": ["p1", "p5", "p10", "p20"],
+    "entry_percentiles": ["p1", "p5", "p10", "p20", "p50"],
     "take_profit_pcts": [0.005, 0.01],
     "max_hold_hours": 336,
     "entry_price_mode": "close",
