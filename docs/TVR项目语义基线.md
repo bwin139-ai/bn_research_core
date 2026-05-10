@@ -57,7 +57,12 @@
    - 入场后 funding 变化只落盘审计，不作为第一版持仓退出条件。
 7. 第一版 `decision_audit` 使用 data_hub 的 `rolling_24h.latest` 与显式配置的 `entry_drop_pct` 判断当前跌幅是否触发。
 8. 第一版 `decision_audit` 必须要求 `history_sufficient=true`，否则该 symbol 禁入并落盘原因。
-9. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力必须另起后续 patch 接入。
+9. 第一版 `decision_audit` 必须由 JSON 显式配置 `tradable_symbols` 白名单：
+   - DataHub 继续采集全部 TradFi universe。
+   - 策略侧只允许白名单品种产生候选 intent。
+   - 非白名单品种必须落盘 `symbol_not_in_tradable_symbols` 拒绝原因。
+   - 白名单为空、重复或包含 DataHub universe 不存在的品种时必须 fail-fast。
+10. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力必须另起后续 patch 接入。
 
 ## 5. rolling 24h 统计
 
@@ -133,7 +138,8 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 1. 读取最新 universe / funding / price_24h / rolling_24h_stats data_hub facts。
 2. 校验 data_hub facts 新鲜度、account、symbol 覆盖和字段可读性。
 3. 应用 LONG-only、history_sufficient、funding_rate_entry_max、entry_drop_pct、risk notional cap。
-4. 生成 audit-only maker LONG intent，不提交订单。
-5. 按 TVR 独立 decision audit 目录落盘候选、拒绝原因和 selected_intents。
-6. 不查询 Binance 账户，不接执行层，不写交易 live state。
+4. 应用 JSON `tradable_symbols` 白名单，非白名单品种只落盘拒绝原因。
+5. 生成 audit-only maker LONG intent，不提交订单。
+6. 按 TVR 独立 decision audit 目录落盘候选、拒绝原因和 selected_intents。
+7. 不查询 Binance 账户，不接执行层，不写交易 live state。
 ```

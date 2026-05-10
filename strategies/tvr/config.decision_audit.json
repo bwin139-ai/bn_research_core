@@ -7,6 +7,9 @@
     "max_age_secs": 300,
     "min_symbol_count": 1
   },
+  "universe": {
+    "tradable_symbols": ["CLUSDT", "BZUSDT", "XAUUSDT", "XAGUSDT"]
+  },
   "collection": {
     "interval_secs": 60
   },

@@ -170,11 +170,33 @@ def _require_float(cfg: Mapping[str, Any], path: str, key: str, *, positive: boo
     return out
 
 
+def _require_symbol_list(cfg: Mapping[str, Any], path: str, key: str) -> list[str]:
+    if key not in cfg:
+        raise KeyError(f"TVR decision audit config missing required field: {key} | {path}")
+    value = cfg[key]
+    if not isinstance(value, list):
+        raise TypeError(f"TVR decision audit config field must be list: {key} | {path}")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        symbol = str(raw).upper().strip()
+        if not symbol:
+            raise ValueError(f"TVR decision audit config contains empty symbol: {key} | {path}")
+        if symbol in seen:
+            raise ValueError(f"TVR decision audit config duplicated symbol: {symbol} | {path}")
+        seen.add(symbol)
+        out.append(symbol)
+    if not out:
+        raise ValueError(f"TVR decision audit config field must not be empty: {key} | {path}")
+    return out
+
+
 def load_config(path: str) -> dict[str, Any]:
     cfg = _load_json(path)
     if int(cfg.get("schema_version", 0)) != 1:
         raise ValueError(f"TVR decision audit config schema_version must be 1 | {path}")
     data_hub = _require_mapping(cfg, path, "data_hub")
+    universe = _require_mapping(cfg, path, "universe")
     collection = _require_mapping(cfg, path, "collection")
     decision = _require_mapping(cfg, path, "decision")
     risk = _require_mapping(cfg, path, "risk")
@@ -186,6 +208,9 @@ def load_config(path: str) -> dict[str, Any]:
         "data_hub": {
             "max_age_secs": _require_int(data_hub, path, "max_age_secs", positive=True),
             "min_symbol_count": _require_int(data_hub, path, "min_symbol_count", positive=True),
+        },
+        "universe": {
+            "tradable_symbols": _require_symbol_list(universe, path, "tradable_symbols"),
         },
         "collection": {
             "interval_secs": _require_int(collection, path, "interval_secs", positive=True),
@@ -351,7 +376,11 @@ def _evaluate_symbol(
 ) -> dict[str, Any]:
     decision_cfg = cfg["decision"]
     risk_cfg = cfg["risk"]
+    tradable_symbols = set(cfg["universe"]["tradable_symbols"])
     reasons: list[str] = []
+
+    if symbol not in tradable_symbols:
+        _reject(reasons, "symbol_not_in_tradable_symbols")
 
     funding_rate = _as_float(funding.get("last_funding_rate"))
     if funding_rate is None:
@@ -449,6 +478,11 @@ def build_decision_audit(cfg: Mapping[str, Any], *, run_id: str) -> dict[str, An
     inputs = _load_inputs(cfg)
     records = inputs["records"]
     universe_symbols = _universe_symbols(records["universe"], min_symbol_count=int(cfg["data_hub"]["min_symbol_count"]))
+    universe_symbol_set = set(universe_symbols)
+    tradable_symbols = list(cfg["universe"]["tradable_symbols"])
+    missing_tradable = [symbol for symbol in tradable_symbols if symbol not in universe_symbol_set]
+    if missing_tradable:
+        raise RuntimeError(f"TVR tradable_symbols not found in data_hub universe: {missing_tradable}")
     funding_by_symbol = _map_rows(records["funding"].get("rows"), stream="funding")
     price_by_symbol = _map_rows(records["price_24h"].get("rows"), stream="price_24h")
     rolling_by_symbol = _map_rows(records["rolling_24h_stats"].get("rows"), stream="rolling_24h_stats")
@@ -492,8 +526,12 @@ def build_decision_audit(cfg: Mapping[str, Any], *, run_id: str) -> dict[str, An
             "decision": dict(cfg["decision"]),
             "risk": dict(cfg["risk"]),
             "data_hub": dict(cfg["data_hub"]),
+            "universe": dict(cfg["universe"]),
         },
         "symbol_count": len(rows),
+        "data_hub_universe_symbol_count": len(universe_symbols),
+        "tradable_symbol_count": len(tradable_symbols),
+        "tradable_symbols": tradable_symbols,
         "eligible_count": len(eligible_rows),
         "selected_count": len(selected_intents),
         "selected_symbols": [str(row["symbol"]) for row in selected_rows],
