@@ -22,6 +22,7 @@ if PROJECT_ROOT not in sys.path:
 
 from core.config_loader import StrategyConfig
 from core.live.audit_log import append_stage_record, get_live_audit_dir, write_event, write_runner_heartbeat, write_runner_started
+from core.live.live_data_gate import record_finalized_payload_not_ready_event
 from core.live.live_state import (
     load_cooldown_map,
     mark_loop_heartbeat,
@@ -2173,6 +2174,19 @@ def _run_once(strategy_cfg: dict[str, Any], live_cfg: dict[str, Any], scheduled_
             'reason': f'hub_candidate_payload_unavailable: {e}',
             'errors': {'finalized_candidate_payload_wait': candidate_payload_wait_diag},
         }
+    if candidate_md_res.get('reason') == 'finalized_candidate_payload_not_ready_for_current_snapshot':
+        record_finalized_payload_not_ready_event(
+            strategy_name='snapback',
+            strategy_label='Snapback-Live',
+            account=account,
+            run_id=str(live_cfg.get('_projection_run_id') or ''),
+            loop_iteration=None,
+            expected_latest_closed_bar_ts=latest_closed_bar_ts_snapshot,
+            expected_signal_time_ts=current_time_ms,
+            candidate_payload_wait=candidate_payload_wait_diag or {},
+            projection_path=None,
+            logger=logging,
+        )
     candidate_md_elapsed_ms = _perf_elapsed_ms(candidate_md_perf_started)
     candidate_md_finished_utc_ms = _now_utc_ms()
     extra_md_res: dict[str, Any] | None = None

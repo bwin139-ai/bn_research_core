@@ -25,6 +25,7 @@ from core.live.execution_runner import (
     reconcile_strategy_open_trades,
 )
 from core.live.live_data_gate import expected_snapshot_from_signal_check_epoch
+from core.live.live_data_gate import record_finalized_payload_not_ready_event
 from core.live.live_data_gate import wait_finalized_candidate_inputs_for_snapshot
 from core.live.live_state import load_live_state
 from core.live.signal_gate import build_live_signal_gate
@@ -418,11 +419,17 @@ def _not_ready_projection_row(
     }
     path = _projection_path(output_dir, run_id)
     _append_projection_row(path, row)
-    logging.info(
-        "[Sweep-Reclaim-Live] finalized payload not ready | account=%s | reason=%s | path=%s",
-        account,
-        row["live_execution_result"]["reason"],
-        path,
+    record_finalized_payload_not_ready_event(
+        strategy_name="sweep-reclaim",
+        strategy_label="Sweep-Reclaim-Live",
+        account=account,
+        run_id=run_id,
+        loop_iteration=loop_iteration,
+        expected_latest_closed_bar_ts=expected_latest_closed_bar_ts,
+        expected_signal_time_ts=expected_signal_time_ts,
+        candidate_payload_wait=candidate_payload_wait,
+        projection_path=path,
+        logger=logging,
     )
     return {"ok": False, "path": str(path), "row": row}
 
