@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "mybwin139",
+  "audit_enabled": true,
+  "data_hub": {
+    "max_age_secs": 300,
+    "min_symbol_count": 1
+  },
+  "collection": {
+    "interval_secs": 60
+  },
+  "decision": {
+    "entry_drop_pct": 0.01,
+    "funding_rate_entry_max": 0.0001,
+    "take_profit_pct": 0.01,
+    "max_candidates": 5,
+    "min_quote_volume_24h": 0
+  },
+  "risk": {
+    "proposed_order_notional_usdt": 1000,
+    "max_symbol_notional_usdt": 1000,
+    "max_total_notional_usdt": 10000
+  }
+}

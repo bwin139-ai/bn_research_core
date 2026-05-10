@@ -44,7 +44,7 @@
 
 ## 4. 入场门禁草案
 
-交易端尚未实现。当前仅锁定后续 TVR live 入场语义草案：
+当前已实现第一版策略侧 `decision_audit`，只读取 TVR data_hub facts 并落盘 audit-only intent，不下单，不写交易 live state。后续真实交易端必须继续遵守以下入场语义：
 
 1. 只允许 LONG。
 2. 只允许 `POST_ONLY` maker 买入。
@@ -55,6 +55,9 @@
    - 若入场时当前 funding rate 大于该阈值，禁止新开仓。
    - 若 funding rate 缺失、不可读或字段异常，fail-fast，不入场。
    - 入场后 funding 变化只落盘审计，不作为第一版持仓退出条件。
+7. 第一版 `decision_audit` 使用 data_hub 的 `rolling_24h.latest` 与显式配置的 `entry_drop_pct` 判断当前跌幅是否触发。
+8. 第一版 `decision_audit` 必须要求 `history_sufficient=true`，否则该 symbol 禁入并落盘原因。
+9. 第一版 `decision_audit` 只生成 `POST_ONLY_MAKER_*_AUDIT_ONLY` intent；真实 Binance 下单能力必须另起后续 patch 接入。
 
 ## 5. rolling 24h 统计
 
@@ -121,4 +124,16 @@ Snapback / Spring / Sweep-Reclaim 的结构信号逻辑
 5. 超过 decision window 的原始 price history 可归入 archive，不参与 live 决策统计。
 6. 按 TVR 独立目录落盘 audit facts。
 7. 不下单，不写 live state，不影响现有三套策略。
+```
+
+## 8. 策略侧第一刀目标
+
+```text
+实现 TVR decision_audit：
+1. 读取最新 universe / funding / price_24h / rolling_24h_stats data_hub facts。
+2. 校验 data_hub facts 新鲜度、account、symbol 覆盖和字段可读性。
+3. 应用 LONG-only、history_sufficient、funding_rate_entry_max、entry_drop_pct、risk notional cap。
+4. 生成 audit-only maker LONG intent，不提交订单。
+5. 按 TVR 独立 decision audit 目录落盘候选、拒绝原因和 selected_intents。
+6. 不查询 Binance 账户，不接执行层，不写交易 live state。
 ```
