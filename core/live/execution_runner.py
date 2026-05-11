@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -574,6 +575,15 @@ def _notify_enabled(cfg: Mapping[str, Any], field: str) -> bool:
 
 def _send_spring_notify(message: str, *, strategy_name: Any = DEFAULT_STRATEGY_NAME) -> None:
     send_to_bot(message, label=_strategy_notify_label(strategy_name))
+
+
+def is_live_symbol_supported_for_signed_api(symbol: Any) -> bool:
+    text = str(symbol or "").strip()
+    return bool(text) and text.isascii()
+
+
+def _unsupported_live_symbol_reason(symbol: Any) -> str:
+    return f"unsupported_live_symbol_non_ascii: symbol={str(symbol or '').strip()!r}"
 
 
 def _json_default(value: Any) -> Any:
@@ -2734,6 +2744,61 @@ def execute_live_execution_plan(
         raise ValueError("exchange precheck is not verified")
     if local_precheck.get("blockers") or exchange_precheck.get("blockers"):
         raise ValueError(f"execution precheck blockers present: {local_precheck.get('blockers')}, {exchange_precheck.get('blockers')}")
+
+    if not is_live_symbol_supported_for_signed_api(symbol):
+        reason = _unsupported_live_symbol_reason(symbol)
+        signal_digest = _signal_digest(signal)
+        mark_signal(
+            account,
+            symbol,
+            signal_side=POSITION_SIDE_LONG,
+            signal_time_ts=int(intent_dict["signal_time"]),
+            signal_time_bj=str(intent_dict["signal_time_bj"]),
+            c_bar_ts=int(intent_dict["c_bar_ts"]) if intent_dict.get("c_bar_ts") else None,
+            c_bar_bj=intent_dict.get("c_bar_bj"),
+            signal_digest=signal_digest,
+            signal_snapshot=signal,
+            strategy_name=state_strategy_name,
+        )
+        mark_error(
+            account,
+            symbol,
+            error_code="unsupported_live_symbol_non_ascii",
+            error_message=reason,
+            error_bj=_now_bj_str(),
+            strategy_name=state_strategy_name,
+        )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
+        _write_exec_event(audit_enabled, account, "spring_unsupported_live_symbol_skip", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": order_root,
+            "reason": reason,
+            "signal_snapshot": signal,
+        })
+        logging.warning(
+            "Live execution skipped unsupported non-ASCII symbol | account=%s | strategy=%s | symbol=%r | source=%s",
+            account,
+            state_strategy_name,
+            symbol,
+            source,
+        )
+        if _notify_enabled(cfg, "notify_on_order_error"):
+            _send_spring_notify(
+                f"[{_fmt_hms_from_ms(current_time_ms)} {state_strategy_name}] {account}\n"
+                f"LIVE skipped unsupported symbol\n"
+                f"symbol={symbol}\n"
+                f"reason=non_ascii_symbol_signed_api_unsupported",
+                strategy_name=state_strategy_name,
+            )
+        return {
+            "ok": False,
+            "outcome": "skipped_unsupported_live_symbol_non_ascii",
+            "reason": reason,
+            "symbol": symbol,
+        }
 
     if _require_str(cfg, "precheck_scope") == "account_flat":
         account_flat = _account_flat_precheck(exchange_snapshot)

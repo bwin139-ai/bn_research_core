@@ -22,6 +22,7 @@ from core.live.binance_exec import (
     resolve_order_fill_price,
 )
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root, parse_client_order_id
+from core.live.execution_runner import is_live_symbol_supported_for_signed_api
 from core.live.live_state import (
     load_live_state,
     load_symbol_state,
@@ -2905,6 +2906,67 @@ def _consume_signal_precheck_and_prepare(
             'signal_digest': signal_digest,
             'outcome': 'skipped_already_processed_bar',
             'reason': '',
+        }
+
+    if not is_live_symbol_supported_for_signed_api(symbol):
+        reason = f"unsupported_live_symbol_non_ascii: symbol={symbol!r}"
+        mark_signal(
+            account,
+            symbol,
+            signal_side=FIXED_POSITION_SIDE,
+            signal_time_ts=int(signal.get('signal_time') or current_time_ms),
+            signal_time_bj=signal.get('signal_time_bj'),
+            c_bar_ts=c_bar_ts,
+            c_bar_bj=c_bar_bj,
+            signal_digest=signal_digest,
+            signal_snapshot=signal,
+        )
+        mark_error(
+            account,
+            symbol,
+            error_code='unsupported_live_symbol_non_ascii',
+            error_message=reason,
+            error_bj=current_time_bj,
+        )
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'precheck_skip', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'reason': reason,
+                'signal_snapshot': signal,
+            })
+            _write_stage_record(account, 'stage7_precheck', {
+                'event': 'precheck_skip',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'precheck_scope': None,
+                'precheck_blocked': True,
+                'precheck_block_reason': 'unsupported_live_symbol_non_ascii',
+                'precheck_position_exists': False,
+                'precheck_orders_exist': False,
+                'precheck_any_position_exists': False,
+            })
+        logging.warning(
+            'Snapback live skipped unsupported non-ASCII symbol | account=%s | symbol=%r | source=%s',
+            account,
+            symbol,
+            source,
+        )
+        if bool(live_cfg.get('notify_enabled', False)) and bool(live_cfg.get('notify_on_order_error', True)):
+            _notify(
+                True,
+                f'[Snapback-Live] skipped unsupported symbol | account={account} | symbol={symbol} | reason=non_ascii_symbol_signed_api_unsupported',
+            )
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'skipped_unsupported_live_symbol_non_ascii',
+            'reason': reason,
         }
 
     mark_signal(

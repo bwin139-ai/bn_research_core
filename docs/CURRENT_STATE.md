@@ -956,7 +956,8 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 11. Spring B 低点确认已从 A-B 区间最低 low 收紧为 A-C 区间最低 low：若 B 之后、C 之前出现任何低于 B_low 的 X 点，待定 B 失效，算法继续搜索其它 B；若无其它合法 B，本轮不产生信号。
 12. Spring 价格时态已拆开：`strategies/spring/logic.py` 不再从 HBs/cross_section 产出 `signal.current_price` 或最终 `tp_price`；sim 侧策略逻辑只消费 `C=HBs[0]` 的 cross_section，并在 `signal_time=CB` 用 CB open 注入可复现执行价；live 侧在公共 execution lifecycle 中 entry 前读取并落盘 `pre_entry_price`，真实 entry fill 后再按 `risk_reward_1r` 重算 TP。执行层必须保证 LONG 的最终 TP 高于真实 entry，避免 BUSDT 23:21 这类 C_open 被误当 current price 后提交低于 entry 的 TP。
 13. live_trades 闭仓 projection 必须保留 entry 审计字段：`pre_entry_price`、`pre_entry_price_source`、`resolved_tp_price_source`，用于复盘真实 entry 前价格、真实 fill 与最终 TP 计算来源。
-14. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
+14. live 实盘执行当前保护规则：非 ASCII symbol 不进入 symbol-specific signed API 下单链路。Spring/SWR 公共 execution runner 返回 `skipped_unsupported_live_symbol_non_ascii`，Snapback consumer 在 precheck 前返回同名 outcome；两者都会记录 state/audit 并标记该 bar 已处理，避免中文 symbol 触发 `-1022` 后杀死进程。
+15. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
 ### 5.4 Spring-SABC sim / 参数
