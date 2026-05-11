@@ -275,6 +275,7 @@ def load_config(path: str) -> dict[str, Any]:
     decision_audit = _require_mapping(cfg, path, "decision_audit")
     collection = _require_mapping(cfg, path, "collection")
     execution = _require_mapping(cfg, path, "execution")
+    recovery = _require_mapping(cfg, path, "recovery")
     logging_cfg = _require_mapping(cfg, path, "logging")
     out = {
         "schema_version": 1,
@@ -300,6 +301,9 @@ def load_config(path: str) -> dict[str, Any]:
             "leverage": _require_int(execution, path, "leverage", positive=True),
             "symbol_notional_usdt": _require_symbol_float_map(execution, path, "symbol_notional_usdt"),
             "max_entry_notional_usdt": _require_symbol_float_map(execution, path, "max_entry_notional_usdt"),
+            "max_symbol_entry_notional_usdt": _require_symbol_float_map(
+                execution, path, "max_symbol_entry_notional_usdt"
+            ),
             "max_open_trades": _require_int(execution, path, "max_open_trades", positive=True),
             "max_new_entries_per_iteration": _require_int(execution, path, "max_new_entries_per_iteration", positive=True),
             "entry_price_mode": _require_non_empty_str(execution, path, "entry_price_mode").upper(),
@@ -316,8 +320,15 @@ def load_config(path: str) -> dict[str, Any]:
             "require_symbol_flat": _require_bool(execution, path, "require_symbol_flat"),
             "require_no_symbol_open_orders": _require_bool(execution, path, "require_no_symbol_open_orders"),
         },
+        "recovery": {
+            "enabled": _require_bool(recovery, path, "enabled"),
+            "anchor": _require_non_empty_str(recovery, path, "anchor").upper(),
+            "grid_step_pct": _require_float(recovery, path, "grid_step_pct", positive=True),
+            "min_spacing_hours": _require_float(recovery, path, "min_spacing_hours", positive=True),
+        },
     }
     exec_cfg = out["execution"]
+    recovery_cfg = out["recovery"]
     if exec_cfg["position_side"] != POSITION_SIDE_LONG:
         raise ValueError(f"TVR live trader only supports LONG position_side | {path}")
     if exec_cfg["position_mode"] != "HEDGE":
@@ -330,9 +341,23 @@ def load_config(path: str) -> dict[str, Any]:
         raise ValueError(f"TVR live trader entry_price_mode must be BEST_BID | {path}")
     if set(exec_cfg["symbol_notional_usdt"]) != set(exec_cfg["max_entry_notional_usdt"]):
         raise ValueError(f"TVR symbol_notional_usdt keys must match max_entry_notional_usdt keys | {path}")
+    if set(exec_cfg["symbol_notional_usdt"]) != set(exec_cfg["max_symbol_entry_notional_usdt"]):
+        raise ValueError(
+            f"TVR symbol_notional_usdt keys must match max_symbol_entry_notional_usdt keys | {path}"
+        )
     for symbol in sorted(exec_cfg["symbol_notional_usdt"]):
         if float(exec_cfg["symbol_notional_usdt"][symbol]) > float(exec_cfg["max_entry_notional_usdt"][symbol]):
             raise ValueError(f"TVR symbol_notional_usdt must be <= max_entry_notional_usdt: {symbol} | {path}")
+        if float(exec_cfg["symbol_notional_usdt"][symbol]) > float(
+            exec_cfg["max_symbol_entry_notional_usdt"][symbol]
+        ):
+            raise ValueError(
+                f"TVR symbol_notional_usdt must be <= max_symbol_entry_notional_usdt: {symbol} | {path}"
+            )
+    if recovery_cfg["anchor"] != "HIGHEST_OPEN_ENTRY":
+        raise ValueError(f"TVR recovery.anchor must be HIGHEST_OPEN_ENTRY | {path}")
+    if recovery_cfg["enabled"]:
+        raise ValueError(f"TVR recovery is configured but live multi-lot recovery is not implemented yet | {path}")
     return out
 
 

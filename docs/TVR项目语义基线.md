@@ -175,6 +175,12 @@ recovery ladder 的第一版规则固定为：
 }
 ```
 
+当前实现阶段：
+
+1. 第一刀只允许配置与校验进入代码，实盘行为不变。
+2. 在多 lot recovery lifecycle 实现前，生产配置必须保持 `recovery.enabled=false`。
+3. 若当前 live 配置中 `recovery.enabled=true`，`live_trader` 必须 fail-fast，不得静默退回单 lot 行为。
+
 实现边界：
 
 1. recovery 不是 martingale；每笔 recovery 的 notional 仍来自 `symbol_notional_usdt[symbol]`。

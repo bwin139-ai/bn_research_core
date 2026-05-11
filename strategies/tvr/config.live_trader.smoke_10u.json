@@ -32,6 +32,12 @@
       "XAUUSDT": 15,
       "XAGUSDT": 15
     },
+    "max_symbol_entry_notional_usdt": {
+      "CLUSDT": 30,
+      "BZUSDT": 30,
+      "XAUUSDT": 30,
+      "XAGUSDT": 30
+    },
     "max_open_trades": 4,
     "max_new_entries_per_iteration": 4,
     "entry_price_mode": "BEST_BID",
@@ -47,5 +53,11 @@
     "api_retry_delay_secs": 1.0,
     "require_symbol_flat": true,
     "require_no_symbol_open_orders": true
+  },
+  "recovery": {
+    "enabled": false,
+    "anchor": "HIGHEST_OPEN_ENTRY",
+    "grid_step_pct": 0.05,
+    "min_spacing_hours": 24
   }
 }
