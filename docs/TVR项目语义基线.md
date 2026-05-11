@@ -103,6 +103,88 @@ research history store:
 14. live stdout 只输出真实动作、异常和显式周期 heartbeat；普通 wait/skip 事件必须继续落 audit，但不得每轮刷 INFO 日志。
 15. live_trader 在已有 pending/open 时必须先过滤本策略 active symbols；持仓期间新增候选 decision 可以按显式 `active_decision_interval_secs` 降频，但已有仓位 lifecycle reconcile 不得降频。
 
+## 4.2 recovery ladder 计划语义
+
+`TVR` 后续可以增加 recovery ladder，用于处理单笔 TVR 仓位长时间未触达 TP 后的低位继续回收交易。
+
+该能力尚未进入当前 live 代码；实现前必须先满足以下约束：
+
+1. 不改变 LONG-only、maker-only、funding gate 和 `current_24h_return <= selected_percentile_return` 入场触发语义。
+2. 不使用账户聚合持仓均价作为 recovery 锚点。
+3. 不用当前市值作为仓位上限，避免越跌越释放额度。
+4. 必须以本金成本口径限制每个 symbol 的最大投入：
+
+```json
+"execution": {
+  "symbol_notional_usdt": {
+    "CLUSDT": 10,
+    "XAUUSDT": 10
+  },
+  "max_symbol_entry_notional_usdt": {
+    "CLUSDT": 30,
+    "XAUUSDT": 30
+  }
+}
+```
+
+`max_symbol_entry_notional_usdt` 的语义固定为：
+
+```text
+sum(open lots entry_notional_usdt for symbol) + next_entry_notional_usdt
+<= max_symbol_entry_notional_usdt[symbol]
+```
+
+该字段表达“最多投入多少本金成本”，不是当前 mark price 下的 position notional。
+
+recovery ladder 的第一版规则固定为：
+
+```text
+允许 recovery 新增一笔，当且仅当：
+
+1. recovery.enabled = true。
+2. 当前 symbol 已有未平 TVR lot。
+3. 当前 symbol 没有 pending entry。
+4. 当前 24h return 仍满足同一 entry_percentile，例如 p10。
+5. 当前 funding 仍满足 funding_rate_entry_max。
+6. 当前 symbol open lots 的 entry_notional_usdt 总和 + 本次 entry notional
+   不超过 max_symbol_entry_notional_usdt[symbol]。
+7. 距离该 symbol 最近一次 entry 至少 recovery.min_spacing_hours。
+8. 当前价格满足最高价锚点的固定间距门槛：
+
+   anchor_price = max(open_lots.entry_price)
+   open_lot_count = len(open_lots)
+   required_drop_pct = recovery.grid_step_pct * open_lot_count
+   current_price <= anchor_price * (1 - required_drop_pct)
+```
+
+若 `grid_step_pct=0.05`，且第一笔 entry price 为 `100`，则：
+
+```text
+第二层 recovery 门槛：current_price <= 95，且距离上一笔 entry >= min_spacing_hours。
+第三层 recovery 门槛：current_price <= 90，且距离上一笔 entry >= min_spacing_hours。
+```
+
+初始建议配置：
+
+```json
+"recovery": {
+  "enabled": true,
+  "anchor": "HIGHEST_OPEN_ENTRY",
+  "grid_step_pct": 0.05,
+  "min_spacing_hours": 24
+}
+```
+
+实现边界：
+
+1. recovery 不是 martingale；每笔 recovery 的 notional 仍来自 `symbol_notional_usdt[symbol]`。
+2. 每个 lot 必须独立记录 `lot_id`、entry order、entry price、entry qty、entry notional、TP order 和状态。
+3. 每个 lot 必须独立挂 `entry_price * (1 + take_profit_pct)` 的 maker TP。
+4. 多 lot 不能继续复用单个 `open_trade` 语义；必须升级为 `open_lots` / `lots` 结构。
+5. reconcile 必须能按 TP order 归属清理对应 lot；不能只依赖 Binance 聚合 LONG position 均价。
+6. bot / log / audit 必须区分 `BASE` 与 `RECOVERY` entry。
+7. recovery dry-run 与审计应先于真实下单实现。
+
 ## 5. rolling 24h 统计
 
 `rolling_24h_return` 定义为：
