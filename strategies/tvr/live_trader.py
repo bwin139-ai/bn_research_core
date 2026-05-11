@@ -62,11 +62,14 @@ QUIET_ENTRY_ACTIONS = {
     "entry_skipped_no_candidate_symbols",
     "entry_skipped_active_decision_interval",
 }
-QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "pending_entry_wait"}
+QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "open_lots_wait", "pending_entry_wait"}
 IMPORTANT_ENTRY_ACTIONS = {
     "signal_locked",
     "dry_run_entry",
     "dry_run_recovery_entry_ready",
+    "recovery_entry_ready",
+    "dry_run_recovery_entry",
+    "recovery_entry_submitted",
     "entry_submitted",
     "entry_terminal_without_pending",
     "entry_attempt_failed",
@@ -74,7 +77,9 @@ IMPORTANT_ENTRY_ACTIONS = {
 }
 IMPORTANT_RECONCILE_ACTIONS = {
     "tp_submitted",
+    "recovery_tp_submitted",
     "open_trade_exit_detected",
+    "open_lot_exit_detected",
     "open_trade_transient_signed_query_failed",
     "pending_entry_query_failed",
     "dry_run_pending_entry_filled",
@@ -526,12 +531,20 @@ def _transient_signed_query_event(
     }
 
 
-def _emit_signal_locked(cfg: Mapping[str, Any], decision: Mapping[str, Any], intent: Mapping[str, Any]) -> dict[str, Any]:
+def _emit_signal_locked(
+    cfg: Mapping[str, Any],
+    decision: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    *,
+    lot_role: str = "BASE",
+) -> dict[str, Any]:
     account = str(cfg["account"]).strip()
     symbol = str(intent.get("symbol") or "").upper().strip()
+    role = str(lot_role or "BASE").upper()
     event = {
         "action": "signal_locked",
         "symbol": symbol,
+        "lot_role": role,
         "entry_percentile": intent.get("entry_percentile"),
         "current_24h_return": intent.get("current_24h_return"),
         "selected_percentile_return": intent.get("selected_percentile_return"),
@@ -543,9 +556,10 @@ def _emit_signal_locked(cfg: Mapping[str, Any], decision: Mapping[str, Any], int
         "decision_collected_bj": decision.get("collected_bj"),
     }
     logging.info(
-        "TVR signal locked | account=%s | symbol=%s | percentile=%s | current_24h_return=%s | threshold=%s | entry_est=%s | qty_est=%s | notional=%s | tp_pct=%s | decision_run_id=%s",
+        "TVR signal locked | account=%s | symbol=%s | lot_role=%s | percentile=%s | current_24h_return=%s | threshold=%s | entry_est=%s | qty_est=%s | notional=%s | tp_pct=%s | decision_run_id=%s",
         account,
         symbol,
+        role,
         intent.get("entry_percentile"),
         _fmt_pct(intent.get("current_24h_return")),
         _fmt_pct(intent.get("selected_percentile_return")),
@@ -557,8 +571,9 @@ def _emit_signal_locked(cfg: Mapping[str, Any], decision: Mapping[str, Any], int
     )
     _notify_tvr(
         account,
-        f"雷达锁定: {symbol}",
+        f"{'Recovery ' if role == 'RECOVERY' else ''}雷达锁定: {symbol}",
         [
+            f"lot_role={role}",
             f"percentile={intent.get('entry_percentile')}",
             (
                 "24h_return="
@@ -768,6 +783,20 @@ def _set_open_trade_and_lots(account: str, symbol: str, open_trade: Mapping[str,
     return symbol_state
 
 
+def _append_open_lot(account: str, symbol: str, open_trade: Mapping[str, Any]) -> dict[str, Any]:
+    symbol_state = load_symbol_state(account, symbol, strategy_name=STRATEGY_NAME)
+    lots = _state_open_lots(symbol_state)
+    lot = _open_lot_from_trade(open_trade)
+    if any(str(item.get("lot_id") or "") == str(lot["lot_id"]) for item in lots):
+        raise ValueError(f"TVR open_lots duplicate lot_id: {symbol} | {lot['lot_id']}")
+    lots.append(lot)
+    symbol_state["open_lots"] = lots
+    if not isinstance(symbol_state.get("open_trade"), Mapping):
+        symbol_state["open_trade"] = lot
+    save_symbol_state(account, symbol, symbol_state, strategy_name=STRATEGY_NAME)
+    return symbol_state
+
+
 def _clear_open_trade_and_lots(account: str, symbol: str) -> dict[str, Any]:
     symbol_state = load_symbol_state(account, symbol, strategy_name=STRATEGY_NAME)
     symbol_state["open_trade"] = None
@@ -796,6 +825,20 @@ def _state_open_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _remove_open_lot(account: str, symbol: str, lot_id: str) -> dict[str, Any]:
+    symbol_state = load_symbol_state(account, symbol, strategy_name=STRATEGY_NAME)
+    target = str(lot_id).strip()
+    remaining = [
+        dict(lot)
+        for lot in _state_open_lots(symbol_state)
+        if str(lot.get("lot_id") or "").strip() != target
+    ]
+    symbol_state["open_lots"] = remaining
+    symbol_state["open_trade"] = dict(remaining[0]) if remaining else None
+    save_symbol_state(account, symbol, symbol_state, strategy_name=STRATEGY_NAME)
+    return symbol_state
+
+
 def _recovery_eval_from_row(
     *,
     cfg: Mapping[str, Any],
@@ -803,6 +846,7 @@ def _recovery_eval_from_row(
     symbol_state: Mapping[str, Any],
     row: Mapping[str, Any],
     now_ms: int,
+    dry_run: bool,
 ) -> dict[str, Any]:
     symbol_key = str(symbol).upper().strip()
     reasons: list[str] = []
@@ -865,7 +909,10 @@ def _recovery_eval_from_row(
     if current_price is not None and trigger_price is not None and float(current_price) > float(trigger_price):
         reasons.append("price_above_recovery_trigger")
 
-    action = "dry_run_recovery_entry_ready" if not reasons else "dry_run_recovery_entry_blocked"
+    if reasons:
+        action = "dry_run_recovery_entry_blocked" if dry_run else "recovery_entry_blocked"
+    else:
+        action = "dry_run_recovery_entry_ready" if dry_run else "recovery_entry_ready"
     return {
         "action": action,
         "symbol": symbol_key,
@@ -949,11 +996,18 @@ def _place_entry_from_intent(
     decision: Mapping[str, Any],
     intent: Mapping[str, Any],
     dry_run: bool,
+    lot_role: str = "BASE",
+    recovery_gate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     account = str(cfg["account"]).strip()
     symbol = str(intent.get("symbol") or "").upper().strip()
+    role = str(lot_role or "BASE").upper()
+    if role not in {"BASE", "RECOVERY"}:
+        raise ValueError(f"TVR unsupported lot_role: {role}")
     if not symbol:
         raise ValueError("TVR selected intent missing symbol")
+    if role == "RECOVERY" and str((recovery_gate or {}).get("action") or "") != "recovery_entry_ready":
+        raise ValueError(f"TVR recovery entry requires recovery_entry_ready gate: {symbol}")
     proposed = _as_float(intent.get("proposed_order_notional_usdt"))
     order_notional = _symbol_order_notional(cfg, symbol)
     if proposed is None or not math.isclose(float(proposed), order_notional, rel_tol=0.0, abs_tol=1e-9):
@@ -974,8 +1028,9 @@ def _place_entry_from_intent(
         entry_limit_price = estimated_price
         estimated_qty = order_notional / entry_limit_price
         return {
-            "action": "dry_run_entry",
+            "action": "dry_run_recovery_entry" if role == "RECOVERY" else "dry_run_entry",
             "symbol": symbol,
+            "lot_role": role,
             "current_price": estimated_price,
             "entry_price_mode": str(cfg["execution"]["entry_price_mode"]),
             "entry_limit_price": entry_limit_price,
@@ -983,11 +1038,14 @@ def _place_entry_from_intent(
             "notional_usdt": order_notional,
             "client_order_id": order_ids["entry_client_order_id"],
             "decision_run_id": decision.get("run_id"),
+            "recovery_gate": dict(recovery_gate or {}),
         }
 
-    precheck = _ensure_symbol_is_flat(account, symbol, cfg)
-    if not precheck["ok"]:
-        return {"action": "entry_blocked", "symbol": symbol, "precheck": precheck}
+    precheck = {"ok": True, "blockers": [], "position": None, "open_orders": []}
+    if role == "BASE":
+        precheck = _ensure_symbol_is_flat(account, symbol, cfg)
+        if not precheck["ok"]:
+            return {"action": "entry_blocked", "symbol": symbol, "lot_role": role, "precheck": precheck}
     env = _ensure_execution_env(account, symbol, cfg)
     attempt_started_ms = _now_utc_ms()
     attempt_deadline_ms = attempt_started_ms + int(float(cfg["execution"]["entry_attempt_window_secs"]) * 1000)
@@ -1043,6 +1101,7 @@ def _place_entry_from_intent(
         return {
             "action": "entry_attempt_failed",
             "symbol": symbol,
+            "lot_role": role,
             "env": env,
             "attempts": attempts,
             "attempt_window_secs": float(cfg["execution"]["entry_attempt_window_secs"]),
@@ -1050,6 +1109,7 @@ def _place_entry_from_intent(
     payload = {
         "symbol": symbol,
         "strategy_name": STRATEGY_NAME,
+        "lot_role": role,
         "order_root": order_ids["order_root"],
         "entry_client_order_id": order_ids["entry_client_order_id"],
         "entry_exchange_order_id": entry_order.get("order_id"),
@@ -1066,15 +1126,34 @@ def _place_entry_from_intent(
         "order_status": status,
         "raw_order": entry_order,
         "entry_attempts": attempts,
+        "precheck": precheck,
+        "recovery_gate": dict(recovery_gate or {}),
     }
     if status in TERMINAL_ORDER_STATUSES and status != "FILLED":
-        return {"action": "entry_terminal_without_pending", "symbol": symbol, "entry_order": entry_order, "env": env, "attempts": attempts}
+        return {
+            "action": "entry_terminal_without_pending",
+            "symbol": symbol,
+            "lot_role": role,
+            "entry_order": entry_order,
+            "env": env,
+            "attempts": attempts,
+        }
     if status not in TERMINAL_ORDER_STATUSES or status == "FILLED":
         set_pending_entry_order(account, symbol, payload, strategy_name=STRATEGY_NAME)
-    return {"action": "entry_submitted", "symbol": symbol, "entry_order": entry_order, "env": env, "pending_entry_order": payload}
+    return {
+        "action": "recovery_entry_submitted" if role == "RECOVERY" else "entry_submitted",
+        "symbol": symbol,
+        "lot_role": role,
+        "entry_order": entry_order,
+        "env": env,
+        "pending_entry_order": payload,
+    }
 
 
 def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[str, Any], order: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
+    lot_role = str(pending.get("lot_role") or "BASE").upper()
+    if lot_role not in {"BASE", "RECOVERY"}:
+        raise ValueError(f"TVR pending entry unsupported lot_role: {symbol} | {lot_role}")
     executed_qty = _as_float(order.get("executed_qty")) or 0.0
     if executed_qty <= 0:
         raise RuntimeError("TVR pending entry has no executed quantity")
@@ -1100,6 +1179,7 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
     open_trade = {
         "symbol": symbol,
         "strategy_name": STRATEGY_NAME,
+        "lot_role": lot_role,
         "side": POSITION_SIDE_LONG,
         "order_root": pending.get("order_root"),
         "entry_client_order_id": pending.get("entry_client_order_id"),
@@ -1119,27 +1199,37 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
         "entry_order_snapshot": dict(order),
         "tp_order_snapshot": dict(tp_order),
     }
-    _set_open_trade_and_lots(account, symbol, open_trade)
+    if lot_role == "RECOVERY":
+        _append_open_lot(account, symbol, open_trade)
+    else:
+        _set_open_trade_and_lots(account, symbol, open_trade)
     set_pending_entry_order(account, symbol, None, strategy_name=STRATEGY_NAME)
     logging.info(
-        "TVR OPEN established | account=%s | symbol=%s | entry=%s | tp=%s | qty=%s",
+        "TVR OPEN established | account=%s | symbol=%s | lot_role=%s | entry=%s | tp=%s | qty=%s",
         account,
         symbol,
+        lot_role,
         _fmt_num(entry_price),
         _fmt_num(size["price"]),
         _fmt_num(size["qty"]),
     )
     _notify_tvr(
         account,
-        "OPEN",
+        "RECOVERY OPEN" if lot_role == "RECOVERY" else "OPEN",
         [
             f"symbol={symbol}",
+            f"lot_role={lot_role}",
             f"entry={_fmt_num(entry_price)} | tp={_fmt_num(size['price'])} | qty={_fmt_num(size['qty'])}",
             f"entry_order={pending.get('entry_client_order_id')}",
             f"tp_order={tp_order.get('client_order_id')}",
         ],
     )
-    return {"action": "tp_submitted", "symbol": symbol, "open_trade": open_trade}
+    return {
+        "action": "recovery_tp_submitted" if lot_role == "RECOVERY" else "tp_submitted",
+        "symbol": symbol,
+        "lot_role": lot_role,
+        "open_trade": open_trade,
+    }
 
 
 def _query_open_trade_tp(account: str, symbol: str, open_trade: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -1261,6 +1351,233 @@ def _finalize_open_trade_exit(
         "exit_reason": exit_reason,
         "closed_trade": closed_trade,
     }
+
+
+def _finalize_open_lot_exit(
+    *,
+    account: str,
+    symbol: str,
+    lot: Mapping[str, Any],
+    exit_reason: str,
+    tp_order: Mapping[str, Any] | None,
+    position_snapshot: Mapping[str, Any] | None,
+    cleanup_cancel: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    lot_id = str(lot.get("lot_id") or "").strip()
+    if not lot_id:
+        raise ValueError(f"TVR open lot missing lot_id: {symbol}")
+    exit_price = None
+    if isinstance(tp_order, Mapping) and (_order_status(tp_order) == "FILLED" or _order_executed_qty(tp_order) > 0):
+        exit_price = _as_float(tp_order.get("avg_price")) or _as_float(tp_order.get("price"))
+    if exit_price is None and exit_reason == "TAKE_PROFIT":
+        exit_price = _as_float(lot.get("tp_price"))
+    entry_price = _as_float(lot.get("entry_price"))
+    pnl_pct = None
+    if entry_price is not None and entry_price > 0 and exit_price is not None and exit_price > 0:
+        pnl_pct = exit_price / entry_price - 1.0
+
+    now_ms = _now_utc_ms()
+    opened_ms = _as_int(lot.get("opened_utc_ms"))
+    holding_ms = int(now_ms - opened_ms) if opened_ms is not None and int(opened_ms) <= now_ms else None
+    holding_text = _fmt_duration_ms(holding_ms)
+    closed_lot = dict(lot)
+    closed_lot.update({
+        "status": "CLOSED",
+        "exit_reason": exit_reason,
+        "exit_price": exit_price,
+        "exit_pnl_pct": pnl_pct,
+        "closed_utc_ms": now_ms,
+        "closed_bj": _fmt_bj_from_ms(now_ms),
+        "holding_ms": holding_ms,
+        "holding_minutes": round(holding_ms / 60_000, 3) if holding_ms is not None else None,
+        "holding_text": holding_text,
+        "tp_exit_order_snapshot": dict(tp_order or {}),
+        "position_close_snapshot": dict(position_snapshot or {}),
+        "cleanup_cancel": dict(cleanup_cancel or {}),
+    })
+    next_state = _remove_open_lot(account, symbol, lot_id)
+    remaining_lots = len(_state_open_lots(next_state))
+    mark_position_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
+    mark_order_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
+    logging.info(
+        "TVR LOT EXIT detected | account=%s | symbol=%s | lot_id=%s | lot_role=%s | reason=%s | entry=%s | exit=%s | pnl_pct=%s | holding=%s | remaining_lots=%s",
+        account,
+        symbol,
+        lot_id,
+        str(lot.get("lot_role") or "BASE").upper(),
+        exit_reason,
+        _fmt_num(entry_price),
+        _fmt_num(exit_price),
+        _fmt_num(pnl_pct, digits=4),
+        holding_text,
+        remaining_lots,
+    )
+    _notify_tvr(
+        account,
+        f"LOT EXIT {exit_reason}",
+        [
+            f"symbol={symbol}",
+            f"lot_role={str(lot.get('lot_role') or 'BASE').upper()}",
+            f"entry={_fmt_num(entry_price)} | exit={_fmt_num(exit_price)} | pnl={_fmt_num(pnl_pct, digits=4)}",
+            f"持仓={holding_text} | remaining_lots={remaining_lots}",
+            f"tp_status={_order_status(tp_order)} | tp_executed={_fmt_num(_order_executed_qty(tp_order))}",
+        ],
+    )
+    return {
+        "action": "open_lot_exit_detected",
+        "symbol": symbol,
+        "lot_id": lot_id,
+        "lot_role": str(lot.get("lot_role") or "BASE").upper(),
+        "exit_reason": exit_reason,
+        "remaining_lots": remaining_lots,
+        "closed_lot": closed_lot,
+    }
+
+
+def _reconcile_open_lots(
+    account: str,
+    symbol: str,
+    lots: list[dict[str, Any]],
+    cfg: Mapping[str, Any],
+    *,
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    now_bj = _fmt_bj_from_ms(_now_utc_ms())
+    position_res = _query_long_position_with_retry(account, symbol, cfg)
+    if not position_res.get("ok"):
+        if _is_transient_signed_query_error(position_res.get("reason")):
+            reason = f"TVR open_lots position query transient failed: {symbol} | {position_res.get('reason')}"
+            return [_transient_signed_query_event(
+                account,
+                symbol,
+                operation="query_long_position",
+                reason=reason,
+                attempts=int(position_res.get("attempts") or 1),
+                now_bj=now_bj,
+            )]
+        raise RuntimeError(f"TVR open_lots position query failed: {symbol} | {position_res.get('reason')}")
+    position_snapshot = position_res.get("data") if isinstance(position_res.get("data"), Mapping) else None
+    position_qty = _position_qty(position_snapshot)
+
+    tp_rows: list[dict[str, Any]] = []
+    for lot in lots:
+        tp_res = _query_open_trade_tp(account, symbol, lot, cfg)
+        if not tp_res.get("ok") and _is_transient_signed_query_error(tp_res.get("reason")):
+            reason = f"TVR open_lot TP query transient failed: {symbol} | lot_id={lot.get('lot_id')} | {tp_res.get('reason')}"
+            return [_transient_signed_query_event(
+                account,
+                symbol,
+                operation="query_tp_order",
+                reason=reason,
+                attempts=int(tp_res.get("attempts") or 1),
+                now_bj=now_bj,
+            )]
+        tp_order = dict(tp_res.get("data") or {}) if tp_res.get("ok") else None
+        tp_rows.append({"lot": lot, "tp_res": tp_res, "tp_order": tp_order, "tp_status": _order_status(tp_order)})
+
+    if dry_run:
+        return [{
+            "action": "dry_run_open_lots_reconcile",
+            "symbol": symbol,
+            "open_lot_count": len(lots),
+            "position_qty": position_qty,
+            "tp_statuses": [
+                {
+                    "lot_id": row["lot"].get("lot_id"),
+                    "lot_role": row["lot"].get("lot_role"),
+                    "tp_query_ok": bool(row["tp_res"].get("ok")),
+                    "tp_status": row["tp_status"],
+                }
+                for row in tp_rows
+            ],
+        }]
+
+    mark_position_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
+    mark_order_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
+    mark_error(account, symbol, error_code=None, error_message=None, error_bj=None, strategy_name=STRATEGY_NAME)
+
+    events: list[dict[str, Any]] = []
+    if position_qty <= 0:
+        for row in tp_rows:
+            lot = row["lot"]
+            tp_order = row["tp_order"]
+            tp_status = row["tp_status"]
+            cleanup_cancel = None
+            exit_reason = "TAKE_PROFIT" if tp_status == "FILLED" else "POSITION_CLOSED"
+            if row["tp_res"].get("ok") and tp_status and tp_status not in TERMINAL_ORDER_STATUSES:
+                cleanup_cancel = cancel_order(
+                    account,
+                    symbol,
+                    exchange_order_id=_as_int(lot.get("tp_exchange_order_id")),
+                    client_order_id=str(lot.get("tp_client_order_id") or ""),
+                    retry_max=int(cfg["execution"]["order_retry_max"]),
+                    retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
+                    notify_label="tvr",
+                )
+            events.append(_finalize_open_lot_exit(
+                account=account,
+                symbol=symbol,
+                lot=lot,
+                exit_reason=exit_reason,
+                tp_order=tp_order,
+                position_snapshot=position_snapshot,
+                cleanup_cancel=cleanup_cancel,
+            ))
+        return events
+
+    for row in tp_rows:
+        lot = row["lot"]
+        tp_order = row["tp_order"]
+        tp_status = row["tp_status"]
+        if not row["tp_res"].get("ok"):
+            reason = f"TVR open lot TP query failed: {symbol} | lot_id={lot.get('lot_id')} | {row['tp_res'].get('reason')}"
+            mark_error(account, symbol, error_code="tvr_tp_query_failed", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+            _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+            raise RuntimeError(reason)
+        if not tp_status:
+            reason = f"TVR open lot TP status missing: {symbol} | lot_id={lot.get('lot_id')}"
+            mark_error(account, symbol, error_code="tvr_tp_status_missing", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+            _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+            raise RuntimeError(reason)
+        if tp_status == "FILLED":
+            if len(lots) == 1:
+                reason = f"TVR single open lot TP filled but LONG position still open: {symbol} | qty={position_qty}"
+                mark_error(account, symbol, error_code="tvr_tp_filled_position_open", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+                _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+                raise RuntimeError(reason)
+            events.append(_finalize_open_lot_exit(
+                account=account,
+                symbol=symbol,
+                lot=lot,
+                exit_reason="TAKE_PROFIT",
+                tp_order=tp_order,
+                position_snapshot=position_snapshot,
+                cleanup_cancel=None,
+            ))
+            continue
+        if tp_status in TERMINAL_ORDER_STATUSES:
+            reason = f"TVR open lot lost active TP: {symbol} | lot_id={lot.get('lot_id')} | tp_status={tp_status}"
+            mark_error(account, symbol, error_code="tvr_open_lot_tp_terminal", error_message=reason, error_bj=now_bj, strategy_name=STRATEGY_NAME)
+            _notify_tvr(account, "CRITICAL", [f"symbol={symbol}", reason])
+            raise RuntimeError(reason)
+
+    if events:
+        return events
+    return [{
+        "action": "open_lots_wait",
+        "symbol": symbol,
+        "open_lot_count": len(lots),
+        "position_qty": position_qty,
+        "tp_statuses": [
+            {
+                "lot_id": row["lot"].get("lot_id"),
+                "lot_role": row["lot"].get("lot_role"),
+                "tp_status": row["tp_status"],
+                "tp_executed_qty": _order_executed_qty(row["tp_order"]),
+            }
+            for row in tp_rows
+        ],
+    }]
 
 
 def _reconcile_open_trade(
@@ -1483,10 +1800,14 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
                     events.append({"action": "pending_entry_ttl_cancel", "symbol": symbol_key, "status": status, "cancel": cancel_res})
                 continue
             events.append({"action": "pending_entry_wait", "symbol": symbol_key, "status": status, "order": order})
+        open_lots = _state_open_lots(symbol_state)
+        if open_lots:
+            if not dry_run and not (isinstance(symbol_state.get("open_lots"), list) and symbol_state.get("open_lots")):
+                _sync_open_lots_from_open_trade(account, symbol_key, symbol_state)
+            events.extend(_reconcile_open_lots(account, symbol_key, open_lots, cfg, dry_run=dry_run))
+            continue
         open_trade = symbol_state.get("open_trade")
         if isinstance(open_trade, Mapping):
-            if not dry_run:
-                _sync_open_lots_from_open_trade(account, symbol_key, symbol_state)
             events.append(_reconcile_open_trade(account, symbol_key, open_trade, cfg, dry_run=dry_run))
     return events
 
@@ -1606,8 +1927,6 @@ def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) ->
 def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | None:
     if not bool(cfg["enabled"]):
         raise RuntimeError("TVR live trader config enabled=false")
-    if bool(cfg["recovery"]["enabled"]) and not bool(dry_run):
-        raise RuntimeError("TVR recovery live entry is not implemented yet; use --dry-run for recovery gate audit")
     account = str(cfg["account"]).strip()
     mark_loop_heartbeat(account, runner_pid=os.getpid(), strategy_name=STRATEGY_NAME)
     decision_cfg = load_decision_audit_config(str(cfg["decision_audit"]["config_path"]))
@@ -1626,8 +1945,8 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
     decision_skip_reason: str | None = None
     selected_intents: list[dict[str, Any]] = []
     max_open_trades = int(cfg["execution"]["max_open_trades"])
-    recovery_dry_run_enabled = bool(cfg["recovery"]["enabled"]) and bool(dry_run)
-    if len(active_symbols) >= max_open_trades and not recovery_dry_run_enabled:
+    recovery_enabled = bool(cfg["recovery"]["enabled"])
+    if len(active_symbols) >= max_open_trades and not recovery_enabled:
         decision_skip_reason = "max_open_trades_reached"
         entry_events.append({"action": "entry_blocked_max_open_trades", "active_symbols": active_symbols})
     else:
@@ -1639,7 +1958,7 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         ]
         recovery_candidate_symbols = [
             symbol for symbol in tradable_symbols
-            if recovery_dry_run_enabled and symbol and symbol in active_set
+            if recovery_enabled and symbol and symbol in active_set
         ]
         candidate_symbols = sorted(set(base_candidate_symbols + recovery_candidate_symbols))
         if not candidate_symbols:
@@ -1686,7 +2005,27 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
                         symbol_state=symbol_state,
                         row=row,
                         now_ms=now_ms,
+                        dry_run=bool(dry_run),
                     ))
+                    gate = recovery_events[-1]
+                    if (
+                        not dry_run
+                        and gate.get("action") == "recovery_entry_ready"
+                        and len(entry_events) < int(cfg["execution"]["max_new_entries_per_iteration"])
+                    ):
+                        intent = dict(row["intent"])
+                        signal_events.append(_emit_signal_locked(cfg, decision, intent, lot_role="RECOVERY"))
+                        event = _place_entry_from_intent(
+                            cfg=cfg,
+                            decision=decision,
+                            intent=intent,
+                            dry_run=False,
+                            lot_role="RECOVERY",
+                            recovery_gate=gate,
+                        )
+                        entry_events.append(event)
+                        if event.get("action") == "recovery_entry_submitted" and symbol not in active_symbols:
+                            active_symbols.append(symbol)
 
         for intent in selected_intents:
             if len(entry_events) >= int(cfg["execution"]["max_new_entries_per_iteration"]):
@@ -1696,10 +2035,13 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
                 if not bool(cfg["recovery"]["enabled"]):
                     entry_events.append({"action": "entry_skipped_local_active_symbol", "symbol": symbol})
                 continue
-            signal_events.append(_emit_signal_locked(cfg, decision, intent))
-            event = _place_entry_from_intent(cfg=cfg, decision=decision, intent=intent, dry_run=dry_run)
+            signal_events.append(_emit_signal_locked(cfg, decision, intent, lot_role="BASE"))
+            event = _place_entry_from_intent(cfg=cfg, decision=decision, intent=intent, dry_run=dry_run, lot_role="BASE")
             entry_events.append(event)
-            if event.get("action") in {"entry_submitted", "dry_run_entry"}:
+            if (
+                event.get("action") in {"entry_submitted", "dry_run_entry", "recovery_entry_submitted", "dry_run_recovery_entry"}
+                and symbol not in active_symbols
+            ):
                 active_symbols.append(symbol)
 
     record = {

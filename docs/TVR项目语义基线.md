@@ -180,8 +180,10 @@ recovery ladder 的第一版规则固定为：
 1. 第一刀只允许配置与校验进入代码，实盘行为不变。
 2. 第二刀允许现有单笔 `open_trade` 同步镜像为 `open_lots[0]`，为后续多 lot recovery lifecycle 铺 state 结构。
 3. 第三刀允许 `--dry-run` 在 `recovery.enabled=true` 时评估 active symbol 的 recovery ladder gate，并输出 `dry_run_recovery_entry_ready` / `dry_run_recovery_entry_blocked`。
-4. 在多 lot recovery lifecycle 实现前，生产实盘配置必须保持 `recovery.enabled=false`。
-5. 若当前 live 配置中 `recovery.enabled=true` 且不是 `--dry-run`，`live_trader` 必须 fail-fast，不得静默退回单 lot 行为。
+4. 第四刀允许 `recovery.enabled=true` 时进入实盘 `RECOVERY` lot 路径：只有 recovery gate ready 才能提交 maker entry；pending fill 后必须追加 `open_lots` 并独立挂 TP。
+5. 默认 smoke 配置仍保持 `recovery.enabled=false`；启用 recovery 必须是显式配置动作。
+6. 多 lot reconcile 必须逐 lot 查询 TP；多 lot 下某个 TP 成交只清理对应 lot，不能用账户聚合 LONG position 直接清空所有 lots。
+7. 单 lot TP filled 但 LONG position 仍 open 必须继续 fail-fast，避免交易所状态延迟或异常导致误清仓位 state。
 
 实现边界：
 
