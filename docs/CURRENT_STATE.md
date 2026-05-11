@@ -960,7 +960,16 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 15. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
-### 5.4 Spring-SABC sim / 参数
+### 5.4 TVR live lifecycle
+
+```text
+1. TVR live 对 open_trade reconcile 中的临时 signed 查询错误单独处理：TP 订单查询或 LONG 持仓查询如果返回 `code=-1021` / `outside of the recvWindow` / `Timestamp for this request`，不会杀死 live 进程。
+2. TVR LONG 持仓查询复用 `execution.order_retry_max` 与 `execution.api_retry_delay_secs` 做短重试；重试后仍失败才返回 `open_trade_transient_signed_query_failed`。
+3. 该 transient 事件会写入 `state/live/tvr_{account}.state.json` 的 `last_error_*`，进入 live audit jsonl，并通过 `tvr` Telegram 队列告警；同一 account/symbol/operation 进程内 30 分钟节流一次，避免刷屏。
+4. transient 事件不会标记 position/order reconcile 成功时间，不会清理 `open_trade`，也不会推进入场/离场判断；下一轮继续 reconcile。
+```
+
+### 5.5 Spring-SABC sim / 参数
 
 ```text
 1. 固定当前 config 事实。
@@ -968,7 +977,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 3. 若要改 pre-A / rebound / sizing 参数，先形成语义说明，再做单问题 patch。
 ```
 
-### 5.4 文档
+### 5.6 文档
 
 ```text
 1. 每个长任务结束前判断是否更新 CURRENT_STATE.md。

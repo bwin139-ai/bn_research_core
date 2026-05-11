@@ -71,6 +71,7 @@ IMPORTANT_ENTRY_ACTIONS = {
 IMPORTANT_RECONCILE_ACTIONS = {
     "tp_submitted",
     "open_trade_exit_detected",
+    "open_trade_transient_signed_query_failed",
     "pending_entry_query_failed",
     "dry_run_pending_entry_filled",
     "partial_entry_cancel_remaining",
@@ -86,6 +87,8 @@ _ITERATION_LOG_STATE = {
     "decision_selected_total": 0,
 }
 _DECISION_THROTTLE_STATE = {"last_decision_utc_ms": 0}
+_TRANSIENT_SIGNED_QUERY_NOTIFY_STATE: dict[str, int] = {}
+_TRANSIENT_SIGNED_QUERY_NOTIFY_INTERVAL_MS = 30 * 60 * 1000
 
 
 def setup_logging() -> None:
@@ -392,6 +395,85 @@ def _notify_tvr(account: str, title: str, lines: list[str]) -> None:
     now_bj = datetime.now(BJ).strftime("%H:%M:%S")
     message = "\n".join([f"[{now_bj} TVR] {account}", str(title), *lines])
     send_to_bot(message, label="tvr")
+
+
+def _is_transient_signed_query_error(reason: Any) -> bool:
+    text = str(reason or "")
+    return (
+        "code=-1021" in text
+        or "outside of the recvWindow" in text
+        or "Timestamp for this request" in text
+    )
+
+
+def _notify_transient_signed_query(
+    account: str,
+    symbol: str,
+    *,
+    operation: str,
+    reason: str,
+    attempts: int,
+) -> bool:
+    now_ms = _now_utc_ms()
+    key = f"{account}:{symbol}:{operation}"
+    last_ms = int(_TRANSIENT_SIGNED_QUERY_NOTIFY_STATE.get(key) or 0)
+    if now_ms - last_ms < _TRANSIENT_SIGNED_QUERY_NOTIFY_INTERVAL_MS:
+        return False
+    _TRANSIENT_SIGNED_QUERY_NOTIFY_STATE[key] = now_ms
+    _notify_tvr(
+        account,
+        "WARN transient signed API error",
+        [
+            f"symbol={symbol}",
+            f"operation={operation}",
+            f"attempts={attempts}",
+            reason,
+        ],
+    )
+    return True
+
+
+def _transient_signed_query_event(
+    account: str,
+    symbol: str,
+    *,
+    operation: str,
+    reason: str,
+    attempts: int,
+    now_bj: str,
+) -> dict[str, Any]:
+    mark_error(
+        account,
+        symbol,
+        error_code="tvr_transient_signed_query_failed",
+        error_message=reason,
+        error_bj=now_bj,
+        strategy_name=STRATEGY_NAME,
+    )
+    notified = _notify_transient_signed_query(
+        account,
+        symbol,
+        operation=operation,
+        reason=reason,
+        attempts=attempts,
+    )
+    logging.warning(
+        "TVR transient signed query failed | account=%s | symbol=%s | operation=%s | attempts=%s | notified=%s | reason=%s",
+        account,
+        symbol,
+        operation,
+        attempts,
+        notified,
+        reason,
+    )
+    return {
+        "action": "open_trade_transient_signed_query_failed",
+        "symbol": symbol,
+        "operation": operation,
+        "attempts": attempts,
+        "reason": reason,
+        "notified": notified,
+    }
 
 
 def _client_order_ids() -> dict[str, str]:
@@ -799,6 +881,23 @@ def _query_open_trade_tp(account: str, symbol: str, open_trade: Mapping[str, Any
     )
 
 
+def _query_long_position_with_retry(account: str, symbol: str, cfg: Mapping[str, Any]) -> dict[str, Any]:
+    attempts = max(0, int(cfg["execution"]["order_retry_max"])) + 1
+    retry_delay_secs = max(0.0, float(cfg["execution"]["api_retry_delay_secs"]))
+    last_res: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        res = get_position(account, symbol, POSITION_SIDE_LONG)
+        payload = dict(res)
+        payload["attempts"] = attempt
+        if payload.get("ok"):
+            return payload
+        last_res = payload
+        if attempt >= attempts or not _is_transient_signed_query_error(payload.get("reason")):
+            return payload
+        time.sleep(retry_delay_secs)
+    return last_res or {"ok": False, "reason": "TVR position query failed without response", "attempts": attempts, "data": None}
+
+
 def _position_qty(position: Any) -> float:
     if not isinstance(position, Mapping):
         return 0.0
@@ -889,10 +988,30 @@ def _reconcile_open_trade(
 ) -> dict[str, Any]:
     now_bj = _fmt_bj_from_ms(_now_utc_ms())
     tp_res = _query_open_trade_tp(account, symbol, open_trade, cfg)
+    if not tp_res.get("ok") and _is_transient_signed_query_error(tp_res.get("reason")):
+        reason = f"TVR open_trade TP query transient failed: {symbol} | {tp_res.get('reason')}"
+        return _transient_signed_query_event(
+            account,
+            symbol,
+            operation="query_tp_order",
+            reason=reason,
+            attempts=int(tp_res.get("attempts") or 1),
+            now_bj=now_bj,
+        )
     tp_order = dict(tp_res.get("data") or {}) if tp_res.get("ok") else None
     tp_status = _order_status(tp_order)
-    position_res = get_position(account, symbol, POSITION_SIDE_LONG)
+    position_res = _query_long_position_with_retry(account, symbol, cfg)
     if not position_res.get("ok"):
+        if _is_transient_signed_query_error(position_res.get("reason")):
+            reason = f"TVR open_trade position query transient failed: {symbol} | {position_res.get('reason')}"
+            return _transient_signed_query_event(
+                account,
+                symbol,
+                operation="query_long_position",
+                reason=reason,
+                attempts=int(position_res.get("attempts") or 1),
+                now_bj=now_bj,
+            )
         raise RuntimeError(f"TVR open_trade position query failed: {symbol} | {position_res.get('reason')}")
     position_snapshot = position_res.get("data") if isinstance(position_res.get("data"), Mapping) else None
     position_qty = _position_qty(position_snapshot)
@@ -908,6 +1027,7 @@ def _reconcile_open_trade(
 
     mark_position_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
     mark_order_reconcile(account, symbol, reconcile_bj=now_bj, strategy_name=STRATEGY_NAME)
+    mark_error(account, symbol, error_code=None, error_message=None, error_bj=None, strategy_name=STRATEGY_NAME)
 
     if position_qty <= 0:
         cleanup_cancel = None
