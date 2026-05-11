@@ -51,6 +51,7 @@ from strategies.tvr.decision_audit import (
 BJ = timezone(timedelta(hours=8))
 STRATEGY_NAME = "tvr"
 STRATEGY_CODE = "TVR"
+STRATEGY_LOGO = "🏛"
 POSITION_SIDE_LONG = "LONG"
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 REPRICE_RETRY_ORDER_STATUSES = {"EXPIRED", "REJECTED"}
@@ -62,6 +63,7 @@ QUIET_ENTRY_ACTIONS = {
 }
 QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "pending_entry_wait"}
 IMPORTANT_ENTRY_ACTIONS = {
+    "signal_locked",
     "dry_run_entry",
     "entry_submitted",
     "entry_terminal_without_pending",
@@ -391,9 +393,16 @@ def _fmt_num(value: Any, *, digits: int = 6) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+def _fmt_pct(value: Any, *, digits: int = 2) -> str:
+    num = _as_float(value)
+    if num is None:
+        return "NA"
+    return f"{num * 100:.{digits}f}%"
+
+
 def _notify_tvr(account: str, title: str, lines: list[str]) -> None:
     now_bj = datetime.now(BJ).strftime("%H:%M:%S")
-    message = "\n".join([f"[{now_bj} TVR] {account}", str(title), *lines])
+    message = "\n".join([f"[{now_bj} {STRATEGY_LOGO} TVR] {account}", str(title), *lines])
     send_to_bot(message, label="tvr")
 
 
@@ -474,6 +483,57 @@ def _transient_signed_query_event(
         "reason": reason,
         "notified": notified,
     }
+
+
+def _emit_signal_locked(cfg: Mapping[str, Any], decision: Mapping[str, Any], intent: Mapping[str, Any]) -> dict[str, Any]:
+    account = str(cfg["account"]).strip()
+    symbol = str(intent.get("symbol") or "").upper().strip()
+    event = {
+        "action": "signal_locked",
+        "symbol": symbol,
+        "entry_percentile": intent.get("entry_percentile"),
+        "current_24h_return": intent.get("current_24h_return"),
+        "selected_percentile_return": intent.get("selected_percentile_return"),
+        "estimated_entry_price": intent.get("estimated_entry_price"),
+        "estimated_order_qty": intent.get("estimated_order_qty"),
+        "proposed_order_notional_usdt": intent.get("proposed_order_notional_usdt"),
+        "take_profit_pct": intent.get("take_profit_pct"),
+        "decision_run_id": decision.get("run_id"),
+        "decision_collected_bj": decision.get("collected_bj"),
+    }
+    logging.info(
+        "TVR signal locked | account=%s | symbol=%s | percentile=%s | current_24h_return=%s | threshold=%s | entry_est=%s | qty_est=%s | notional=%s | tp_pct=%s | decision_run_id=%s",
+        account,
+        symbol,
+        intent.get("entry_percentile"),
+        _fmt_pct(intent.get("current_24h_return")),
+        _fmt_pct(intent.get("selected_percentile_return")),
+        _fmt_num(intent.get("estimated_entry_price")),
+        _fmt_num(intent.get("estimated_order_qty")),
+        _fmt_num(intent.get("proposed_order_notional_usdt"), digits=2),
+        _fmt_pct(intent.get("take_profit_pct")),
+        decision.get("run_id"),
+    )
+    _notify_tvr(
+        account,
+        f"雷达锁定: {symbol}",
+        [
+            f"percentile={intent.get('entry_percentile')}",
+            (
+                "24h_return="
+                f"{_fmt_pct(intent.get('current_24h_return'))} <= "
+                f"threshold={_fmt_pct(intent.get('selected_percentile_return'))}"
+            ),
+            (
+                f"entry≈{_fmt_num(intent.get('estimated_entry_price'))} | "
+                f"qty≈{_fmt_num(intent.get('estimated_order_qty'))}"
+            ),
+            f"开仓金额: {_fmt_num(intent.get('proposed_order_notional_usdt'), digits=2)}U",
+            f"TP: {_fmt_pct(intent.get('take_profit_pct'))}",
+            f"decision={decision.get('run_id')}",
+        ],
+    )
+    return event
 
 
 def _client_order_ids() -> dict[str, str]:
@@ -1222,8 +1282,10 @@ def _has_interesting_actions(reconcile_events: list[dict[str, Any]], entry_event
 def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) -> None:
     reconcile_events = [dict(x) for x in list(record.get("reconcile_events") or []) if isinstance(x, Mapping)]
     entry_events = [dict(x) for x in list(record.get("entry_events") or []) if isinstance(x, Mapping)]
+    signal_events = [dict(x) for x in list(record.get("signal_events") or []) if isinstance(x, Mapping)]
     reconcile_counts = _count_actions(reconcile_events)
     entry_counts = _count_actions(entry_events)
+    signal_counts = _count_actions(signal_events)
     now_ms = _now_utc_ms()
     _ITERATION_LOG_STATE["iterations"] = int(_ITERATION_LOG_STATE["iterations"]) + 1
     _ITERATION_LOG_STATE["quiet_reconcile_events"] = int(_ITERATION_LOG_STATE["quiet_reconcile_events"]) + sum(
@@ -1236,15 +1298,16 @@ def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) ->
 
     interval_ms = int(cfg["logging"]["summary_interval_secs"]) * 1000
     elapsed = now_ms - int(_ITERATION_LOG_STATE["last_summary_utc_ms"] or 0)
-    important = _has_interesting_actions(reconcile_events, entry_events)
+    important = bool(signal_events) or _has_interesting_actions(reconcile_events, entry_events)
     if not important and elapsed < interval_ms:
         return
 
     logging.info(
-        "TVR live heartbeat | dry_run=%s | selected=%s | active=%s | reconcile=%s | entry_events=%s | quiet_reconcile_events=%s | quiet_entry_events=%s | iterations=%s",
+        "TVR live heartbeat | dry_run=%s | selected=%s | active=%s | signals=%s | reconcile=%s | entry_events=%s | quiet_reconcile_events=%s | quiet_entry_events=%s | iterations=%s",
         bool(record.get("dry_run")),
         list(record.get("selected_symbols") or []),
         list(record.get("active_symbols") or []),
+        signal_counts,
         reconcile_counts,
         entry_counts,
         int(_ITERATION_LOG_STATE["quiet_reconcile_events"]),
@@ -1271,6 +1334,7 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
     state = load_live_state(account, strategy_name=STRATEGY_NAME)
     active_symbols = _active_local_symbols(state)
     entry_events: list[dict[str, Any]] = []
+    signal_events: list[dict[str, Any]] = []
 
     decision: dict[str, Any] | None = None
     decision_path: Path | None = None
@@ -1313,6 +1377,7 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
             if symbol in active_symbols:
                 entry_events.append({"action": "entry_skipped_local_active_symbol", "symbol": symbol})
                 continue
+            signal_events.append(_emit_signal_locked(cfg, decision, intent))
             event = _place_entry_from_intent(cfg=cfg, decision=decision, intent=intent, dry_run=dry_run)
             entry_events.append(event)
             if event.get("action") in {"entry_submitted", "dry_run_entry"}:
@@ -1334,6 +1399,7 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         "decision_selected_count": decision.get("selected_count") if decision is not None else 0,
         "selected_symbols": list(decision.get("selected_symbols") or []) if decision is not None else [],
         "active_symbols": list(active_symbols),
+        "signal_events": signal_events,
         "reconcile_events": reconcile_events,
         "entry_events": entry_events,
     }

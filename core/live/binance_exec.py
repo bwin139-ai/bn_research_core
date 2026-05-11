@@ -90,8 +90,15 @@ def _strategy_icon(strategy_code: str) -> str:
     if strategy_code == "SWR":
         return "📈"
     if strategy_code == "TVR":
-        return "TVR"
+        return "🏛"
     return "BN"
+
+
+def _strategy_header_tag(strategy_code: str) -> str:
+    icon = _strategy_icon(strategy_code)
+    if icon == strategy_code:
+        return strategy_code
+    return f"{icon} {strategy_code}"
 
 
 def _format_trade_event_message(
@@ -114,7 +121,7 @@ def _format_trade_event_message(
     strategy_code = _strategy_code_from_client_order_id(client_order_id)
     status_text = str(status or "").lower().strip()
     lines = [
-        f"[{_fmt_event_hms(event_time_ms)} {_strategy_icon(strategy_code)} {strategy_code}] {account}",
+        f"[{_fmt_event_hms(event_time_ms)} {_strategy_header_tag(strategy_code)}] {account}",
         f"{str(action or '').upper()} {status_text}【BN_EXEC】",
         f"symbol={symbol}",
     ]
@@ -1561,6 +1568,7 @@ def cancel_order(
             order_status=raw.get("status"),
             attempts=res.get("attempts"),
             is_algo_order=False,
+            event_time_ms=_extract_order_event_time_ms(raw),
             notify_label=notify_label,
         )
         return _ok(
@@ -1621,6 +1629,7 @@ def cancel_order(
         order_status=raw.get("msg") or raw.get("code"),
         attempts=algo_res.get("attempts"),
         is_algo_order=True,
+        event_time_ms=_extract_order_event_time_ms(raw),
         notify_label=notify_label,
     )
     return _ok(
