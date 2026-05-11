@@ -50,7 +50,7 @@ nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
 
 ACCOUNT=chen912
 nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
-  --config strategies/sweep_reclaim/config_500u.json \
+  --config strategies/sweep_reclaim/config_12000u.json \
   --account "$ACCOUNT" \
   --loop \
   --signal-check-second 5 \

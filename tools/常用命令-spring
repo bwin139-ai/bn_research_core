@@ -14,7 +14,7 @@ nohup /root/service_env/bin/python strategies/spring/run_live.py \
 
 ACCOUNT=chen912
 nohup /root/service_env/bin/python strategies/spring/run_live.py \
-  --config strategies/spring/config_500u.json \
+  --config strategies/spring/config_12000u.json \
   --account "$ACCOUNT" \
   --loop \
   --signal-check-second 5 \
