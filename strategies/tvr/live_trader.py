@@ -402,6 +402,20 @@ def _fmt_pct(value: Any, *, digits: int = 2) -> str:
     return f"{num * 100:.{digits}f}%"
 
 
+def _fmt_duration_ms(duration_ms: Any) -> str:
+    value = _as_int(duration_ms)
+    if value is None or value < 0:
+        return "NA"
+    total_minutes = int(round(value / 60_000))
+    days, rem_minutes = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(rem_minutes, 60)
+    if days > 0:
+        return f"{days}d{hours}h{minutes}m"
+    if hours > 0:
+        return f"{hours}h{minutes}m"
+    return f"{minutes}m"
+
+
 def _notify_tvr(account: str, title: str, lines: list[str]) -> None:
     now_bj = datetime.now(BJ).strftime("%H:%M:%S")
     message = "\n".join([f"[{now_bj} {STRATEGY_LOGO} TVR] {account}", str(title), *lines])
@@ -884,6 +898,7 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
     tp_status = str(tp_order.get("status") or "").upper()
     if tp_status in TERMINAL_ORDER_STATUSES and tp_status != "FILLED":
         raise RuntimeError(f"TVR take-profit order terminal without maker TP: symbol={symbol} status={tp_status}")
+    opened_ms = _now_utc_ms()
     open_trade = {
         "symbol": symbol,
         "strategy_name": STRATEGY_NAME,
@@ -900,8 +915,9 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
         "tp_status": tp_status,
         "take_profit_pct": float(pending["take_profit_pct"]),
         "decision_run_id": pending.get("decision_run_id"),
-        "opened_utc_ms": _now_utc_ms(),
-        "opened_bj": _fmt_bj_from_ms(_now_utc_ms()),
+        "opened_utc_ms": opened_ms,
+        "opened_bj": _fmt_bj_from_ms(opened_ms),
+        "opened_time_source": "tp_order_submitted_after_entry_fill",
         "entry_order_snapshot": dict(order),
         "tp_order_snapshot": dict(tp_order),
     }
@@ -1000,6 +1016,10 @@ def _finalize_open_trade_exit(
 
     closed_trade = dict(open_trade)
     now_ms = _now_utc_ms()
+    opened_ms = _as_int(open_trade.get("opened_utc_ms"))
+    holding_ms = int(now_ms - opened_ms) if opened_ms is not None and int(opened_ms) <= now_ms else None
+    holding_minutes = round(holding_ms / 60_000, 3) if holding_ms is not None else None
+    holding_text = _fmt_duration_ms(holding_ms)
     closed_trade.update({
         "status": "CLOSED",
         "exit_reason": exit_reason,
@@ -1007,6 +1027,9 @@ def _finalize_open_trade_exit(
         "exit_pnl_pct": pnl_pct,
         "closed_utc_ms": now_ms,
         "closed_bj": _fmt_bj_from_ms(now_ms),
+        "holding_ms": holding_ms,
+        "holding_minutes": holding_minutes,
+        "holding_text": holding_text,
         "tp_exit_order_snapshot": dict(tp_order or {}),
         "position_close_snapshot": dict(position_snapshot or {}),
         "cleanup_cancel": dict(cleanup_cancel or {}),
@@ -1015,13 +1038,14 @@ def _finalize_open_trade_exit(
     mark_position_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
     mark_order_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
     logging.info(
-        "TVR EXIT detected | account=%s | symbol=%s | reason=%s | entry=%s | exit=%s | pnl_pct=%s",
+        "TVR EXIT detected | account=%s | symbol=%s | reason=%s | entry=%s | exit=%s | pnl_pct=%s | holding=%s",
         account,
         symbol,
         exit_reason,
         _fmt_num(entry_price),
         _fmt_num(exit_price),
         _fmt_num(pnl_pct, digits=4),
+        holding_text,
     )
     _notify_tvr(
         account,
@@ -1029,6 +1053,7 @@ def _finalize_open_trade_exit(
         [
             f"symbol={symbol}",
             f"entry={_fmt_num(entry_price)} | exit={_fmt_num(exit_price)} | pnl={_fmt_num(pnl_pct, digits=4)}",
+            f"持仓={holding_text}",
             f"tp_status={_order_status(tp_order)} | tp_executed={_fmt_num(_order_executed_qty(tp_order))}",
         ],
     )

@@ -99,7 +99,7 @@ research history store:
 10. 若 `BUY LIMIT GTX` 因盘口下移或 post-only 约束直接 `EXPIRED/REJECTED`，该结果视为有利方向上的 maker 重定价机会；在本次 entry attempt window 内只重读 best bid 并重试，不重新判断 `current_24h_return`。
 11. entry attempt 必须有显式生命周期和次数上限，防止无限重试和 API 额度失控。
 12. TVR 实盘下单必须复用公共 Binance execution / Gateway 体系，保留统一 quota、ban guard、BN_EXEC 日志和 bot 执行通知，不得在 `live_trader` 私有绕过公共执行入口直接调用 Binance 下单。
-13. open trade 必须进入完整生命周期 reconcile：同时查询 TP 订单与 LONG position；TP 成交时清理本策略 state 并输出 EXIT；position 已关闭但 TP 未成交时按外部 `POSITION_CLOSED` 清理并取消残留 TP；position 仍存在但 TP 查询失败、缺失或终态未成交时必须 CRITICAL + fail-fast。
+13. open trade 必须进入完整生命周期 reconcile：同时查询 TP 订单与 LONG position；TP 成交时清理本策略 state 并输出 EXIT；position 已关闭但 TP 未成交时按外部 `POSITION_CLOSED` 清理并取消残留 TP；position 仍存在但 TP 查询失败、缺失或终态未成交时必须 CRITICAL + fail-fast。`opened_utc_ms` 不是 entry 挂单创建时间，而是 entry 已成交或部分成交并处理剩余后、TP 提交完成并建立 open_trade 的时间；EXIT 日志、bot 与 closed trade audit 必须包含基于 `opened_utc_ms` / `closed_utc_ms` 计算出的持仓时长。
 14. live stdout 只输出真实动作、异常和显式周期 heartbeat；普通 wait/skip 事件必须继续落 audit，但不得每轮刷 INFO 日志。
 15. live_trader 在已有 pending/open 时必须先过滤本策略 active symbols；持仓期间新增候选 decision 可以按显式 `active_decision_interval_secs` 降频，但已有仓位 lifecycle reconcile 不得降频。
 
