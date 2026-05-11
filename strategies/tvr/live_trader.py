@@ -76,6 +76,7 @@ IMPORTANT_RECONCILE_ACTIONS = {
     "open_trade_transient_signed_query_failed",
     "pending_entry_query_failed",
     "dry_run_pending_entry_filled",
+    "partial_entry_wait",
     "partial_entry_cancel_remaining",
     "pending_entry_terminal_cleared",
     "dry_run_pending_entry_ttl_reached",
@@ -307,6 +308,7 @@ def load_config(path: str) -> dict[str, Any]:
             "entry_retry_sleep_secs": _require_float(execution, path, "entry_retry_sleep_secs", positive=True),
             "entry_max_attempts": _require_int(execution, path, "entry_max_attempts", positive=True),
             "entry_order_ttl_secs": _require_float(execution, path, "entry_order_ttl_secs", positive=True),
+            "partial_fill_wait_secs": _require_float(execution, path, "partial_fill_wait_secs", positive=False),
             "take_profit_pct": _require_float(execution, path, "take_profit_pct", positive=True),
             "post_only_time_in_force": _require_non_empty_str(execution, path, "post_only_time_in_force").upper(),
             "order_retry_max": _require_int(execution, path, "order_retry_max", positive=False),
@@ -1169,7 +1171,48 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
             order = dict(order_res.get("data") or {})
             status = str(order.get("status") or "").upper()
             executed_qty = _as_float(order.get("executed_qty")) or 0.0
+            created_ms = _as_int(pending.get("created_utc_ms"))
+            now_ms = _now_utc_ms()
+            ttl_ms = int(float(cfg["execution"]["entry_order_ttl_secs"]) * 1000)
             if status == "PARTIALLY_FILLED" and executed_qty > 0:
+                first_partial_ms = _as_int(pending.get("first_partial_fill_utc_ms"))
+                pending_update = dict(pending)
+                if first_partial_ms is None:
+                    first_partial_ms = now_ms
+                    pending_update["first_partial_fill_utc_ms"] = int(first_partial_ms)
+                    pending_update["first_partial_fill_bj"] = _fmt_bj_from_ms(first_partial_ms)
+                pending_update["last_partial_fill_utc_ms"] = int(now_ms)
+                pending_update["last_partial_fill_bj"] = _fmt_bj_from_ms(now_ms)
+                pending_update["partial_executed_qty"] = float(executed_qty)
+                pending_update["latest_entry_order_snapshot"] = order
+                partial_wait_ms = int(float(cfg["execution"]["partial_fill_wait_secs"]) * 1000)
+                partial_elapsed_ms = max(0, now_ms - int(first_partial_ms))
+                ttl_elapsed = created_ms is not None and now_ms - int(created_ms) > ttl_ms
+                if partial_elapsed_ms < partial_wait_ms and not ttl_elapsed:
+                    if not dry_run:
+                        set_pending_entry_order(account, symbol_key, pending_update, strategy_name=STRATEGY_NAME)
+                    events.append({
+                        "action": "partial_entry_wait",
+                        "symbol": symbol_key,
+                        "executed_qty": float(executed_qty),
+                        "partial_elapsed_secs": round(partial_elapsed_ms / 1000.0, 3),
+                        "partial_fill_wait_secs": float(cfg["execution"]["partial_fill_wait_secs"]),
+                        "status": status,
+                        "order": order,
+                    })
+                    continue
+                if dry_run:
+                    events.append({
+                        "action": "dry_run_partial_entry_cancel_remaining",
+                        "symbol": symbol_key,
+                        "executed_qty": float(executed_qty),
+                        "partial_elapsed_secs": round(partial_elapsed_ms / 1000.0, 3),
+                        "partial_fill_wait_secs": float(cfg["execution"]["partial_fill_wait_secs"]),
+                        "ttl_elapsed": bool(ttl_elapsed),
+                        "status": status,
+                        "order": order,
+                    })
+                    continue
                 cancel_res = cancel_order(
                     account,
                     symbol_key,
@@ -1179,7 +1222,15 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
                     retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
                     notify_label="tvr",
                 )
-                events.append({"action": "partial_entry_cancel_remaining", "symbol": symbol_key, "cancel": cancel_res})
+                events.append({
+                    "action": "partial_entry_cancel_remaining",
+                    "symbol": symbol_key,
+                    "executed_qty": float(executed_qty),
+                    "partial_elapsed_secs": round(partial_elapsed_ms / 1000.0, 3),
+                    "partial_fill_wait_secs": float(cfg["execution"]["partial_fill_wait_secs"]),
+                    "ttl_elapsed": bool(ttl_elapsed),
+                    "cancel": cancel_res,
+                })
                 status = "FILLED"
             if status == "FILLED" or (executed_qty > 0 and status in TERMINAL_ORDER_STATUSES):
                 if dry_run:
@@ -1191,8 +1242,7 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
                 set_pending_entry_order(account, symbol_key, None, strategy_name=STRATEGY_NAME)
                 events.append({"action": "pending_entry_terminal_cleared", "symbol": symbol_key, "status": status, "order": order})
                 continue
-            created_ms = _as_int(pending.get("created_utc_ms"))
-            if created_ms is not None and _now_utc_ms() - int(created_ms) > int(float(cfg["execution"]["entry_order_ttl_secs"]) * 1000):
+            if created_ms is not None and now_ms - int(created_ms) > ttl_ms:
                 if dry_run:
                     events.append({"action": "dry_run_pending_entry_ttl_reached", "symbol": symbol_key, "status": status, "order": order})
                 else:

@@ -336,4 +336,5 @@ TVR live 后续生产形态固定为：
 7. 对 open_trade 执行 TP order + position 双事实 reconcile，完成 OPEN / EXIT / CRITICAL 生命周期日志与 bot 输出。
 8. 通过 `logging.summary_interval_secs` 聚合普通循环观测，避免 `open_trade_wait` / `entry_skipped_local_active_symbol` 每 2 秒刷屏。
 9. 持仓期间通过 `collection.active_decision_interval_secs` 降低新增候选扫描频率，并只对非 active tradable symbols 请求 live 24h ticker。
+10. pending entry 若出现 `PARTIALLY_FILLED`，先按显式 `execution.partial_fill_wait_secs` 等待继续成交；等待到期或 entry TTL 到期后撤剩余挂单，并按已成交数量挂 maker TP。
 ```
