@@ -19,7 +19,7 @@
     "position_side": "LONG",
     "position_mode": "HEDGE",
     "margin_type": "CROSSED",
-    "leverage": 5,
+    "leverage": 10,
     "symbol_notional_usdt": {
       "CLUSDT": 10,
       "BZUSDT": 10,
@@ -55,9 +55,9 @@
     "require_no_symbol_open_orders": true
   },
   "recovery": {
-    "enabled": false,
+    "enabled": true,
     "anchor": "HIGHEST_OPEN_ENTRY",
-    "grid_step_pct": 0.05,
-    "min_spacing_hours": 24
+    "grid_step_pct": 0.01,
+    "min_spacing_hours": 6
   }
 }
