@@ -66,6 +66,7 @@ QUIET_RECONCILE_ACTIONS = {"open_trade_wait", "pending_entry_wait"}
 IMPORTANT_ENTRY_ACTIONS = {
     "signal_locked",
     "dry_run_entry",
+    "dry_run_recovery_entry_ready",
     "entry_submitted",
     "entry_terminal_without_pending",
     "entry_attempt_failed",
@@ -357,8 +358,6 @@ def load_config(path: str) -> dict[str, Any]:
             )
     if recovery_cfg["anchor"] != "HIGHEST_OPEN_ENTRY":
         raise ValueError(f"TVR recovery.anchor must be HIGHEST_OPEN_ENTRY | {path}")
-    if recovery_cfg["enabled"]:
-        raise ValueError(f"TVR recovery is configured but live multi-lot recovery is not implemented yet | {path}")
     return out
 
 
@@ -722,6 +721,14 @@ def _symbol_max_entry_notional(cfg: Mapping[str, Any], symbol: str) -> float:
     return float(cap_by_symbol[symbol_key])
 
 
+def _symbol_max_entry_cost_notional(cfg: Mapping[str, Any], symbol: str) -> float:
+    symbol_key = str(symbol).upper().strip()
+    cap_by_symbol = dict(cfg["execution"]["max_symbol_entry_notional_usdt"])
+    if symbol_key not in cap_by_symbol:
+        raise KeyError(f"TVR live trader max_symbol_entry_notional_usdt missing symbol: {symbol_key}")
+    return float(cap_by_symbol[symbol_key])
+
+
 def _open_lot_from_trade(open_trade: Mapping[str, Any]) -> dict[str, Any]:
     order_root = str(open_trade.get("order_root") or "").strip()
     tp_client_order_id = str(open_trade.get("tp_client_order_id") or "").strip()
@@ -777,6 +784,108 @@ def _sync_open_lots_from_open_trade(account: str, symbol: str, symbol_state: Map
     if isinstance(open_lots, list) and open_lots:
         return
     _set_open_trade_and_lots(account, symbol, open_trade)
+
+
+def _state_open_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_lots = symbol_state.get("open_lots")
+    if isinstance(raw_lots, list) and raw_lots:
+        return [dict(item) for item in raw_lots if isinstance(item, Mapping)]
+    open_trade = symbol_state.get("open_trade")
+    if isinstance(open_trade, Mapping):
+        return [_open_lot_from_trade(open_trade)]
+    return []
+
+
+def _recovery_eval_from_row(
+    *,
+    cfg: Mapping[str, Any],
+    symbol: str,
+    symbol_state: Mapping[str, Any],
+    row: Mapping[str, Any],
+    now_ms: int,
+) -> dict[str, Any]:
+    symbol_key = str(symbol).upper().strip()
+    reasons: list[str] = []
+    pending = symbol_state.get("pending_entry_order")
+    if isinstance(pending, Mapping):
+        reasons.append("symbol_has_pending_entry")
+    lots = _state_open_lots(symbol_state)
+    if not lots:
+        reasons.append("symbol_has_no_open_lots")
+    if not bool(row.get("eligible")):
+        row_reasons = [str(x) for x in list(row.get("reject_reasons") or []) if str(x)]
+        reasons.extend(f"decision_rejected:{reason}" for reason in row_reasons)
+    intent = row.get("intent")
+    if not isinstance(intent, Mapping):
+        reasons.append("decision_intent_missing")
+
+    open_entry_notional = 0.0
+    latest_entry_ms: int | None = None
+    anchor_price: float | None = None
+    for lot in lots:
+        entry_notional = _as_float(lot.get("entry_notional_usdt"))
+        entry_price = _as_float(lot.get("entry_price"))
+        opened_ms = _as_int(lot.get("opened_utc_ms"))
+        if entry_notional is None or entry_notional <= 0:
+            reasons.append("open_lot_entry_notional_invalid")
+        else:
+            open_entry_notional += float(entry_notional)
+        if entry_price is None or entry_price <= 0:
+            reasons.append("open_lot_entry_price_invalid")
+        else:
+            anchor_price = float(entry_price) if anchor_price is None else max(anchor_price, float(entry_price))
+        if opened_ms is not None:
+            latest_entry_ms = int(opened_ms) if latest_entry_ms is None else max(latest_entry_ms, int(opened_ms))
+
+    next_entry_notional = _symbol_order_notional(cfg, symbol_key)
+    max_entry_cost = _symbol_max_entry_cost_notional(cfg, symbol_key)
+    if open_entry_notional + next_entry_notional > max_entry_cost + 1e-9:
+        reasons.append("max_symbol_entry_notional_exceeded")
+
+    min_spacing_ms = int(float(cfg["recovery"]["min_spacing_hours"]) * 60 * 60 * 1000)
+    spacing_elapsed_ms = None
+    if latest_entry_ms is None:
+        reasons.append("latest_open_lot_entry_time_missing")
+    else:
+        spacing_elapsed_ms = max(0, int(now_ms) - int(latest_entry_ms))
+        if spacing_elapsed_ms < min_spacing_ms:
+            reasons.append("min_spacing_hours_not_elapsed")
+
+    current_price = _as_float(intent.get("estimated_entry_price")) if isinstance(intent, Mapping) else None
+    if current_price is None or current_price <= 0:
+        reasons.append("current_price_missing")
+    if anchor_price is None:
+        reasons.append("anchor_price_missing")
+
+    open_lot_count = len(lots)
+    required_drop_pct = float(cfg["recovery"]["grid_step_pct"]) * float(open_lot_count)
+    trigger_price = None
+    if anchor_price is not None:
+        trigger_price = float(anchor_price) * (1.0 - required_drop_pct)
+    if current_price is not None and trigger_price is not None and float(current_price) > float(trigger_price):
+        reasons.append("price_above_recovery_trigger")
+
+    action = "dry_run_recovery_entry_ready" if not reasons else "dry_run_recovery_entry_blocked"
+    return {
+        "action": action,
+        "symbol": symbol_key,
+        "lot_role": "RECOVERY",
+        "open_lot_count": open_lot_count,
+        "open_entry_notional_usdt": float(open_entry_notional),
+        "next_entry_notional_usdt": float(next_entry_notional),
+        "max_symbol_entry_notional_usdt": float(max_entry_cost),
+        "anchor": str(cfg["recovery"]["anchor"]),
+        "anchor_price": anchor_price,
+        "current_price": current_price,
+        "grid_step_pct": float(cfg["recovery"]["grid_step_pct"]),
+        "required_drop_pct": float(required_drop_pct),
+        "trigger_price": trigger_price,
+        "latest_entry_utc_ms": latest_entry_ms,
+        "spacing_elapsed_hours": round(spacing_elapsed_ms / 3_600_000, 6) if spacing_elapsed_ms is not None else None,
+        "min_spacing_hours": float(cfg["recovery"]["min_spacing_hours"]),
+        "decision_eligible": bool(row.get("eligible")),
+        "reject_reasons": reasons,
+    }
 
 
 def _active_local_symbols(state: Mapping[str, Any]) -> list[str]:
@@ -1449,9 +1558,11 @@ def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) ->
     reconcile_events = [dict(x) for x in list(record.get("reconcile_events") or []) if isinstance(x, Mapping)]
     entry_events = [dict(x) for x in list(record.get("entry_events") or []) if isinstance(x, Mapping)]
     signal_events = [dict(x) for x in list(record.get("signal_events") or []) if isinstance(x, Mapping)]
+    recovery_events = [dict(x) for x in list(record.get("recovery_events") or []) if isinstance(x, Mapping)]
     reconcile_counts = _count_actions(reconcile_events)
     entry_counts = _count_actions(entry_events)
     signal_counts = _count_actions(signal_events)
+    recovery_counts = _count_actions(recovery_events)
     now_ms = _now_utc_ms()
     _ITERATION_LOG_STATE["iterations"] = int(_ITERATION_LOG_STATE["iterations"]) + 1
     _ITERATION_LOG_STATE["quiet_reconcile_events"] = int(_ITERATION_LOG_STATE["quiet_reconcile_events"]) + sum(
@@ -1464,16 +1575,21 @@ def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) ->
 
     interval_ms = int(cfg["logging"]["summary_interval_secs"]) * 1000
     elapsed = now_ms - int(_ITERATION_LOG_STATE["last_summary_utc_ms"] or 0)
-    important = bool(signal_events) or _has_interesting_actions(reconcile_events, entry_events)
+    important = (
+        bool(signal_events)
+        or bool(recovery_counts.get("dry_run_recovery_entry_ready"))
+        or _has_interesting_actions(reconcile_events, entry_events)
+    )
     if not important and elapsed < interval_ms:
         return
 
     logging.info(
-        "TVR live heartbeat | dry_run=%s | selected=%s | active=%s | signals=%s | reconcile=%s | entry_events=%s | quiet_reconcile_events=%s | quiet_entry_events=%s | iterations=%s",
+        "TVR live heartbeat | dry_run=%s | selected=%s | active=%s | signals=%s | recovery=%s | reconcile=%s | entry_events=%s | quiet_reconcile_events=%s | quiet_entry_events=%s | iterations=%s",
         bool(record.get("dry_run")),
         list(record.get("selected_symbols") or []),
         list(record.get("active_symbols") or []),
         signal_counts,
+        recovery_counts,
         reconcile_counts,
         entry_counts,
         int(_ITERATION_LOG_STATE["quiet_reconcile_events"]),
@@ -1490,6 +1606,8 @@ def _log_iteration_summary(cfg: Mapping[str, Any], record: Mapping[str, Any]) ->
 def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | None:
     if not bool(cfg["enabled"]):
         raise RuntimeError("TVR live trader config enabled=false")
+    if bool(cfg["recovery"]["enabled"]) and not bool(dry_run):
+        raise RuntimeError("TVR recovery live entry is not implemented yet; use --dry-run for recovery gate audit")
     account = str(cfg["account"]).strip()
     mark_loop_heartbeat(account, runner_pid=os.getpid(), strategy_name=STRATEGY_NAME)
     decision_cfg = load_decision_audit_config(str(cfg["decision_audit"]["config_path"]))
@@ -1501,19 +1619,29 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
     active_symbols = _active_local_symbols(state)
     entry_events: list[dict[str, Any]] = []
     signal_events: list[dict[str, Any]] = []
+    recovery_events: list[dict[str, Any]] = []
 
     decision: dict[str, Any] | None = None
     decision_path: Path | None = None
     decision_skip_reason: str | None = None
     selected_intents: list[dict[str, Any]] = []
     max_open_trades = int(cfg["execution"]["max_open_trades"])
-    if len(active_symbols) >= max_open_trades:
+    recovery_dry_run_enabled = bool(cfg["recovery"]["enabled"]) and bool(dry_run)
+    if len(active_symbols) >= max_open_trades and not recovery_dry_run_enabled:
         decision_skip_reason = "max_open_trades_reached"
         entry_events.append({"action": "entry_blocked_max_open_trades", "active_symbols": active_symbols})
     else:
         active_set = set(active_symbols)
         tradable_symbols = [str(symbol).upper().strip() for symbol in list(decision_cfg["universe"]["tradable_symbols"])]
-        candidate_symbols = [symbol for symbol in tradable_symbols if symbol and symbol not in active_set]
+        base_candidate_symbols = [
+            symbol for symbol in tradable_symbols
+            if symbol and symbol not in active_set and len(active_symbols) < max_open_trades
+        ]
+        recovery_candidate_symbols = [
+            symbol for symbol in tradable_symbols
+            if recovery_dry_run_enabled and symbol and symbol in active_set
+        ]
+        candidate_symbols = sorted(set(base_candidate_symbols + recovery_candidate_symbols))
         if not candidate_symbols:
             decision_skip_reason = "no_candidate_symbols_after_active_filter"
             entry_events.append({"action": "entry_skipped_no_candidate_symbols", "active_symbols": active_symbols})
@@ -1535,13 +1663,38 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
             if bool(decision.get("order_submission_enabled")) != bool(cfg["decision_audit"]["required_order_submission_enabled"]):
                 raise ValueError("TVR decision audit order_submission_enabled does not match required value")
             selected_intents = _selected_intents(decision)
+            if recovery_candidate_symbols:
+                rows_by_symbol = {
+                    str(row.get("symbol") or "").upper().strip(): dict(row)
+                    for row in list(decision.get("rows") or [])
+                    if isinstance(row, Mapping)
+                }
+                now_ms = _now_utc_ms()
+                for symbol in recovery_candidate_symbols:
+                    symbol_state = dict(state.get("symbols", {}).get(symbol) or {})
+                    row = rows_by_symbol.get(symbol)
+                    if row is None:
+                        recovery_events.append({
+                            "action": "dry_run_recovery_entry_blocked",
+                            "symbol": symbol,
+                            "reject_reasons": ["decision_row_missing"],
+                        })
+                        continue
+                    recovery_events.append(_recovery_eval_from_row(
+                        cfg=cfg,
+                        symbol=symbol,
+                        symbol_state=symbol_state,
+                        row=row,
+                        now_ms=now_ms,
+                    ))
 
         for intent in selected_intents:
             if len(entry_events) >= int(cfg["execution"]["max_new_entries_per_iteration"]):
                 break
             symbol = str(intent.get("symbol") or "").upper().strip()
             if symbol in active_symbols:
-                entry_events.append({"action": "entry_skipped_local_active_symbol", "symbol": symbol})
+                if not bool(cfg["recovery"]["enabled"]):
+                    entry_events.append({"action": "entry_skipped_local_active_symbol", "symbol": symbol})
                 continue
             signal_events.append(_emit_signal_locked(cfg, decision, intent))
             event = _place_entry_from_intent(cfg=cfg, decision=decision, intent=intent, dry_run=dry_run)
@@ -1566,6 +1719,7 @@ def run_once(cfg: Mapping[str, Any], *, run_id: str, dry_run: bool) -> Path | No
         "selected_symbols": list(decision.get("selected_symbols") or []) if decision is not None else [],
         "active_symbols": list(active_symbols),
         "signal_events": signal_events,
+        "recovery_events": recovery_events,
         "reconcile_events": reconcile_events,
         "entry_events": entry_events,
     }
