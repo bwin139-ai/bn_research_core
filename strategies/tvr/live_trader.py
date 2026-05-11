@@ -33,11 +33,12 @@ from core.live.binance_rest_gateway import REQUEST_PRIORITY_HIGH, call_client_me
 from core.live.custom_id import build_client_order_id, make_order_root
 from core.live.live_state import (
     load_live_state,
+    load_symbol_state,
     mark_error,
     mark_loop_heartbeat,
     mark_order_reconcile,
     mark_position_reconcile,
-    set_open_trade,
+    save_symbol_state,
     set_pending_entry_order,
 )
 from core.message_bridge import send_to_bot
@@ -721,12 +722,75 @@ def _symbol_max_entry_notional(cfg: Mapping[str, Any], symbol: str) -> float:
     return float(cap_by_symbol[symbol_key])
 
 
+def _open_lot_from_trade(open_trade: Mapping[str, Any]) -> dict[str, Any]:
+    order_root = str(open_trade.get("order_root") or "").strip()
+    tp_client_order_id = str(open_trade.get("tp_client_order_id") or "").strip()
+    entry_client_order_id = str(open_trade.get("entry_client_order_id") or "").strip()
+    lot_id = order_root or tp_client_order_id or entry_client_order_id
+    if not lot_id:
+        raise ValueError("TVR open_trade cannot be mirrored to open_lots without order identity")
+    return {
+        "lot_id": lot_id,
+        "lot_role": str(open_trade.get("lot_role") or "BASE").upper(),
+        "status": "OPEN",
+        "symbol": str(open_trade.get("symbol") or "").upper().strip(),
+        "side": POSITION_SIDE_LONG,
+        "order_root": open_trade.get("order_root"),
+        "entry_client_order_id": open_trade.get("entry_client_order_id"),
+        "entry_exchange_order_id": open_trade.get("entry_exchange_order_id"),
+        "entry_price": float(open_trade["entry_price"]),
+        "entry_qty": float(open_trade["entry_qty"]),
+        "entry_notional_usdt": float(open_trade["entry_notional_usdt"]),
+        "tp_price": float(open_trade["tp_price"]),
+        "tp_client_order_id": open_trade.get("tp_client_order_id"),
+        "tp_exchange_order_id": open_trade.get("tp_exchange_order_id"),
+        "tp_status": open_trade.get("tp_status"),
+        "take_profit_pct": float(open_trade["take_profit_pct"]),
+        "decision_run_id": open_trade.get("decision_run_id"),
+        "opened_utc_ms": open_trade.get("opened_utc_ms"),
+        "opened_bj": open_trade.get("opened_bj"),
+        "opened_time_source": open_trade.get("opened_time_source"),
+    }
+
+
+def _set_open_trade_and_lots(account: str, symbol: str, open_trade: Mapping[str, Any]) -> dict[str, Any]:
+    symbol_state = load_symbol_state(account, symbol, strategy_name=STRATEGY_NAME)
+    symbol_state["open_trade"] = dict(open_trade)
+    symbol_state["open_lots"] = [_open_lot_from_trade(open_trade)]
+    save_symbol_state(account, symbol, symbol_state, strategy_name=STRATEGY_NAME)
+    return symbol_state
+
+
+def _clear_open_trade_and_lots(account: str, symbol: str) -> dict[str, Any]:
+    symbol_state = load_symbol_state(account, symbol, strategy_name=STRATEGY_NAME)
+    symbol_state["open_trade"] = None
+    symbol_state["open_lots"] = []
+    save_symbol_state(account, symbol, symbol_state, strategy_name=STRATEGY_NAME)
+    return symbol_state
+
+
+def _sync_open_lots_from_open_trade(account: str, symbol: str, symbol_state: Mapping[str, Any]) -> None:
+    open_trade = symbol_state.get("open_trade")
+    if not isinstance(open_trade, Mapping):
+        return
+    open_lots = symbol_state.get("open_lots")
+    if isinstance(open_lots, list) and open_lots:
+        return
+    _set_open_trade_and_lots(account, symbol, open_trade)
+
+
 def _active_local_symbols(state: Mapping[str, Any]) -> list[str]:
     out: list[str] = []
     for symbol, payload in dict(state.get("symbols") or {}).items():
         if not isinstance(payload, Mapping):
             continue
-        if isinstance(payload.get("pending_entry_order"), Mapping) or isinstance(payload.get("open_trade"), Mapping):
+        open_lots = payload.get("open_lots")
+        has_open_lots = isinstance(open_lots, list) and any(isinstance(item, Mapping) for item in open_lots)
+        if (
+            isinstance(payload.get("pending_entry_order"), Mapping)
+            or isinstance(payload.get("open_trade"), Mapping)
+            or has_open_lots
+        ):
             out.append(str(symbol).upper().strip())
     return sorted(x for x in out if x)
 
@@ -946,7 +1010,7 @@ def _place_take_profit_for_pending(account: str, symbol: str, pending: Mapping[s
         "entry_order_snapshot": dict(order),
         "tp_order_snapshot": dict(tp_order),
     }
-    set_open_trade(account, symbol, open_trade, strategy_name=STRATEGY_NAME)
+    _set_open_trade_and_lots(account, symbol, open_trade)
     set_pending_entry_order(account, symbol, None, strategy_name=STRATEGY_NAME)
     logging.info(
         "TVR OPEN established | account=%s | symbol=%s | entry=%s | tp=%s | qty=%s",
@@ -1059,7 +1123,7 @@ def _finalize_open_trade_exit(
         "position_close_snapshot": dict(position_snapshot or {}),
         "cleanup_cancel": dict(cleanup_cancel or {}),
     })
-    set_open_trade(account, symbol, None, strategy_name=STRATEGY_NAME)
+    _clear_open_trade_and_lots(account, symbol)
     mark_position_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
     mark_order_reconcile(account, symbol, reconcile_bj=_fmt_bj_from_ms(now_ms), strategy_name=STRATEGY_NAME)
     logging.info(
@@ -1312,6 +1376,8 @@ def _reconcile_local_state(cfg: Mapping[str, Any], *, dry_run: bool) -> list[dic
             events.append({"action": "pending_entry_wait", "symbol": symbol_key, "status": status, "order": order})
         open_trade = symbol_state.get("open_trade")
         if isinstance(open_trade, Mapping):
+            if not dry_run:
+                _sync_open_lots_from_open_trade(account, symbol_key, symbol_state)
             events.append(_reconcile_open_trade(account, symbol_key, open_trade, cfg, dry_run=dry_run))
     return events
 
