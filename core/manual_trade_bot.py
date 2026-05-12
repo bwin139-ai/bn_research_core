@@ -56,8 +56,6 @@ CLOSE_INPUT_QTY = 204
 STOP_SELECT_SYMBOL = 301
 STOP_INPUT_PRICE = 302
 EDIT_SYMBOLS_INPUT = 401
-HISTORY_INPUT_SYMBOL = 501
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -263,6 +261,16 @@ def _tp_ratio(entry_price: float, orders: list[dict[str, Any]]) -> str:
     if abs(ratio) < 0.05:
         return "🟡"
     return f"{ratio:.1f}🎯"
+
+
+def _bj_minute(ts_ms: Any) -> str:
+    try:
+        value = int(ts_ms)
+    except Exception:
+        return "UNKNOWN"
+    if value <= 0:
+        return "UNKNOWN"
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%m-%d %H:%M")
 
 
 def _chunk_lines(lines: list[str], limit: int = 3600) -> list[str]:
@@ -498,8 +506,8 @@ async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def detail_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Input symbol for last 24h history")
-    return HISTORY_INPUT_SYMBOL
+    await send_history(update, context)
+    return ConversationHandler.END
 
 
 @_admin_required
@@ -903,46 +911,133 @@ async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT_SYMBOLS_INPUT
 
 
-@_admin_required
-async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    _selected_account(context)
-    await update.message.reply_text("Input symbol for last 24h history")
-    return HISTORY_INPUT_SYMBOL
+def _history_symbols(account: str) -> list[str]:
+    symbols = {row["symbol"] for row in _load_symbol_rows()}
+    try:
+        symbols.update(str(p.get("symbol") or "").upper() for p in _long_positions(account))
+    except Exception:
+        pass
+    try:
+        symbols.update(str(o.get("symbol") or "").upper() for o in _long_orders(account))
+    except Exception:
+        pass
+    return sorted(s for s in symbols if s.endswith("USDT"))
+
+
+def _manual_order_type(order: dict[str, Any]) -> str | None:
+    side = str(order.get("side") or "").upper()
+    position_side = str(order.get("position_side") or "").upper()
+    if position_side != LONG:
+        return None
+    if side == "BUY":
+        return "开多"
+    if side == "SELL":
+        return "平多"
+    return None
+
+
+def _sum_income(account: str, *, days: int, income_type: str) -> float | None:
+    end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    start_ms = end_ms - int(days) * 24 * 60 * 60 * 1000
+    res = get_income_history(
+        account,
+        income_type=income_type,
+        start_time_ms=start_ms,
+        end_time_ms=end_ms,
+        limit=1000,
+    )
+    if not res["ok"]:
+        return None
+    return round(sum(float(row.get("income", 0.0) or 0.0) for row in res["data"]), 4)
 
 
 @_admin_required
-async def history_input_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     account = _selected_account(context)
-    symbol = update.message.text.strip().upper()
     now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     start_ms = now_ms - 24 * 60 * 60 * 1000
-    orders = get_all_orders(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
-    trades = get_account_trades(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
-    income = get_income_history(account, symbol=symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
-    lines = [f"History 24h: {account} {symbol}"]
-    if orders["ok"]:
-        lines.append(f"Orders: {len(orders['data'])}")
-        for o in orders["data"][-20:]:
+    order_rows: list[dict[str, Any]] = []
+    trade_rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for symbol in _history_symbols(account):
+        orders = get_all_orders(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
+        if orders["ok"]:
+            order_rows.extend(orders["data"])
+        else:
+            errors.append(f"{symbol} orders: {orders['reason']}")
+        trades = get_account_trades(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
+        if trades["ok"]:
+            trade_rows.extend(trades["data"])
+        else:
+            errors.append(f"{symbol} trades: {trades['reason']}")
+
+    filled_orders = [
+        row
+        for row in order_rows
+        if str(row.get("status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"}
+        and _manual_order_type(row)
+    ]
+    filled_orders.sort(key=lambda x: int(x.get("time_ms") or x.get("update_time_ms") or 0))
+    transfer = get_income_history(
+        account,
+        income_type="TRANSFER",
+        start_time_ms=start_ms,
+        end_time_ms=now_ms,
+        limit=1000,
+    )
+    transfer_rows = transfer["data"] if transfer["ok"] else []
+    deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
+    withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
+    trade_pnl_by_order: dict[Any, float] = {}
+    for row in trade_rows:
+        oid = row.get("order_id")
+        trade_pnl_by_order[oid] = trade_pnl_by_order.get(oid, 0.0) + float(row.get("realized_pnl", 0.0) or 0.0)
+
+    lines = [f"📜 {account} 最近24小时历史记录", "", "🔸 历史委托:"]
+    if filled_orders:
+        for order in filled_orders[-60:]:
+            order_type = _manual_order_type(order)
+            oid = order.get("order_id")
+            qty = float(order.get("executed_qty", 0.0) or order.get("orig_qty", 0.0) or 0.0)
+            price = float(order.get("avg_price", 0.0) or order.get("price", 0.0) or 0.0)
+            pnl = trade_pnl_by_order.get(oid, 0.0)
+            pnl_text = f"  已实现{_fmt_intish(pnl)}" if abs(pnl) > 1e-9 else ""
             lines.append(
-                f"{o.get('side')} {o.get('type')} {o.get('status')} qty={_fmt_float(o.get('qty'))} "
-                f"price={_fmt_float(o.get('price') or o.get('stop_price'))} oid={o.get('order_id')}"
+                f"{_bj_minute(order.get('time_ms') or order.get('update_time_ms'))}{order_type} {order.get('symbol')}\n"
+                f"                 量{_fmt_float(qty)}  价{_fmt_float(price)}{pnl_text}"
             )
     else:
-        lines.append(f"Orders error: {orders['reason']}")
-    if trades["ok"]:
-        lines.append(f"Trades: {len(trades['data'])}")
-        for t in trades["data"][-20:]:
+        lines.append("无 LONG 成交委托")
+
+    lines.extend(["", "🔹 转账流水:"])
+    if transfer_rows:
+        for row in transfer_rows:
             lines.append(
-                f"trade oid={t.get('order_id')} side={t.get('side')} qty={_fmt_float(t.get('qty'))} "
-                f"price={_fmt_float(t.get('price'))} realized={_fmt_usdt(t.get('realized_pnl'))}"
+                f"{_bj_minute(row.get('time_ms') or row.get('time'))} | 转账 | "
+                f"{row.get('asset') or ''} | {_fmt_float(row.get('income'))}"
             )
     else:
-        lines.append(f"Trades error: {trades['reason']}")
-    if income["ok"]:
-        total_income = sum(float(x.get("income", 0.0) or 0.0) for x in income["data"])
-        lines.append(f"Income rows={len(income['data'])} total={_fmt_usdt(total_income)}")
-    else:
-        lines.append(f"Income error: {income['reason']}")
+        lines.append("无转账记录" if transfer["ok"] else f"转账查询失败: {transfer['reason']}")
+
+    fee_24h = _sum_income(account, days=1, income_type="FUNDING_FEE")
+    fee_3d = _sum_income(account, days=3, income_type="FUNDING_FEE")
+    fee_7d = _sum_income(account, days=7, income_type="FUNDING_FEE")
+    fee_30d = _sum_income(account, days=30, income_type="FUNDING_FEE")
+    lines.extend(
+        [
+            "",
+            "🔖 汇总统计:",
+            f"资金费(24h): {fee_24h if fee_24h is not None else '查询失败'}",
+            f"资金费(3d): {fee_3d if fee_3d is not None else '查询失败'}",
+            f"资金费(7d): {fee_7d if fee_7d is not None else '查询失败'}",
+            f"资金费(30d): {fee_30d if fee_30d is not None else '查询失败'}",
+            f"",
+            f"净入金(入金-出金): {round(deposit_total - withdraw_total, 4)}",
+        ]
+    )
+    if errors:
+        lines.extend(["", "⚠️ 部分查询失败:"])
+        lines.extend(errors[:10])
     await _send_lines(update, lines)
     return ConversationHandler.END
 
@@ -973,8 +1068,10 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("status", account_status))
     application.add_handler(CommandHandler("account_detail", account_detail))
     application.add_handler(CommandHandler("pending_orders", pending_orders))
+    application.add_handler(CommandHandler("view_history", send_history))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(pending_orders, pattern=r"^detail_pending$"))
+    application.add_handler(CallbackQueryHandler(detail_history, pattern=r"^detail_history$"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_group, pattern=r"^cancel_group:"))
     application.add_handler(CallbackQueryHandler(do_cancel_group, pattern=r"^cancel_group_ok:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_order, pattern=r"^cancel:"))
@@ -1025,18 +1122,6 @@ def run_bot() -> None:
         ConversationHandler(
             entry_points=[CommandHandler("edit_symbols", edit_symbols)],
             states={EDIT_SYMBOLS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_symbols_input)]},
-            fallbacks=[CommandHandler("cancel", cancel_conv)],
-            allow_reentry=True,
-            per_user=True,
-        )
-    )
-    application.add_handler(
-        ConversationHandler(
-            entry_points=[
-                CommandHandler("view_history", view_history),
-                CallbackQueryHandler(detail_history, pattern=r"^detail_history$"),
-            ],
-            states={HISTORY_INPUT_SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, history_input_symbol)]},
             fallbacks=[CommandHandler("cancel", cancel_conv)],
             allow_reentry=True,
             per_user=True,
