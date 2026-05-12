@@ -1037,10 +1037,11 @@ def place_limit_order(
     position_side: str,
     side: str,
     quantity: float,
-    limit_price: float,
+    limit_price: float | None,
     *,
     order_role: str,
     time_in_force: str,
+    price_match: str | None = None,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
@@ -1074,9 +1075,14 @@ def place_limit_order(
                 notify_label=notify_label,
             )
         return qty_res
+    price_match_value = str(price_match or "").upper().strip()
+    if price_match_value and price_match_value not in {"QUEUE", "QUEUE_5"}:
+        return _err(f"unsupported price_match: {price_match}")
     filters = qty_res["data"]["filters"]
-    px = _normalize_price(limit_price, filters["tick_size"])
-    if px <= 0:
+    px = None
+    if not price_match_value:
+        px = _normalize_price(float(limit_price or 0.0), filters["tick_size"])
+    if not price_match_value and (px is None or px <= 0):
         reason = f"limit_price 非法: {limit_price}"
         if notify_on_error:
             _emit_trade_event(
@@ -1100,9 +1106,12 @@ def place_limit_order(
         "type": TAKE_PROFIT_ORDER_TYPE,
         "timeInForce": tif,
         "quantity": qty_res["data"]["qty"],
-        "price": px,
         "newClientOrderId": cid,
     }
+    if price_match_value:
+        payload["priceMatch"] = price_match_value
+    else:
+        payload["price"] = px
     res = _call_gateway_client_with_retry(
         account,
         'binance_exec.futures_create_order',
@@ -1158,6 +1167,7 @@ def place_limit_order(
         "order_role": role,
         "order_type": TAKE_PROFIT_ORDER_TYPE,
         "time_in_force": tif,
+        "price_match": price_match_value or None,
         "payload": payload,
     })
     return _ok(normalized, attempts=res.get("attempts"))

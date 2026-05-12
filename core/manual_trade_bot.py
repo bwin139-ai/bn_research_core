@@ -316,6 +316,15 @@ def _order_root(leg: str) -> str:
     return build_client_order_id(strat="MAN", leg=leg, root=make_order_root())
 
 
+def _parse_price_match(value: str) -> str | None:
+    text = str(value or "").upper().strip()
+    if text == "Q":
+        return "QUEUE"
+    if text == "Q5":
+        return "QUEUE_5"
+    return None
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     logging.error("[manual_bot] unhandled error: %s\n%s", context.error, tb)
@@ -616,7 +625,7 @@ async def open_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
     order_type = query.data.split(":", 1)[1]
     context.user_data["open_type"] = order_type
     if order_type == "LIMIT":
-        await query.edit_message_text("Input limit price")
+        await query.edit_message_text("Input limit price (Q=QUEUE, Q5=QUEUE_5)")
         return OPEN_INPUT_PRICE
     await query.edit_message_text("Input notional USDT")
     return OPEN_INPUT_NOTIONAL
@@ -624,7 +633,14 @@ async def open_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @_admin_required
 async def open_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["open_price"] = float(update.message.text.strip())
+    raw_price = update.message.text.strip()
+    price_match = _parse_price_match(raw_price)
+    if price_match:
+        context.user_data["open_price"] = None
+        context.user_data["open_price_match"] = price_match
+    else:
+        context.user_data["open_price"] = float(raw_price)
+        context.user_data.pop("open_price_match", None)
     await update.message.reply_text("Input notional USDT")
     return OPEN_INPUT_NOTIONAL
 
@@ -645,12 +661,13 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
     symbol = str(context.user_data["open_symbol"])
     leverage = int(context.user_data["open_leverage"])
     order_type = str(context.user_data["open_type"])
+    price_match = context.user_data.get("open_price_match")
     notional = float(update.message.text.strip())
     if notional <= 0:
         await update.message.reply_text("notional must be positive")
         return OPEN_INPUT_NOTIONAL
     price = float(context.user_data.get("open_price") or 0.0)
-    if order_type == "MARKET":
+    if order_type == "MARKET" or price_match:
         price_res = get_last_price(account, symbol)
         if not price_res["ok"]:
             await update.message.reply_text(price_res["reason"])
@@ -678,6 +695,7 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
                 price,
                 order_role="MANUAL_ENTRY",
                 time_in_force="GTC",
+                price_match=str(price_match) if price_match else None,
                 client_order_id=_order_root("ENT"),
                 notify_label=NOTIFY_LABEL,
             )
@@ -689,9 +707,9 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
     data = res["data"]
     await update.message.reply_text(
-        f"LONG open submitted {symbol}\nqty={_fmt_float(data.get('qty'))}\n"
-        f"price={_fmt_float(data.get('price') or data.get('avg_price') or price)}\n"
-        f"oid={data.get('exchange_order_id')}\ncid={data.get('client_order_id')}"
+        f"LONG open submitted {symbol}\nqty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
+        f"price={data.get('price_match') or _fmt_float(data.get('price') or data.get('avg_price') or price)}\n"
+        f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
     )
     return ConversationHandler.END
 
@@ -765,13 +783,20 @@ async def close_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
             return ConversationHandler.END
         await query.edit_message_text(f"market close submitted: {symbol}")
         return ConversationHandler.END
-    await query.edit_message_text("Input limit close price")
+    await query.edit_message_text("Input limit close price (Q=QUEUE, Q5=QUEUE_5)")
     return CLOSE_INPUT_PRICE
 
 
 @_admin_required
 async def close_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["close_price"] = float(update.message.text.strip())
+    raw_price = update.message.text.strip()
+    price_match = _parse_price_match(raw_price)
+    if price_match:
+        context.user_data["close_price"] = None
+        context.user_data["close_price_match"] = price_match
+    else:
+        context.user_data["close_price"] = float(raw_price)
+        context.user_data.pop("close_price_match", None)
     await update.message.reply_text("Input close qty, or ALL")
     return CLOSE_INPUT_QTY
 
@@ -780,7 +805,8 @@ async def close_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     account = _selected_account(context)
     symbol = str(context.user_data["close_symbol"])
-    price = float(context.user_data["close_price"])
+    price_match = context.user_data.get("close_price_match")
+    price = None if price_match else float(context.user_data["close_price"])
     pos_res = get_positions(account, symbol)
     if not pos_res["ok"]:
         await update.message.reply_text(pos_res["reason"])
@@ -803,6 +829,7 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         price,
         order_role="MANUAL_CLOSE",
         time_in_force="GTC",
+        price_match=str(price_match) if price_match else None,
         client_order_id=_order_root("CLS"),
         notify_label=NOTIFY_LABEL,
     )
@@ -811,8 +838,9 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     data = res["data"]
     await update.message.reply_text(
-        f"limit close submitted {symbol}\nqty={_fmt_float(data.get('qty'))}\n"
-        f"price={_fmt_float(data.get('price'))}\noid={data.get('order_id')}\ncid={data.get('client_order_id')}"
+        f"limit close submitted {symbol}\nqty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
+        f"price={data.get('price_match') or _fmt_float(data.get('price'))}\n"
+        f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
     )
     return ConversationHandler.END
 
