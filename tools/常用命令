@@ -5,6 +5,8 @@ ssh aliyun-bn
 
 ps aux | grep python
 
+ps aux | grep '[r]un_manual_trade_bot.py'
+
 ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[s]trategies/spring/run_live.py'
@@ -20,6 +22,13 @@ ps aux | grep '[s]trategies/tvr/history_backfill.py'
 ```bash
 
 ```
+# ============== telegram bot 进程  ===============
+set -a
+. ./.env
+set +a
+nohup /root/service_env/bin/python -u run_manual_trade_bot.py \
+  >> output/logs/manual_trade_bot.log 2>&1 &
+tail -n 50 -f output/logs/manual_trade_bot.log
 
 # ============== Market dataHub 进程  ===============
 nohup bash -lc '

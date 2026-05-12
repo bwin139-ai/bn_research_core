@@ -556,6 +556,40 @@ def get_last_price(account: str, symbol: str) -> dict[str, Any]:
     return _ok({"symbol": su, "price": float(raw["price"]), "raw": raw})
 
 
+def get_order_book_top(account: str, symbol: str) -> dict[str, Any]:
+    su = (symbol or "").upper().strip()
+    res = _call_gateway_client_with_retry(
+        account,
+        'binance_exec.futures_order_book',
+        'futures_order_book',
+        payload={'symbol': su, 'limit': 5},
+        priority=REQUEST_PRIORITY_HIGH,
+    )
+    if not res["ok"]:
+        return res
+    raw = res["data"]
+    bids = raw.get("bids") or []
+    asks = raw.get("asks") or []
+    if not bids or not asks:
+        return _err(f"empty order book: {su}", raw=raw)
+    best_bid = float(bids[0][0])
+    best_bid_qty = float(bids[0][1])
+    best_ask = float(asks[0][0])
+    best_ask_qty = float(asks[0][1])
+    if best_bid <= 0 or best_ask <= 0:
+        return _err(f"invalid order book top: {su}", raw=raw)
+    return _ok(
+        {
+            "symbol": su,
+            "best_bid": best_bid,
+            "best_bid_qty": best_bid_qty,
+            "best_ask": best_ask,
+            "best_ask_qty": best_ask_qty,
+            "raw": raw,
+        }
+    )
+
+
 def get_open_orders(account: str, symbol: str | None = None) -> dict[str, Any]:
     su = (symbol or "").upper().strip()
     payload = {'symbol': su} if su else {}

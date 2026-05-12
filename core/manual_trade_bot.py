@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,11 +32,14 @@ from core.live.binance_exec import (
     get_all_orders,
     get_income_history,
     get_last_price,
+    get_order,
+    get_order_book_top,
     get_open_orders,
     get_positions,
     place_entry_order,
     place_limit_order,
     place_sl_order,
+    place_tp_order,
     place_time_stop_order,
 )
 from core.live.custom_id import build_client_order_id, make_order_root
@@ -57,6 +61,10 @@ STOP_SELECT_SYMBOL = 301
 STOP_INPUT_PRICE = 302
 EDIT_SYMBOLS_INPUT = 401
 
+PO_WATCH_TIMEOUT_SECS = 60
+PO_WATCH_POLL_SECS = 2
+_ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -67,6 +75,15 @@ def _permissions_path() -> Path:
 
 def _symbols_path() -> Path:
     return state_path("manual_trade_symbols.json")
+
+
+def _manual_events_path() -> Path:
+    day = datetime.now(tz=BJ).strftime("%Y-%m-%d")
+    return state_path("manual_trade", "orders", f"{day}.jsonl")
+
+
+def _manual_events_dir() -> Path:
+    return state_path("manual_trade", "orders")
 
 
 def _bot_token() -> str:
@@ -316,6 +333,81 @@ def _order_root(leg: str) -> str:
     return build_client_order_id(strat="MAN", leg=leg, root=make_order_root())
 
 
+def _client_order_id(leg: str, root: str) -> str:
+    return build_client_order_id(strat="MAN", leg=leg, root=root)
+
+
+def _append_manual_event(event: str, **payload: Any) -> None:
+    record = {
+        "event": event,
+        "ts_utc_ms": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+        "ts_bj": datetime.now(tz=BJ).isoformat(),
+    }
+    record.update(payload)
+    path = _manual_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _recent_manual_event_paths(limit: int = 3) -> list[Path]:
+    root = _manual_events_dir()
+    if not root.exists():
+        return []
+    return sorted(root.glob("*.jsonl"))[-limit:]
+
+
+def _manual_po_pending_entries() -> list[dict[str, Any]]:
+    pending: dict[str, dict[str, Any]] = {}
+    for path in _recent_manual_event_paths():
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                event = str(record.get("event") or "")
+                account = str(record.get("account") or "")
+                symbol = str(record.get("symbol") or "")
+                result = record.get("result") if isinstance(record.get("result"), dict) else {}
+                data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                client_order_id = str(
+                    record.get("entry_client_order_id")
+                    or data.get("client_order_id")
+                    or data.get("clientOrderId")
+                    or ""
+                )
+                key = f"{account}|{symbol}|{client_order_id}"
+                if not account or not symbol or not client_order_id:
+                    continue
+                if event == "manual_trade_po_entry_submit" and record.get("ok") is True:
+                    pending[key] = {
+                        "account": account,
+                        "symbol": symbol,
+                        "client_order_id": client_order_id,
+                        "ts_bj": record.get("ts_bj"),
+                    }
+                elif event == "manual_trade_po_watcher_done":
+                    pending.pop(key, None)
+    return list(pending.values())
+
+
+def _fail_fast_if_pending_manual_po_entries() -> None:
+    pending = _manual_po_pending_entries()
+    if not pending:
+        return
+    summary = ", ".join(
+        f"{x['account']} {x['symbol']} {x['client_order_id']} ts={x.get('ts_bj')}"
+        for x in pending[:5]
+    )
+    raise RuntimeError(
+        "manual PO watcher state has unfinished entries; check Binance open orders manually before restarting bot: "
+        + summary
+    )
+
+
 def _parse_price_match(value: str) -> str | None:
     text = str(value or "").upper().strip()
     if text == "Q":
@@ -323,6 +415,245 @@ def _parse_price_match(value: str) -> str | None:
     if text == "Q5":
         return "QUEUE_5"
     return None
+
+
+def _trade_usage() -> str:
+    return (
+        "Usage:\n"
+        "/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE\n"
+        "Example:\n"
+        "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
+        "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9"
+    )
+
+
+def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
+    if len(args) != 10 or str(args[0]).lower() != "open":
+        raise ValueError(_trade_usage())
+    account = str(args[1]).strip()
+    if account not in _discover_accounts():
+        raise ValueError(f"unknown account: {account}")
+    symbol = str(args[2]).upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    leverage_text = str(args[3]).lower().strip()
+    if not leverage_text.endswith("x"):
+        raise ValueError("leverage must look like 10x")
+    leverage = int(leverage_text[:-1])
+    if leverage <= 0:
+        raise ValueError("leverage must be positive")
+    mode = str(args[4]).upper().strip()
+    if mode not in {"M", "PO"}:
+        raise ValueError("mode must be M or PO")
+    notional = float(args[5])
+    if notional <= 0:
+        raise ValueError("notional must be positive")
+    if str(args[6]).upper().strip() != "SL":
+        raise ValueError("missing SL field")
+    sl_price = float(args[7])
+    if sl_price < 0:
+        raise ValueError("SL price must be >= 0")
+    if str(args[8]).upper().strip() != "TP":
+        raise ValueError("missing TP field")
+    tp_price = float(args[9])
+    if tp_price < 0:
+        raise ValueError("TP price must be >= 0")
+    return {
+        "account": account,
+        "symbol": symbol,
+        "leverage": leverage,
+        "mode": mode,
+        "notional": notional,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+    }
+
+
+def _entry_qty_from_notional(account: str, symbol: str, notional: float, price: float) -> float:
+    if price <= 0:
+        raise ValueError("entry price must be positive")
+    return float(notional) / float(price)
+
+
+def _validate_long_protection_prices(reference_price: float, sl_price: float, tp_price: float) -> None:
+    if sl_price > 0 and sl_price >= reference_price:
+        raise ValueError(f"LONG SL must be below entry reference price: sl={sl_price} ref={reference_price}")
+    if tp_price > 0 and tp_price <= reference_price:
+        raise ValueError(f"LONG TP must be above entry reference price: tp={tp_price} ref={reference_price}")
+
+
+async def _protect_manual_entry(
+    bot: Any,
+    chat_id: int,
+    *,
+    account: str,
+    symbol: str,
+    quantity: float,
+    sl_price: float,
+    tp_price: float,
+    root: str,
+) -> list[str]:
+    messages: list[str] = []
+    if quantity <= 0:
+        raise ValueError("executed quantity must be positive before SL/TP")
+    if sl_price > 0:
+        sl_res = place_sl_order(
+            account,
+            symbol,
+            LONG,
+            sl_price,
+            client_order_id=_client_order_id("SL", root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_manual_event("manual_trade_sl_submit", account=account, symbol=symbol, ok=sl_res["ok"], result=sl_res)
+        if sl_res["ok"]:
+            messages.append(f"SL ok stop={_fmt_float(sl_res['data'].get('stop_price'))}")
+        else:
+            messages.append(f"SL failed reason={sl_res['reason']}")
+    else:
+        messages.append("SL skipped")
+    if tp_price > 0:
+        tp_res = place_tp_order(
+            account,
+            symbol,
+            LONG,
+            quantity,
+            tp_price,
+            client_order_id=_client_order_id("TP", root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_manual_event("manual_trade_tp_submit", account=account, symbol=symbol, ok=tp_res["ok"], result=tp_res)
+        if tp_res["ok"]:
+            messages.append(f"TP ok price={_fmt_float(tp_res['data'].get('price'))}")
+        else:
+            messages.append(f"TP failed reason={tp_res['reason']}")
+    else:
+        messages.append("TP skipped")
+    await bot.send_message(chat_id=chat_id, text="\n".join([f"Manual protection {account} {symbol}", *messages]))
+    return messages
+
+
+async def _watch_po_entry(
+    bot: Any,
+    chat_id: int,
+    *,
+    account: str,
+    symbol: str,
+    entry_order_id: int | None,
+    entry_client_order_id: str,
+    root: str,
+    sl_price: float,
+    tp_price: float,
+    timeout_secs: int = PO_WATCH_TIMEOUT_SECS,
+) -> None:
+    key = (account, symbol)
+    async def finish(outcome: str, **payload: Any) -> None:
+        _append_manual_event(
+            "manual_trade_po_watcher_done",
+            account=account,
+            symbol=symbol,
+            entry_client_order_id=entry_client_order_id,
+            outcome=outcome,
+            **payload,
+        )
+
+    try:
+        deadline = asyncio.get_running_loop().time() + float(timeout_secs)
+        last_order: dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(PO_WATCH_POLL_SECS)
+            order_res = get_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+            )
+            _append_manual_event("manual_trade_po_poll", account=account, symbol=symbol, ok=order_res["ok"], result=order_res)
+            if not order_res["ok"]:
+                continue
+            last_order = order_res["data"]
+            status = str(last_order.get("status") or "").upper()
+            executed_qty = float(last_order.get("executed_qty", 0.0) or 0.0)
+            if status == "FILLED" and executed_qty > 0:
+                await _protect_manual_entry(
+                    bot,
+                    chat_id,
+                    account=account,
+                    symbol=symbol,
+                    quantity=executed_qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    root=root,
+                )
+                await bot.send_message(chat_id=chat_id, text=f"PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
+                await finish("filled", status=status, executed_qty=executed_qty)
+                return
+            if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+                if executed_qty > 0:
+                    await _protect_manual_entry(
+                        bot,
+                        chat_id,
+                        account=account,
+                        symbol=symbol,
+                        quantity=executed_qty,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        root=root,
+                    )
+                    await bot.send_message(chat_id=chat_id, text=f"PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}")
+                    await finish("terminal_with_fill", status=status, executed_qty=executed_qty)
+                else:
+                    await bot.send_message(chat_id=chat_id, text=f"PO entry terminal no fill {account} {symbol} status={status}")
+                    await finish("terminal_no_fill", status=status, executed_qty=executed_qty)
+                return
+
+        executed_qty = float((last_order or {}).get("executed_qty", 0.0) or 0.0)
+        status = str((last_order or {}).get("status") or "").upper()
+        if status in {"NEW", "PARTIALLY_FILLED", ""}:
+            cancel_res = cancel_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event("manual_trade_po_timeout_cancel", account=account, symbol=symbol, ok=cancel_res["ok"], result=cancel_res)
+            final_res = get_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+            )
+            if final_res["ok"]:
+                executed_qty = max(executed_qty, float(final_res["data"].get("executed_qty", 0.0) or 0.0))
+        if executed_qty > 0:
+            await _protect_manual_entry(
+                bot,
+                chat_id,
+                account=account,
+                symbol=symbol,
+                quantity=executed_qty,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                root=root,
+            )
+            await bot.send_message(chat_id=chat_id, text=f"PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
+            await finish("timeout_partial_fill", status=status, executed_qty=executed_qty)
+        else:
+            await bot.send_message(chat_id=chat_id, text=f"PO timeout canceled no fill {account} {symbol}")
+            await finish("timeout_no_fill", status=status, executed_qty=executed_qty)
+    except Exception as exc:
+        logging.error("[manual_po_watcher] failed: %s", exc, exc_info=True)
+        _append_manual_event(
+            "manual_trade_po_watcher_error",
+            account=account,
+            symbol=symbol,
+            entry_client_order_id=entry_client_order_id,
+            reason=str(exc),
+        )
+        await bot.send_message(chat_id=chat_id, text=f"PO watcher error {account} {symbol}: {exc}")
+    finally:
+        _ACTIVE_PO_WATCHERS.discard(key)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -351,6 +682,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("account_detail", "Account Detail"),
         BotCommand("pending_orders", "Pending Orders"),
         BotCommand("view_history", "History"),
+        BotCommand("trade", "Command Trade"),
         BotCommand("stop_market", "Stop Market"),
         BotCommand("edit_symbols", "Edit Symbols"),
     ]
@@ -1070,6 +1402,163 @@ async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+async def _run_market_trade_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    account: str,
+    symbol: str,
+    leverage: int,
+    notional: float,
+    sl_price: float,
+    tp_price: float,
+) -> None:
+    price_res = get_last_price(account, symbol)
+    if not price_res["ok"]:
+        await update.message.reply_text(f"price query failed: {price_res['reason']}")
+        return
+    entry_price = float(price_res["data"]["price"])
+    try:
+        _validate_long_protection_prices(entry_price, sl_price, tp_price)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    quantity = _entry_qty_from_notional(account, symbol, notional, entry_price)
+    root = make_order_root()
+    try:
+        _prepare_symbol(account, symbol, leverage)
+    except Exception as exc:
+        await update.message.reply_text(f"prepare symbol failed: {exc}")
+        return
+    entry_res = place_entry_order(
+        account,
+        symbol,
+        LONG,
+        quantity,
+        client_order_id=_client_order_id("ENT", root),
+        notify_label=NOTIFY_LABEL,
+    )
+    _append_manual_event("manual_trade_market_entry", account=account, symbol=symbol, ok=entry_res["ok"], result=entry_res)
+    if not entry_res["ok"]:
+        await update.message.reply_text(f"M entry failed: {entry_res['reason']}")
+        return
+    entry = entry_res["data"]
+    executed_qty = float(entry.get("executed_qty", 0.0) or entry.get("qty", 0.0) or 0.0)
+    await update.message.reply_text(
+        f"M entry submitted\n"
+        f"account={account}\n"
+        f"symbol={symbol}\n"
+        f"qty={_fmt_float(executed_qty)}\n"
+        f"avg={_fmt_float(entry.get('avg_price') or entry_price)}\n"
+        f"cid={entry.get('client_order_id')}"
+    )
+    if executed_qty <= 0:
+        await update.message.reply_text("M entry has no executed quantity; SL/TP skipped")
+        return
+    await _protect_manual_entry(
+        context.bot,
+        update.effective_chat.id,
+        account=account,
+        symbol=symbol,
+        quantity=executed_qty,
+        sl_price=sl_price,
+        tp_price=tp_price,
+        root=root,
+    )
+
+
+async def _run_post_only_trade_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    account: str,
+    symbol: str,
+    leverage: int,
+    notional: float,
+    sl_price: float,
+    tp_price: float,
+) -> None:
+    key = (account, symbol)
+    if key in _ACTIVE_PO_WATCHERS:
+        await update.message.reply_text(f"PO watcher already active: {account} {symbol}")
+        return
+    book_res = get_order_book_top(account, symbol)
+    if not book_res["ok"]:
+        await update.message.reply_text(f"order book query failed: {book_res['reason']}")
+        return
+    best_bid = float(book_res["data"]["best_bid"])
+    try:
+        _validate_long_protection_prices(best_bid, sl_price, tp_price)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    quantity = _entry_qty_from_notional(account, symbol, notional, best_bid)
+    root = make_order_root()
+    try:
+        _prepare_symbol(account, symbol, leverage)
+    except Exception as exc:
+        await update.message.reply_text(f"prepare symbol failed: {exc}")
+        return
+    entry_res = place_limit_order(
+        account,
+        symbol,
+        LONG,
+        "BUY",
+        quantity,
+        best_bid,
+        order_role="MANUAL_PO_ENTRY",
+        time_in_force="GTX",
+        client_order_id=_client_order_id("POE", root),
+        notify_label=NOTIFY_LABEL,
+    )
+    _append_manual_event("manual_trade_po_entry_submit", account=account, symbol=symbol, ok=entry_res["ok"], result=entry_res)
+    if not entry_res["ok"]:
+        await update.message.reply_text(f"PO entry failed: {entry_res['reason']}")
+        return
+    entry = entry_res["data"]
+    entry_order_id = entry.get("order_id") or entry.get("exchange_order_id")
+    entry_client_order_id = str(entry.get("client_order_id") or "")
+    if not entry_client_order_id:
+        await update.message.reply_text("PO entry missing client_order_id; watcher not started")
+        return
+    _ACTIVE_PO_WATCHERS.add(key)
+    context.application.create_task(
+        _watch_po_entry(
+            context.bot,
+            update.effective_chat.id,
+            account=account,
+            symbol=symbol,
+            entry_order_id=int(entry_order_id) if entry_order_id is not None else None,
+            entry_client_order_id=entry_client_order_id,
+            root=root,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            timeout_secs=PO_WATCH_TIMEOUT_SECS,
+        )
+    )
+    await update.message.reply_text(
+        f"PO entry submitted\n"
+        f"account={account}\n"
+        f"symbol={symbol}\n"
+        f"price={_fmt_float(best_bid)}\n"
+        f"wait={PO_WATCH_TIMEOUT_SECS}s\n"
+        f"cid={entry_client_order_id}"
+    )
+
+
+@_admin_required
+async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    spec = _parse_trade_open_args(list(context.args or []))
+    mode = spec["mode"]
+    if mode == "M":
+        await _run_market_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+        return
+    if mode == "PO":
+        await _run_post_only_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+        return
+    raise ValueError("unsupported trade mode")
+
+
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
         await update.message.reply_text("cancelled")
@@ -1097,6 +1586,7 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("account_detail", account_detail))
     application.add_handler(CommandHandler("pending_orders", pending_orders))
     application.add_handler(CommandHandler("view_history", send_history))
+    application.add_handler(CommandHandler("trade", trade_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(pending_orders, pattern=r"^detail_pending$"))
     application.add_handler(CallbackQueryHandler(detail_history, pattern=r"^detail_history$"))
@@ -1162,6 +1652,7 @@ def run_bot() -> None:
 def main() -> int:
     try:
         _load_permissions()
+        _fail_fast_if_pending_manual_po_entries()
         run_bot()
         return 0
     except Exception as exc:

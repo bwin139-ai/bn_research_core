@@ -1013,4 +1013,12 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
 5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
+6. 新增 `/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE` 命令式 LONG 开仓入口：
+   - `M` 使用市价 entry，成交后按输入挂 SL/TP；`SL 0` / `TP 0` 表示跳过对应保护单。
+   - `PO` 表示 post-only entry，使用 order book best bid 提交 `LIMIT + GTX` maker 单；命令立即返回，后台 watcher 按 `account + symbol` 并行追踪。
+   - PO watcher 默认等待 60 秒；成交后挂 SL/TP，部分成交时取消剩余并保护已成交数量，超时未成交则取消 entry。
+   - 同一 `account + symbol` 同时只允许一个 PO watcher；不同账户或不同 symbol 可以并行。
+   - 手动命令事件落盘到 `state/manual_trade/orders/YYYY-MM-DD.jsonl`，不写入策略 live state / strategy audit。
+   - bot 启动时会扫描最近手动交易事件；若发现 PO entry 已提交但没有 watcher done 终态，fail-fast 停止启动并要求人工核查交易所挂单。
+   - LONG 手动开仓会先按 entry reference price 校验 `SL < entry`、`TP > entry`；`SL 0` / `TP 0` 仍表示跳过对应保护单。
 ```
