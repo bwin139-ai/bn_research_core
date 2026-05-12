@@ -25,7 +25,6 @@ from core.live.binance_exec import (
     cancel_all_orders,
     cancel_order,
     ensure_cross_margin,
-    ensure_hedge_mode,
     ensure_leverage,
     get_account_status,
     get_account_trades,
@@ -35,6 +34,7 @@ from core.live.binance_exec import (
     get_order,
     get_order_book_top,
     get_open_orders,
+    get_position_mode,
     get_positions,
     place_entry_order,
     place_limit_order,
@@ -1078,8 +1078,13 @@ async def open_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def _prepare_symbol(account: str, symbol: str, leverage: int) -> None:
+    mode_res = get_position_mode(account)
+    if not mode_res["ok"]:
+        raise RuntimeError(mode_res["reason"])
+    if not bool(mode_res["data"].get("dual_side")):
+        mode = mode_res["data"].get("position_side_mode")
+        raise RuntimeError(f"account position mode must be HEDGE before manual LONG trade: mode={mode}")
     for res in (
-        ensure_hedge_mode(account),
         ensure_cross_margin(account, symbol),
         ensure_leverage(account, symbol, leverage),
     ):

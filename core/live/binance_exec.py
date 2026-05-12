@@ -715,7 +715,7 @@ def get_position(account: str, symbol: str, position_side: str) -> dict[str, Any
     return _ok(row)
 
 
-def ensure_hedge_mode(account: str) -> dict[str, Any]:
+def get_position_mode(account: str) -> dict[str, Any]:
     get_res = _call_gateway_client_with_retry(
         account,
         'binance_exec.futures_get_position_mode',
@@ -725,8 +725,16 @@ def ensure_hedge_mode(account: str) -> dict[str, Any]:
         return get_res
     raw = get_res["data"]
     dual_side = bool(raw.get("dualSidePosition", False))
-    if dual_side:
-        return _ok({"position_side_mode": POSITION_MODE, "changed": False, "raw": raw})
+    mode = POSITION_MODE if dual_side else "ONE_WAY"
+    return _ok({"position_side_mode": mode, "dual_side": dual_side, "raw": raw})
+
+
+def ensure_hedge_mode(account: str) -> dict[str, Any]:
+    mode_res = get_position_mode(account)
+    if not mode_res["ok"]:
+        return mode_res
+    if bool(mode_res["data"].get("dual_side")):
+        return _ok({"position_side_mode": POSITION_MODE, "changed": False, "raw": mode_res["data"].get("raw")})
     set_res = _call_gateway_client_with_retry(
         account,
         'binance_exec.futures_change_position_mode',
