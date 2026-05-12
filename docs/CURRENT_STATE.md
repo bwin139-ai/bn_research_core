@@ -1022,4 +1022,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - bot 启动时会扫描最近手动交易事件；若发现 PO entry 已提交但没有 watcher done 终态，fail-fast 停止启动并要求人工核查交易所挂单。
    - LONG 手动开仓会先按 entry reference price 校验 `SL < entry`、`TP > entry`；`SL 0` / `TP 0` 仍表示跳过对应保护单。
    - PO entry 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best bid 并重试提交；当前硬编码最多 3 次，只对 `-5022` 类 post-only maker reject 重试。
+7. 新增 `/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO` 命令式 LONG 平仓入口：
+   - `M` 对每个指定账户查询该 symbol 的 LONG position qty，并提交 `MANUAL_CLOSE` market reduce 平仓。
+   - `PO` 对每个指定账户查询该 symbol 的 LONG position qty，读取 order book best ask，并提交 `LIMIT + GTX` maker 平仓单。
+   - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
+   - PO close 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best ask 并重试提交；当前硬编码最多 3 次。
 ```

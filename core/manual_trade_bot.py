@@ -422,18 +422,36 @@ def _trade_usage() -> str:
     return (
         "Usage:\n"
         "/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO\n"
         "Example:\n"
         "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
-        "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9"
+        "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9\n"
+        "/trade close bwin182 | chen912 | junjie2026 CLUSDT M\n"
+        "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO"
     )
+
+
+def _parse_trade_accounts(tokens: list[str]) -> list[str]:
+    raw = " ".join(str(x).strip() for x in tokens if str(x).strip())
+    accounts = [x.strip() for x in raw.split("|") if x.strip()]
+    if not accounts:
+        raise ValueError("missing account")
+    known = set(_discover_accounts())
+    unknown = [x for x in accounts if x not in known]
+    if unknown:
+        raise ValueError(f"unknown account(s): {', '.join(unknown)}")
+    if len(accounts) != len(set(accounts)):
+        raise ValueError("duplicate account in command")
+    return accounts
 
 
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     if len(args) != 10 or str(args[0]).lower() != "open":
         raise ValueError(_trade_usage())
-    account = str(args[1]).strip()
-    if account not in _discover_accounts():
-        raise ValueError(f"unknown account: {account}")
+    accounts = _parse_trade_accounts([str(args[1]).strip()])
+    if len(accounts) != 1:
+        raise ValueError("open command requires exactly one account")
+    account = accounts[0]
     symbol = str(args[2]).upper().strip()
     if not symbol.endswith("USDT"):
         raise ValueError(f"symbol must end with USDT: {symbol}")
@@ -467,6 +485,23 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
         "notional": notional,
         "sl_price": sl_price,
         "tp_price": tp_price,
+    }
+
+
+def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 4 or str(args[0]).lower() != "close":
+        raise ValueError(_trade_usage())
+    mode = str(args[-1]).upper().strip()
+    if mode not in {"M", "PO"}:
+        raise ValueError("close mode must be M or PO")
+    symbol = str(args[-2]).upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    accounts = _parse_trade_accounts([str(x) for x in args[1:-2]])
+    return {
+        "accounts": accounts,
+        "symbol": symbol,
+        "mode": mode,
     }
 
 
@@ -1580,17 +1615,144 @@ async def _run_post_only_trade_command(
     )
 
 
+def _long_position_qty(account: str, symbol: str) -> float:
+    pos_res = get_positions(account, symbol)
+    if not pos_res["ok"]:
+        raise RuntimeError(pos_res["reason"])
+    pos = next((p for p in pos_res["data"] if p.get("position_side") == LONG), None)
+    if not pos:
+        raise ValueError(f"no LONG position: {symbol}")
+    qty = float(pos["qty"])
+    if qty <= 0:
+        raise ValueError(f"invalid LONG position qty: {symbol} qty={qty}")
+    return qty
+
+
+async def _run_market_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"M close {symbol}"]
+    for account in accounts:
+        try:
+            qty = _long_position_qty(account, symbol)
+            root = make_order_root()
+            res = place_time_stop_order(
+                account,
+                symbol,
+                LONG,
+                qty,
+                order_role="MANUAL_CLOSE",
+                client_order_id=_client_order_id("CLS", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event("manual_trade_market_close", account=account, symbol=symbol, ok=res["ok"], result=res)
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or qty)} "
+                f"avg={_fmt_float(data.get('avg_price'))} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event("manual_trade_market_close", account=account, symbol=symbol, ok=False, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def _run_post_only_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"PO close {symbol}"]
+    for account in accounts:
+        try:
+            qty = _long_position_qty(account, symbol)
+            root = make_order_root()
+            entry_res: dict[str, Any] | None = None
+            best_ask = 0.0
+            for attempt in range(1, PO_ENTRY_SUBMIT_MAX_ATTEMPTS + 1):
+                book_res = get_order_book_top(account, symbol)
+                if not book_res["ok"]:
+                    raise RuntimeError(f"order book query failed: {book_res['reason']}")
+                best_ask = float(book_res["data"]["best_ask"])
+                leg = "CPO" if attempt == 1 else f"CP{attempt}"
+                entry_res = place_limit_order(
+                    account,
+                    symbol,
+                    LONG,
+                    "SELL",
+                    qty,
+                    best_ask,
+                    order_role="MANUAL_CLOSE",
+                    time_in_force="GTX",
+                    client_order_id=_client_order_id(leg, root),
+                    notify_label=NOTIFY_LABEL,
+                )
+                _append_manual_event(
+                    "manual_trade_po_close_submit",
+                    account=account,
+                    symbol=symbol,
+                    ok=entry_res["ok"],
+                    attempt=attempt,
+                    max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
+                    price=best_ask,
+                    result=entry_res,
+                )
+                if entry_res["ok"]:
+                    break
+                if _is_po_maker_reject(entry_res["reason"]):
+                    if attempt < PO_ENTRY_SUBMIT_MAX_ATTEMPTS:
+                        continue
+                    break
+                lines.append(f"{account}: failed reason={entry_res['reason']}")
+                entry_res = None
+                break
+            if not entry_res or not entry_res["ok"]:
+                reason = entry_res["reason"] if entry_res else "unknown PO close submit failure"
+                lines.append(f"{account}: failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts reason={reason}")
+                continue
+            data = entry_res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"price={_fmt_float(data.get('price') or best_ask)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event("manual_trade_po_close_submit", account=account, symbol=symbol, ok=False, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await update.message.reply_text("\n".join(lines))
+
+
 @_admin_required
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    spec = _parse_trade_open_args(list(context.args or []))
-    mode = spec["mode"]
-    if mode == "M":
-        await _run_market_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
-        return
-    if mode == "PO":
-        await _run_post_only_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
-        return
-    raise ValueError("unsupported trade mode")
+    args = list(context.args or [])
+    if not args:
+        raise ValueError(_trade_usage())
+    action = str(args[0]).lower()
+    if action == "open":
+        spec = _parse_trade_open_args(args)
+        mode = spec["mode"]
+        if mode == "M":
+            await _run_market_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+            return
+        if mode == "PO":
+            await _run_post_only_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+            return
+    if action == "close":
+        spec = _parse_trade_close_args(args)
+        mode = spec["mode"]
+        if mode == "M":
+            await _run_market_close_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+            return
+        if mode == "PO":
+            await _run_post_only_close_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+            return
+    raise ValueError("unsupported trade command")
 
 
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
