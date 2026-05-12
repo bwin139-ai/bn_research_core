@@ -208,6 +208,63 @@ def _fmt_float(value: Any, digits: int = 6) -> str:
         return str(value)
 
 
+def _fmt_intish(value: Any) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return str(value)
+    if abs(number - round(number)) < 1e-9:
+        return str(int(round(number)))
+    return f"{number:.1f}"
+
+
+def _order_qty(order: dict[str, Any]) -> float:
+    for key in ("orig_qty", "qty", "executed_qty"):
+        try:
+            value = float(order.get(key, 0.0) or 0.0)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _order_display_price(order: dict[str, Any]) -> float:
+    for key in ("price", "stop_price", "avg_price"):
+        try:
+            value = float(order.get(key, 0.0) or 0.0)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _order_icon(order: dict[str, Any]) -> str:
+    order_type = str(order.get("type") or order.get("orig_type") or "").upper()
+    if order_type == "STOP_MARKET":
+        return "🚦"
+    if order_type == "TAKE_PROFIT_MARKET":
+        return "⏳"
+    return ""
+
+
+def _tp_ratio(entry_price: float, orders: list[dict[str, Any]]) -> str:
+    tp_orders = [
+        o
+        for o in orders
+        if str(o.get("side") or "").upper() == "SELL" and _order_display_price(o) > entry_price
+    ]
+    weighted_qty = sum(_order_qty(o) for o in tp_orders)
+    if weighted_qty <= 0 or entry_price <= 0:
+        return "⚪"
+    weighted_price = sum(_order_display_price(o) * _order_qty(o) for o in tp_orders) / weighted_qty
+    ratio = ((weighted_price - entry_price) / entry_price) * 100.0
+    if abs(ratio) < 0.05:
+        return "🟡"
+    return f"{ratio:.1f}🎯"
+
+
 def _chunk_lines(lines: list[str], limit: int = 3600) -> list[str]:
     chunks: list[str] = []
     buf: list[str] = []
@@ -309,19 +366,42 @@ async def select_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 @_admin_required
 async def account_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     accounts = _discover_accounts()
-    lines = ["All Accounts"]
+    lines = ["📊 活跃账户列表"]
+    account_rows: list[tuple[str, str, str, str, str]] = []
     for account in accounts:
         res = get_account_status(account)
         if not res["ok"]:
-            lines.append(f"{account}: ERROR {res['reason']}")
+            account_rows.append((account, "查询异常", "", "", ""))
             continue
         data = res["data"]
-        lines.append(
-            f"{account}: W={_fmt_usdt(data['wallet_usdt'])} "
-            f"M={_fmt_usdt(data['margin_usdt'])} "
-            f"A={_fmt_usdt(data['available_usdt'])} "
-            f"U={_fmt_usdt(data['unrealized_usdt'])}"
+        account_rows.append(
+            (
+                account,
+                _fmt_intish(data["wallet_usdt"]),
+                _fmt_intish(data["margin_usdt"]),
+                _fmt_intish(data["available_usdt"]),
+                _fmt_intish(data["unrealized_usdt"]),
+            )
         )
+    for i in range(0, len(account_rows), 2):
+        left = account_rows[i]
+        right = account_rows[i + 1] if i + 1 < len(account_rows) else None
+        if right:
+            lines.append(
+                f"🔹 {left[0]:<12} 🔹 {right[0]:<12}\n"
+                f"W: {left[1]:>10}    W: {right[1]:>10}\n"
+                f"B: {left[2]:>10}    B: {right[2]:>10}\n"
+                f"A: {left[3]:>10}    A: {right[3]:>10}\n"
+                f"U: {left[4]:>10}    U: {right[4]:>10}"
+            )
+        else:
+            lines.append(
+                f"🔹 {left[0]:<12}\n"
+                f"W: {left[1]:>10}\n"
+                f"B: {left[2]:>10}\n"
+                f"A: {left[3]:>10}\n"
+                f"U: {left[4]:>10}"
+            )
     await _send_lines(update, lines)
 
 
@@ -332,56 +412,123 @@ async def account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not status["ok"]:
         await update.message.reply_text(status["reason"])
         return
-    lines = [f"Account Detail: {account}"]
+    lines: list[str] = [""]
     data = status["data"]
     lines.append(
-        f"W={_fmt_usdt(data['wallet_usdt'])} M={_fmt_usdt(data['margin_usdt'])} "
-        f"A={_fmt_usdt(data['available_usdt'])} U={_fmt_usdt(data['unrealized_usdt'])}"
+        f"🔷{account}  M: {_fmt_intish(data['margin_usdt'])}  "
+        f"uPnL: {_fmt_intish(data['unrealized_usdt'])}"
     )
     positions = _long_positions(account)
+    orders = _long_orders(account)
     if positions:
+        net_amount = sum(int(float(p["qty"]) * float(p["entry_price"])) for p in positions)
+        lines.append(f"      W: {_fmt_intish(data['wallet_usdt'])}      净持仓: {_fmt_intish(net_amount)}")
         lines.append("")
-        lines.append("LONG Positions")
-        for p in positions:
-            notional = float(p["qty"]) * float(p["mark_price"])
+        for p in sorted(positions, key=lambda x: float(x["qty"]) * float(x["entry_price"]), reverse=True):
+            amount = int(float(p["qty"]) * float(p["entry_price"]))
+            symbol_orders = [o for o in orders if o.get("symbol") == p["symbol"]]
             lines.append(
-                f"{p['symbol']} qty={_fmt_float(p['qty'])} entry={_fmt_float(p['entry_price'])} "
-                f"mark={_fmt_float(p['mark_price'])} notional={_fmt_usdt(notional)} "
-                f"uPnL={_fmt_usdt(p['unrealized_usdt'])}"
+                f"🟢{p['symbol']}    uPnL: {_fmt_intish(p['unrealized_usdt'])}\n"
+                f"     {_fmt_float(p['qty'])} | {_fmt_float(p['entry_price'])} "
+                f"| {amount} | {_tp_ratio(float(p['entry_price']), symbol_orders)}"
             )
     else:
-        lines.append("LONG Positions: none")
-    orders = _long_orders(account)
-    lines.append("")
-    lines.append(f"LONG Pending Orders: {len(orders)}")
-    for o in orders[:40]:
-        price = o.get("price") or o.get("stop_price")
-        lines.append(
-            f"{o['symbol']} {o.get('side')} {o.get('type')} qty={_fmt_float(o.get('qty'))} "
-            f"price={_fmt_float(price)} oid={o.get('order_id')} cid={o.get('client_order_id')}"
-        )
-    await _send_lines(update, lines)
+        lines.append("ℹ️ 无持仓信息")
+    keyboard = [
+        [
+            InlineKeyboardButton("📄 Pending", callback_data="detail_pending"),
+            InlineKeyboardButton("📜 History", callback_data="detail_history"),
+        ]
+    ]
+    await update.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 @_admin_required
 async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     account = _selected_account(context)
+    query = update.callback_query
+    if query:
+        await query.answer()
     orders = _long_orders(account)
     if not orders:
-        await update.message.reply_text(f"{account}: no LONG pending orders")
+        text = "📄 当前挂单\n\n✅ 当前无挂单"
+        if query:
+            await query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
         return
-    lines = [f"Pending Orders: {account}"]
+    lines = [f"📄 当前挂单 {account}"]
     buttons = []
-    for o in orders:
-        price = o.get("price") or o.get("stop_price")
-        oid = o.get("order_id")
-        lines.append(
-            f"{o['symbol']} {o.get('side')} {o.get('type')} qty={_fmt_float(o.get('qty'))} "
-            f"price={_fmt_float(price)} oid={oid} cid={o.get('client_order_id')}"
-        )
-        if oid is not None:
-            buttons.append([InlineKeyboardButton(f"Cancel {o['symbol']} {oid}", callback_data=f"cancel:{o['symbol']}:{oid}")])
-    await update.message.reply_text("\n".join(lines[:60]), reply_markup=InlineKeyboardMarkup(buttons[:40]))
+    order_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for order in sorted(orders, key=lambda x: (str(x.get("symbol")), str(x.get("side")), _order_display_price(x)), reverse=False):
+        key = (str(order.get("symbol")), str(order.get("side")))
+        order_groups.setdefault(key, []).append(order)
+    for (symbol, side), group in order_groups.items():
+        buttons.append([InlineKeyboardButton(f"📌 {symbol} {side} 撤单 ↓↓↓", callback_data=f"cancel_group:{symbol}")])
+        row_buttons = []
+        for order in sorted(group, key=_order_display_price, reverse=True):
+            oid = order.get("order_id")
+            price = _order_display_price(order)
+            qty = _order_qty(order)
+            lines.append(
+                f"{symbol} {side} {order.get('type')} "
+                f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid}"
+            )
+            if oid is not None:
+                row_buttons.append(
+                    InlineKeyboardButton(
+                        f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})",
+                        callback_data=f"cancel:{symbol}:{oid}",
+                    )
+                )
+            if len(row_buttons) == 2:
+                buttons.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            buttons.append(row_buttons)
+    text = "\n".join(lines[:60])
+    markup = InlineKeyboardMarkup(buttons[:40])
+    if query:
+        await query.edit_message_text(text, reply_markup=markup)
+    else:
+        await update.message.reply_text(text, reply_markup=markup)
+
+
+@_admin_required
+async def detail_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Input symbol for last 24h history")
+    return HISTORY_INPUT_SYMBOL
+
+
+@_admin_required
+async def confirm_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    _, symbol = query.data.split(":", 1)
+    await query.edit_message_text(
+        f"Confirm cancel all LONG orders for {symbol}?",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Confirm", callback_data=f"cancel_group_ok:{symbol}")],
+                [InlineKeyboardButton("Abort", callback_data="abort")],
+            ]
+        ),
+    )
+
+
+@_admin_required
+async def do_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    account = _selected_account(context)
+    _, symbol = query.data.split(":", 1)
+    res = cancel_all_orders(account, symbol, notify_label=NOTIFY_LABEL)
+    if not res["ok"]:
+        await query.edit_message_text(f"cancel orders failed: {res['reason']}")
+        return
+    await query.edit_message_text(f"cancel orders submitted: {symbol}")
 
 
 @_admin_required
@@ -827,6 +974,9 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("account_detail", account_detail))
     application.add_handler(CommandHandler("pending_orders", pending_orders))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
+    application.add_handler(CallbackQueryHandler(pending_orders, pattern=r"^detail_pending$"))
+    application.add_handler(CallbackQueryHandler(confirm_cancel_group, pattern=r"^cancel_group:"))
+    application.add_handler(CallbackQueryHandler(do_cancel_group, pattern=r"^cancel_group_ok:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_order, pattern=r"^cancel:"))
     application.add_handler(CallbackQueryHandler(do_cancel_order, pattern=r"^cancel_ok:"))
     application.add_handler(CallbackQueryHandler(abort, pattern=r"^abort$"))
@@ -882,7 +1032,10 @@ def run_bot() -> None:
     )
     application.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("view_history", view_history)],
+            entry_points=[
+                CommandHandler("view_history", view_history),
+                CallbackQueryHandler(detail_history, pattern=r"^detail_history$"),
+            ],
             states={HISTORY_INPUT_SYMBOL: [MessageHandler(filters.TEXT & ~filters.COMMAND, history_input_symbol)]},
             fallbacks=[CommandHandler("cancel", cancel_conv)],
             allow_reentry=True,
