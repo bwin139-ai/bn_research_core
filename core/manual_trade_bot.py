@@ -425,13 +425,15 @@ def _trade_usage() -> str:
         "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL L PRICE [PCT%]\n"
         "/trade sl ACCOUNT[ | ACCOUNT...] SYMBOL PRICE [PCT%]\n"
+        "/trade cancel ACCOUNT[ | ACCOUNT...] SYMBOL\n"
         "Example:\n"
         "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
         "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT M\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO 50%\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT L 101.36 30%\n"
-        "/trade sl bwin182 | chen912 | junjie2026 CLUSDT 98.37 50%"
+        "/trade sl bwin182 | chen912 | junjie2026 CLUSDT 98.37 50%\n"
+        "/trade cancel bwin182 | chen912 | junjie2026 CLUSDT"
     )
 
 
@@ -557,6 +559,19 @@ def _parse_trade_sl_args(args: list[str]) -> dict[str, Any]:
         "symbol": symbol,
         "stop_price": stop_price,
         "sl_ratio": sl_ratio,
+    }
+
+
+def _parse_trade_cancel_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 3 or str(args[0]).lower() != "cancel":
+        raise ValueError(_trade_usage())
+    symbol = str(args[-1]).upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    accounts = _parse_trade_accounts([str(x) for x in args[1:-1]])
+    return {
+        "accounts": accounts,
+        "symbol": symbol,
     }
 
 
@@ -1903,6 +1918,29 @@ async def _run_sl_command(
     await update.message.reply_text("\n".join(lines))
 
 
+async def _run_cancel_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"Cancel open orders {symbol}"]
+    for account in accounts:
+        res = cancel_all_orders(account, symbol, notify_label=NOTIFY_LABEL)
+        _append_manual_event("manual_trade_cancel_all", account=account, symbol=symbol, ok=res["ok"], result=res)
+        if not res["ok"]:
+            lines.append(f"{account}: failed reason={res['reason']}")
+            continue
+        rows = list(res.get("data") or [])
+        failed = [row for row in rows if not row.get("ok")]
+        if failed:
+            reasons = "; ".join(str(row.get("reason") or "unknown") for row in failed[:3])
+            lines.append(f"{account}: partial failed cancelled={len(rows) - len(failed)} failed={len(failed)} reason={reasons}")
+            continue
+        lines.append(f"{account}: cancelled={len(rows)}")
+    await update.message.reply_text("\n".join(lines))
+
+
 @_admin_required
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = list(context.args or [])
@@ -1954,6 +1992,14 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             symbol=spec["symbol"],
             stop_price=spec["stop_price"],
             sl_ratio=spec["sl_ratio"],
+        )
+        return
+    if action == "cancel":
+        spec = _parse_trade_cancel_args(args)
+        await _run_cancel_command(
+            update,
+            accounts=spec["accounts"],
+            symbol=spec["symbol"],
         )
         return
     raise ValueError("unsupported trade command")
