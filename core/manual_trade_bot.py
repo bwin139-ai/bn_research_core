@@ -424,12 +424,14 @@ def _trade_usage() -> str:
         "/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE\n"
         "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL L PRICE [PCT%]\n"
+        "/trade sl ACCOUNT[ | ACCOUNT...] SYMBOL PRICE [PCT%]\n"
         "Example:\n"
         "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
         "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT M\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO 50%\n"
-        "/trade close bwin182 | chen912 | junjie2026 CLUSDT L 101.36 30%"
+        "/trade close bwin182 | chen912 | junjie2026 CLUSDT L 101.36 30%\n"
+        "/trade sl bwin182 | chen912 | junjie2026 CLUSDT 98.37 50%"
     )
 
 
@@ -445,6 +447,18 @@ def _parse_trade_accounts(tokens: list[str]) -> list[str]:
     if len(accounts) != len(set(accounts)):
         raise ValueError("duplicate account in command")
     return accounts
+
+
+def _parse_percent_suffix(tokens: list[str], *, field_name: str) -> tuple[list[str], float]:
+    remaining = [str(x).strip() for x in tokens if str(x).strip()]
+    ratio = 1.0
+    if remaining and remaining[-1].endswith("%"):
+        percent_text = remaining.pop()[:-1].strip()
+        percent = float(percent_text)
+        if percent <= 0 or percent > 100:
+            raise ValueError(f"{field_name} percent must be > 0 and <= 100")
+        ratio = percent / 100.0
+    return remaining, ratio
 
 
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
@@ -493,14 +507,7 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
 def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 4 or str(args[0]).lower() != "close":
         raise ValueError(_trade_usage())
-    tokens = [str(x).strip() for x in args[1:] if str(x).strip()]
-    close_ratio = 1.0
-    if tokens and tokens[-1].endswith("%"):
-        percent_text = tokens.pop()[:-1].strip()
-        close_percent = float(percent_text)
-        if close_percent <= 0 or close_percent > 100:
-            raise ValueError("close percent must be > 0 and <= 100")
-        close_ratio = close_percent / 100.0
+    tokens, close_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="close")
     if len(tokens) < 3:
         raise ValueError(_trade_usage())
     limit_price: float | None = None
@@ -529,6 +536,27 @@ def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
         "mode": mode,
         "limit_price": limit_price,
         "close_ratio": close_ratio,
+    }
+
+
+def _parse_trade_sl_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 4 or str(args[0]).lower() != "sl":
+        raise ValueError(_trade_usage())
+    tokens, sl_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="sl")
+    if len(tokens) < 3:
+        raise ValueError(_trade_usage())
+    stop_price = float(tokens[-1])
+    if stop_price <= 0:
+        raise ValueError("SL price must be positive")
+    symbol = str(tokens[-2]).upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    accounts = _parse_trade_accounts(tokens[:-2])
+    return {
+        "accounts": accounts,
+        "symbol": symbol,
+        "stop_price": stop_price,
+        "sl_ratio": sl_ratio,
     }
 
 
@@ -1815,6 +1843,61 @@ async def _run_limit_close_command(
     await update.message.reply_text("\n".join(lines))
 
 
+async def _run_sl_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    stop_price: float,
+    sl_ratio: float,
+) -> None:
+    lines = [f"SL {symbol} stop={_fmt_float(stop_price)}"]
+    for account in accounts:
+        try:
+            quantity = None if sl_ratio == 1.0 else _long_position_qty(account, symbol, sl_ratio)
+            root = make_order_root()
+            res = place_sl_order(
+                account,
+                symbol,
+                LONG,
+                stop_price,
+                quantity=quantity,
+                client_order_id=_client_order_id("SL", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event(
+                "manual_trade_sl_command",
+                account=account,
+                symbol=symbol,
+                ok=res["ok"],
+                stop_price=stop_price,
+                sl_ratio=sl_ratio,
+                quantity=quantity,
+                result=res,
+            )
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            lines.append(
+                f"{account}: submitted qty={qty_text} "
+                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event(
+                "manual_trade_sl_command",
+                account=account,
+                symbol=symbol,
+                ok=False,
+                stop_price=stop_price,
+                sl_ratio=sl_ratio,
+                reason=str(exc),
+            )
+            lines.append(f"{account}: failed reason={exc}")
+    await update.message.reply_text("\n".join(lines))
+
+
 @_admin_required
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = list(context.args or [])
@@ -1858,6 +1941,16 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 close_ratio=spec["close_ratio"],
             )
             return
+    if action == "sl":
+        spec = _parse_trade_sl_args(args)
+        await _run_sl_command(
+            update,
+            accounts=spec["accounts"],
+            symbol=spec["symbol"],
+            stop_price=spec["stop_price"],
+            sl_ratio=spec["sl_ratio"],
+        )
+        return
     raise ValueError("unsupported trade command")
 
 

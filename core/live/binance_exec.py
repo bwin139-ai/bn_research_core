@@ -1213,6 +1213,7 @@ def place_sl_order(
     position_side: str,
     stop_price: float,
     *,
+    quantity: float | None = None,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
     client_order_id: str | None = None,
@@ -1252,6 +1253,25 @@ def place_sl_order(
             notify_label=notify_label,
         )
         return _err(reason)
+    qty_value: float | None = None
+    if quantity is not None:
+        qty_res = _normalize_quantity(account, su, quantity)
+        if not qty_res["ok"]:
+            _emit_trade_event(
+                "SL",
+                "fail",
+                account=account,
+                symbol=su,
+                position_side=pos,
+                stop_price=px,
+                client_order_id=client_order_id,
+                reason=qty_res["reason"],
+                attempts=qty_res.get("attempts"),
+                is_algo_order=True,
+                notify_label=notify_label,
+            )
+            return qty_res
+        qty_value = float(qty_res["data"]["qty"])
     cid = client_order_id or _gen_client_order_id("SL", su)
     payload = {
         "algoType": "CONDITIONAL",
@@ -1260,10 +1280,13 @@ def place_sl_order(
         "positionSide": pos,
         "type": STOP_LOSS_ORDER_TYPE,
         "triggerPrice": px,
-        "closePosition": "true",
         "workingType": "CONTRACT_PRICE",
         "clientAlgoId": cid,
     }
+    if qty_value is None:
+        payload["closePosition"] = "true"
+    else:
+        payload["quantity"] = qty_value
     res = _call_with_retry(
         lambda: call_futures_signed(
             account,
@@ -1284,6 +1307,7 @@ def place_sl_order(
             symbol=su,
             position_side=pos,
             side=payload["side"],
+            qty=qty_value,
             stop_price=px,
             client_order_id=cid,
             reason=res["reason"],
@@ -1300,6 +1324,7 @@ def place_sl_order(
         symbol=su,
         position_side=pos,
         side=payload["side"],
+        qty=qty_value,
         stop_price=px,
         client_order_id=raw.get("clientAlgoId", cid),
         exchange_order_id=raw.get("algoId"),
@@ -1316,6 +1341,7 @@ def place_sl_order(
             "order_type": STOP_LOSS_ORDER_TYPE,
             "side": payload["side"],
             "position_side": pos,
+            "qty": qty_value,
             "stop_price": px,
             "client_order_id": raw.get("clientAlgoId", cid),
             "exchange_order_id": raw.get("algoId"),
