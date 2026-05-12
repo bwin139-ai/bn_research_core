@@ -1021,4 +1021,5 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 手动命令事件落盘到 `state/manual_trade/orders/YYYY-MM-DD.jsonl`，不写入策略 live state / strategy audit。
    - bot 启动时会扫描最近手动交易事件；若发现 PO entry 已提交但没有 watcher done 终态，fail-fast 停止启动并要求人工核查交易所挂单。
    - LONG 手动开仓会先按 entry reference price 校验 `SL < entry`、`TP > entry`；`SL 0` / `TP 0` 仍表示跳过对应保护单。
+   - PO entry 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best bid 并重试提交；当前硬编码最多 3 次，只对 `-5022` 类 post-only maker reject 重试。
 ```

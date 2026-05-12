@@ -63,6 +63,7 @@ EDIT_SYMBOLS_INPUT = 401
 
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
+PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
 _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
 
 def _repo_root() -> Path:
@@ -480,6 +481,15 @@ def _validate_long_protection_prices(reference_price: float, sl_price: float, tp
         raise ValueError(f"LONG SL must be below entry reference price: sl={sl_price} ref={reference_price}")
     if tp_price > 0 and tp_price <= reference_price:
         raise ValueError(f"LONG TP must be above entry reference price: tp={tp_price} ref={reference_price}")
+
+
+def _is_po_maker_reject(reason: str) -> bool:
+    text = str(reason or "")
+    return (
+        "code=-5022" in text
+        or "could not be executed as maker" in text
+        or "Post Only order will be rejected" in text
+    )
 
 
 async def _protect_manual_entry(
@@ -1482,38 +1492,62 @@ async def _run_post_only_trade_command(
     if key in _ACTIVE_PO_WATCHERS:
         await update.message.reply_text(f"PO watcher already active: {account} {symbol}")
         return
-    book_res = get_order_book_top(account, symbol)
-    if not book_res["ok"]:
-        await update.message.reply_text(f"order book query failed: {book_res['reason']}")
-        return
-    best_bid = float(book_res["data"]["best_bid"])
-    try:
-        _validate_long_protection_prices(best_bid, sl_price, tp_price)
-    except ValueError as exc:
-        await update.message.reply_text(str(exc))
-        return
-    quantity = _entry_qty_from_notional(account, symbol, notional, best_bid)
     root = make_order_root()
     try:
         _prepare_symbol(account, symbol, leverage)
     except Exception as exc:
         await update.message.reply_text(f"prepare symbol failed: {exc}")
         return
-    entry_res = place_limit_order(
-        account,
-        symbol,
-        LONG,
-        "BUY",
-        quantity,
-        best_bid,
-        order_role="MANUAL_PO_ENTRY",
-        time_in_force="GTX",
-        client_order_id=_client_order_id("POE", root),
-        notify_label=NOTIFY_LABEL,
-    )
-    _append_manual_event("manual_trade_po_entry_submit", account=account, symbol=symbol, ok=entry_res["ok"], result=entry_res)
-    if not entry_res["ok"]:
+
+    best_bid = 0.0
+    entry_res: dict[str, Any] | None = None
+    for attempt in range(1, PO_ENTRY_SUBMIT_MAX_ATTEMPTS + 1):
+        book_res = get_order_book_top(account, symbol)
+        if not book_res["ok"]:
+            await update.message.reply_text(f"order book query failed: {book_res['reason']}")
+            return
+        best_bid = float(book_res["data"]["best_bid"])
+        try:
+            _validate_long_protection_prices(best_bid, sl_price, tp_price)
+        except ValueError as exc:
+            await update.message.reply_text(str(exc))
+            return
+        quantity = _entry_qty_from_notional(account, symbol, notional, best_bid)
+        leg = "POE" if attempt == 1 else f"PO{attempt}"
+        entry_res = place_limit_order(
+            account,
+            symbol,
+            LONG,
+            "BUY",
+            quantity,
+            best_bid,
+            order_role="MANUAL_PO_ENTRY",
+            time_in_force="GTX",
+            client_order_id=_client_order_id(leg, root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_manual_event(
+            "manual_trade_po_entry_submit",
+            account=account,
+            symbol=symbol,
+            ok=entry_res["ok"],
+            attempt=attempt,
+            max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
+            price=best_bid,
+            result=entry_res,
+        )
+        if entry_res["ok"]:
+            break
+        if _is_po_maker_reject(entry_res["reason"]):
+            if attempt < PO_ENTRY_SUBMIT_MAX_ATTEMPTS:
+                continue
+            break
         await update.message.reply_text(f"PO entry failed: {entry_res['reason']}")
+        return
+
+    if not entry_res or not entry_res["ok"]:
+        reason = entry_res["reason"] if entry_res else "unknown PO entry submit failure"
+        await update.message.reply_text(f"PO entry failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts: {reason}")
         return
     entry = entry_res["data"]
     entry_order_id = entry.get("order_id") or entry.get("exchange_order_id")
