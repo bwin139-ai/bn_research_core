@@ -109,7 +109,14 @@ def _admin_required(
 ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, Any]]:
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Any:
         if _is_admin(update):
-            return await fn(update, context)
+            try:
+                return await fn(update, context)
+            except ValueError as exc:
+                if update.callback_query:
+                    await update.callback_query.answer(str(exc), show_alert=True)
+                elif update.message:
+                    await update.message.reply_text(str(exc))
+                return ConversationHandler.END
         if update.callback_query:
             await update.callback_query.answer("unauthorized", show_alert=True)
             return ConversationHandler.END
