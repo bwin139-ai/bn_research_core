@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-11
+更新时间：2026-05-12
 
 ## 0. 文档定位
 
@@ -1000,4 +1000,17 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 1. 每个长任务结束前判断是否更新 CURRENT_STATE.md。
 2. 阶段性审计结论写入 docs/archive/reports/。
 3. 新线程必须从 AGENTS.md + docs/README.md + CURRENT_STATE.md 恢复现场。
+```
+
+### 5.7 manual Telegram bot 迁移
+
+```text
+2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。
+
+当前迁移边界：
+1. 保留菜单：/set_current_account、/open、/close、/status、/account_detail、/pending_orders、/view_history、/stop_market、/edit_symbols。
+2. 删除旧菜单：/view_monitor_status、/hedge_open、/hedge_close、/view_monitor_config、/edit_monitor_config、/add_viewer、/remove_viewer。
+3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
+4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
+5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
 ```
