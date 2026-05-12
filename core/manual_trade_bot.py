@@ -422,12 +422,14 @@ def _trade_usage() -> str:
     return (
         "Usage:\n"
         "/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE\n"
-        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO [PCT%]\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL L PRICE [PCT%]\n"
         "Example:\n"
         "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
         "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9\n"
         "/trade close bwin182 | chen912 | junjie2026 CLUSDT M\n"
-        "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO"
+        "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO 50%\n"
+        "/trade close bwin182 | chen912 | junjie2026 CLUSDT L 101.36 30%"
     )
 
 
@@ -491,17 +493,42 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
 def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 4 or str(args[0]).lower() != "close":
         raise ValueError(_trade_usage())
-    mode = str(args[-1]).upper().strip()
-    if mode not in {"M", "PO"}:
-        raise ValueError("close mode must be M or PO")
-    symbol = str(args[-2]).upper().strip()
+    tokens = [str(x).strip() for x in args[1:] if str(x).strip()]
+    close_ratio = 1.0
+    if tokens and tokens[-1].endswith("%"):
+        percent_text = tokens.pop()[:-1].strip()
+        close_percent = float(percent_text)
+        if close_percent <= 0 or close_percent > 100:
+            raise ValueError("close percent must be > 0 and <= 100")
+        close_ratio = close_percent / 100.0
+    if len(tokens) < 3:
+        raise ValueError(_trade_usage())
+    limit_price: float | None = None
+    tail_mode = str(tokens[-1]).upper().strip()
+    if tail_mode in {"M", "PO"}:
+        mode = tail_mode
+        symbol = str(tokens[-2]).upper().strip()
+        account_tokens = tokens[:-2]
+    else:
+        if len(tokens) < 4:
+            raise ValueError(_trade_usage())
+        mode = str(tokens[-2]).upper().strip()
+        if mode != "L":
+            raise ValueError("close mode must be M, PO, or L")
+        limit_price = float(tokens[-1])
+        if limit_price <= 0:
+            raise ValueError("limit close price must be positive")
+        symbol = str(tokens[-3]).upper().strip()
+        account_tokens = tokens[:-3]
     if not symbol.endswith("USDT"):
         raise ValueError(f"symbol must end with USDT: {symbol}")
-    accounts = _parse_trade_accounts([str(x) for x in args[1:-2]])
+    accounts = _parse_trade_accounts(account_tokens)
     return {
         "accounts": accounts,
         "symbol": symbol,
         "mode": mode,
+        "limit_price": limit_price,
+        "close_ratio": close_ratio,
     }
 
 
@@ -1615,7 +1642,9 @@ async def _run_post_only_trade_command(
     )
 
 
-def _long_position_qty(account: str, symbol: str) -> float:
+def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
+    if close_ratio <= 0 or close_ratio > 1:
+        raise ValueError(f"close_ratio must be > 0 and <= 1: {close_ratio}")
     pos_res = get_positions(account, symbol)
     if not pos_res["ok"]:
         raise RuntimeError(pos_res["reason"])
@@ -1625,7 +1654,7 @@ def _long_position_qty(account: str, symbol: str) -> float:
     qty = float(pos["qty"])
     if qty <= 0:
         raise ValueError(f"invalid LONG position qty: {symbol} qty={qty}")
-    return qty
+    return qty if close_ratio == 1.0 else qty * close_ratio
 
 
 async def _run_market_close_command(
@@ -1633,11 +1662,12 @@ async def _run_market_close_command(
     *,
     accounts: list[str],
     symbol: str,
+    close_ratio: float,
 ) -> None:
     lines = [f"M close {symbol}"]
     for account in accounts:
         try:
-            qty = _long_position_qty(account, symbol)
+            qty = _long_position_qty(account, symbol, close_ratio)
             root = make_order_root()
             res = place_time_stop_order(
                 account,
@@ -1668,11 +1698,12 @@ async def _run_post_only_close_command(
     *,
     accounts: list[str],
     symbol: str,
+    close_ratio: float,
 ) -> None:
     lines = [f"PO close {symbol}"]
     for account in accounts:
         try:
-            qty = _long_position_qty(account, symbol)
+            qty = _long_position_qty(account, symbol, close_ratio)
             root = make_order_root()
             entry_res: dict[str, Any] | None = None
             best_ask = 0.0
@@ -1728,6 +1759,62 @@ async def _run_post_only_close_command(
     await update.message.reply_text("\n".join(lines))
 
 
+async def _run_limit_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    limit_price: float,
+    close_ratio: float,
+) -> None:
+    lines = [f"L close {symbol} price={_fmt_float(limit_price)}"]
+    for account in accounts:
+        try:
+            qty = _long_position_qty(account, symbol, close_ratio)
+            root = make_order_root()
+            res = place_limit_order(
+                account,
+                symbol,
+                LONG,
+                "SELL",
+                qty,
+                limit_price,
+                order_role="MANUAL_CLOSE",
+                time_in_force="GTC",
+                client_order_id=_client_order_id("CLS", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event(
+                "manual_trade_limit_close",
+                account=account,
+                symbol=symbol,
+                ok=res["ok"],
+                price=limit_price,
+                close_ratio=close_ratio,
+                result=res,
+            )
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event(
+                "manual_trade_limit_close",
+                account=account,
+                symbol=symbol,
+                ok=False,
+                price=limit_price,
+                close_ratio=close_ratio,
+                reason=str(exc),
+            )
+            lines.append(f"{account}: failed reason={exc}")
+    await update.message.reply_text("\n".join(lines))
+
+
 @_admin_required
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = list(context.args or [])
@@ -1747,10 +1834,29 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         spec = _parse_trade_close_args(args)
         mode = spec["mode"]
         if mode == "M":
-            await _run_market_close_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+            await _run_market_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_ratio=spec["close_ratio"],
+            )
             return
         if mode == "PO":
-            await _run_post_only_close_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+            await _run_post_only_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
+        if mode == "L":
+            await _run_limit_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                limit_price=spec["limit_price"],
+                close_ratio=spec["close_ratio"],
+            )
             return
     raise ValueError("unsupported trade command")
 
