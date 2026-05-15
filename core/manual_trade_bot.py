@@ -87,6 +87,10 @@ def _manual_events_dir() -> Path:
     return state_path("manual_trade", "orders")
 
 
+def _live_audit_dir() -> Path:
+    return state_path("live_audit")
+
+
 def _bot_token() -> str:
     token = os.getenv("TG_BOT_TOKEN", "").strip()
     if token:
@@ -1393,6 +1397,10 @@ async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def _history_symbols(account: str) -> list[str]:
     symbols = {row["symbol"] for row in _load_symbol_rows()}
+    now = datetime.now(tz=timezone.utc)
+    start = now - timedelta(hours=24)
+    symbols.update(_history_manual_event_symbols(account, start, now))
+    symbols.update(_history_live_audit_symbols(account, start, now))
     try:
         symbols.update(str(p.get("symbol") or "").upper() for p in _long_positions(account))
     except Exception:
@@ -1402,6 +1410,96 @@ def _history_symbols(account: str) -> list[str]:
     except Exception:
         pass
     return sorted(s for s in symbols if s.endswith("USDT"))
+
+
+def _history_days(start: datetime, end: datetime) -> list[str]:
+    start_day = start.astimezone(BJ).date()
+    end_day = end.astimezone(BJ).date()
+    days: list[str] = []
+    cur = start_day
+    while cur <= end_day:
+        days.append(cur.isoformat())
+        cur = cur + timedelta(days=1)
+    return days
+
+
+def _event_ts_in_window(record: dict[str, Any], start: datetime, end: datetime) -> bool:
+    raw = record.get("ts_utc_ms") or record.get("event_time_ms") or record.get("time_ms") or record.get("update_time_ms")
+    try:
+        ts_ms = int(raw)
+    except Exception:
+        return True
+    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    return start <= ts <= end
+
+
+def _read_jsonl_symbols(path: Path, *, account: str, start: datetime, end: datetime, require_trade_event: bool) -> set[str]:
+    symbols: set[str] = set()
+    if not path.exists():
+        return symbols
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if str(record.get("account") or "") != account:
+                continue
+            if require_trade_event and not _is_history_trade_event(str(record.get("event") or "")):
+                continue
+            if not _event_ts_in_window(record, start, end):
+                continue
+            symbol = str(record.get("symbol") or "").upper().strip()
+            if symbol.endswith("USDT"):
+                symbols.add(symbol)
+    return symbols
+
+
+def _history_manual_event_symbols(account: str, start: datetime, end: datetime) -> set[str]:
+    symbols: set[str] = set()
+    for day in _history_days(start, end):
+        symbols.update(
+            _read_jsonl_symbols(
+                _manual_events_dir() / f"{day}.jsonl",
+                account=account,
+                start=start,
+                end=end,
+                require_trade_event=False,
+            )
+        )
+    return symbols
+
+
+def _is_history_trade_event(event: str) -> bool:
+    value = event.lower().strip()
+    needles = (
+        "entry_submitted",
+        "entry_fill_observed",
+        "sl_submitted",
+        "tp_submitted",
+        "time_stop_submitted",
+        "time_stop_triggered",
+        "position_closed_detected",
+        "state_cleared_after_exit",
+    )
+    return any(x in value for x in needles)
+
+
+def _history_live_audit_symbols(account: str, start: datetime, end: datetime) -> set[str]:
+    symbols: set[str] = set()
+    root = _live_audit_dir()
+    for day in _history_days(start, end):
+        for path in root.glob(f"*_{account}.{day}.jsonl"):
+            symbols.update(
+                _read_jsonl_symbols(
+                    path,
+                    account=account,
+                    start=start,
+                    end=end,
+                    require_trade_event=True,
+                )
+            )
+    return symbols
 
 
 def _manual_order_type(order: dict[str, Any]) -> str | None:

@@ -1035,4 +1035,6 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
+
+2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。
 ```
