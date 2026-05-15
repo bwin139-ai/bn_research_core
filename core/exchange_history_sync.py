@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -533,20 +534,58 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--lookback-hours", type=int, default=24)
     parser.add_argument("--overlap-minutes", type=int, default=10)
     parser.add_argument("--no-exchange-snapshot", action="store_true")
+    parser.add_argument("--loop", action="store_true", help="Run continuously instead of one sync pass.")
+    parser.add_argument("--interval-secs", type=int, default=300, help="Loop sleep interval in seconds.")
+    parser.add_argument("--max-iterations", type=int, default=0, help="Loop iteration limit. 0 means unlimited.")
     return parser.parse_args()
 
 
-def main() -> int:
-    args = _parse_args()
-    result = sync_account_history(
+def _run_once(args: argparse.Namespace) -> dict[str, Any]:
+    return sync_account_history(
         args.account,
         symbols=args.symbol,
         lookback_hours=args.lookback_hours,
         overlap_minutes=args.overlap_minutes,
         include_exchange_snapshot=not args.no_exchange_snapshot,
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if result["ok"] else 1
+
+
+def _print_result(result: dict[str, Any]) -> None:
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def main() -> int:
+    args = _parse_args()
+    if args.interval_secs <= 0:
+        raise ValueError("--interval-secs must be positive")
+    if args.max_iterations < 0:
+        raise ValueError("--max-iterations must be >= 0")
+
+    if not args.loop:
+        result = _run_once(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+    iterations = 0
+    last_ok = True
+    while True:
+        iterations += 1
+        try:
+            result = _run_once(args)
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "account": args.account,
+                "sync_time_ms": _now_ms(),
+                "sync_time_bj": _bj_time(_now_ms()),
+                "reason": str(exc),
+            }
+        last_ok = bool(result.get("ok"))
+        _print_result(result)
+        if args.max_iterations and iterations >= args.max_iterations:
+            break
+        time.sleep(int(args.interval_secs))
+    return 0 if last_ok else 1
 
 
 if __name__ == "__main__":

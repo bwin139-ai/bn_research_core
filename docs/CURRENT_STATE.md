@@ -1038,5 +1038,5 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 
 2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。当前 `/view_history` 的“历史委托”对应 Binance order history / `get_all_orders` 的已成交 LONG order；`get_account_trades` 仅用于按 order id 补充 realized PnL，不是独立的“历史成交”列表。
 
-2026-05-15 已新增 `docs/EXCHANGE_HISTORY_SYNC_SPEC.md` 与 `core/exchange_history_sync.py` 初始模块，明确后续用独立同步层同步账户侧交易所历史事实，定时/增量落盘 orders、trades、income、transfers；admin 门户查询只读本地账本，REST 按 symbol 补查仅作为同步层职责，不再让 Telegram 查询实时扫描大量 symbol。每个账户可在 `secrets_{account}.json` 顶层配置 `exchange_history_start_time` 作为最早追溯边界，格式为带时区 ISO 时间字符串。
+2026-05-15 已新增 `docs/EXCHANGE_HISTORY_SYNC_SPEC.md` 与 `core/exchange_history_sync.py` 初始模块，明确后续用独立同步层同步账户侧交易所历史事实，定时/增量落盘 orders、trades、income、transfers；admin 门户查询只读本地账本，REST 按 symbol 补查仅作为同步层职责，不再让 Telegram 查询实时扫描大量 symbol。每个账户可在 `secrets_{account}.json` 顶层配置 `exchange_history_start_time` 作为最早追溯边界，格式为带时区 ISO 时间字符串。模块支持 `python -m core.exchange_history_sync --account ACCOUNT --loop --interval-secs 300` 常驻增量运行。
 ```
