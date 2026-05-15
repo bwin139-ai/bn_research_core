@@ -20,6 +20,10 @@
    - 当前现场快照。
    - 只记录当前正在做什么、做到哪里、下一步是什么。
 
+5. `EXCHANGE_HISTORY_SYNC_SPEC.md`
+   - 账户级交易所历史同步规格。
+   - 定义 orders / trades / income / transfers 的增量落盘、symbol discovery 与 admin 门户查询边界。
+
 ## 策略语义
 
 - `Spring-SABC项目语义基线.md`

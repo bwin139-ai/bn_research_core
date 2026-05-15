@@ -75,6 +75,12 @@
 1.8.6 除策略自身信号生成逻辑外，Snapback live 侧已实现且具备公共语义的 live 能力，必须逐步沉淀为公共模块并供 Spring 及后续 LONG 策略复用；禁止第三、第四策略复制私有 live 闭环。
 1.8.7 `signal` 只能表示策略计算后的信号结果；不得用 `Signal Input` 等术语指代信号生成前的数据输入层。
 
+### 1.9 管理员门户语义
+1.9.1 `run_manual_trade_bot.py` / `core/manual_trade_bot.py` 当前文件名保留历史命名，但语义定位是账户级管理员门户，不是仅覆盖手动 API 订单的窄义 bot。
+1.9.2 管理员门户必须以 Binance 账户事实为主，覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水。
+1.9.3 管理员门户的查询类能力（例如 status / pending orders / history）不得只按本地手动事件或策略 state 判断账户事实；必须优先读取交易所事实，并用本地 state / audit / manual event 只作为 symbol discovery、可读性补充或交叉核查。
+1.9.4 管理员门户仍必须遵守项目 LONG-only 基线；若查询到非 LONG 方向或与 LONG-only 冲突的交易所事实，必须显式暴露为异常事实，不得混入正常 LONG 历史或静默忽略。
+
 ## 2. 行动纪律（铁律）
 
 ### 2.1 事实优先

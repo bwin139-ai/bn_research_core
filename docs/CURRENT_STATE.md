@@ -1005,7 +1005,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 ### 5.7 manual Telegram bot 迁移
 
 ```text
-2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。
+2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。2026-05-15 已将其语义定位写入 `PROJECT_BASELINE.md`：该进程是账户级管理员门户，管理范围覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水；文件名中的 `manual` 仅为历史命名。
 
 当前迁移边界：
 1. 保留菜单：/set_current_account、/open、/close、/status、/account_detail、/pending_orders、/view_history、/stop_market、/edit_symbols。
@@ -1036,5 +1036,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
 
-2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。
+2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。当前 `/view_history` 的“历史委托”对应 Binance order history / `get_all_orders` 的已成交 LONG order；`get_account_trades` 仅用于按 order id 补充 realized PnL，不是独立的“历史成交”列表。
+
+2026-05-15 已新增 `docs/EXCHANGE_HISTORY_SYNC_SPEC.md` 与 `core/exchange_history_sync.py` 初始模块，明确后续用独立同步层同步账户侧交易所历史事实，定时/增量落盘 orders、trades、income、transfers；admin 门户查询只读本地账本，REST 按 symbol 补查仅作为同步层职责，不再让 Telegram 查询实时扫描大量 symbol。每个账户可在 `secrets_{account}.json` 顶层配置 `exchange_history_start_time` 作为最早追溯边界，格式为带时区 ISO 时间字符串。
 ```
