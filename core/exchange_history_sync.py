@@ -10,6 +10,7 @@ from typing import Any
 
 from core.live.binance_exec import (
     get_account_trades,
+    get_account_status,
     get_all_orders,
     get_income_history,
 )
@@ -21,6 +22,7 @@ SOURCE_ORDERS = "orders"
 SOURCE_TRADES = "trades"
 SOURCE_INCOME = "income"
 SOURCE_TRANSFERS = "transfers"
+SOURCE_BALANCE_SNAPSHOTS = "balance_snapshots"
 ACCOUNT_KEY = "_account"
 DAY_MS = 24 * 60 * 60 * 1000
 ORDER_TRADE_QUERY_WINDOW_MS = 6 * DAY_MS
@@ -170,6 +172,7 @@ def _event_time_ms(source: str, row: dict[str, Any]) -> int:
         SOURCE_TRADES: ("time_ms",),
         SOURCE_INCOME: ("time_ms",),
         SOURCE_TRANSFERS: ("time_ms",),
+        SOURCE_BALANCE_SNAPSHOTS: ("time_ms",),
     }
     for key in keys_by_source.get(source, ("time_ms", "update_time_ms")):
         try:
@@ -192,16 +195,21 @@ def _dedupe_key(account: str, source: str, row: dict[str, Any]) -> str:
             f"{account}|{source}|{symbol}|{row.get('income_type')}|{row.get('tran_id')}|"
             f"{row.get('trade_id')}|{row.get('time_ms')}|{row.get('income')}"
         )
+    if source == SOURCE_BALANCE_SNAPSHOTS:
+        asset = str(row.get("asset") or "").upper().strip()
+        return f"{account}|{source}|{asset}|{row.get('time_ms')}"
     raise ValueError(f"unsupported source: {source}")
 
 
 def _history_record(account: str, source: str, row: dict[str, Any], sync_ms: int) -> dict[str, Any]:
     event_ms = _event_time_ms(source, row)
     symbol = str(row.get("symbol") or "").upper().strip()
+    asset = str(row.get("asset") or "").upper().strip()
     return {
         "source": source,
         "account": account,
         "symbol": symbol,
+        "asset": asset,
         "event_time_ms": event_ms,
         "event_day_bj": _bj_day(event_ms),
         "sync_time_ms": sync_ms,
@@ -496,6 +504,62 @@ def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int, request
     }
 
 
+def _required_float(raw: dict[str, Any], key: str, *, context: str) -> float:
+    if key not in raw:
+        raise ValueError(f"missing {key}: {context}")
+    try:
+        return float(raw.get(key))
+    except Exception as exc:
+        raise ValueError(f"invalid {key}: {context} value={raw.get(key)!r}") from exc
+
+
+def _balance_snapshot_rows(account_status: dict[str, Any], sync_ms: int) -> list[dict[str, Any]]:
+    raw = account_status.get("raw")
+    if not isinstance(raw, dict):
+        raise ValueError("account status raw must be object")
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("account status raw.assets must be list")
+    rows: list[dict[str, Any]] = []
+    for idx, asset_row in enumerate(assets):
+        if not isinstance(asset_row, dict):
+            raise ValueError(f"account status asset row must be object: idx={idx}")
+        asset = str(asset_row.get("asset") or "").upper().strip()
+        if not asset:
+            raise ValueError(f"account status asset missing asset: idx={idx}")
+        rows.append(
+            {
+                "asset": asset,
+                "time_ms": int(sync_ms),
+                "wallet_balance": _required_float(asset_row, "walletBalance", context=asset),
+                "available_balance": _required_float(asset_row, "availableBalance", context=asset),
+                "margin_balance": _required_float(asset_row, "marginBalance", context=asset),
+                "unrealized_profit": _required_float(asset_row, "unrealizedProfit", context=asset),
+                "raw": asset_row,
+            }
+        )
+    return rows
+
+
+def _sync_balance_snapshots(account: str, sync_ms: int, request_sleep_secs: float) -> dict[str, Any]:
+    res = get_account_status(account)
+    _sleep_between_requests(request_sleep_secs)
+    if not res["ok"]:
+        return {"ok": False, "reason": res["reason"], "rows_seen": 0, "rows_written": 0}
+    try:
+        rows = _balance_snapshot_rows(res["data"], sync_ms)
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "rows_seen": 0, "rows_written": 0}
+    rows_written = _write_history_rows(account, SOURCE_BALANCE_SNAPSHOTS, rows, sync_ms)
+    return {
+        "ok": True,
+        "reason": "",
+        "rows_seen": len(rows),
+        "rows_written": rows_written,
+        "assets": sorted(row["asset"] for row in rows),
+    }
+
+
 def sync_account_history(
     account: str,
     *,
@@ -551,9 +615,22 @@ def sync_account_history(
         "historical_symbols": [],
         "symbols": [],
         "discovery_errors": [],
-        "sources": {SOURCE_ORDERS: {}, SOURCE_TRADES: {}, SOURCE_INCOME: {}, SOURCE_TRANSFERS: {}},
+        "sources": {
+            SOURCE_ORDERS: {},
+            SOURCE_TRADES: {},
+            SOURCE_INCOME: {},
+            SOURCE_TRANSFERS: {},
+            SOURCE_BALANCE_SNAPSHOTS: {},
+        },
         "errors": [],
     }
+
+    balance_res = _sync_balance_snapshots(account_key, sync_ms, request_sleep_secs)
+    results["sources"][SOURCE_BALANCE_SNAPSHOTS][ACCOUNT_KEY] = balance_res
+    if not balance_res["ok"]:
+        results["ok"] = False
+        results["errors"].append(f"{SOURCE_BALANCE_SNAPSHOTS}: {balance_res['reason']}")
+        return results
 
     income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
     income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms, request_sleep_secs)
