@@ -1045,4 +1045,6 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-21 服务器执行 `mybwin139` bootstrap 后确认 Binance `orders` / `trades` 历史接口对大跨度窗口返回 `APIError(code=-4165): Maximum time interval is 7 days.`；`income` 虽未报错但单次返回命中 `limit=1000`，不能视为完整。已将 exchange history sync 改为窗口化查询：orders/trades 按不超过 6 天切片，income 按 1 天切片；失败窗口不会把 per-source cursor 推进到未成功覆盖的 end_ms，后续 bootstrap 可继续重试补齐。
 
 2026-05-21 exchange history sync 已降为低优先级后台账本任务：历史 orders/trades/income 请求显式使用 Binance REST `LOW` priority，并支持 `--request-sleep-secs` 在每次请求后主动慢跑；CLI 支持重复传入 `--account`，同一进程内按账户串行执行，账户之间用 `--account-sleep-secs` 间隔，避免每账户一个进程并发回填挤压 live 策略 REST quota。
+
+2026-05-21 第一刀推进 exchange history sync 的 symbol universe 简化：日常同步改为 `income-first active symbols`。每轮先同步账户级 `income/transfers`，从本轮 income 查询窗口返回的非空 `income.symbol` 提取 `active_sync_symbols`，再只对这些 symbol 同步 `orders/trades`。`state/exchange_history/{account}/symbols.json` 只作为历史出现过的 symbol 索引，不再作为每轮 orders/trades API 扫描输入；`--symbol` / `--symbol-file` 仅保留为人工补查入口。零成交 `CANCELED/EXPIRED` 订单无 income 事实，当前不纳入完整交易账本的完整性要求。
 ```

@@ -12,8 +12,6 @@ from core.live.binance_exec import (
     get_account_trades,
     get_all_orders,
     get_income_history,
-    get_open_orders,
-    get_positions,
 )
 from core.live.binance_rest_gateway import REQUEST_PRIORITY_LOW
 from core.runtime_state import load_json_file, save_json_file_atomic, state_path
@@ -29,17 +27,6 @@ ORDER_TRADE_QUERY_WINDOW_MS = 6 * DAY_MS
 INCOME_QUERY_WINDOW_MS = DAY_MS
 QUERY_LIMIT = 1000
 DEFAULT_REQUEST_SLEEP_SECS = 0.3
-
-TRADE_LIFECYCLE_NEEDLES = (
-    "entry_submitted",
-    "entry_fill_observed",
-    "sl_submitted",
-    "tp_submitted",
-    "time_stop_submitted",
-    "time_stop_triggered",
-    "position_closed_detected",
-    "state_cleared_after_exit",
-)
 
 
 def _now_ms() -> int:
@@ -68,18 +55,6 @@ def _sync_state_path(account: str) -> Path:
 
 def _symbols_path(account: str) -> Path:
     return state_path("exchange_history", account, "symbols.json")
-
-
-def _manual_symbols_path() -> Path:
-    return state_path("manual_trade_symbols.json")
-
-
-def _manual_events_dir() -> Path:
-    return state_path("manual_trade", "orders")
-
-
-def _live_audit_dir() -> Path:
-    return state_path("live_audit")
 
 
 def _repo_root() -> Path:
@@ -147,6 +122,15 @@ def _symbols_from_file(path_text: str) -> set[str]:
         raise ValueError(f"symbol file contains non-USDT symbols: {path} bad={bad[:10]}")
     if not cleaned:
         raise ValueError(f"symbol file must contain at least one symbol: {path}")
+    return cleaned
+
+
+def _clean_usdt_symbols(symbols: list[str] | set[str]) -> set[str]:
+    cleaned = {str(s or "").upper().strip() for s in symbols}
+    cleaned.discard("")
+    bad = sorted(s for s in cleaned if not s.endswith("USDT"))
+    if bad:
+        raise ValueError(f"symbols must be USDT symbols: bad={bad[:10]}")
     return cleaned
 
 
@@ -346,24 +330,6 @@ def _sleep_between_requests(request_sleep_secs: float) -> None:
         time.sleep(seconds)
 
 
-def _days_for_window(start_ms: int, end_ms: int) -> list[str]:
-    start_day = datetime.fromtimestamp(start_ms / 1000.0, tz=timezone.utc).astimezone(BJ).date()
-    end_day = datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc).astimezone(BJ).date()
-    days: list[str] = []
-    cur = start_day
-    while cur <= end_day:
-        days.append(cur.isoformat())
-        cur = cur + timedelta(days=1)
-    return days
-
-
-def _symbols_from_manual_config() -> set[str]:
-    data = load_json_file(_manual_symbols_path(), default=[])
-    if not isinstance(data, list):
-        return set()
-    return {str(row.get("symbol") or "").upper().strip() for row in data if isinstance(row, dict)}
-
-
 def _symbols_from_existing_index(account: str) -> set[str]:
     data = load_json_file(_symbols_path(account), default=[])
     if not isinstance(data, list):
@@ -371,79 +337,17 @@ def _symbols_from_existing_index(account: str) -> set[str]:
     return {str(x or "").upper().strip() for x in data}
 
 
-def _symbols_from_jsonl(path: Path, *, account: str | None = None, trade_events_only: bool = False) -> set[str]:
-    symbols: set[str] = set()
-    for row in _load_jsonl(path):
-        if account and str(row.get("account") or "") != account:
-            continue
-        if trade_events_only:
-            event = str(row.get("event") or "").lower().strip()
-            if not any(needle in event for needle in TRADE_LIFECYCLE_NEEDLES):
-                continue
-        symbol = str(row.get("symbol") or "").upper().strip()
-        if symbol.endswith("USDT"):
-            symbols.add(symbol)
-    return symbols
+def _income_symbols(rows: list[dict[str, Any]]) -> set[str]:
+    symbols = {str(row.get("symbol") or "").upper().strip() for row in rows}
+    return {symbol for symbol in symbols if symbol.endswith("USDT")}
 
 
-def _symbols_from_local_events(account: str, start_ms: int, end_ms: int) -> set[str]:
-    symbols: set[str] = set()
-    for day in _days_for_window(start_ms, end_ms):
-        symbols.update(_symbols_from_jsonl(_manual_events_dir() / f"{day}.jsonl", account=account))
-        for path in _live_audit_dir().glob(f"*_{account}.{day}.jsonl"):
-            symbols.update(_symbols_from_jsonl(path, account=account, trade_events_only=True))
-    return symbols
-
-
-def _symbols_from_existing_history(account: str) -> set[str]:
-    symbols: set[str] = set()
-    root = _history_root(account)
-    for source in (SOURCE_ORDERS, SOURCE_TRADES):
-        for path in (root / source).glob("*.jsonl"):
-            for row in _load_jsonl(path):
-                symbol = str(row.get("symbol") or row.get("raw", {}).get("symbol") or "").upper().strip()
-                if symbol.endswith("USDT"):
-                    symbols.add(symbol)
-    return symbols
-
-
-def _symbols_from_exchange_snapshot(account: str) -> tuple[set[str], list[str]]:
-    symbols: set[str] = set()
-    errors: list[str] = []
-    pos_res = get_positions(account)
-    if pos_res["ok"]:
-        symbols.update(str(row.get("symbol") or "").upper().strip() for row in pos_res["data"] if float(row.get("qty", 0.0) or 0.0) != 0.0)
-    else:
-        errors.append(f"positions: {pos_res['reason']}")
-    ord_res = get_open_orders(account)
-    if ord_res["ok"]:
-        symbols.update(str(row.get("symbol") or "").upper().strip() for row in ord_res["data"])
-    else:
-        errors.append(f"open_orders: {ord_res['reason']}")
-    return {s for s in symbols if s.endswith("USDT")}, errors
-
-
-def discover_symbols(
-    account: str,
-    *,
-    start_ms: int,
-    end_ms: int,
-    explicit_symbols: list[str] | None = None,
-    include_exchange_snapshot: bool = True,
-) -> dict[str, Any]:
-    symbols = {str(s or "").upper().strip() for s in (explicit_symbols or [])}
-    symbols.update(_symbols_from_manual_config())
-    symbols.update(_symbols_from_existing_index(account))
-    symbols.update(_symbols_from_local_events(account, start_ms, end_ms))
-    symbols.update(_symbols_from_existing_history(account))
-    errors: list[str] = []
-    if include_exchange_snapshot:
-        exchange_symbols, exchange_errors = _symbols_from_exchange_snapshot(account)
-        symbols.update(exchange_symbols)
-        errors.extend(exchange_errors)
-    cleaned = sorted(s for s in symbols if s.endswith("USDT"))
+def _merge_symbol_index(account: str, symbols: set[str]) -> list[str]:
+    merged = _symbols_from_existing_index(account)
+    merged.update(symbols)
+    cleaned = sorted(symbol for symbol in merged if symbol.endswith("USDT"))
     save_json_file_atomic(_symbols_path(account), cleaned, indent=2)
-    return {"symbols": cleaned, "errors": errors}
+    return cleaned
 
 
 def _sync_orders(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int, request_sleep_secs: float) -> dict[str, Any]:
@@ -535,6 +439,7 @@ def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int, request
     income_written = 0
     transfers_seen = 0
     transfers_written = 0
+    active_symbols: set[str] = set()
     cursor_end_ms = int(start_ms)
     windows = _iter_windows(start_ms, end_ms, INCOME_QUERY_WINDOW_MS)
     for window_start, window_end in windows:
@@ -572,6 +477,7 @@ def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int, request
                 "failed_window": {"start_ms": window_start, "end_ms": window_end},
             }
         transfer_rows = [row for row in income_rows if str(row.get("income_type") or "").upper() == "TRANSFER"]
+        active_symbols.update(_income_symbols(income_rows))
         income_seen += len(income_rows)
         transfers_seen += len(transfer_rows)
         income_written += _write_history_rows(account, SOURCE_INCOME, income_rows, sync_ms)
@@ -584,6 +490,7 @@ def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int, request
         "income_written": income_written,
         "transfers_seen": transfers_seen,
         "transfers_written": transfers_written,
+        "active_symbols": sorted(active_symbols),
         "cursor_end_ms": int(end_ms),
         "windows": len(windows),
     }
@@ -596,7 +503,6 @@ def sync_account_history(
     symbol_files: list[str] | None = None,
     lookback_hours: int = 24,
     overlap_minutes: int = 10,
-    include_exchange_snapshot: bool = True,
     end_ms: int | None = None,
     bootstrap: bool = False,
     request_sleep_secs: float = DEFAULT_REQUEST_SLEEP_SECS,
@@ -628,14 +534,7 @@ def sync_account_history(
     explicit_symbols = list(symbols or [])
     for symbol_file in symbol_files or []:
         explicit_symbols.extend(sorted(_symbols_from_file(symbol_file)))
-    discovery = discover_symbols(
-        account_key,
-        start_ms=default_start_ms,
-        end_ms=final_end_ms,
-        explicit_symbols=explicit_symbols,
-        include_exchange_snapshot=include_exchange_snapshot,
-    )
-    sync_symbols = list(discovery["symbols"])
+    explicit_symbol_set = _clean_usdt_symbols(explicit_symbols)
     results: dict[str, Any] = {
         "ok": True,
         "account": account_key,
@@ -647,11 +546,69 @@ def sync_account_history(
         "request_priority": REQUEST_PRIORITY_LOW,
         "request_sleep_secs": float(request_sleep_secs),
         "end_ms": final_end_ms,
-        "symbols": sync_symbols,
-        "discovery_errors": list(discovery.get("errors") or []),
+        "active_sync_symbols": [],
+        "explicit_symbols": sorted(explicit_symbol_set),
+        "historical_symbols": [],
+        "symbols": [],
+        "discovery_errors": [],
         "sources": {SOURCE_ORDERS: {}, SOURCE_TRADES: {}, SOURCE_INCOME: {}, SOURCE_TRANSFERS: {}},
         "errors": [],
     }
+
+    income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
+    income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms, request_sleep_secs)
+    _update_source_state(
+        state,
+        SOURCE_INCOME,
+        None,
+        start_ms=income_start,
+        end_ms=int(income_res.get("cursor_end_ms", income_start)),
+        rows_seen=income_res["income_seen"],
+        rows_written=income_res["income_written"],
+        ok=income_res["ok"],
+        reason=income_res["reason"],
+    )
+    _update_source_state(
+        state,
+        SOURCE_TRANSFERS,
+        None,
+        start_ms=income_start,
+        end_ms=int(income_res.get("cursor_end_ms", income_start)),
+        rows_seen=income_res["transfers_seen"],
+        rows_written=income_res["transfers_written"],
+        ok=income_res["ok"],
+        reason=income_res["reason"],
+    )
+    results["sources"][SOURCE_INCOME][ACCOUNT_KEY] = {
+        "ok": income_res["ok"],
+        "reason": income_res["reason"],
+        "rows_seen": income_res["income_seen"],
+        "rows_written": income_res["income_written"],
+        "active_symbols": income_res.get("active_symbols", []),
+        "cursor_end_ms": income_res.get("cursor_end_ms"),
+        "windows": income_res.get("windows"),
+    }
+    results["sources"][SOURCE_TRANSFERS][ACCOUNT_KEY] = {
+        "ok": income_res["ok"],
+        "reason": income_res["reason"],
+        "rows_seen": income_res["transfers_seen"],
+        "rows_written": income_res["transfers_written"],
+        "cursor_end_ms": income_res.get("cursor_end_ms"),
+        "windows": income_res.get("windows"),
+    }
+    if not income_res["ok"]:
+        results["ok"] = False
+        results["errors"].append(f"{SOURCE_INCOME}: {income_res['reason']}")
+        results["historical_symbols"] = _merge_symbol_index(account_key, set())
+        results["symbols"] = []
+        save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
+        return results
+
+    active_symbol_set = _clean_usdt_symbols(set(income_res.get("active_symbols") or []))
+    sync_symbols = sorted(active_symbol_set | explicit_symbol_set)
+    results["active_sync_symbols"] = sync_symbols
+    results["symbols"] = sync_symbols
+    results["historical_symbols"] = _merge_symbol_index(account_key, active_symbol_set | explicit_symbol_set)
 
     for symbol in sync_symbols:
         order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms)
@@ -690,50 +647,6 @@ def sync_account_history(
             results["ok"] = False
             results["errors"].append(f"{SOURCE_TRADES} {symbol}: {trade_res['reason']}")
 
-    income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
-    income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms, request_sleep_secs)
-    _update_source_state(
-        state,
-        SOURCE_INCOME,
-        None,
-        start_ms=income_start,
-        end_ms=int(income_res.get("cursor_end_ms", income_start)),
-        rows_seen=income_res["income_seen"],
-        rows_written=income_res["income_written"],
-        ok=income_res["ok"],
-        reason=income_res["reason"],
-    )
-    _update_source_state(
-        state,
-        SOURCE_TRANSFERS,
-        None,
-        start_ms=income_start,
-        end_ms=int(income_res.get("cursor_end_ms", income_start)),
-        rows_seen=income_res["transfers_seen"],
-        rows_written=income_res["transfers_written"],
-        ok=income_res["ok"],
-        reason=income_res["reason"],
-    )
-    results["sources"][SOURCE_INCOME][ACCOUNT_KEY] = {
-        "ok": income_res["ok"],
-        "reason": income_res["reason"],
-        "rows_seen": income_res["income_seen"],
-        "rows_written": income_res["income_written"],
-        "cursor_end_ms": income_res.get("cursor_end_ms"),
-        "windows": income_res.get("windows"),
-    }
-    results["sources"][SOURCE_TRANSFERS][ACCOUNT_KEY] = {
-        "ok": income_res["ok"],
-        "reason": income_res["reason"],
-        "rows_seen": income_res["transfers_seen"],
-        "rows_written": income_res["transfers_written"],
-        "cursor_end_ms": income_res.get("cursor_end_ms"),
-        "windows": income_res.get("windows"),
-    }
-    if not income_res["ok"]:
-        results["ok"] = False
-        results["errors"].append(f"{SOURCE_INCOME}: {income_res['reason']}")
-
     save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
     return results
 
@@ -747,7 +660,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--overlap-minutes", type=int, default=10)
     parser.add_argument("--request-sleep-secs", type=float, default=DEFAULT_REQUEST_SLEEP_SECS, help="Sleep after each Binance history request.")
     parser.add_argument("--account-sleep-secs", type=float, default=30.0, help="Sleep between accounts when multiple --account values are provided.")
-    parser.add_argument("--no-exchange-snapshot", action="store_true")
     parser.add_argument("--bootstrap", action="store_true", help="Backfill from exchange_history_start_time and ignore prior per-source cursors.")
     parser.add_argument("--loop", action="store_true", help="Run continuously instead of one sync pass.")
     parser.add_argument("--interval-secs", type=int, default=300, help="Loop sleep interval in seconds.")
@@ -762,7 +674,6 @@ def _run_account_once(args: argparse.Namespace, account: str) -> dict[str, Any]:
         symbol_files=args.symbol_file,
         lookback_hours=args.lookback_hours,
         overlap_minutes=args.overlap_minutes,
-        include_exchange_snapshot=not args.no_exchange_snapshot,
         bootstrap=args.bootstrap,
         request_sleep_secs=args.request_sleep_secs,
     )
