@@ -15,6 +15,7 @@ from core.live.binance_exec import (
     get_open_orders,
     get_positions,
 )
+from core.live.binance_rest_gateway import REQUEST_PRIORITY_LOW
 from core.runtime_state import load_json_file, save_json_file_atomic, state_path
 
 BJ = timezone(timedelta(hours=8))
@@ -27,6 +28,7 @@ DAY_MS = 24 * 60 * 60 * 1000
 ORDER_TRADE_QUERY_WINDOW_MS = 6 * DAY_MS
 INCOME_QUERY_WINDOW_MS = DAY_MS
 QUERY_LIMIT = 1000
+DEFAULT_REQUEST_SLEEP_SECS = 0.3
 
 TRADE_LIFECYCLE_NEEDLES = (
     "entry_submitted",
@@ -338,6 +340,12 @@ def _iter_windows(start_ms: int, end_ms: int, window_ms: int) -> list[tuple[int,
     return windows
 
 
+def _sleep_between_requests(request_sleep_secs: float) -> None:
+    seconds = float(request_sleep_secs)
+    if seconds > 0:
+        time.sleep(seconds)
+
+
 def _days_for_window(start_ms: int, end_ms: int) -> list[str]:
     start_day = datetime.fromtimestamp(start_ms / 1000.0, tz=timezone.utc).astimezone(BJ).date()
     end_day = datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc).astimezone(BJ).date()
@@ -438,13 +446,21 @@ def discover_symbols(
     return {"symbols": cleaned, "errors": errors}
 
 
-def _sync_orders(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
+def _sync_orders(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int, request_sleep_secs: float) -> dict[str, Any]:
     rows_seen = 0
     rows_written = 0
     cursor_end_ms = int(start_ms)
     windows = _iter_windows(start_ms, end_ms, ORDER_TRADE_QUERY_WINDOW_MS)
     for window_start, window_end in windows:
-        res = get_all_orders(account, symbol, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        res = get_all_orders(
+            account,
+            symbol,
+            start_time_ms=window_start,
+            end_time_ms=window_end,
+            limit=QUERY_LIMIT,
+            priority=REQUEST_PRIORITY_LOW,
+        )
+        _sleep_between_requests(request_sleep_secs)
         if not res["ok"]:
             return {
                 "ok": False,
@@ -472,13 +488,21 @@ def _sync_orders(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms:
     return {"ok": True, "reason": "", "rows_seen": rows_seen, "rows_written": rows_written, "cursor_end_ms": int(end_ms), "windows": len(windows)}
 
 
-def _sync_trades(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
+def _sync_trades(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int, request_sleep_secs: float) -> dict[str, Any]:
     rows_seen = 0
     rows_written = 0
     cursor_end_ms = int(start_ms)
     windows = _iter_windows(start_ms, end_ms, ORDER_TRADE_QUERY_WINDOW_MS)
     for window_start, window_end in windows:
-        res = get_account_trades(account, symbol, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        res = get_account_trades(
+            account,
+            symbol,
+            start_time_ms=window_start,
+            end_time_ms=window_end,
+            limit=QUERY_LIMIT,
+            priority=REQUEST_PRIORITY_LOW,
+        )
+        _sleep_between_requests(request_sleep_secs)
         if not res["ok"]:
             return {
                 "ok": False,
@@ -506,7 +530,7 @@ def _sync_trades(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms:
     return {"ok": True, "reason": "", "rows_seen": rows_seen, "rows_written": rows_written, "cursor_end_ms": int(end_ms), "windows": len(windows)}
 
 
-def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
+def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int, request_sleep_secs: float) -> dict[str, Any]:
     income_seen = 0
     income_written = 0
     transfers_seen = 0
@@ -514,7 +538,14 @@ def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int) -> dict
     cursor_end_ms = int(start_ms)
     windows = _iter_windows(start_ms, end_ms, INCOME_QUERY_WINDOW_MS)
     for window_start, window_end in windows:
-        res = get_income_history(account, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        res = get_income_history(
+            account,
+            start_time_ms=window_start,
+            end_time_ms=window_end,
+            limit=QUERY_LIMIT,
+            priority=REQUEST_PRIORITY_LOW,
+        )
+        _sleep_between_requests(request_sleep_secs)
         if not res["ok"]:
             return {
                 "ok": False,
@@ -568,6 +599,7 @@ def sync_account_history(
     include_exchange_snapshot: bool = True,
     end_ms: int | None = None,
     bootstrap: bool = False,
+    request_sleep_secs: float = DEFAULT_REQUEST_SLEEP_SECS,
 ) -> dict[str, Any]:
     account_key = str(account or "").strip()
     if not account_key:
@@ -612,6 +644,8 @@ def sync_account_history(
         "exchange_history_start_ms": floor_ms,
         "sync_mode": sync_mode,
         "bootstrap": bool(bootstrap),
+        "request_priority": REQUEST_PRIORITY_LOW,
+        "request_sleep_secs": float(request_sleep_secs),
         "end_ms": final_end_ms,
         "symbols": sync_symbols,
         "discovery_errors": list(discovery.get("errors") or []),
@@ -621,7 +655,7 @@ def sync_account_history(
 
     for symbol in sync_symbols:
         order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms)
-        order_res = _sync_orders(account_key, symbol, order_start, final_end_ms, sync_ms)
+        order_res = _sync_orders(account_key, symbol, order_start, final_end_ms, sync_ms, request_sleep_secs)
         _update_source_state(
             state,
             SOURCE_ORDERS,
@@ -639,7 +673,7 @@ def sync_account_history(
             results["errors"].append(f"{SOURCE_ORDERS} {symbol}: {order_res['reason']}")
 
         trade_start = _source_start_ms(state_for_start, SOURCE_TRADES, symbol, default_start_ms, overlap_ms)
-        trade_res = _sync_trades(account_key, symbol, trade_start, final_end_ms, sync_ms)
+        trade_res = _sync_trades(account_key, symbol, trade_start, final_end_ms, sync_ms, request_sleep_secs)
         _update_source_state(
             state,
             SOURCE_TRADES,
@@ -657,7 +691,7 @@ def sync_account_history(
             results["errors"].append(f"{SOURCE_TRADES} {symbol}: {trade_res['reason']}")
 
     income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
-    income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms)
+    income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms, request_sleep_secs)
     _update_source_state(
         state,
         SOURCE_INCOME,
@@ -706,11 +740,13 @@ def sync_account_history(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync Binance account exchange history into local state.")
-    parser.add_argument("--account", required=True)
+    parser.add_argument("--account", action="append", required=True, help="Account key. Can be repeated; accounts run serially.")
     parser.add_argument("--symbol", action="append", default=[], help="Optional USDT symbol. Can be repeated.")
     parser.add_argument("--symbol-file", action="append", default=[], help="Optional JSON list or newline text file of USDT symbols. Can be repeated.")
     parser.add_argument("--lookback-hours", type=int, default=24)
     parser.add_argument("--overlap-minutes", type=int, default=10)
+    parser.add_argument("--request-sleep-secs", type=float, default=DEFAULT_REQUEST_SLEEP_SECS, help="Sleep after each Binance history request.")
+    parser.add_argument("--account-sleep-secs", type=float, default=30.0, help="Sleep between accounts when multiple --account values are provided.")
     parser.add_argument("--no-exchange-snapshot", action="store_true")
     parser.add_argument("--bootstrap", action="store_true", help="Backfill from exchange_history_start_time and ignore prior per-source cursors.")
     parser.add_argument("--loop", action="store_true", help="Run continuously instead of one sync pass.")
@@ -719,16 +755,37 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_once(args: argparse.Namespace) -> dict[str, Any]:
+def _run_account_once(args: argparse.Namespace, account: str) -> dict[str, Any]:
     return sync_account_history(
-        args.account,
+        account,
         symbols=args.symbol,
         symbol_files=args.symbol_file,
         lookback_hours=args.lookback_hours,
         overlap_minutes=args.overlap_minutes,
         include_exchange_snapshot=not args.no_exchange_snapshot,
         bootstrap=args.bootstrap,
+        request_sleep_secs=args.request_sleep_secs,
     )
+
+
+def _run_once(args: argparse.Namespace) -> dict[str, Any]:
+    accounts = [str(account or "").strip() for account in args.account]
+    if any(not account for account in accounts):
+        raise ValueError("--account must not be empty")
+    if len(accounts) == 1:
+        return _run_account_once(args, accounts[0])
+    results: list[dict[str, Any]] = []
+    for idx, account in enumerate(accounts):
+        results.append(_run_account_once(args, account))
+        if idx < len(accounts) - 1 and args.account_sleep_secs > 0:
+            time.sleep(float(args.account_sleep_secs))
+    return {
+        "ok": all(bool(row.get("ok")) for row in results),
+        "mode": "multi_account_serial",
+        "accounts": accounts,
+        "account_sleep_secs": float(args.account_sleep_secs),
+        "results": results,
+    }
 
 
 def _print_result(result: dict[str, Any]) -> None:
@@ -741,6 +798,10 @@ def main() -> int:
         raise ValueError("--interval-secs must be positive")
     if args.max_iterations < 0:
         raise ValueError("--max-iterations must be >= 0")
+    if args.request_sleep_secs < 0:
+        raise ValueError("--request-sleep-secs must be >= 0")
+    if args.account_sleep_secs < 0:
+        raise ValueError("--account-sleep-secs must be >= 0")
     if args.loop and args.bootstrap:
         raise ValueError("--bootstrap must be run as a bounded one-shot sync, not with --loop")
 

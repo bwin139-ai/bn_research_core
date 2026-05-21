@@ -1466,6 +1466,7 @@ def get_all_orders(
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     limit: int = 1000,
+    priority: str = REQUEST_PRIORITY_HIGH,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
@@ -1483,6 +1484,7 @@ def get_all_orders(
         'binance_exec.futures_get_all_orders',
         'futures_get_all_orders',
         payload=payload,
+        priority=priority,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
@@ -1499,6 +1501,7 @@ def get_account_trades(
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     limit: int = 1000,
+    priority: str = REQUEST_PRIORITY_HIGH,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
@@ -1516,6 +1519,7 @@ def get_account_trades(
         'binance_exec.futures_account_trades',
         'futures_account_trades',
         payload=payload,
+        priority=priority,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
@@ -1532,6 +1536,7 @@ def get_income_history(
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     limit: int = 1000,
+    priority: str = REQUEST_PRIORITY_HIGH,
     retry_max: int = 0,
     retry_delay_secs: float = 1.0,
 ) -> dict[str, Any]:
@@ -1553,6 +1558,7 @@ def get_income_history(
         'binance_exec.futures_income_history',
         'futures_income_history',
         payload=payload,
+        priority=priority,
         retry_max=retry_max,
         retry_delay_secs=retry_delay_secs,
     )
