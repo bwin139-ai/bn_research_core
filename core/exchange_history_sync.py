@@ -94,13 +94,19 @@ def _account_secrets_path(account: str) -> Path:
     return _secrets_dir() / f"secrets_{account_key}.json"
 
 
-def _exchange_history_floor_ms(account: str) -> int | None:
+def _load_account_secrets(account: str) -> dict[str, Any]:
     path = _account_secrets_path(account)
     if not path.exists():
         raise FileNotFoundError(f"account secrets missing: {path}")
     data = load_json_file(path, default={})
     if not isinstance(data, dict):
         raise ValueError(f"account secrets must be object: {path}")
+    return data
+
+
+def _exchange_history_floor_ms(account: str) -> int | None:
+    path = _account_secrets_path(account)
+    data = _load_account_secrets(account)
     raw = data.get("exchange_history_start_time")
     if raw is None or str(raw).strip() == "":
         return None
@@ -114,6 +120,28 @@ def _exchange_history_floor_ms(account: str) -> int | None:
     if parsed.tzinfo is None:
         raise ValueError(f"exchange_history_start_time must include timezone: {path} value={text!r}")
     return int(parsed.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def _symbols_from_file(path_text: str) -> set[str]:
+    path = Path(path_text).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"symbol file missing: {path}")
+    text = path.read_text(encoding="utf-8")
+    symbols: list[Any]
+    if path.suffix.lower() == ".json":
+        data = json.loads(text)
+        if not isinstance(data, list):
+            raise ValueError(f"symbol file JSON must be a list: {path}")
+        symbols = data
+    else:
+        symbols = [line.strip() for line in text.splitlines() if line.strip()]
+    cleaned = {str(s or "").upper().strip() for s in symbols}
+    bad = sorted(s for s in cleaned if not s.endswith("USDT"))
+    if bad:
+        raise ValueError(f"symbol file contains non-USDT symbols: {path} bad={bad[:10]}")
+    if not cleaned:
+        raise ValueError(f"symbol file must contain at least one symbol: {path}")
+    return cleaned
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -210,6 +238,16 @@ def _load_sync_state(account: str) -> dict[str, Any]:
         raise ValueError(f"sync_state must be object: {_sync_state_path(account)}")
     data.setdefault("sources", {})
     return data
+
+
+def _state_has_source_progress(state: dict[str, Any]) -> bool:
+    sources = state.get("sources", {})
+    if not isinstance(sources, dict):
+        return False
+    for source_map in sources.values():
+        if isinstance(source_map, dict) and source_map:
+            return True
+    return False
 
 
 def _source_state_key(source: str, symbol: str | None) -> str:
@@ -410,10 +448,12 @@ def sync_account_history(
     account: str,
     *,
     symbols: list[str] | None = None,
+    symbol_files: list[str] | None = None,
     lookback_hours: int = 24,
     overlap_minutes: int = 10,
     include_exchange_snapshot: bool = True,
     end_ms: int | None = None,
+    bootstrap: bool = False,
 ) -> dict[str, Any]:
     account_key = str(account or "").strip()
     if not account_key:
@@ -422,14 +462,31 @@ def sync_account_history(
     final_end_ms = int(end_ms or sync_ms)
     requested_start_ms = final_end_ms - int(lookback_hours) * 60 * 60 * 1000
     floor_ms = _exchange_history_floor_ms(account_key)
-    default_start_ms = max(requested_start_ms, floor_ms) if floor_ms is not None else requested_start_ms
     overlap_ms = int(overlap_minutes) * 60 * 1000
     state = _load_sync_state(account_key)
+    if bootstrap and floor_ms is None:
+        raise ValueError("bootstrap requires exchange_history_start_time in account secrets")
+    has_progress = _state_has_source_progress(state)
+    if bootstrap:
+        default_start_ms = int(floor_ms)
+        state_for_start = {"sources": {}}
+        sync_mode = "bootstrap"
+    elif floor_ms is not None and not has_progress:
+        default_start_ms = int(floor_ms)
+        state_for_start = state
+        sync_mode = "initial_from_exchange_history_start_time"
+    else:
+        default_start_ms = max(requested_start_ms, floor_ms) if floor_ms is not None else requested_start_ms
+        state_for_start = state
+        sync_mode = "incremental"
+    explicit_symbols = list(symbols or [])
+    for symbol_file in symbol_files or []:
+        explicit_symbols.extend(sorted(_symbols_from_file(symbol_file)))
     discovery = discover_symbols(
         account_key,
         start_ms=default_start_ms,
         end_ms=final_end_ms,
-        explicit_symbols=symbols,
+        explicit_symbols=explicit_symbols,
         include_exchange_snapshot=include_exchange_snapshot,
     )
     sync_symbols = list(discovery["symbols"])
@@ -439,6 +496,8 @@ def sync_account_history(
         "start_ms": default_start_ms,
         "requested_start_ms": requested_start_ms,
         "exchange_history_start_ms": floor_ms,
+        "sync_mode": sync_mode,
+        "bootstrap": bool(bootstrap),
         "end_ms": final_end_ms,
         "symbols": sync_symbols,
         "discovery_errors": list(discovery.get("errors") or []),
@@ -447,7 +506,7 @@ def sync_account_history(
     }
 
     for symbol in sync_symbols:
-        order_start = _source_start_ms(state, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms)
+        order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms)
         order_res = _sync_orders(account_key, symbol, order_start, final_end_ms, sync_ms)
         _update_source_state(
             state,
@@ -465,7 +524,7 @@ def sync_account_history(
             results["ok"] = False
             results["errors"].append(f"{SOURCE_ORDERS} {symbol}: {order_res['reason']}")
 
-        trade_start = _source_start_ms(state, SOURCE_TRADES, symbol, default_start_ms, overlap_ms)
+        trade_start = _source_start_ms(state_for_start, SOURCE_TRADES, symbol, default_start_ms, overlap_ms)
         trade_res = _sync_trades(account_key, symbol, trade_start, final_end_ms, sync_ms)
         _update_source_state(
             state,
@@ -483,7 +542,7 @@ def sync_account_history(
             results["ok"] = False
             results["errors"].append(f"{SOURCE_TRADES} {symbol}: {trade_res['reason']}")
 
-    income_start = _source_start_ms(state, SOURCE_INCOME, None, default_start_ms, overlap_ms)
+    income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
     income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms)
     _update_source_state(
         state,
@@ -531,9 +590,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync Binance account exchange history into local state.")
     parser.add_argument("--account", required=True)
     parser.add_argument("--symbol", action="append", default=[], help="Optional USDT symbol. Can be repeated.")
+    parser.add_argument("--symbol-file", action="append", default=[], help="Optional JSON list or newline text file of USDT symbols. Can be repeated.")
     parser.add_argument("--lookback-hours", type=int, default=24)
     parser.add_argument("--overlap-minutes", type=int, default=10)
     parser.add_argument("--no-exchange-snapshot", action="store_true")
+    parser.add_argument("--bootstrap", action="store_true", help="Backfill from exchange_history_start_time and ignore prior per-source cursors.")
     parser.add_argument("--loop", action="store_true", help="Run continuously instead of one sync pass.")
     parser.add_argument("--interval-secs", type=int, default=300, help="Loop sleep interval in seconds.")
     parser.add_argument("--max-iterations", type=int, default=0, help="Loop iteration limit. 0 means unlimited.")
@@ -544,9 +605,11 @@ def _run_once(args: argparse.Namespace) -> dict[str, Any]:
     return sync_account_history(
         args.account,
         symbols=args.symbol,
+        symbol_files=args.symbol_file,
         lookback_hours=args.lookback_hours,
         overlap_minutes=args.overlap_minutes,
         include_exchange_snapshot=not args.no_exchange_snapshot,
+        bootstrap=args.bootstrap,
     )
 
 
@@ -560,6 +623,8 @@ def main() -> int:
         raise ValueError("--interval-secs must be positive")
     if args.max_iterations < 0:
         raise ValueError("--max-iterations must be >= 0")
+    if args.loop and args.bootstrap:
+        raise ValueError("--bootstrap must be run as a bounded one-shot sync, not with --loop")
 
     if not args.loop:
         result = _run_once(args)
