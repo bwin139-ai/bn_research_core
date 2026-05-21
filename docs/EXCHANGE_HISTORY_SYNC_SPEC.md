@@ -109,6 +109,14 @@ sum(trades.realized_pnl) ≈ sum(income[REALIZED_PNL])
 sum(trades.commission) ≈ -sum(income[COMMISSION])
 ```
 
+审计工具入口：
+
+```text
+python audit_tools/exchange_history/audit_exchange_history_continuity.py --account mybwin139 --pretty
+```
+
+该工具只读本地 `state/exchange_history/{account}`，不访问 Binance，不修改 state。余额连续性不匹配、realized PnL 交叉核查不匹配、commission 交叉核查不匹配均返回非零退出码；资产余额快照数量不足只作为 warning。
+
 ## 6. 查询语义
 
 管理员门户查询类功能应读本地 exchange history：
