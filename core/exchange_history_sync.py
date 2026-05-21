@@ -23,6 +23,10 @@ SOURCE_TRADES = "trades"
 SOURCE_INCOME = "income"
 SOURCE_TRANSFERS = "transfers"
 ACCOUNT_KEY = "_account"
+DAY_MS = 24 * 60 * 60 * 1000
+ORDER_TRADE_QUERY_WINDOW_MS = 6 * DAY_MS
+INCOME_QUERY_WINDOW_MS = DAY_MS
+QUERY_LIMIT = 1000
 
 TRADE_LIFECYCLE_NEEDLES = (
     "entry_submitted",
@@ -245,8 +249,17 @@ def _state_has_source_progress(state: dict[str, Any]) -> bool:
     if not isinstance(sources, dict):
         return False
     for source_map in sources.values():
-        if isinstance(source_map, dict) and source_map:
-            return True
+        if not isinstance(source_map, dict):
+            continue
+        for row in source_map.values():
+            if not isinstance(row, dict):
+                continue
+            try:
+                last_end = int(row.get("last_end_ms") or 0)
+            except Exception:
+                last_end = 0
+            if row.get("ok") and last_end > 0:
+                return True
     return False
 
 
@@ -271,6 +284,8 @@ def _source_start_ms(
         return default_start_ms
     row = source_map.get(_source_state_key(source, symbol), {})
     if not isinstance(row, dict):
+        return default_start_ms
+    if row.get("ok") is False:
         return default_start_ms
     try:
         last_end = int(row.get("last_end_ms") or 0)
@@ -306,6 +321,21 @@ def _update_source_state(
         "ok": bool(ok),
         "reason": str(reason or ""),
     }
+
+
+def _iter_windows(start_ms: int, end_ms: int, window_ms: int) -> list[tuple[int, int]]:
+    if start_ms > end_ms:
+        return []
+    if window_ms <= 0:
+        raise ValueError("window_ms must be positive")
+    windows: list[tuple[int, int]] = []
+    cur = int(start_ms)
+    final = int(end_ms)
+    while cur <= final:
+        win_end = min(final, cur + int(window_ms) - 1)
+        windows.append((cur, win_end))
+        cur = win_end + 1
+    return windows
 
 
 def _days_for_window(start_ms: int, end_ms: int) -> list[str]:
@@ -409,38 +439,122 @@ def discover_symbols(
 
 
 def _sync_orders(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
-    res = get_all_orders(account, symbol, start_time_ms=start_ms, end_time_ms=end_ms, limit=1000)
-    if not res["ok"]:
-        return {"ok": False, "reason": res["reason"], "rows_seen": 0, "rows_written": 0}
-    rows = list(res["data"] or [])
-    written = _write_history_rows(account, SOURCE_ORDERS, rows, sync_ms)
-    return {"ok": True, "reason": "", "rows_seen": len(rows), "rows_written": written}
+    rows_seen = 0
+    rows_written = 0
+    cursor_end_ms = int(start_ms)
+    windows = _iter_windows(start_ms, end_ms, ORDER_TRADE_QUERY_WINDOW_MS)
+    for window_start, window_end in windows:
+        res = get_all_orders(account, symbol, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        if not res["ok"]:
+            return {
+                "ok": False,
+                "reason": res["reason"],
+                "rows_seen": rows_seen,
+                "rows_written": rows_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        rows = list(res["data"] or [])
+        if len(rows) >= QUERY_LIMIT:
+            return {
+                "ok": False,
+                "reason": f"orders window hit limit={QUERY_LIMIT}; split window smaller before trusting completeness",
+                "rows_seen": rows_seen,
+                "rows_written": rows_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        rows_seen += len(rows)
+        rows_written += _write_history_rows(account, SOURCE_ORDERS, rows, sync_ms)
+        cursor_end_ms = window_end
+    return {"ok": True, "reason": "", "rows_seen": rows_seen, "rows_written": rows_written, "cursor_end_ms": int(end_ms), "windows": len(windows)}
 
 
 def _sync_trades(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
-    res = get_account_trades(account, symbol, start_time_ms=start_ms, end_time_ms=end_ms, limit=1000)
-    if not res["ok"]:
-        return {"ok": False, "reason": res["reason"], "rows_seen": 0, "rows_written": 0}
-    rows = list(res["data"] or [])
-    written = _write_history_rows(account, SOURCE_TRADES, rows, sync_ms)
-    return {"ok": True, "reason": "", "rows_seen": len(rows), "rows_written": written}
+    rows_seen = 0
+    rows_written = 0
+    cursor_end_ms = int(start_ms)
+    windows = _iter_windows(start_ms, end_ms, ORDER_TRADE_QUERY_WINDOW_MS)
+    for window_start, window_end in windows:
+        res = get_account_trades(account, symbol, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        if not res["ok"]:
+            return {
+                "ok": False,
+                "reason": res["reason"],
+                "rows_seen": rows_seen,
+                "rows_written": rows_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        rows = list(res["data"] or [])
+        if len(rows) >= QUERY_LIMIT:
+            return {
+                "ok": False,
+                "reason": f"trades window hit limit={QUERY_LIMIT}; split window smaller before trusting completeness",
+                "rows_seen": rows_seen,
+                "rows_written": rows_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        rows_seen += len(rows)
+        rows_written += _write_history_rows(account, SOURCE_TRADES, rows, sync_ms)
+        cursor_end_ms = window_end
+    return {"ok": True, "reason": "", "rows_seen": rows_seen, "rows_written": rows_written, "cursor_end_ms": int(end_ms), "windows": len(windows)}
 
 
 def _sync_income(account: str, start_ms: int, end_ms: int, sync_ms: int) -> dict[str, Any]:
-    res = get_income_history(account, start_time_ms=start_ms, end_time_ms=end_ms, limit=1000)
-    if not res["ok"]:
-        return {"ok": False, "reason": res["reason"], "income_seen": 0, "income_written": 0, "transfers_seen": 0, "transfers_written": 0}
-    income_rows = list(res["data"] or [])
-    transfer_rows = [row for row in income_rows if str(row.get("income_type") or "").upper() == "TRANSFER"]
-    income_written = _write_history_rows(account, SOURCE_INCOME, income_rows, sync_ms)
-    transfer_written = _write_history_rows(account, SOURCE_TRANSFERS, transfer_rows, sync_ms)
+    income_seen = 0
+    income_written = 0
+    transfers_seen = 0
+    transfers_written = 0
+    cursor_end_ms = int(start_ms)
+    windows = _iter_windows(start_ms, end_ms, INCOME_QUERY_WINDOW_MS)
+    for window_start, window_end in windows:
+        res = get_income_history(account, start_time_ms=window_start, end_time_ms=window_end, limit=QUERY_LIMIT)
+        if not res["ok"]:
+            return {
+                "ok": False,
+                "reason": res["reason"],
+                "income_seen": income_seen,
+                "income_written": income_written,
+                "transfers_seen": transfers_seen,
+                "transfers_written": transfers_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        income_rows = list(res["data"] or [])
+        if len(income_rows) >= QUERY_LIMIT:
+            return {
+                "ok": False,
+                "reason": f"income window hit limit={QUERY_LIMIT}; split window smaller before trusting completeness",
+                "income_seen": income_seen,
+                "income_written": income_written,
+                "transfers_seen": transfers_seen,
+                "transfers_written": transfers_written,
+                "cursor_end_ms": cursor_end_ms,
+                "windows": len(windows),
+                "failed_window": {"start_ms": window_start, "end_ms": window_end},
+            }
+        transfer_rows = [row for row in income_rows if str(row.get("income_type") or "").upper() == "TRANSFER"]
+        income_seen += len(income_rows)
+        transfers_seen += len(transfer_rows)
+        income_written += _write_history_rows(account, SOURCE_INCOME, income_rows, sync_ms)
+        transfers_written += _write_history_rows(account, SOURCE_TRANSFERS, transfer_rows, sync_ms)
+        cursor_end_ms = window_end
     return {
         "ok": True,
         "reason": "",
-        "income_seen": len(income_rows),
+        "income_seen": income_seen,
         "income_written": income_written,
-        "transfers_seen": len(transfer_rows),
-        "transfers_written": transfer_written,
+        "transfers_seen": transfers_seen,
+        "transfers_written": transfers_written,
+        "cursor_end_ms": int(end_ms),
+        "windows": len(windows),
     }
 
 
@@ -513,7 +627,7 @@ def sync_account_history(
             SOURCE_ORDERS,
             symbol,
             start_ms=order_start,
-            end_ms=final_end_ms,
+            end_ms=int(order_res.get("cursor_end_ms", order_start)),
             rows_seen=order_res["rows_seen"],
             rows_written=order_res["rows_written"],
             ok=order_res["ok"],
@@ -531,7 +645,7 @@ def sync_account_history(
             SOURCE_TRADES,
             symbol,
             start_ms=trade_start,
-            end_ms=final_end_ms,
+            end_ms=int(trade_res.get("cursor_end_ms", trade_start)),
             rows_seen=trade_res["rows_seen"],
             rows_written=trade_res["rows_written"],
             ok=trade_res["ok"],
@@ -549,7 +663,7 @@ def sync_account_history(
         SOURCE_INCOME,
         None,
         start_ms=income_start,
-        end_ms=final_end_ms,
+        end_ms=int(income_res.get("cursor_end_ms", income_start)),
         rows_seen=income_res["income_seen"],
         rows_written=income_res["income_written"],
         ok=income_res["ok"],
@@ -560,7 +674,7 @@ def sync_account_history(
         SOURCE_TRANSFERS,
         None,
         start_ms=income_start,
-        end_ms=final_end_ms,
+        end_ms=int(income_res.get("cursor_end_ms", income_start)),
         rows_seen=income_res["transfers_seen"],
         rows_written=income_res["transfers_written"],
         ok=income_res["ok"],
@@ -571,12 +685,16 @@ def sync_account_history(
         "reason": income_res["reason"],
         "rows_seen": income_res["income_seen"],
         "rows_written": income_res["income_written"],
+        "cursor_end_ms": income_res.get("cursor_end_ms"),
+        "windows": income_res.get("windows"),
     }
     results["sources"][SOURCE_TRANSFERS][ACCOUNT_KEY] = {
         "ok": income_res["ok"],
         "reason": income_res["reason"],
         "rows_seen": income_res["transfers_seen"],
         "rows_written": income_res["transfers_written"],
+        "cursor_end_ms": income_res.get("cursor_end_ms"),
+        "windows": income_res.get("windows"),
     }
     if not income_res["ok"]:
         results["ok"] = False

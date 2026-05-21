@@ -1041,4 +1041,6 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-15 已新增 `docs/EXCHANGE_HISTORY_SYNC_SPEC.md` 与 `core/exchange_history_sync.py` 初始模块，明确后续用独立同步层同步账户侧交易所历史事实，定时/增量落盘 orders、trades、income、transfers；admin 门户查询只读本地账本，REST 按 symbol 补查仅作为同步层职责，不再让 Telegram 查询实时扫描大量 symbol。每个账户可在 `secrets_{account}.json` 顶层配置 `exchange_history_start_time` 作为最早追溯边界，格式为带时区 ISO 时间字符串。模块支持 `python -m core.exchange_history_sync --account ACCOUNT --loop --interval-secs 300` 常驻增量运行。
 
 2026-05-21 对 Binance 官方导出与服务器 `state/exchange_history/mybwin139` 做对比：服务器已落盘的 `85` 个 order_id 与 `79` 个 trade_id 均能在官方导出中命中，说明已覆盖子集的数据一致；但官方导出有历史委托 `774`、历史成交 `725`、交易流水 `1620`，服务器当前仅有 orders `85`、trades `79`、income `293`、transfers `0`，缺口来自同步窗口和 symbol universe 覆盖不足。已将 `core/exchange_history_sync.py` 增强为：首次无 source 进度时从 `exchange_history_start_time` 起步；新增一次性 `--bootstrap` 历史回填模式，可忽略已有 cursor 从起始时间重扫；新增 `--symbol-file` 显式历史 symbol universe 入口。`--bootstrap` 必须有 `exchange_history_start_time`，且不得与 `--loop` 同用。
+
+2026-05-21 服务器执行 `mybwin139` bootstrap 后确认 Binance `orders` / `trades` 历史接口对大跨度窗口返回 `APIError(code=-4165): Maximum time interval is 7 days.`；`income` 虽未报错但单次返回命中 `limit=1000`，不能视为完整。已将 exchange history sync 改为窗口化查询：orders/trades 按不超过 6 天切片，income 按 1 天切片；失败窗口不会把 per-source cursor 推进到未成功覆盖的 end_ms，后续 bootstrap 可继续重试补齐。
 ```
