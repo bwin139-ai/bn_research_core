@@ -125,6 +125,7 @@ python audit_tools/exchange_history/audit_exchange_history_continuity.py --accou
 2. 后续“历史成交”读 `trades`。
 3. 资金费 / 转账读 `income` / `transfers`。
 4. 仓位历史读 `positions` 派生视图。
+5. `/view_history` 必须显示本地账本的最近同步时间，提醒用户该视图允许分钟级延迟。
 
 正常视图只展示 LONG-only 事实。若发现 `position_side=SHORT` 或交易所返回方向与 LONG-only 基线冲突，必须进入异常审计区，不得混入正常 LONG 历史。
 

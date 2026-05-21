@@ -27,9 +27,6 @@ from core.live.binance_exec import (
     ensure_cross_margin,
     ensure_leverage,
     get_account_status,
-    get_account_trades,
-    get_all_orders,
-    get_income_history,
     get_last_price,
     get_order,
     get_order_book_top,
@@ -85,10 +82,6 @@ def _manual_events_path() -> Path:
 
 def _manual_events_dir() -> Path:
     return state_path("manual_trade", "orders")
-
-
-def _live_audit_dir() -> Path:
-    return state_path("live_audit")
 
 
 def _bot_token() -> str:
@@ -293,6 +286,16 @@ def _bj_minute(ts_ms: Any) -> str:
     if value <= 0:
         return "UNKNOWN"
     return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%m-%d %H:%M")
+
+
+def _bj_second(ts_ms: Any) -> str:
+    try:
+        value = int(ts_ms)
+    except Exception:
+        return "UNKNOWN"
+    if value <= 0:
+        return "UNKNOWN"
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _chunk_lines(lines: list[str], limit: int = 3600) -> list[str]:
@@ -1395,23 +1398,6 @@ async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT_SYMBOLS_INPUT
 
 
-def _history_symbols(account: str) -> list[str]:
-    symbols = {row["symbol"] for row in _load_symbol_rows()}
-    now = datetime.now(tz=timezone.utc)
-    start = now - timedelta(hours=24)
-    symbols.update(_history_manual_event_symbols(account, start, now))
-    symbols.update(_history_live_audit_symbols(account, start, now))
-    try:
-        symbols.update(str(p.get("symbol") or "").upper() for p in _long_positions(account))
-    except Exception:
-        pass
-    try:
-        symbols.update(str(o.get("symbol") or "").upper() for o in _long_orders(account))
-    except Exception:
-        pass
-    return sorted(s for s in symbols if s.endswith("USDT"))
-
-
 def _history_days(start: datetime, end: datetime) -> list[str]:
     start_day = start.astimezone(BJ).date()
     end_day = end.astimezone(BJ).date()
@@ -1423,83 +1409,151 @@ def _history_days(start: datetime, end: datetime) -> list[str]:
     return days
 
 
-def _event_ts_in_window(record: dict[str, Any], start: datetime, end: datetime) -> bool:
-    raw = record.get("ts_utc_ms") or record.get("event_time_ms") or record.get("time_ms") or record.get("update_time_ms")
+def _exchange_history_root(account: str) -> Path:
+    account_key = str(account or "").strip()
+    if not account_key:
+        raise ValueError("account is required")
+    return state_path("exchange_history", account_key, ".keep").parent
+
+
+def _int_ms(value: Any) -> int:
     try:
-        ts_ms = int(raw)
+        return int(value)
     except Exception:
-        return True
-    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
-    return start <= ts <= end
+        return 0
 
 
-def _read_jsonl_symbols(path: Path, *, account: str, start: datetime, end: datetime, require_trade_event: bool) -> set[str]:
-    symbols: set[str] = set()
-    if not path.exists():
-        return symbols
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except Exception:
-                continue
-            if str(record.get("account") or "") != account:
-                continue
-            if require_trade_event and not _is_history_trade_event(str(record.get("event") or "")):
-                continue
-            if not _event_ts_in_window(record, start, end):
-                continue
-            symbol = str(record.get("symbol") or "").upper().strip()
-            if symbol.endswith("USDT"):
-                symbols.add(symbol)
-    return symbols
-
-
-def _history_manual_event_symbols(account: str, start: datetime, end: datetime) -> set[str]:
-    symbols: set[str] = set()
+def _read_exchange_history_records(account: str, source: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    if start_ms > end_ms:
+        return []
+    start = datetime.fromtimestamp(start_ms / 1000.0, tz=timezone.utc)
+    end = datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc)
+    source_dir = _exchange_history_root(account) / source
+    records: list[dict[str, Any]] = []
     for day in _history_days(start, end):
-        symbols.update(
-            _read_jsonl_symbols(
-                _manual_events_dir() / f"{day}.jsonl",
-                account=account,
-                start=start,
-                end=end,
-                require_trade_event=False,
-            )
-        )
-    return symbols
+        path = source_dir / f"{day}.jsonl"
+        if not path.exists():
+            continue
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("account") or "") != account:
+                    continue
+                event_ms = _int_ms(record.get("event_time_ms"))
+                if start_ms <= event_ms <= end_ms:
+                    records.append(record)
+    return records
 
 
-def _is_history_trade_event(event: str) -> bool:
-    value = event.lower().strip()
-    needles = (
-        "entry_submitted",
-        "entry_fill_observed",
-        "sl_submitted",
-        "tp_submitted",
-        "time_stop_submitted",
-        "time_stop_triggered",
-        "position_closed_detected",
-        "state_cleared_after_exit",
+def _exchange_history_rows(account: str, source: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in _read_exchange_history_records(account, source, start_ms, end_ms):
+        raw = record.get("raw")
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        row["_history_event_time_ms"] = record.get("event_time_ms")
+        row["_history_sync_time_ms"] = record.get("sync_time_ms")
+        rows.append(row)
+    return rows
+
+
+def _latest_exchange_history_sync_ms(account: str) -> int:
+    latest = 0
+    root = _exchange_history_root(account)
+    sync_state_path = root / "sync_state.json"
+    if sync_state_path.exists():
+        try:
+            state = load_json_file(sync_state_path, default={})
+        except Exception:
+            state = {}
+        sources = state.get("sources", {}) if isinstance(state, dict) else {}
+        if isinstance(sources, dict):
+            for source_map in sources.values():
+                if not isinstance(source_map, dict):
+                    continue
+                for row in source_map.values():
+                    if isinstance(row, dict) and row.get("ok"):
+                        latest = max(latest, _int_ms(row.get("last_sync_time_ms")))
+    return latest
+
+
+def _latest_loaded_rows_sync_ms(*rowsets: list[dict[str, Any]]) -> int:
+    latest = 0
+    for rows in rowsets:
+        for row in rows:
+            latest = max(latest, _int_ms(row.get("_history_sync_time_ms")))
+    return latest
+
+
+def _history_display_ms(row: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = _int_ms(row.get(key))
+        if value > 0:
+            return value
+    return _int_ms(row.get("_history_event_time_ms"))
+
+
+def _position_base_asset(symbol: str) -> str:
+    if symbol.endswith("USDT"):
+        return symbol[:-4]
+    return symbol
+
+
+def _fmt_history_duration(open_ms: Any, close_ms: Any) -> str:
+    start = _int_ms(open_ms)
+    end = _int_ms(close_ms)
+    if start <= 0 or end <= 0:
+        return "UNKNOWN"
+    minutes = max(0, (end - start) // 60000)
+    if minutes < 1:
+        return "<1分"
+    days, rem = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}时")
+    if mins or not parts:
+        parts.append(f"{mins}分")
+    return "".join(parts)
+
+
+def _fmt_history_float(value: Any, digits: int = 6) -> str:
+    if value is None or value == "":
+        return "UNKNOWN"
+    return _fmt_float(value, digits=digits)
+
+
+def _fmt_history_usdt(value: Any) -> str:
+    if value is None or value == "":
+        return "UNKNOWN"
+    return _fmt_usdt(value)
+
+
+def _sum_income(account: str, *, days: int, income_type: str) -> float:
+    end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    start_ms = end_ms - int(days) * 24 * 60 * 60 * 1000
+    rows = _exchange_history_rows(account, "income", start_ms, end_ms)
+    total = sum(
+        float(row.get("income", 0.0) or 0.0)
+        for row in rows
+        if str(row.get("income_type") or "").upper() == income_type.upper()
     )
-    return any(x in value for x in needles)
+    return round(total, 4)
 
 
-def _history_live_audit_symbols(account: str, start: datetime, end: datetime) -> set[str]:
-    symbols: set[str] = set()
-    root = _live_audit_dir()
-    for day in _history_days(start, end):
-        for path in root.glob(f"*_{account}.{day}.jsonl"):
-            symbols.update(
-                _read_jsonl_symbols(
-                    path,
-                    account=account,
-                    start=start,
-                    end=end,
-                    require_trade_event=True,
-                )
-            )
-    return symbols
+def _load_exchange_history_rows_or_missing(account: str, source: str, start_ms: int, end_ms: int) -> tuple[list[dict[str, Any]], bool]:
+    path = _exchange_history_root(account) / source
+    if not path.exists():
+        return [], True
+    return _exchange_history_rows(account, source, start_ms, end_ms), False
 
 
 def _manual_order_type(order: dict[str, Any]) -> str | None:
@@ -1514,40 +1568,15 @@ def _manual_order_type(order: dict[str, Any]) -> str | None:
     return None
 
 
-def _sum_income(account: str, *, days: int, income_type: str) -> float | None:
-    end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    start_ms = end_ms - int(days) * 24 * 60 * 60 * 1000
-    res = get_income_history(
-        account,
-        income_type=income_type,
-        start_time_ms=start_ms,
-        end_time_ms=end_ms,
-        limit=1000,
-    )
-    if not res["ok"]:
-        return None
-    return round(sum(float(row.get("income", 0.0) or 0.0) for row in res["data"]), 4)
-
-
 @_admin_required
 async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     account = _selected_account(context)
     now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    start_ms = now_ms - 24 * 60 * 60 * 1000
-    order_rows: list[dict[str, Any]] = []
-    trade_rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for symbol in _history_symbols(account):
-        orders = get_all_orders(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
-        if orders["ok"]:
-            order_rows.extend(orders["data"])
-        else:
-            errors.append(f"{symbol} orders: {orders['reason']}")
-        trades = get_account_trades(account, symbol, start_time_ms=start_ms, end_time_ms=now_ms, limit=100)
-        if trades["ok"]:
-            trade_rows.extend(trades["data"])
-        else:
-            errors.append(f"{symbol} trades: {trades['reason']}")
+    start_ms = now_ms - 48 * 60 * 60 * 1000
+    order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", start_ms, now_ms)
+    trade_rows, trades_missing = _load_exchange_history_rows_or_missing(account, "trades", start_ms, now_ms)
+    transfer_rows, transfers_missing = _load_exchange_history_rows_or_missing(account, "transfers", start_ms, now_ms)
+    position_rows, positions_missing = _load_exchange_history_rows_or_missing(account, "positions", start_ms, now_ms)
 
     filled_orders = [
         row
@@ -1555,27 +1584,39 @@ async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if str(row.get("status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"}
         and _manual_order_type(row)
     ]
-    filled_orders.sort(key=lambda x: int(x.get("time_ms") or x.get("update_time_ms") or 0))
-    transfer = get_income_history(
-        account,
-        income_type="TRANSFER",
-        start_time_ms=start_ms,
-        end_time_ms=now_ms,
-        limit=1000,
-    )
-    transfer_rows = transfer["data"] if transfer["ok"] else []
-    deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
-    withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
-    trade_pnl_by_order: dict[Any, float] = {}
+    filled_orders.sort(key=lambda x: _history_display_ms(x, "time_ms", "update_time_ms"))
+    trade_pnl_by_order: dict[str, float] = {}
     for row in trade_rows:
-        oid = row.get("order_id")
+        oid = str(row.get("order_id") or "")
         trade_pnl_by_order[oid] = trade_pnl_by_order.get(oid, 0.0) + float(row.get("realized_pnl", 0.0) or 0.0)
 
-    lines = [f"📜 {account} 最近24小时历史记录", "", "🔸 历史委托:"]
+    long_positions = [
+        row
+        for row in position_rows
+        if str(row.get("position_side") or "").upper() == LONG
+        and str(row.get("status") or "").upper() in {"CLOSED", "INCOMPLETE"}
+    ]
+    long_positions.sort(key=lambda x: _history_display_ms(x, "close_time_ms", "last_trade_time_ms"), reverse=True)
+    transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
+    deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
+    withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
+
+    latest_sync_ms = max(
+        _latest_exchange_history_sync_ms(account),
+        _latest_loaded_rows_sync_ms(order_rows, trade_rows, transfer_rows, position_rows),
+    )
+    sync_text = _bj_second(latest_sync_ms) if latest_sync_ms > 0 else "未发现本地同步数据"
+    lines = [
+        f"📜 {account} 最近48小时历史记录",
+        f"数据同步时间: {sync_text}",
+        "说明: 以下为本地 exchange_history 账本数据，常驻同步存在分钟级延迟。",
+        "",
+        "🔸 历史委托:",
+    ]
     if filled_orders:
         for order in filled_orders[-60:]:
             order_type = _manual_order_type(order)
-            oid = order.get("order_id")
+            oid = str(order.get("order_id") or "")
             qty = float(order.get("executed_qty", 0.0) or order.get("orig_qty", 0.0) or 0.0)
             price = float(order.get("avg_price", 0.0) or order.get("price", 0.0) or 0.0)
             pnl = trade_pnl_by_order.get(oid, 0.0)
@@ -1585,17 +1626,35 @@ async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 f"                 量{_fmt_float(qty)}  价{_fmt_float(price)}{pnl_text}"
             )
     else:
-        lines.append("无 LONG 成交委托")
+        lines.append("本地账本无 LONG 成交委托" if not orders_missing else "本地账本缺少 orders 落盘")
+
+    lines.extend(["", "📌 仓位历史:"])
+    if long_positions:
+        for position in long_positions[:60]:
+            symbol = str(position.get("symbol") or "").upper()
+            asset = _position_base_asset(symbol)
+            status = str(position.get("status") or "").upper()
+            status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
+            lines.append(
+                f"{symbol} | {status_text}\n"
+                f"  已实现盈亏: {_fmt_history_usdt(position.get('realized_pnl'))}  已平仓量({asset}): {_fmt_history_float(position.get('closed_qty'))}\n"
+                f"  开仓均价: {_fmt_history_float(position.get('entry_price'))}  平仓均价: {_fmt_history_float(position.get('average_close_price'))}\n"
+                f"  开仓时间: {_bj_minute(position.get('open_time_ms'))}\n"
+                f"  平仓时间: {_bj_minute(position.get('close_time_ms'))}  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
+                f"  最高OI({asset}): {_fmt_history_float(position.get('max_open_qty'))}"
+            )
+    else:
+        lines.append("本地账本无仓位历史" if not positions_missing else "本地账本缺少 positions 落盘")
 
     lines.extend(["", "🔹 转账流水:"])
     if transfer_rows:
-        for row in transfer_rows:
+        for row in transfer_rows[:60]:
             lines.append(
                 f"{_bj_minute(row.get('time_ms') or row.get('time'))} | 转账 | "
                 f"{row.get('asset') or ''} | {_fmt_float(row.get('income'))}"
             )
     else:
-        lines.append("无转账记录" if transfer["ok"] else f"转账查询失败: {transfer['reason']}")
+        lines.append("本地账本无转账记录" if not transfers_missing else "本地账本缺少 transfers 落盘")
 
     fee_24h = _sum_income(account, days=1, income_type="FUNDING_FEE")
     fee_3d = _sum_income(account, days=3, income_type="FUNDING_FEE")
@@ -1613,9 +1672,18 @@ async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             f"净入金(入金-出金): {round(deposit_total - withdraw_total, 4)}",
         ]
     )
-    if errors:
-        lines.extend(["", "⚠️ 部分查询失败:"])
-        lines.extend(errors[:10])
+    missing_sources = [
+        source
+        for source, missing in (
+            ("orders", orders_missing),
+            ("trades", trades_missing),
+            ("positions", positions_missing),
+            ("transfers", transfers_missing),
+        )
+        if missing
+    ]
+    if missing_sources:
+        lines.extend(["", f"⚠️ 缺少本地落盘 source: {', '.join(missing_sources)}"])
     await _send_lines(update, lines)
     return ConversationHandler.END
 
