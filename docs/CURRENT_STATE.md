@@ -1013,9 +1013,14 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
 5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
-6. 新增 `/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE` 命令式 LONG 开仓入口：
+6. 新增 `/set s` 当前交易 symbol 入口：输入后显示当前 `SYMBOL LEVERAGE`，继续输入 `HYPEUSDT 20x` 会写入 `state/manual_trade_current_symbol.json`。这里的杠杆只作为 `/trade` 简化命令的记录；`/set s` 本身不调用 Binance API 修改任何账户或品种杠杆。
+7. `/trade open` 改为使用 `/set s` 维护的当前 symbol / leverage，命令中不再携带 symbol 与杠杆；支持多账户开仓：
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M SL PRICE TP PRICE`
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] PO SL PRICE TP PRICE`
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE`
    - `M` 使用市价 entry，成交后按输入挂 SL/TP；`SL 0` / `TP 0` 表示跳过对应保护单。
    - `PO` 表示 post-only entry，使用 order book best bid 提交 `LIMIT + GTX` maker 单；命令立即返回，后台 watcher 按 `account + symbol` 并行追踪。
+   - `L` 表示普通 `LIMIT + GTC` LONG entry，只提交限价开仓，不自动挂 SL/TP。
    - PO watcher 默认等待 60 秒；成交后挂 SL/TP，部分成交时取消剩余并保护已成交数量，超时未成交则取消 entry。
    - 同一 `account + symbol` 同时只允许一个 PO watcher；不同账户或不同 symbol 可以并行。
    - 手动命令事件落盘到 `state/manual_trade/orders/YYYY-MM-DD.jsonl`，不写入策略 live state / strategy audit。
@@ -1023,15 +1028,15 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - LONG 手动开仓会先按 entry reference price 校验 `SL < entry`、`TP > entry`；`SL 0` / `TP 0` 仍表示跳过对应保护单。
    - PO entry 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best bid 并重试提交；当前硬编码最多 3 次，只对 `-5022` 类 post-only maker reject 重试。
    - 2026-05-12 已将手动 open 前的账户 position mode 处理改为只读校验：若账户不是 Hedge Mode，fail-fast 提示；不再在每次 open 前自动调用 `futures_change_position_mode`，避免已有 open orders 时触发 Binance `-4067`。
-7. 新增 `/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO [PCT%]` 与 `/trade close ACCOUNT[ | ACCOUNT...] SYMBOL L PRICE [PCT%]` 命令式 LONG 平仓入口：
+8. `/trade close` 改为使用 `/set s` 维护的当前 symbol，命令中不再携带 symbol；支持 `/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]` 与 `/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]` 命令式 LONG 平仓入口：
    - `M` 对每个指定账户查询该 symbol 的 LONG position qty，并提交 `MANUAL_CLOSE` market reduce 平仓。
    - `PO` 对每个指定账户查询该 symbol 的 LONG position qty，读取 order book best ask，并提交 `LIMIT + GTX` maker 平仓单。
    - `L PRICE` 对每个指定账户查询该 symbol 的 LONG position qty，并按指定 price 提交普通 `LIMIT + GTC` 平仓单。
    - 命令末尾可选 `PCT%` 表示按当前 LONG 持仓比例平仓；不填表示 100% 全部平仓。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
    - PO close 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best ask 并重试提交；当前硬编码最多 3 次。
-8. 新增 `/trade cancel ACCOUNT[ | ACCOUNT...] SYMBOL` 命令式撤单入口：对每个指定账户撤销该 symbol 的全部 open orders；多账户用 `|` 分隔，逐账户顺序执行，某个账户失败不阻断后续账户。
-9. 新增 `/trade sl ACCOUNT[ | ACCOUNT...] SYMBOL PRICE [PCT%]` 命令式 LONG 止损挂单入口：
+9. `/trade cancel ACCOUNT[ | ACCOUNT...]` 命令式撤单入口：使用当前 symbol，对每个指定账户撤销该 symbol 的全部 open orders；多账户用 `|` 分隔，逐账户顺序执行，某个账户失败不阻断后续账户。兼容用户常见拼写 `/trade cancle ...`。
+10. `/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]` 命令式 LONG 止损挂单入口：使用当前 symbol，命令中不再携带 symbol。
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。

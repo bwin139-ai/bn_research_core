@@ -57,6 +57,7 @@ CLOSE_INPUT_QTY = 204
 STOP_SELECT_SYMBOL = 301
 STOP_INPUT_PRICE = 302
 EDIT_SYMBOLS_INPUT = 401
+SET_SYMBOL_INPUT = 501
 
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
@@ -73,6 +74,10 @@ def _permissions_path() -> Path:
 
 def _symbols_path() -> Path:
     return state_path("manual_trade_symbols.json")
+
+
+def _current_trade_symbol_path() -> Path:
+    return state_path("manual_trade_current_symbol.json")
 
 
 def _manual_events_path() -> Path:
@@ -205,6 +210,40 @@ def _symbol_row(symbol: str) -> dict[str, Any]:
         if row["symbol"] == su:
             return row
     raise ValueError(f"symbol not configured for manual trading: {su}")
+
+
+def _parse_symbol_leverage(symbol_text: str, leverage_text: str) -> dict[str, Any]:
+    symbol = str(symbol_text or "").upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    text = str(leverage_text or "").lower().strip()
+    if not text.endswith("x"):
+        raise ValueError("leverage must look like 20x")
+    leverage = int(text[:-1])
+    if leverage <= 0:
+        raise ValueError("leverage must be positive")
+    return {"symbol": symbol, "leverage": leverage}
+
+
+def _load_current_trade_symbol() -> dict[str, Any]:
+    path = _current_trade_symbol_path()
+    if not path.exists():
+        raise ValueError("当前交易 symbol 未设置，请先使用 /set s")
+    data = load_json_file(path, default={})
+    if not isinstance(data, dict):
+        raise ValueError(f"manual_trade_current_symbol.json must be object: {path}")
+    return _parse_symbol_leverage(str(data.get("symbol") or ""), f"{data.get('leverage')}x")
+
+
+def _save_current_trade_symbol(symbol: str, leverage: int) -> dict[str, Any]:
+    row = _parse_symbol_leverage(symbol, f"{int(leverage)}x")
+    save_json_file_atomic(_current_trade_symbol_path(), row)
+    return row
+
+
+def _current_trade_symbol_text() -> str:
+    row = _load_current_trade_symbol()
+    return f"{row['symbol']} {row['leverage']}x"
 
 
 def _fmt_usdt(value: Any) -> str:
@@ -428,19 +467,23 @@ def _parse_price_match(value: str) -> str | None:
 def _trade_usage() -> str:
     return (
         "Usage:\n"
-        "/trade open ACCOUNT SYMBOL LEVERAGE M|PO NOTIONAL SL PRICE TP PRICE\n"
-        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL M|PO [PCT%]\n"
-        "/trade close ACCOUNT[ | ACCOUNT...] SYMBOL L PRICE [PCT%]\n"
-        "/trade sl ACCOUNT[ | ACCOUNT...] SYMBOL PRICE [PCT%]\n"
-        "/trade cancel ACCOUNT[ | ACCOUNT...] SYMBOL\n"
+        "/set s\n"
+        "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO SL PRICE TP PRICE\n"
+        "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
+        "/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
+        "/trade cancel ACCOUNT[ | ACCOUNT...]\n"
         "Example:\n"
-        "/trade open mybwin139 BTCUSDT 10x M 100 SL 80888.8 TP 81999.9\n"
-        "/trade open mybwin139 BTCUSDT 10x PO 100 SL 80888.8 TP 81999.9\n"
-        "/trade close bwin182 | chen912 | junjie2026 CLUSDT M\n"
-        "/trade close bwin182 | chen912 | junjie2026 CLUSDT PO 50%\n"
-        "/trade close bwin182 | chen912 | junjie2026 CLUSDT L 101.36 30%\n"
-        "/trade sl bwin182 | chen912 | junjie2026 CLUSDT 98.37 50%\n"
-        "/trade cancel bwin182 | chen912 | junjie2026 CLUSDT"
+        "/set s then HYPEUSDT 20x\n"
+        "/trade open deepa999 500 | chen912 1500 | mybwin139 750 PO SL 55.38 TP 59.39\n"
+        "/trade open deepa999 500 | chen912 1500 | mybwin139 750 M SL 55.38 TP 59.39\n"
+        "/trade open deepa999 500 | chen912 1500 | mybwin139 750 L 57.27\n"
+        "/trade close bwin182 | chen912 | junjie2026 M\n"
+        "/trade close bwin182 | chen912 | junjie2026 PO 50%\n"
+        "/trade close bwin182 | chen912 | junjie2026 L 101.36 30%\n"
+        "/trade sl bwin182 | chen912 | junjie2026 98.37 50%\n"
+        "/trade cancel bwin182 | chen912 | junjie2026"
     )
 
 
@@ -458,6 +501,30 @@ def _parse_trade_accounts(tokens: list[str]) -> list[str]:
     return accounts
 
 
+def _parse_trade_open_account_notionals(tokens: list[str]) -> list[dict[str, Any]]:
+    raw = " ".join(str(x).strip() for x in tokens if str(x).strip())
+    chunks = [x.strip() for x in raw.split("|") if x.strip()]
+    if not chunks:
+        raise ValueError("missing account notional")
+    known = set(_discover_accounts())
+    rows: list[dict[str, Any]] = []
+    for chunk in chunks:
+        parts = chunk.split()
+        if len(parts) != 2:
+            raise ValueError("open account segment must be: ACCOUNT NOTIONAL")
+        account = parts[0]
+        if account not in known:
+            raise ValueError(f"unknown account: {account}")
+        notional = float(parts[1])
+        if notional <= 0:
+            raise ValueError("notional must be positive")
+        rows.append({"account": account, "notional": notional})
+    accounts = [row["account"] for row in rows]
+    if len(accounts) != len(set(accounts)):
+        raise ValueError("duplicate account in command")
+    return rows
+
+
 def _parse_percent_suffix(tokens: list[str], *, field_name: str) -> tuple[list[str], float]:
     remaining = [str(x).strip() for x in tokens if str(x).strip()]
     ratio = 1.0
@@ -471,62 +538,59 @@ def _parse_percent_suffix(tokens: list[str], *, field_name: str) -> tuple[list[s
 
 
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
-    if len(args) != 10 or str(args[0]).lower() != "open":
+    if len(args) < 5 or str(args[0]).lower() != "open":
         raise ValueError(_trade_usage())
-    accounts = _parse_trade_accounts([str(args[1]).strip()])
-    if len(accounts) != 1:
-        raise ValueError("open command requires exactly one account")
-    account = accounts[0]
-    symbol = str(args[2]).upper().strip()
-    if not symbol.endswith("USDT"):
-        raise ValueError(f"symbol must end with USDT: {symbol}")
-    leverage_text = str(args[3]).lower().strip()
-    if not leverage_text.endswith("x"):
-        raise ValueError("leverage must look like 10x")
-    leverage = int(leverage_text[:-1])
-    if leverage <= 0:
-        raise ValueError("leverage must be positive")
-    mode = str(args[4]).upper().strip()
-    if mode not in {"M", "PO"}:
-        raise ValueError("mode must be M or PO")
-    notional = float(args[5])
-    if notional <= 0:
-        raise ValueError("notional must be positive")
-    if str(args[6]).upper().strip() != "SL":
-        raise ValueError("missing SL field")
-    sl_price = float(args[7])
-    if sl_price < 0:
-        raise ValueError("SL price must be >= 0")
-    if str(args[8]).upper().strip() != "TP":
-        raise ValueError("missing TP field")
-    tp_price = float(args[9])
-    if tp_price < 0:
-        raise ValueError("TP price must be >= 0")
+    mode_idx = next((idx for idx, token in enumerate(args[1:], start=1) if str(token).upper().strip() in {"M", "PO", "L"}), -1)
+    if mode_idx <= 1:
+        raise ValueError(_trade_usage())
+    entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+    current = _load_current_trade_symbol()
+    symbol = current["symbol"]
+    leverage = int(current["leverage"])
+    mode = str(args[mode_idx]).upper().strip()
+    tail = [str(x).strip() for x in args[mode_idx + 1 :]]
+    sl_price = 0.0
+    tp_price = 0.0
+    limit_price: float | None = None
+    if mode in {"M", "PO"}:
+        if len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP":
+            raise ValueError(_trade_usage())
+        sl_price = float(tail[1])
+        tp_price = float(tail[3])
+        if sl_price < 0:
+            raise ValueError("SL price must be >= 0")
+        if tp_price < 0:
+            raise ValueError("TP price must be >= 0")
+    else:
+        if len(tail) != 1:
+            raise ValueError(_trade_usage())
+        limit_price = float(tail[0])
+        if limit_price <= 0:
+            raise ValueError("limit open price must be positive")
     return {
-        "account": account,
+        "entries": entries,
         "symbol": symbol,
         "leverage": leverage,
         "mode": mode,
-        "notional": notional,
         "sl_price": sl_price,
         "tp_price": tp_price,
+        "limit_price": limit_price,
     }
 
 
 def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 4 or str(args[0]).lower() != "close":
+    if len(args) < 3 or str(args[0]).lower() != "close":
         raise ValueError(_trade_usage())
     tokens, close_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="close")
-    if len(tokens) < 3:
+    if len(tokens) < 2:
         raise ValueError(_trade_usage())
     limit_price: float | None = None
     tail_mode = str(tokens[-1]).upper().strip()
     if tail_mode in {"M", "PO"}:
         mode = tail_mode
-        symbol = str(tokens[-2]).upper().strip()
-        account_tokens = tokens[:-2]
+        account_tokens = tokens[:-1]
     else:
-        if len(tokens) < 4:
+        if len(tokens) < 3:
             raise ValueError(_trade_usage())
         mode = str(tokens[-2]).upper().strip()
         if mode != "L":
@@ -534,10 +598,8 @@ def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
         limit_price = float(tokens[-1])
         if limit_price <= 0:
             raise ValueError("limit close price must be positive")
-        symbol = str(tokens[-3]).upper().strip()
-        account_tokens = tokens[:-3]
-    if not symbol.endswith("USDT"):
-        raise ValueError(f"symbol must end with USDT: {symbol}")
+        account_tokens = tokens[:-2]
+    symbol = _load_current_trade_symbol()["symbol"]
     accounts = _parse_trade_accounts(account_tokens)
     return {
         "accounts": accounts,
@@ -549,18 +611,16 @@ def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
 
 
 def _parse_trade_sl_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 4 or str(args[0]).lower() != "sl":
+    if len(args) < 3 or str(args[0]).lower() != "sl":
         raise ValueError(_trade_usage())
     tokens, sl_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="sl")
-    if len(tokens) < 3:
+    if len(tokens) < 2:
         raise ValueError(_trade_usage())
     stop_price = float(tokens[-1])
     if stop_price <= 0:
         raise ValueError("SL price must be positive")
-    symbol = str(tokens[-2]).upper().strip()
-    if not symbol.endswith("USDT"):
-        raise ValueError(f"symbol must end with USDT: {symbol}")
-    accounts = _parse_trade_accounts(tokens[:-2])
+    symbol = _load_current_trade_symbol()["symbol"]
+    accounts = _parse_trade_accounts(tokens[:-1])
     return {
         "accounts": accounts,
         "symbol": symbol,
@@ -570,12 +630,10 @@ def _parse_trade_sl_args(args: list[str]) -> dict[str, Any]:
 
 
 def _parse_trade_cancel_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 3 or str(args[0]).lower() != "cancel":
+    if len(args) < 2 or str(args[0]).lower() not in {"cancel", "cancle"}:
         raise ValueError(_trade_usage())
-    symbol = str(args[-1]).upper().strip()
-    if not symbol.endswith("USDT"):
-        raise ValueError(f"symbol must end with USDT: {symbol}")
-    accounts = _parse_trade_accounts([str(x) for x in args[1:-1]])
+    symbol = _load_current_trade_symbol()["symbol"]
+    accounts = _parse_trade_accounts([str(x) for x in args[1:]])
     return {
         "accounts": accounts,
         "symbol": symbol,
@@ -805,6 +863,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("pending_orders", "Pending Orders"),
         BotCommand("view_history", "History"),
         BotCommand("trade", "Command Trade"),
+        BotCommand("set", "Set Trade Symbol"),
         BotCommand("stop_market", "Stop Market"),
         BotCommand("edit_symbols", "Edit Symbols"),
     ]
@@ -1398,6 +1457,37 @@ async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT_SYMBOLS_INPUT
 
 
+@_admin_required
+async def set_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    args = [str(x).strip() for x in (context.args or []) if str(x).strip()]
+    if len(args) != 1 or args[0].lower() != "s":
+        await update.message.reply_text("Usage: /set s")
+        return ConversationHandler.END
+    try:
+        current = _current_trade_symbol_text()
+    except ValueError:
+        current = "未设置"
+    await update.message.reply_text(f"当前 symbol: {current}\n请输入 SYMBOL LEVERAGE，例如: HYPEUSDT 20x")
+    return SET_SYMBOL_INPUT
+
+
+@_admin_required
+async def set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().upper()
+    parts = text.split()
+    if len(parts) != 2:
+        await update.message.reply_text("请输入 SYMBOL LEVERAGE，例如: HYPEUSDT 20x")
+        return SET_SYMBOL_INPUT
+    try:
+        row = _parse_symbol_leverage(parts[0], parts[1])
+        saved = _save_current_trade_symbol(row["symbol"], int(row["leverage"]))
+    except Exception as exc:
+        await update.message.reply_text(f"设置失败: {exc}")
+        return SET_SYMBOL_INPUT
+    await update.message.reply_text(f"当前 symbol 已设置: {saved['symbol']} {saved['leverage']}x")
+    return ConversationHandler.END
+
+
 def _history_days(start: datetime, end: datetime) -> list[str]:
     start_day = start.astimezone(BJ).date()
     end_day = end.astimezone(BJ).date()
@@ -1855,6 +1945,67 @@ async def _run_post_only_trade_command(
     )
 
 
+async def _run_limit_trade_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    entries: list[dict[str, Any]],
+    symbol: str,
+    leverage: int,
+    limit_price: float,
+) -> None:
+    lines = [f"L entry {symbol} {leverage}x price={_fmt_float(limit_price)}"]
+    for entry in entries:
+        account = str(entry["account"])
+        notional = float(entry["notional"])
+        try:
+            quantity = _entry_qty_from_notional(account, symbol, notional, limit_price)
+            _prepare_symbol(account, symbol, leverage)
+            root = make_order_root()
+            res = place_limit_order(
+                account,
+                symbol,
+                LONG,
+                "BUY",
+                quantity,
+                limit_price,
+                order_role="MANUAL_LIMIT_ENTRY",
+                time_in_force="GTC",
+                client_order_id=_client_order_id("ENT", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event(
+                "manual_trade_limit_entry",
+                account=account,
+                symbol=symbol,
+                ok=res["ok"],
+                notional=notional,
+                price=limit_price,
+                result=res,
+            )
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted notional={_fmt_float(notional)} "
+                f"qty={_fmt_float(data.get('qty') or data.get('orig_qty') or quantity)} "
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event(
+                "manual_trade_limit_entry",
+                account=account,
+                symbol=symbol,
+                ok=False,
+                notional=notional,
+                price=limit_price,
+                reason=str(exc),
+            )
+            lines.append(f"{account}: failed reason={exc}")
+    await update.message.reply_text("\n".join(lines))
+
+
 def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
     if close_ratio <= 0 or close_ratio > 1:
         raise ValueError(f"close_ratio must be > 0 and <= 1: {close_ratio}")
@@ -2116,10 +2267,40 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         spec = _parse_trade_open_args(args)
         mode = spec["mode"]
         if mode == "M":
-            await _run_market_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+            for entry in spec["entries"]:
+                await _run_market_trade_command(
+                    update,
+                    context,
+                    account=entry["account"],
+                    symbol=spec["symbol"],
+                    leverage=spec["leverage"],
+                    notional=entry["notional"],
+                    sl_price=spec["sl_price"],
+                    tp_price=spec["tp_price"],
+                )
             return
         if mode == "PO":
-            await _run_post_only_trade_command(update, context, **{k: v for k, v in spec.items() if k != "mode"})
+            for entry in spec["entries"]:
+                await _run_post_only_trade_command(
+                    update,
+                    context,
+                    account=entry["account"],
+                    symbol=spec["symbol"],
+                    leverage=spec["leverage"],
+                    notional=entry["notional"],
+                    sl_price=spec["sl_price"],
+                    tp_price=spec["tp_price"],
+                )
+            return
+        if mode == "L":
+            await _run_limit_trade_command(
+                update,
+                context,
+                entries=spec["entries"],
+                symbol=spec["symbol"],
+                leverage=spec["leverage"],
+                limit_price=spec["limit_price"],
+            )
             return
     if action == "close":
         spec = _parse_trade_close_args(args)
@@ -2159,7 +2340,7 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             sl_ratio=spec["sl_ratio"],
         )
         return
-    if action == "cancel":
+    if action in {"cancel", "cancle"}:
         spec = _parse_trade_cancel_args(args)
         await _run_cancel_command(
             update,
@@ -2207,6 +2388,15 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(do_cancel_order, pattern=r"^cancel_ok:"))
     application.add_handler(CallbackQueryHandler(abort, pattern=r"^abort$"))
 
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("set", set_command)],
+            states={SET_SYMBOL_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_symbol_input)]},
+            fallbacks=[CommandHandler("cancel", cancel_conv)],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
     application.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("open", open_position)],
