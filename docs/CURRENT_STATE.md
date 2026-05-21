@@ -1035,8 +1035,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 命令末尾可选 `PCT%` 表示按当前 LONG 持仓比例平仓；不填表示 100% 全部平仓。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
    - PO close 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best ask 并重试提交；当前硬编码最多 3 次。
-9. `/trade cancel ACCOUNT[ | ACCOUNT...]` 命令式撤单入口：使用当前 symbol，对每个指定账户撤销该 symbol 的全部 open orders；多账户用 `|` 分隔，逐账户顺序执行，某个账户失败不阻断后续账户。兼容用户常见拼写 `/trade cancle ...`。
-10. `/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]` 命令式 LONG 止损挂单入口：使用当前 symbol，命令中不再携带 symbol。
+9. `/trade pending ACCOUNT[ | ACCOUNT...]` 命令式挂单查询入口：使用当前 symbol，列出每个指定账户该 symbol 的 LONG open orders；多账户用 `|` 分隔，逐账户顺序查询，某个账户失败不阻断后续账户。
+10. `/trade cancel ACCOUNT[ | ACCOUNT...]` 命令式撤单入口：使用当前 symbol，对每个指定账户撤销该 symbol 的全部 open orders；多账户用 `|` 分隔，逐账户顺序执行，某个账户失败不阻断后续账户。兼容用户常见拼写 `/trade cancle ...`。
+11. `/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]` 命令式 LONG 止损挂单入口：使用当前 symbol，命令中不再携带 symbol。
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。

@@ -473,6 +473,7 @@ def _trade_usage() -> str:
         "/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
         "/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
+        "/trade pending ACCOUNT[ | ACCOUNT...]\n"
         "/trade cancel ACCOUNT[ | ACCOUNT...]\n"
         "Example:\n"
         "/set s then HYPEUSDT 20x\n"
@@ -483,6 +484,7 @@ def _trade_usage() -> str:
         "/trade close bwin182 | chen912 | junjie2026 PO 50%\n"
         "/trade close bwin182 | chen912 | junjie2026 L 101.36 30%\n"
         "/trade sl bwin182 | chen912 | junjie2026 98.37 50%\n"
+        "/trade pending deepa999 | chen912 | mybwin139\n"
         "/trade cancel bwin182 | chen912 | junjie2026"
     )
 
@@ -631,6 +633,17 @@ def _parse_trade_sl_args(args: list[str]) -> dict[str, Any]:
 
 def _parse_trade_cancel_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 2 or str(args[0]).lower() not in {"cancel", "cancle"}:
+        raise ValueError(_trade_usage())
+    symbol = _load_current_trade_symbol()["symbol"]
+    accounts = _parse_trade_accounts([str(x) for x in args[1:]])
+    return {
+        "accounts": accounts,
+        "symbol": symbol,
+    }
+
+
+def _parse_trade_pending_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 2 or str(args[0]).lower() != "pending":
         raise ValueError(_trade_usage())
     symbol = _load_current_trade_symbol()["symbol"]
     accounts = _parse_trade_accounts([str(x) for x in args[1:]])
@@ -2257,6 +2270,35 @@ async def _run_cancel_command(
     await update.message.reply_text("\n".join(lines))
 
 
+async def _run_pending_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"📄 当前挂单 {symbol}"]
+    for account in accounts:
+        res = get_open_orders(account, symbol)
+        if not res["ok"]:
+            lines.append(f"{account}: 查询失败 reason={res['reason']}")
+            continue
+        orders = [row for row in list(res.get("data") or []) if str(row.get("position_side") or "").upper() == LONG]
+        if not orders:
+            lines.append(f"{account}: 无挂单")
+            continue
+        lines.append(f"{account}:")
+        for order in sorted(orders, key=lambda x: (str(x.get("side") or ""), _order_display_price(x))):
+            side = str(order.get("side") or "")
+            order_type = str(order.get("type") or order.get("orig_type") or "")
+            price = _order_display_price(order)
+            qty = _order_qty(order)
+            oid = order.get("order_id")
+            lines.append(
+                f"  {side} {order_type} {_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid}"
+            )
+    await _send_lines(update, lines)
+
+
 @_admin_required
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = list(context.args or [])
@@ -2338,6 +2380,14 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             symbol=spec["symbol"],
             stop_price=spec["stop_price"],
             sl_ratio=spec["sl_ratio"],
+        )
+        return
+    if action == "pending":
+        spec = _parse_trade_pending_args(args)
+        await _run_pending_command(
+            update,
+            accounts=spec["accounts"],
+            symbol=spec["symbol"],
         )
         return
     if action in {"cancel", "cancle"}:
