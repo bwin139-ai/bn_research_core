@@ -1054,5 +1054,5 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 
 2026-05-21 第四刀推进 exchange history 只读审计工具：新增 `audit_tools/exchange_history/audit_exchange_history_continuity.py`，读取本地 `state/exchange_history/{account}`，不访问 Binance、不修改 state。主审计按 `wallet_end(asset) = wallet_start(asset) + sum(income.amount by asset)` 检查相邻 `balance_snapshots` 区间；交叉核查 `sum(trades.realized_pnl) ≈ sum(income[REALIZED_PNL])` 与 `sum(trades.commission) ≈ -sum(income[COMMISSION])`。余额不连续或交叉核查不一致返回非零退出码；资产快照不足只给 warning。
 
-2026-05-21 已将 `core/manual_trade_bot.py` 的 `/view_history` 改为只读本地 `state/exchange_history/{account}` 落盘账本，不再在 Telegram 查询路径实时调用 Binance 历史接口。展示窗口从最近 24 小时扩大为最近 48 小时，并在标题区显示本地账本最近同步时间，提醒用户该视图允许分钟级延迟；“历史委托”读 `orders`，“仓位历史”读 `positions` 派生视图并展示已实现盈亏、开仓均价、平仓均价、开仓时间、平仓时间、持仓时间、已平仓量、最高 OI，“转账流水”读 `transfers`，资金费汇总读本地 `income`。
+2026-05-21 已将 `core/manual_trade_bot.py` 的 `/view_history` 改为只读本地 `state/exchange_history/{account}` 落盘账本，不再在 Telegram 查询路径实时调用 Binance 历史接口。展示窗口从最近 24 小时扩大为最近 48 小时，并在标题区显示本地账本最近同步时间，提醒用户该视图允许分钟级延迟；“历史委托”读 `orders`，“仓位历史”读 `positions` 派生视图并展示盈亏、开仓价、平仓价、开仓时间、平仓时间、持仓时间、最高 O、已平仓量，“转账流水”读 `transfers`，资金费汇总读本地 `income`。
 ```

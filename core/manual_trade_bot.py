@@ -1632,16 +1632,15 @@ async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if long_positions:
         for position in long_positions[:60]:
             symbol = str(position.get("symbol") or "").upper()
-            asset = _position_base_asset(symbol)
             status = str(position.get("status") or "").upper()
             status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
             lines.append(
-                f"{symbol} | {status_text}\n"
-                f"  已实现盈亏: {_fmt_history_usdt(position.get('realized_pnl'))}  已平仓量({asset}): {_fmt_history_float(position.get('closed_qty'))}\n"
-                f"  开仓均价: {_fmt_history_float(position.get('entry_price'))}  平仓均价: {_fmt_history_float(position.get('average_close_price'))}\n"
+                f"{symbol} | {status_text} | 盈亏 {_fmt_history_usdt(position.get('realized_pnl'))}\n"
+                f"  开仓价: {_fmt_history_float(position.get('entry_price'))}  平仓价: {_fmt_history_float(position.get('average_close_price'))}\n"
                 f"  开仓时间: {_bj_minute(position.get('open_time_ms'))}\n"
-                f"  平仓时间: {_bj_minute(position.get('close_time_ms'))}  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
-                f"  最高OI({asset}): {_fmt_history_float(position.get('max_open_qty'))}"
+                f"  平仓时间: {_bj_minute(position.get('close_time_ms'))}\n"
+                f"  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
+                f"  最高O: {_fmt_history_float(position.get('max_open_qty'))}  已平仓量: {_fmt_history_float(position.get('closed_qty'))}"
             )
     else:
         lines.append("本地账本无仓位历史" if not positions_missing else "本地账本缺少 positions 落盘")
