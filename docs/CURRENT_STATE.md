@@ -1049,4 +1049,6 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-21 第一刀推进 exchange history sync 的 symbol universe 简化：日常同步改为 `income-first active symbols`。每轮先同步账户级 `income/transfers`，从本轮 income 查询窗口返回的非空 `income.symbol` 提取 `active_sync_symbols`，再只对这些 symbol 同步 `orders/trades`。`state/exchange_history/{account}/symbols.json` 只作为历史出现过的 symbol 索引，不再作为每轮 orders/trades API 扫描输入；`--symbol` / `--symbol-file` 仅保留为人工补查入口。零成交 `CANCELED/EXPIRED` 订单无 income 事实，当前不纳入完整交易账本的完整性要求。
 
 2026-05-21 第二刀推进 exchange history sync 的余额快照落盘：每轮同步先读取 Binance futures account，并按资产写入 `state/exchange_history/{account}/balance_snapshots/YYYY-MM-DD.jsonl`。每个资产一行，规范化字段中的 `wallet_balance` 表示该资产钱包余额数量，不是折算美元价值；`raw` 保留 Binance account `assets[]` 原始行。余额快照是本轮同步必备事实，失败时本轮返回非 ok，且不继续推进 `income/orders/trades` cursor。后续余额连续性审计按 `wallet_end(asset) = wallet_start(asset) + sum(income.amount by asset)`，`trades.realized_pnl/commission` 只用于和 income 的 `REALIZED_PNL/COMMISSION` 交叉核查，避免重复计算。
+
+2026-05-21 第三刀推进 exchange history sync 的 `positions` 派生落盘：每轮在 `orders/trades` 同步成功后，从已落盘 LONG `trades` 派生闭合仓位生命周期，写入 `state/exchange_history/{account}/positions/YYYY-MM-DD.jsonl`。正常闭合仓位状态为 `CLOSED`；若平仓成交缺少对应开仓事实，则写 `status=INCOMPLETE` 与 `incomplete_reason`，不得伪造 entry price / open time；仍未闭合的 active position 不硬造历史行，只在结果中计入 `open_positions_skipped`。派生过程若发现 SHORT 或无法解释的成交顺序冲突，返回非 ok。
 ```

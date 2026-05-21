@@ -5,6 +5,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ SOURCE_TRADES = "trades"
 SOURCE_INCOME = "income"
 SOURCE_TRANSFERS = "transfers"
 SOURCE_BALANCE_SNAPSHOTS = "balance_snapshots"
+SOURCE_POSITIONS = "positions"
 ACCOUNT_KEY = "_account"
 DAY_MS = 24 * 60 * 60 * 1000
 ORDER_TRADE_QUERY_WINDOW_MS = 6 * DAY_MS
@@ -173,6 +175,7 @@ def _event_time_ms(source: str, row: dict[str, Any]) -> int:
         SOURCE_INCOME: ("time_ms",),
         SOURCE_TRANSFERS: ("time_ms",),
         SOURCE_BALANCE_SNAPSHOTS: ("time_ms",),
+        SOURCE_POSITIONS: ("close_time_ms", "last_trade_time_ms", "open_time_ms"),
     }
     for key in keys_by_source.get(source, ("time_ms", "update_time_ms")):
         try:
@@ -198,6 +201,8 @@ def _dedupe_key(account: str, source: str, row: dict[str, Any]) -> str:
     if source == SOURCE_BALANCE_SNAPSHOTS:
         asset = str(row.get("asset") or "").upper().strip()
         return f"{account}|{source}|{asset}|{row.get('time_ms')}"
+    if source == SOURCE_POSITIONS:
+        return f"{account}|{source}|{symbol}|{row.get('position_id')}"
     raise ValueError(f"unsupported source: {source}")
 
 
@@ -560,6 +565,197 @@ def _sync_balance_snapshots(account: str, sync_ms: int, request_sleep_secs: floa
     }
 
 
+def _history_raw_rows(account: str, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    root = _history_root(account) / source
+    for path in sorted(root.glob("*.jsonl")):
+        for record in _load_jsonl(path):
+            raw = record.get("raw")
+            if isinstance(raw, dict):
+                rows.append(raw)
+    return rows
+
+
+def _decimal_value(raw: dict[str, Any], key: str, *, context: str) -> Decimal:
+    if key not in raw:
+        raise ValueError(f"missing {key}: {context}")
+    try:
+        return Decimal(str(raw.get(key)))
+    except Exception as exc:
+        raise ValueError(f"invalid {key}: {context} value={raw.get(key)!r}") from exc
+
+
+def _int_value(raw: dict[str, Any], key: str, *, context: str) -> int:
+    if key not in raw:
+        raise ValueError(f"missing {key}: {context}")
+    try:
+        value = int(raw.get(key))
+    except Exception as exc:
+        raise ValueError(f"invalid {key}: {context} value={raw.get(key)!r}") from exc
+    if value <= 0:
+        raise ValueError(f"invalid {key}: {context} value={raw.get(key)!r}")
+    return value
+
+
+def _trade_sort_key(row: dict[str, Any]) -> tuple[int, str, int]:
+    return (
+        _int_value(row, "time_ms", context=str(row.get("symbol") or "")),
+        str(row.get("symbol") or ""),
+        _int_value(row, "trade_id", context=str(row.get("symbol") or "")),
+    )
+
+
+def _position_row(position: dict[str, Any], *, status: str, close_trade: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(position["symbol"])
+    trade_ids = list(position["trade_ids"])
+    order_ids = list(position["order_ids"])
+    open_time_ms = int(position["open_time_ms"])
+    close_time_ms = _int_value(close_trade, "time_ms", context=symbol)
+    entry_qty = Decimal(position["entry_qty"])
+    closed_qty = Decimal(position["closed_qty"])
+    entry_notional = Decimal(position["entry_notional"])
+    close_notional = Decimal(position["close_notional"])
+    entry_price = entry_notional / entry_qty
+    average_close_price = close_notional / closed_qty
+    position_id = f"{symbol}|{open_time_ms}|{close_time_ms}|{trade_ids[0]}|{trade_ids[-1]}"
+    return {
+        "symbol": symbol,
+        "position_side": "LONG",
+        "status": status,
+        "position_id": position_id,
+        "open_time_ms": open_time_ms,
+        "close_time_ms": close_time_ms,
+        "last_trade_time_ms": close_time_ms,
+        "entry_price": float(entry_price),
+        "average_close_price": float(average_close_price),
+        "max_open_qty": float(position["max_open_qty"]),
+        "closed_qty": float(closed_qty),
+        "realized_pnl": float(position["realized_pnl"]),
+        "entry_notional": float(entry_notional),
+        "close_notional": float(close_notional),
+        "trade_ids": trade_ids,
+        "order_ids": order_ids,
+        "incomplete": False,
+    }
+
+
+def _incomplete_position_row(trade: dict[str, Any], reason: str) -> dict[str, Any]:
+    symbol = str(trade.get("symbol") or "").upper().strip()
+    trade_id = _int_value(trade, "trade_id", context=symbol)
+    order_id = _int_value(trade, "order_id", context=symbol)
+    close_time_ms = _int_value(trade, "time_ms", context=symbol)
+    qty = _decimal_value(trade, "qty", context=symbol)
+    price = _decimal_value(trade, "price", context=symbol)
+    realized_pnl = _decimal_value(trade, "realized_pnl", context=symbol)
+    position_id = f"{symbol}|INCOMPLETE|{close_time_ms}|{trade_id}"
+    return {
+        "symbol": symbol,
+        "position_side": "LONG",
+        "status": "INCOMPLETE",
+        "position_id": position_id,
+        "open_time_ms": None,
+        "close_time_ms": close_time_ms,
+        "last_trade_time_ms": close_time_ms,
+        "entry_price": None,
+        "average_close_price": float(price),
+        "max_open_qty": None,
+        "closed_qty": float(qty),
+        "realized_pnl": float(realized_pnl),
+        "entry_notional": None,
+        "close_notional": float(qty * price),
+        "trade_ids": [trade_id],
+        "order_ids": [order_id],
+        "incomplete": True,
+        "incomplete_reason": reason,
+    }
+
+
+def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    active: dict[str, dict[str, Any]] = {}
+    positions: list[dict[str, Any]] = []
+    open_positions = 0
+    for trade in sorted(trades, key=_trade_sort_key):
+        symbol = str(trade.get("symbol") or "").upper().strip()
+        if not symbol.endswith("USDT"):
+            raise ValueError(f"trade symbol must be USDT: {symbol}")
+        position_side = str(trade.get("position_side") or "").upper().strip()
+        if position_side != "LONG":
+            raise ValueError(f"positions derivation only supports LONG trades: symbol={symbol} position_side={position_side}")
+        side = str(trade.get("side") or "").upper().strip()
+        qty = _decimal_value(trade, "qty", context=symbol)
+        price = _decimal_value(trade, "price", context=symbol)
+        realized_pnl = _decimal_value(trade, "realized_pnl", context=symbol)
+        time_ms = _int_value(trade, "time_ms", context=symbol)
+        trade_id = _int_value(trade, "trade_id", context=symbol)
+        order_id = _int_value(trade, "order_id", context=symbol)
+        if qty <= 0 or price <= 0:
+            raise ValueError(f"invalid trade qty/price: symbol={symbol} trade_id={trade_id}")
+        current = active.get(symbol)
+        if side == "BUY":
+            if current is None:
+                current = {
+                    "symbol": symbol,
+                    "open_time_ms": time_ms,
+                    "open_qty": Decimal("0"),
+                    "entry_qty": Decimal("0"),
+                    "entry_notional": Decimal("0"),
+                    "closed_qty": Decimal("0"),
+                    "close_notional": Decimal("0"),
+                    "max_open_qty": Decimal("0"),
+                    "realized_pnl": Decimal("0"),
+                    "trade_ids": [],
+                    "order_ids": [],
+                }
+                active[symbol] = current
+            current["open_qty"] += qty
+            current["entry_qty"] += qty
+            current["entry_notional"] += qty * price
+            current["max_open_qty"] = max(current["max_open_qty"], current["open_qty"])
+            current["trade_ids"].append(trade_id)
+            current["order_ids"].append(order_id)
+        elif side == "SELL":
+            if current is None:
+                positions.append(_incomplete_position_row(trade, "missing_open_trade"))
+                continue
+            if qty > current["open_qty"]:
+                raise ValueError(
+                    f"SELL qty exceeds open LONG qty: symbol={symbol} trade_id={trade_id} "
+                    f"sell_qty={qty} open_qty={current['open_qty']}"
+                )
+            current["open_qty"] -= qty
+            current["closed_qty"] += qty
+            current["close_notional"] += qty * price
+            current["realized_pnl"] += realized_pnl
+            current["trade_ids"].append(trade_id)
+            current["order_ids"].append(order_id)
+            if current["open_qty"] == 0:
+                positions.append(_position_row(current, status="CLOSED", close_trade=trade))
+                active.pop(symbol)
+        else:
+            raise ValueError(f"unsupported trade side: symbol={symbol} trade_id={trade_id} side={side}")
+    open_positions = len(active)
+    return {"positions": positions, "open_positions_skipped": open_positions}
+
+
+def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
+    trades = _history_raw_rows(account, SOURCE_TRADES)
+    try:
+        derived = _derive_long_positions(trades)
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "rows_seen": len(trades), "rows_written": 0, "open_positions_skipped": 0}
+    rows = list(derived["positions"])
+    rows_written = _write_history_rows(account, SOURCE_POSITIONS, rows, sync_ms)
+    incomplete_count = sum(1 for row in rows if row.get("incomplete"))
+    return {
+        "ok": True,
+        "reason": "",
+        "rows_seen": len(rows),
+        "rows_written": rows_written,
+        "incomplete_positions": incomplete_count,
+        "open_positions_skipped": int(derived["open_positions_skipped"]),
+    }
+
+
 def sync_account_history(
     account: str,
     *,
@@ -621,6 +817,7 @@ def sync_account_history(
             SOURCE_INCOME: {},
             SOURCE_TRANSFERS: {},
             SOURCE_BALANCE_SNAPSHOTS: {},
+            SOURCE_POSITIONS: {},
         },
         "errors": [],
     }
@@ -723,6 +920,13 @@ def sync_account_history(
         if not trade_res["ok"]:
             results["ok"] = False
             results["errors"].append(f"{SOURCE_TRADES} {symbol}: {trade_res['reason']}")
+
+    if results["ok"]:
+        position_res = _sync_positions(account_key, sync_ms)
+        results["sources"][SOURCE_POSITIONS][ACCOUNT_KEY] = position_res
+        if not position_res["ok"]:
+            results["ok"] = False
+            results["errors"].append(f"{SOURCE_POSITIONS}: {position_res['reason']}")
 
     save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
     return results
