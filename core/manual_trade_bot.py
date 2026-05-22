@@ -46,6 +46,9 @@ BJ = timezone(timedelta(hours=8))
 LONG = "LONG"
 NOTIFY_LABEL = "manual"
 POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
+API_REBATE_ACCOUNT = "mybwin139"
+API_REBATE_INCOME_TYPE = "API_REBATE"
+NO_REBATE_GROUP = "__NO_REBATE_GROUP__"
 
 OPEN_SELECT_SYMBOL = 101
 OPEN_SELECT_TYPE = 102
@@ -163,6 +166,29 @@ def _discover_accounts() -> list[str]:
         if account:
             accounts.append(account)
     return sorted(set(accounts))
+
+
+def _account_secrets_path(account: str) -> Path:
+    account_key = str(account or "").strip()
+    if not account_key:
+        raise ValueError("account must not be empty")
+    return _secrets_dir() / f"secrets_{account_key}.json"
+
+
+def _load_account_secrets(account: str) -> dict[str, Any]:
+    path = _account_secrets_path(account)
+    if not path.exists():
+        raise FileNotFoundError(f"account secrets missing: {path}")
+    data = load_json_file(path, default={})
+    if not isinstance(data, dict):
+        raise ValueError(f"account secrets must be object: {path}")
+    return data
+
+
+def _account_rebate_group(account: str) -> str:
+    data = _load_account_secrets(account)
+    group = str(data.get("rebate_group") or "").strip()
+    return group or NO_REBATE_GROUP
 
 
 def _selected_account(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -884,6 +910,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("account_detail", "Account Detail"),
         BotCommand("view_history", "History"),
         BotCommand("pending_orders", "Pending Orders"),
+        BotCommand("rebate_report", "API Rebate Report"),
         BotCommand("trade", "Command Trade"),
         BotCommand("edit_symbols", "Edit Symbols"),
         BotCommand("open", "Open"),
@@ -1644,6 +1671,27 @@ def _history_days(start: datetime, end: datetime) -> list[str]:
     return days
 
 
+def _parse_bj_date(text: str) -> datetime:
+    try:
+        value = datetime.strptime(str(text or "").strip(), "%Y-%m-%d")
+    except Exception as exc:
+        raise ValueError(f"日期格式必须是 YYYY-MM-DD: {text}") from exc
+    return value.replace(tzinfo=BJ)
+
+
+def _bj_day_range_ms(day_text: str) -> tuple[int, int]:
+    start = _parse_bj_date(day_text)
+    end = start + timedelta(days=1) - timedelta(milliseconds=1)
+    return (
+        int(start.astimezone(timezone.utc).timestamp() * 1000),
+        int(end.astimezone(timezone.utc).timestamp() * 1000),
+    )
+
+
+def _today_bj_text() -> str:
+    return datetime.now(tz=BJ).date().isoformat()
+
+
 def _exchange_history_root(account: str) -> Path:
     account_key = str(account or "").strip()
     if not account_key:
@@ -1816,6 +1864,210 @@ def _load_exchange_history_rows_or_missing(account: str, source: str, start_ms: 
     if not path.exists():
         return [], True
     return _exchange_history_rows(account, source, start_ms, end_ms), False
+
+
+def _rebate_daily_report_path(rebate_account: str, day_text: str) -> Path:
+    return state_path("exchange_history", "reports", "api_rebate_daily", rebate_account, f"{day_text}.json")
+
+
+def _load_rebate_daily_report(rebate_account: str, day_text: str) -> dict[str, Any] | None:
+    path = _rebate_daily_report_path(rebate_account, day_text)
+    if not path.exists():
+        return None
+    data = load_json_file(path, default={})
+    if not isinstance(data, dict):
+        raise ValueError(f"api rebate daily report cache must be object: {path}")
+    return data
+
+
+def _trade_owner_lookup(accounts: list[str], keys: set[tuple[str, str]]) -> dict[tuple[str, str], set[str]]:
+    owners: dict[tuple[str, str], set[str]] = {}
+    if not keys:
+        return owners
+    for account in accounts:
+        root = _exchange_history_root(account) / "trades"
+        if not root.exists():
+            continue
+        for path in sorted(root.glob("*.jsonl")):
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    raw = record.get("raw")
+                    if not isinstance(raw, dict):
+                        continue
+                    key = (str(raw.get("symbol") or "").upper().strip(), str(raw.get("trade_id") or "").strip())
+                    if key in keys:
+                        owners.setdefault(key, set()).add(account)
+    return owners
+
+
+def _build_rebate_daily_report(rebate_account: str, day_text: str) -> dict[str, Any]:
+    start_ms, end_ms = _bj_day_range_ms(day_text)
+    rebate_rows = [
+        row
+        for row in _exchange_history_rows(rebate_account, "income", start_ms, end_ms)
+        if str(row.get("income_type") or "").upper().strip() == API_REBATE_INCOME_TYPE
+    ]
+    keys = {
+        (str(row.get("symbol") or "").upper().strip(), str(row.get("trade_id") or "").strip())
+        for row in rebate_rows
+        if str(row.get("symbol") or "").strip() and str(row.get("trade_id") or "").strip()
+    }
+    trade_accounts = [account for account in _discover_accounts() if account != rebate_account]
+    owners = _trade_owner_lookup(trade_accounts, keys)
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    unmatched_count = 0
+    unmatched_usdt = 0.0
+    ambiguous_count = 0
+    no_group_count = 0
+    no_group_usdt = 0.0
+    for row in rebate_rows:
+        symbol = str(row.get("symbol") or "").upper().strip()
+        trade_id = str(row.get("trade_id") or "").strip()
+        amount = float(row.get("income", 0.0) or 0.0)
+        owner_set = owners.get((symbol, trade_id), set())
+        if len(owner_set) == 0:
+            unmatched_count += 1
+            unmatched_usdt += amount
+            continue
+        if len(owner_set) > 1:
+            ambiguous_count += 1
+            unmatched_usdt += amount
+            continue
+        account = next(iter(owner_set))
+        group = _account_rebate_group(account)
+        if group == NO_REBATE_GROUP:
+            no_group_count += 1
+            no_group_usdt += amount
+        email = str(row.get("info") or "").strip()
+        key = (group, account, email)
+        entry = grouped.setdefault(
+            key,
+            {
+                "group": group,
+                "account": account,
+                "masked_email": email,
+                "rebate_usdt": 0.0,
+                "row_count": 0,
+            },
+        )
+        entry["rebate_usdt"] = float(entry["rebate_usdt"]) + amount
+        entry["row_count"] = int(entry["row_count"]) + 1
+    rows = sorted(grouped.values(), key=lambda x: (str(x["group"]), str(x["account"]), str(x["masked_email"])))
+    group_totals: dict[str, float] = {}
+    for row in rows:
+        group = str(row["group"])
+        group_totals[group] = group_totals.get(group, 0.0) + float(row["rebate_usdt"])
+    is_closed = day_text < _today_bj_text()
+    complete = unmatched_count == 0 and ambiguous_count == 0 and no_group_count == 0
+    return {
+        "date_bj": day_text,
+        "rebate_account": rebate_account,
+        "closed": is_closed,
+        "complete": complete,
+        "generated_time_bj": datetime.now(tz=BJ).isoformat(),
+        "rows": rows,
+        "group_totals": group_totals,
+        "total_rebate_usdt": sum(float(row["rebate_usdt"]) for row in rows),
+        "source_row_count": len(rebate_rows),
+        "unmatched_count": unmatched_count,
+        "unmatched_rebate_usdt": unmatched_usdt,
+        "ambiguous_count": ambiguous_count,
+        "no_group_count": no_group_count,
+        "no_group_rebate_usdt": no_group_usdt,
+    }
+
+
+def _rebate_daily_report(rebate_account: str, day_text: str) -> dict[str, Any]:
+    cached = _load_rebate_daily_report(rebate_account, day_text)
+    if cached and cached.get("closed"):
+        return cached
+    report = _build_rebate_daily_report(rebate_account, day_text)
+    if report["closed"] and report["complete"]:
+        save_json_file_atomic(_rebate_daily_report_path(rebate_account, day_text), report)
+    return report
+
+
+def _rebate_report_days(start_day: str, end_day: str) -> list[str]:
+    start = _parse_bj_date(start_day)
+    end = _parse_bj_date(end_day)
+    if start > end:
+        raise ValueError("起始日期不能晚于截止日期")
+    if (end - start).days > 62:
+        raise ValueError("查询区间不能超过 63 天")
+    return _history_days(start, end)
+
+
+def _merge_rebate_reports(group: str, daily_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    group_key = str(group or "").strip()
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for report in daily_reports:
+        for row in report.get("rows", []):
+            if str(row.get("group") or "") != group_key:
+                continue
+            key = (str(row.get("account") or ""), str(row.get("masked_email") or ""))
+            entry = merged.setdefault(
+                key,
+                {
+                    "account": key[0],
+                    "masked_email": key[1],
+                    "rebate_usdt": 0.0,
+                    "row_count": 0,
+                },
+            )
+            entry["rebate_usdt"] = float(entry["rebate_usdt"]) + float(row.get("rebate_usdt", 0.0) or 0.0)
+            entry["row_count"] = int(entry["row_count"]) + int(row.get("row_count", 0) or 0)
+    rows = sorted(merged.values(), key=lambda x: (str(x["account"]), str(x["masked_email"])))
+    return {
+        "rows": rows,
+        "total_rebate_usdt": sum(float(row["rebate_usdt"]) for row in rows),
+        "source_row_count": sum(int(report.get("source_row_count", 0) or 0) for report in daily_reports),
+        "unmatched_count": sum(int(report.get("unmatched_count", 0) or 0) for report in daily_reports),
+        "ambiguous_count": sum(int(report.get("ambiguous_count", 0) or 0) for report in daily_reports),
+        "no_group_count": sum(int(report.get("no_group_count", 0) or 0) for report in daily_reports),
+    }
+
+
+@_admin_required
+async def rebate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = list(context.args or [])
+    if len(args) != 3:
+        await update.message.reply_text("用法: /rebate_report GROUP START_DATE END_DATE，例如 /rebate_report partner_a 2026-05-22 2026-05-22")
+        return
+    group, start_day, end_day = args
+    days = _rebate_report_days(start_day, end_day)
+    reports = [_rebate_daily_report(API_REBATE_ACCOUNT, day) for day in days]
+    merged = _merge_rebate_reports(group, reports)
+    lines = [
+        "API返佣报表",
+        f"组: {group}",
+        f"日期: {start_day} ~ {end_day}",
+        "",
+    ]
+    if merged["rows"]:
+        for row in merged["rows"]:
+            lines.append(
+                f"{row['account']} | {row['masked_email']}\n"
+                f"{_fmt_float(row['rebate_usdt'], digits=8)} USDT | {row['row_count']} 笔"
+            )
+    else:
+        lines.append("该组在查询区间内无 API 返佣记录")
+    lines.extend(["", f"合计: {_fmt_float(merged['total_rebate_usdt'], digits=8)} USDT"])
+    warnings = []
+    if merged["unmatched_count"]:
+        warnings.append(f"未匹配返佣 {merged['unmatched_count']} 笔")
+    if merged["ambiguous_count"]:
+        warnings.append(f"多账户冲突 {merged['ambiguous_count']} 笔")
+    if merged["no_group_count"]:
+        warnings.append(f"缺少 rebate_group {merged['no_group_count']} 笔")
+    if warnings:
+        lines.extend(["", "注意: " + "；".join(warnings)])
+    await _send_lines(update, lines)
 
 
 def _manual_order_type(order: dict[str, Any]) -> str | None:
@@ -2606,6 +2858,7 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("account_detail", account_detail))
     application.add_handler(CommandHandler("pending_orders", pending_orders))
     application.add_handler(CommandHandler("view_history", send_history))
+    application.add_handler(CommandHandler("rebate_report", rebate_report))
     application.add_handler(CommandHandler("trade", trade_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(account_detail_selected, pattern=r"^account_action:detail:"))
