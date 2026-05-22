@@ -1008,7 +1008,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。2026-05-15 已将其语义定位写入 `PROJECT_BASELINE.md`：该进程是账户级管理员门户，管理范围覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水；文件名中的 `manual` 仅为历史命名。
 
 当前迁移边界：
-1. 保留菜单，当前显示顺序为：/set_s、/set_current_account、/status、/account_detail、/view_history、/pending_orders、/trade、/edit_symbols、/open、/close、/stop_market。
+1. 保留菜单，当前显示顺序为：/set_s、/status、/account_detail、/view_history、/pending_orders、/trade、/edit_symbols、/open、/close、/stop_market、/set_current_account。
 2. 删除旧菜单：/view_monitor_status、/hedge_open、/hedge_close、/view_monitor_config、/edit_monitor_config、/add_viewer、/remove_viewer。
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
@@ -1041,6 +1041,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
+12. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
 
 2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。当前 `/view_history` 的“历史委托”对应 Binance order history / `get_all_orders` 的已成交 LONG order；`get_account_trades` 仅用于按 order id 补充 realized PnL，不是独立的“历史成交”列表。
 

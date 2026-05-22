@@ -869,7 +869,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     commands = [
         BotCommand("set_s", "Set Trade Symbol"),
-        BotCommand("set_current_account", "Select"),
         BotCommand("status", "All Accounts"),
         BotCommand("account_detail", "Account Detail"),
         BotCommand("view_history", "History"),
@@ -879,6 +878,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("open", "Open"),
         BotCommand("close", "Close"),
         BotCommand("stop_market", "Stop Market"),
+        BotCommand("set_current_account", "Select"),
     ]
     await context.bot.set_my_commands(commands=commands, scope=BotCommandScopeChat(chat_id=chat_id))
     await update.message.reply_text("menu updated")
@@ -904,6 +904,33 @@ async def select_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     context.user_data["current_account"] = account
     await query.edit_message_text(f"current account: {account}")
+
+
+async def _prompt_account_action(update: Update, action: str, title: str) -> None:
+    accounts = _discover_accounts()
+    if not accounts:
+        text = "no secrets_*.json accounts found"
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text)
+        else:
+            await update.message.reply_text(text)
+        return
+    buttons = [[InlineKeyboardButton(acc, callback_data=f"account_action:{action}:{acc}")] for acc in accounts]
+    text = f"Select account for {title}"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def _account_action_parts(update: Update, expected_action: str) -> tuple[Any, str]:
+    query = update.callback_query
+    _, action, account = query.data.split(":", 2)
+    if action != expected_action:
+        raise ValueError(f"unexpected account action: {action}")
+    if account not in _discover_accounts():
+        raise ValueError(f"account not found: {account}")
+    return query, account
 
 
 @_admin_required
@@ -948,12 +975,13 @@ async def account_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _send_lines(update, lines)
 
 
-@_admin_required
-async def account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    account = _selected_account(context)
+async def _send_account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, account: str) -> None:
     status = get_account_status(account)
     if not status["ok"]:
-        await update.message.reply_text(status["reason"])
+        if update.callback_query:
+            await update.callback_query.edit_message_text(status["reason"])
+        else:
+            await update.message.reply_text(status["reason"])
         return
     lines: list[str] = [""]
     data = status["data"]
@@ -979,19 +1007,32 @@ async def account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines.append("ℹ️ 无持仓信息")
     keyboard = [
         [
-            InlineKeyboardButton("📄 Pending", callback_data="detail_pending"),
-            InlineKeyboardButton("📜 History", callback_data="detail_history"),
+            InlineKeyboardButton("📄 Pending", callback_data=f"detail_pending:{account}"),
+            InlineKeyboardButton("📜 History", callback_data=f"detail_history:{account}"),
         ]
     ]
-    await update.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
+    text = "\n".join(lines)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 @_admin_required
-async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    account = _selected_account(context)
+async def account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _prompt_account_action(update, "detail", "Account Detail")
+
+
+@_admin_required
+async def account_detail_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if query:
-        await query.answer()
+    await query.answer()
+    _, account = _account_action_parts(update, "detail")
+    await _send_account_detail(update, context, account)
+
+
+async def _send_pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, account: str) -> None:
+    query = update.callback_query
     orders = _long_orders(account)
     if not orders:
         text = "📄 当前挂单\n\n✅ 当前无挂单"
@@ -1007,7 +1048,7 @@ async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         key = (str(order.get("symbol")), str(order.get("side")))
         order_groups.setdefault(key, []).append(order)
     for (symbol, side), group in order_groups.items():
-        buttons.append([InlineKeyboardButton(f"📌 {symbol} {side} 撤单 ↓↓↓", callback_data=f"cancel_group:{symbol}")])
+        buttons.append([InlineKeyboardButton(f"📌 {symbol} {side} 撤单 ↓↓↓", callback_data=f"cancel_group:{account}:{symbol}")])
         row_buttons = []
         for order in sorted(group, key=_order_display_price, reverse=True):
             oid = order.get("order_id")
@@ -1021,7 +1062,7 @@ async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 row_buttons.append(
                     InlineKeyboardButton(
                         f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})",
-                        callback_data=f"cancel:{symbol}:{oid}",
+                        callback_data=f"cancel:{account}:{symbol}:{oid}",
                     )
                 )
             if len(row_buttons) == 2:
@@ -1038,10 +1079,39 @@ async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 @_admin_required
+async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _prompt_account_action(update, "pending", "Pending Orders")
+
+
+@_admin_required
+async def pending_orders_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    _, account = _account_action_parts(update, "pending")
+    await _send_pending_orders(update, context, account)
+
+
+@_admin_required
+async def detail_pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    _, account = query.data.split(":", 1)
+    if account not in _discover_accounts():
+        await query.edit_message_text(f"account not found: {account}")
+        return ConversationHandler.END
+    await _send_pending_orders(update, context, account)
+    return ConversationHandler.END
+
+
+@_admin_required
 async def detail_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await send_history(update, context)
+    _, account = query.data.split(":", 1)
+    if account not in _discover_accounts():
+        await query.edit_message_text(f"account not found: {account}")
+        return ConversationHandler.END
+    await _send_history(update, context, account)
     return ConversationHandler.END
 
 
@@ -1049,12 +1119,17 @@ async def detail_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def confirm_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    _, symbol = query.data.split(":", 1)
+    parts = query.data.split(":")
+    if len(parts) == 3:
+        _, account, symbol = parts
+    else:
+        _, symbol = parts
+        account = _selected_account(context)
     await query.edit_message_text(
-        f"Confirm cancel all LONG orders for {symbol}?",
+        f"Confirm cancel all LONG orders for {account} {symbol}?",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Confirm", callback_data=f"cancel_group_ok:{symbol}")],
+                [InlineKeyboardButton("Confirm", callback_data=f"cancel_group_ok:{account}:{symbol}")],
                 [InlineKeyboardButton("Abort", callback_data="abort")],
             ]
         ),
@@ -1065,25 +1140,34 @@ async def confirm_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYP
 async def do_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    account = _selected_account(context)
-    _, symbol = query.data.split(":", 1)
+    parts = query.data.split(":")
+    if len(parts) == 3:
+        _, account, symbol = parts
+    else:
+        _, symbol = parts
+        account = _selected_account(context)
     res = cancel_all_orders(account, symbol, notify_label=NOTIFY_LABEL)
     if not res["ok"]:
         await query.edit_message_text(f"cancel orders failed: {res['reason']}")
         return
-    await query.edit_message_text(f"cancel orders submitted: {symbol}")
+    await query.edit_message_text(f"cancel orders submitted: {account} {symbol}")
 
 
 @_admin_required
 async def confirm_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    _, symbol, oid = query.data.split(":", 2)
+    parts = query.data.split(":")
+    if len(parts) == 4:
+        _, account, symbol, oid = parts
+    else:
+        _, symbol, oid = parts
+        account = _selected_account(context)
     await query.edit_message_text(
-        f"Confirm cancel {symbol} {oid}?",
+        f"Confirm cancel {account} {symbol} {oid}?",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Confirm", callback_data=f"cancel_ok:{symbol}:{oid}")],
+                [InlineKeyboardButton("Confirm", callback_data=f"cancel_ok:{account}:{symbol}:{oid}")],
                 [InlineKeyboardButton("Abort", callback_data="abort")],
             ]
         ),
@@ -1094,13 +1178,17 @@ async def confirm_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYP
 async def do_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    account = _selected_account(context)
-    _, symbol, oid = query.data.split(":", 2)
+    parts = query.data.split(":")
+    if len(parts) == 4:
+        _, account, symbol, oid = parts
+    else:
+        _, symbol, oid = parts
+        account = _selected_account(context)
     res = cancel_order(account, symbol, exchange_order_id=int(oid), notify_label=NOTIFY_LABEL)
     if not res["ok"]:
         await query.edit_message_text(f"cancel failed: {res['reason']}")
         return
-    await query.edit_message_text(f"cancel submitted: {symbol} {oid}")
+    await query.edit_message_text(f"cancel submitted: {account} {symbol} {oid}")
 
 
 @_admin_required
@@ -1706,7 +1794,20 @@ def _manual_order_type(order: dict[str, Any]) -> str | None:
 
 @_admin_required
 async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    account = _selected_account(context)
+    await _prompt_account_action(update, "history", "History")
+    return ConversationHandler.END
+
+
+@_admin_required
+async def send_history_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    _, account = _account_action_parts(update, "history")
+    await _send_history(update, context, account)
+    return ConversationHandler.END
+
+
+async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, account: str) -> int:
     now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     start_ms = now_ms - 48 * 60 * 60 * 1000
     order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", start_ms, now_ms)
@@ -2463,8 +2564,11 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("view_history", send_history))
     application.add_handler(CommandHandler("trade", trade_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
-    application.add_handler(CallbackQueryHandler(pending_orders, pattern=r"^detail_pending$"))
-    application.add_handler(CallbackQueryHandler(detail_history, pattern=r"^detail_history$"))
+    application.add_handler(CallbackQueryHandler(account_detail_selected, pattern=r"^account_action:detail:"))
+    application.add_handler(CallbackQueryHandler(pending_orders_selected, pattern=r"^account_action:pending:"))
+    application.add_handler(CallbackQueryHandler(send_history_selected, pattern=r"^account_action:history:"))
+    application.add_handler(CallbackQueryHandler(detail_pending, pattern=r"^detail_pending:"))
+    application.add_handler(CallbackQueryHandler(detail_history, pattern=r"^detail_history:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_group, pattern=r"^cancel_group:"))
     application.add_handler(CallbackQueryHandler(do_cancel_group, pattern=r"^cancel_group_ok:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_order, pattern=r"^cancel:"))
