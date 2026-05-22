@@ -32,6 +32,7 @@ INCOME_QUERY_WINDOW_MS = DAY_MS
 MIN_INCOME_QUERY_WINDOW_MS = 60 * 60 * 1000
 QUERY_LIMIT = 1000
 DEFAULT_REQUEST_SLEEP_SECS = 0.3
+POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
 
 
 def _now_ms() -> int:
@@ -716,6 +717,31 @@ def _incomplete_position_row(trade: dict[str, Any], reason: str) -> dict[str, An
     }
 
 
+def _position_net_pnl_from_income(position: dict[str, Any], incomes: list[dict[str, Any]]) -> Decimal | None:
+    symbol = str(position.get("symbol") or "").upper().strip()
+    trade_ids = {str(x) for x in position.get("trade_ids") or [] if str(x)}
+    open_time_ms = int(position.get("open_time_ms") or 0)
+    close_time_ms = int(position.get("close_time_ms") or 0)
+    total = Decimal("0")
+    matched = False
+    for income in incomes:
+        if str(income.get("symbol") or "").upper().strip() != symbol:
+            continue
+        income_type = str(income.get("income_type") or "").upper().strip()
+        if income_type not in POSITION_NET_PNL_INCOME_TYPES:
+            continue
+        trade_id = str(income.get("trade_id") or "").strip()
+        include = bool(trade_id and trade_id in trade_ids)
+        if not include and income_type == "FUNDING_FEE" and open_time_ms > 0 and close_time_ms > 0:
+            time_ms = int(income.get("time_ms") or 0)
+            include = open_time_ms <= time_ms <= close_time_ms
+        if not include:
+            continue
+        total += _decimal_value(income, "income", context=symbol)
+        matched = True
+    return total if matched else None
+
+
 def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
     active: dict[str, dict[str, Any]] = {}
     positions: list[dict[str, Any]] = []
@@ -785,11 +811,17 @@ def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
     trades = _history_raw_rows(account, SOURCE_TRADES)
+    incomes = _history_raw_rows(account, SOURCE_INCOME)
     try:
         derived = _derive_long_positions(trades)
     except Exception as exc:
         return {"ok": False, "reason": str(exc), "rows_seen": len(trades), "rows_written": 0, "open_positions_skipped": 0}
     rows = list(derived["positions"])
+    for row in rows:
+        net_pnl = _position_net_pnl_from_income(row, incomes)
+        if net_pnl is not None:
+            row["trade_realized_pnl"] = row["realized_pnl"]
+            row["net_pnl"] = float(net_pnl)
     rows_written = _write_history_rows(account, SOURCE_POSITIONS, rows, sync_ms)
     incomplete_count = sum(1 for row in rows if row.get("incomplete"))
     return {

@@ -45,6 +45,7 @@ from core.runtime_state import load_json_file, save_json_file_atomic, state_path
 BJ = timezone(timedelta(hours=8))
 LONG = "LONG"
 NOTIFY_LABEL = "manual"
+POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
 
 OPEN_SELECT_SYMBOL = 101
 OPEN_SELECT_TYPE = 102
@@ -335,6 +336,16 @@ def _bj_second(ts_ms: Any) -> str:
     if value <= 0:
         return "UNKNOWN"
     return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _bj_short_second(ts_ms: Any) -> str:
+    try:
+        value = int(ts_ms)
+    except Exception:
+        return "UNKNOWN"
+    if value <= 0:
+        return "UNKNOWN"
+    return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%m-%d %H:%M:%S")
 
 
 def _chunk_lines(lines: list[str], limit: int = 3600) -> list[str]:
@@ -1761,6 +1772,33 @@ def _fmt_history_usdt(value: Any) -> str:
     return _fmt_usdt(value)
 
 
+def _position_net_pnl(position: dict[str, Any], income_rows: list[dict[str, Any]]) -> Any:
+    if position.get("net_pnl") is not None:
+        return position.get("net_pnl")
+    symbol = str(position.get("symbol") or "").upper().strip()
+    trade_ids = {str(x) for x in position.get("trade_ids") or [] if str(x)}
+    open_time_ms = _int_ms(position.get("open_time_ms"))
+    close_time_ms = _int_ms(position.get("close_time_ms"))
+    total = 0.0
+    matched = False
+    for row in income_rows:
+        if str(row.get("symbol") or "").upper().strip() != symbol:
+            continue
+        income_type = str(row.get("income_type") or "").upper().strip()
+        if income_type not in POSITION_NET_PNL_INCOME_TYPES:
+            continue
+        trade_id = str(row.get("trade_id") or "").strip()
+        include = bool(trade_id and trade_id in trade_ids)
+        if not include and income_type == "FUNDING_FEE" and open_time_ms > 0 and close_time_ms > 0:
+            time_ms = _int_ms(row.get("time_ms"))
+            include = open_time_ms <= time_ms <= close_time_ms
+        if not include:
+            continue
+        total += float(row.get("income", 0.0) or 0.0)
+        matched = True
+    return total if matched else position.get("realized_pnl")
+
+
 def _sum_income(account: str, *, days: int, income_type: str) -> float:
     end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     start_ms = end_ms - int(days) * 24 * 60 * 60 * 1000
@@ -1834,6 +1872,12 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
         and str(row.get("status") or "").upper() in {"CLOSED", "INCOMPLETE"}
     ]
     long_positions.sort(key=lambda x: _history_display_ms(x, "close_time_ms", "last_trade_time_ms"), reverse=True)
+    income_start_ms = start_ms
+    for position in long_positions:
+        open_time_ms = _int_ms(position.get("open_time_ms"))
+        if open_time_ms > 0:
+            income_start_ms = min(income_start_ms, max(0, open_time_ms - 60_000))
+    income_rows, _ = _load_exchange_history_rows_or_missing(account, "income", income_start_ms, now_ms)
     transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
     deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
     withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
@@ -1872,10 +1916,10 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
             status = str(position.get("status") or "").upper()
             status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
             lines.append(
-                f"{symbol} | {status_text} | 盈亏 {_fmt_history_usdt(position.get('realized_pnl'))}\n"
+                f"{symbol} | {status_text} | 盈亏 {_fmt_history_usdt(_position_net_pnl(position, income_rows))}\n"
                 f"  开仓价: {_fmt_history_float(position.get('entry_price'))}  平仓价: {_fmt_history_float(position.get('average_close_price'))}\n"
-                f"  开仓时间: {_bj_minute(position.get('open_time_ms'))}\n"
-                f"  平仓时间: {_bj_minute(position.get('close_time_ms'))}\n"
+                f"  开仓时间: {_bj_short_second(position.get('open_time_ms'))}\n"
+                f"  平仓时间: {_bj_short_second(position.get('close_time_ms'))}\n"
                 f"  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
                 f"  最高O: {_fmt_history_float(position.get('max_open_qty'))}  已平仓量: {_fmt_history_float(position.get('closed_qty'))}"
             )
