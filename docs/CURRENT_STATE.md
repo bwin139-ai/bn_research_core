@@ -1008,7 +1008,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。2026-05-15 已将其语义定位写入 `PROJECT_BASELINE.md`：该进程是账户级管理员门户，管理范围覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水；文件名中的 `manual` 仅为历史命名。
 
 当前迁移边界：
-1. 保留菜单：/set_current_account、/open、/close、/status、/account_detail、/pending_orders、/view_history、/stop_market、/edit_symbols。
+1. 保留菜单，当前显示顺序为：/set_s、/set_current_account、/status、/account_detail、/view_history、/pending_orders、/trade、/edit_symbols、/open、/close、/stop_market。
 2. 删除旧菜单：/view_monitor_status、/hedge_open、/hedge_close、/view_monitor_config、/edit_monitor_config、/add_viewer、/remove_viewer。
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。

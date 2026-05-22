@@ -868,17 +868,17 @@ async def post_init(application: Application) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     commands = [
+        BotCommand("set_s", "Set Trade Symbol"),
         BotCommand("set_current_account", "Select"),
-        BotCommand("open", "Open"),
-        BotCommand("close", "Close"),
         BotCommand("status", "All Accounts"),
         BotCommand("account_detail", "Account Detail"),
-        BotCommand("pending_orders", "Pending Orders"),
         BotCommand("view_history", "History"),
+        BotCommand("pending_orders", "Pending Orders"),
         BotCommand("trade", "Command Trade"),
-        BotCommand("set_s", "Set Trade Symbol"),
-        BotCommand("stop_market", "Stop Market"),
         BotCommand("edit_symbols", "Edit Symbols"),
+        BotCommand("open", "Open"),
+        BotCommand("close", "Close"),
+        BotCommand("stop_market", "Stop Market"),
     ]
     await context.bot.set_my_commands(commands=commands, scope=BotCommandScopeChat(chat_id=chat_id))
     await update.message.reply_text("menu updated")
