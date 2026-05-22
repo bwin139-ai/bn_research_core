@@ -1013,7 +1013,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
 5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
-6. 新增 `/set s` 当前交易 symbol 入口：输入后显示当前 `SYMBOL LEVERAGE`，继续输入 `HYPEUSDT 20x` 会写入 `state/manual_trade_current_symbol.json`。这里的杠杆只作为 `/trade` 简化命令的记录；`/set s` 本身不调用 Binance API 修改任何账户或品种杠杆。
+6. 新增 `/set_s` 菜单命令与 `/set s` 当前交易 symbol 入口：输入后显示当前 `SYMBOL LEVERAGE`，并从 `manual_trade_symbols.json` 弹出 symbol/leverage 按钮供点选；也可继续手动输入 `HYPEUSDT 20x`，写入 `state/manual_trade_current_symbol.json`。这里的杠杆只作为 `/trade` 简化命令的记录；设置入口本身不调用 Binance API 修改任何账户或品种杠杆。
 7. `/trade open` 改为使用 `/set s` 维护的当前 symbol / leverage，命令中不再携带 symbol 与杠杆；支持多账户开仓：
    - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M SL PRICE TP PRICE`
    - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] PO SL PRICE TP PRICE`

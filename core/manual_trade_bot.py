@@ -228,7 +228,7 @@ def _parse_symbol_leverage(symbol_text: str, leverage_text: str) -> dict[str, An
 def _load_current_trade_symbol() -> dict[str, Any]:
     path = _current_trade_symbol_path()
     if not path.exists():
-        raise ValueError("当前交易 symbol 未设置，请先使用 /set s")
+        raise ValueError("当前交易 symbol 未设置，请先使用 /set_s 或 /set s")
     data = load_json_file(path, default={})
     if not isinstance(data, dict):
         raise ValueError(f"manual_trade_current_symbol.json must be object: {path}")
@@ -467,7 +467,7 @@ def _parse_price_match(value: str) -> str | None:
 def _trade_usage() -> str:
     return (
         "Usage:\n"
-        "/set s\n"
+        "/set_s or /set s\n"
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO SL PRICE TP PRICE\n"
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
@@ -476,7 +476,7 @@ def _trade_usage() -> str:
         "/trade pending ACCOUNT[ | ACCOUNT...]\n"
         "/trade cancel ACCOUNT[ | ACCOUNT...]\n"
         "Example:\n"
-        "/set s then HYPEUSDT 20x\n"
+        "/set_s then HYPEUSDT 20x\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 PO SL 55.38 TP 59.39\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 M SL 55.38 TP 59.39\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 L 57.27\n"
@@ -876,7 +876,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("pending_orders", "Pending Orders"),
         BotCommand("view_history", "History"),
         BotCommand("trade", "Command Trade"),
-        BotCommand("set", "Set Trade Symbol"),
+        BotCommand("set_s", "Set Trade Symbol"),
         BotCommand("stop_market", "Stop Market"),
         BotCommand("edit_symbols", "Edit Symbols"),
     ]
@@ -1476,12 +1476,45 @@ async def set_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if len(args) != 1 or args[0].lower() != "s":
         await update.message.reply_text("Usage: /set s")
         return ConversationHandler.END
+    return await _prompt_set_symbol(update)
+
+
+@_admin_required
+async def set_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _prompt_set_symbol(update)
+
+
+async def _prompt_set_symbol(update: Update) -> int:
     try:
         current = _current_trade_symbol_text()
     except ValueError:
         current = "未设置"
-    await update.message.reply_text(f"当前 symbol: {current}\n请输入 SYMBOL LEVERAGE，例如: HYPEUSDT 20x")
+    rows = _load_symbol_rows()
+    buttons = [
+        [InlineKeyboardButton(f"{row['symbol']} {row['leverage']}x", callback_data=f"set_symbol:{row['symbol']}")]
+        for row in rows
+    ]
+    buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
+    text = f"当前 symbol: {current}\n请选择 symbol，或输入 SYMBOL LEVERAGE，例如: HYPEUSDT 20x"
+    if not rows:
+        text = f"{text}\nmanual_trade_symbols.json 为空，只能手动输入。"
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     return SET_SYMBOL_INPUT
+
+
+@_admin_required
+async def set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    symbol = query.data.split(":", 1)[1]
+    try:
+        row = _symbol_row(symbol)
+        saved = _save_current_trade_symbol(row["symbol"], int(row["leverage"]))
+    except Exception as exc:
+        await query.edit_message_text(f"设置失败: {exc}")
+        return ConversationHandler.END
+    await query.edit_message_text(f"当前 symbol 已设置: {saved['symbol']} {saved['leverage']}x")
+    return ConversationHandler.END
 
 
 @_admin_required
@@ -2440,8 +2473,13 @@ def run_bot() -> None:
 
     application.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("set", set_command)],
-            states={SET_SYMBOL_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_symbol_input)]},
+            entry_points=[CommandHandler("set", set_command), CommandHandler("set_s", set_symbol_command)],
+            states={
+                SET_SYMBOL_INPUT: [
+                    CallbackQueryHandler(set_symbol_selected, pattern=r"^set_symbol:"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, set_symbol_input),
+                ]
+            },
             fallbacks=[CommandHandler("cancel", cancel_conv)],
             allow_reentry=True,
             per_user=True,
