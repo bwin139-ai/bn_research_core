@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -42,6 +43,15 @@ EQUITY_INITIAL = 100.0
 DEFAULT_FEE_SIDE = 0.0005
 HBS_LOGIC_STRATEGIES = {"spring-sabc", "sweep-reclaim"}
 HBS_LOGIC_PREFIX_MS = 60_000
+AUDIT_DATA_REQUIRED_COLUMNS = (
+    "open_time_ms",
+    "open",
+    "high",
+    "low",
+    "close",
+    "quote_asset_volume",
+)
+SNAPBACK_AUDIT_IDX_COLUMNS = ("high_idx", "low_idx", "close_idx")
 
 
 def setup_logging(log_file: str):
@@ -103,6 +113,130 @@ def _extract_base_order_notional_usdt(config: Dict[str, Any]) -> Optional[float]
     if value is not None and value > 0:
         return float(value)
     return None
+
+
+def _bj_text(ts_ms: int) -> str:
+    return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).astimezone(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _preflight_audit_symbol_data(
+    *,
+    data_dir: str,
+    strategy_name: str,
+    audit_symbols: set[str],
+    audit_start_ms: int,
+    audit_end_ms: int,
+    history_window_mins: int,
+) -> None:
+    if not audit_symbols:
+        return
+
+    data_root = Path(data_dir)
+    lookback_ms = max(0, int(history_window_mins)) * 60_000
+    coverage_start_ms = int(audit_start_ms) - lookback_ms
+    coverage_end_ms = int(audit_end_ms)
+    errors: List[str] = []
+
+    for symbol in sorted(audit_symbols):
+        symbol_dir = data_root / symbol
+        if not symbol_dir.is_dir():
+            errors.append(f"{symbol}: missing data directory {symbol_dir}")
+            continue
+
+        files = sorted(symbol_dir.glob("*.parquet"))
+        if not files:
+            errors.append(f"{symbol}: no parquet files under {symbol_dir}")
+            continue
+
+        try:
+            df_symbol = pq.read_table([str(p) for p in files]).to_pandas()
+        except Exception as exc:
+            errors.append(f"{symbol}: parquet read failed: {exc}")
+            continue
+
+        missing_cols = [col for col in AUDIT_DATA_REQUIRED_COLUMNS if col not in df_symbol.columns]
+        if strategy_name == "snapback":
+            missing_cols.extend(col for col in SNAPBACK_AUDIT_IDX_COLUMNS if col not in df_symbol.columns)
+        if missing_cols:
+            errors.append(f"{symbol}: missing columns {sorted(set(missing_cols))}")
+            continue
+
+        df_symbol = df_symbol.copy()
+        df_symbol["open_time_ms"] = pd.to_numeric(df_symbol["open_time_ms"], errors="coerce")
+        df_symbol = df_symbol.dropna(subset=["open_time_ms"])
+        if df_symbol.empty:
+            errors.append(f"{symbol}: open_time_ms is empty after numeric coercion")
+            continue
+        df_symbol["open_time_ms"] = df_symbol["open_time_ms"].astype("int64")
+        df_symbol.sort_values("open_time_ms", inplace=True)
+
+        duplicate_count = int(df_symbol["open_time_ms"].duplicated().sum())
+        if duplicate_count:
+            errors.append(f"{symbol}: duplicate open_time_ms rows={duplicate_count}")
+            continue
+
+        min_ts = int(df_symbol["open_time_ms"].iloc[0])
+        max_ts = int(df_symbol["open_time_ms"].iloc[-1])
+        if min_ts > coverage_start_ms:
+            errors.append(
+                f"{symbol}: leading coverage missing, first={_bj_text(min_ts)} required_start={_bj_text(coverage_start_ms)}"
+            )
+        if max_ts < coverage_end_ms:
+            errors.append(
+                f"{symbol}: trailing coverage missing, last={_bj_text(max_ts)} required_end={_bj_text(coverage_end_ms)}"
+            )
+
+        window_df = df_symbol[
+            (df_symbol["open_time_ms"] >= coverage_start_ms)
+            & (df_symbol["open_time_ms"] <= coverage_end_ms)
+        ].copy()
+        if window_df.empty:
+            errors.append(
+                f"{symbol}: no rows in required window {_bj_text(coverage_start_ms)} -> {_bj_text(coverage_end_ms)}"
+            )
+            continue
+
+        base_bad_cols = []
+        for col in AUDIT_DATA_REQUIRED_COLUMNS:
+            values = pd.to_numeric(window_df[col], errors="coerce")
+            if values.isna().any():
+                base_bad_cols.append(col)
+        if base_bad_cols:
+            errors.append(f"{symbol}: NaN/non-numeric base columns in audit window {base_bad_cols}")
+
+        ts_values = window_df["open_time_ms"].tolist()
+        gaps = []
+        for prev_ts, next_ts in zip(ts_values[:-1], ts_values[1:]):
+            gap_ms = int(next_ts) - int(prev_ts)
+            if gap_ms != 60_000:
+                gaps.append((int(prev_ts), int(next_ts), gap_ms))
+                if len(gaps) >= 3:
+                    break
+        if gaps:
+            gap_text = ", ".join(
+                f"{_bj_text(prev_ts)}->{_bj_text(next_ts)} gap_ms={gap_ms}"
+                for prev_ts, next_ts, gap_ms in gaps
+            )
+            errors.append(f"{symbol}: non-continuous 1m data in audit window: {gap_text}")
+
+        if strategy_name == "snapback":
+            idx_bad_cols = []
+            for col in SNAPBACK_AUDIT_IDX_COLUMNS:
+                values = pd.to_numeric(window_df[col], errors="coerce")
+                if values.isna().any() or (values <= 0).any():
+                    idx_bad_cols.append(col)
+            if idx_bad_cols:
+                errors.append(
+                    f"{symbol}: invalid Snapback idx columns in audit window {idx_bad_cols}"
+                )
+
+    if errors:
+        detail = "; ".join(errors)
+        raise ValueError(
+            "audit data preflight failed: "
+            f"required_window={_bj_text(coverage_start_ms)}->{_bj_text(coverage_end_ms)}; "
+            f"{detail}"
+        )
 
 
 def _extract_exit_time_ms(trade: Dict[str, Any]) -> int:
@@ -1046,18 +1180,31 @@ def main():
     # 3. 初始化基础设施
     data_dir = os.path.join(PROJECT_ROOT, "data", "klines_1m")
     try:
+        max_history_window_mins = int(config["runtime"]["max_history_window_mins"])
+        if audit_enabled:
+            if audit_start_ms is None or audit_end_ms is None:
+                raise ValueError("audit preflight requires parsed audit_start_ms/audit_end_ms")
+            _preflight_audit_symbol_data(
+                data_dir=data_dir,
+                strategy_name=args.strategy,
+                audit_symbols=audit_symbols,
+                audit_start_ms=int(audit_start_ms),
+                audit_end_ms=int(audit_end_ms),
+                history_window_mins=max_history_window_mins,
+            )
+
         if args.strategy == "snapback":
             feeder_ndays_lowest = max(
                 1,
                 math.ceil(
-                    config["runtime"]["max_history_window_mins"] / (24 * 60)
+                    max_history_window_mins / (24 * 60)
                 ),
             )
         elif args.strategy in {"spring-sabc", "sweep-reclaim"}:
             feeder_ndays_lowest = max(
                 1,
                 math.ceil(
-                    config["runtime"]["max_history_window_mins"] / (24 * 60)
+                    max_history_window_mins / (24 * 60)
                 ),
             )
         else:
