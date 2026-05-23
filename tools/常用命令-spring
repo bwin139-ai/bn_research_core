@@ -42,8 +42,8 @@ nohup /root/service_env/bin/python strategies/spring/run_live.py \
 RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
 /root/service_env/bin/python strategies/run_backtest.py \
   --strategy spring-sabc \
-  --start 2026-05-08T04:00:00+08:00 \
-  --end   2026-05-08T11:20:00+08:00 \
+  --start 2026-05-11T13:30:00+08:00 \
+  --end   2026-05-22T13:00:00+08:00 \
   --kline-window 60 \
   --config spring/config.live_smoke_10u.json \
   --out-dir "output/SmokeTest" \
@@ -53,8 +53,8 @@ RUNSET="Spring_SmokeTest_V1_$(date +%m%dT%H%M)"
 RUNSET="SPRING_V1.5_30D_P6_$(date +%m%dT%H%M)"
 nohup bash -lc 'cd /root/bn_research_core && PYTHONPATH=/root/bn_research_core /root/service_env/bin/python strategies/schedule_backtests.py \
   --strategy spring-sabc \
-  --start 2025-04-18T00:00:00+08:00 \
-  --end 2026-05-08T10:00:00+08:00 \
+  --start 2025-05-11T13:30:00+08:00 \
+  --end 2026-05-22T13:00:00+08:00 \
   --batch-days 30 \
   --max-parallel 6 \
   --kline-window 90 \
