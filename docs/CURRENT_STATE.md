@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-12
+更新时间：2026-05-23
 
 ## 0. 文档定位
 
@@ -49,6 +49,67 @@ bn_research_core
 
 ```text
 让 live 数据链路、hub 共享数据、策略信号、交易执行、审计落盘与文档交接都进入可复核、可续接、可长期维护状态。
+```
+
+### 1.4 2026-05-23 三策略 sim/live 一致性审计闭环
+
+本轮围绕 `sweep-reclaim` / `spring-sabc` / `snapback-sabc` 的 mybwin139 重叠窗口完成复跑收尾。服务器执行环境为 `/root/bn_research_core`，审计窗口保持与前轮一致：
+
+```text
+2026-05-11 13:30:00+08:00 ~ 2026-05-22 13:00:00+08:00
+```
+
+新回测 run id：
+
+```text
+SWR_SmokeTest_V1_0523T2039
+Spring_SmokeTest_V1_0523T2041
+Snapback_SmokeTest_0523T2041
+```
+
+对齐结果：
+
+```text
+SWR:
+- sim signals = 70
+- live signals = 91
+- matched = 70
+- sim_only = 0
+- live_only = 21
+
+Spring:
+- sim signals = 86
+- live signals = 99
+- matched = 84
+- sim_only = 2
+- live_only = 15
+
+Snapback:
+- sim signals = 150
+- live signals = 157
+- matched = 146
+- sim_only = 4
+- live_only = 11
+```
+
+已闭合结论：
+
+1. 本地 1m / idx 数据完整性已在服务器做全量审计与修复；`STARUSDT` 缺口修复后，Snapback `STARUSDT 2026-05-15 16:36` 已在新 sim 中恢复并与 live 对齐。
+2. Spring 两个结构差异样本已由 feeder precision patch 解决：`STORJUSDT 2026-05-16 08:55` 与 `PROVEUSDT 2026-05-21 16:00` 均在新 sim 中出现并与 live 对齐。
+3. `STARUSDT -4028 Leverage 5 is not valid` 不作为待修代码项；live 遇到该类交易所能力限制时跳过交易并保留审计记录。
+4. `UNKNOWN_EXIT` / 外部平仓归因增强暂不改变下单或平仓行为，后续若推进，应按偏审计的 `ARCH_ONLY` 路线增强 attribution detail。
+
+剩余差异归因：
+
+1. SWR `live_only=21` 中 20 笔在 sim decision audit 内归因为 `cooldown_active`，1 笔 `MLNUSDT` 无本地 sim row，属于 delisted / 本地数据尾部不可补事实，不构成新策略语义 patch。
+2. Spring `live_only=15` 中 11 笔在 sim decision audit 内归因为 `cooldown_active`，1 笔为 `baseline_window_insufficient_bars`，3 笔无本地 sim row（`MLNUSDT` 两笔、`PROVEUSDT 2026-05-22 13:11` 一笔）；`sim_only=2` 分别为 live 侧 `cooldown_active` 与 `score_not_in_top_n`。这批差异来自 live 生命周期/本地数据窗口/当时 ranking 输入边界，不再归为 Spring 结构逻辑差异。
+3. Snapback 新 sim 对齐了已修复的 `STARUSDT 16:36`；剩余差异集中在 live 执行状态、交易所能力跳过、delisted 无本地尾部、以及 signal-only live 文件无法直接解释的少量候选边界。当前不新增策略逻辑 patch。
+
+当前状态：
+
+```text
+本轮三策略 sim/live 一致性审计的代码修复项已收口。
+后续若继续推进，应优先作为审计可观测性增强，而不是改交易语义。
 ```
 
 ---
