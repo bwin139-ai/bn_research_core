@@ -69,7 +69,8 @@ PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
 PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
 _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
-_TRADE_SHORTCUT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_TRADE_SHORTCUT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,32}$")
+_TRADE_SHORTCUT_NAME_MAX_BYTES = 48
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -283,7 +284,9 @@ def _current_trade_symbol_text() -> str:
 def _normalize_trade_shortcut_name(name: str) -> str:
     value = str(name or "").strip()
     if not _TRADE_SHORTCUT_NAME_RE.fullmatch(value):
-        raise ValueError("favorite name must match [A-Za-z0-9_-] and be 1-32 chars")
+        raise ValueError("favorite name must use letters, numbers, Chinese, _ or - and be 1-32 chars")
+    if len(value.encode("utf-8")) > _TRADE_SHORTCUT_NAME_MAX_BYTES:
+        raise ValueError(f"favorite name must be <= {_TRADE_SHORTCUT_NAME_MAX_BYTES} UTF-8 bytes")
     return value.lower()
 
 
