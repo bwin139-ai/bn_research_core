@@ -1102,8 +1102,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
-12. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
-13. `/rebate_report GROUP START_DATE END_DATE` 是只读 API 返佣区间报表，标题固定“API返佣报表”。报表从 `mybwin139` 的本地 `income[API_REBATE]` 账本读取返佣流水，用 `symbol + trade_id` 反查系统内账户 `trades`，再从对应 `secrets_{account}.json` 顶层 `rebate_group` 读取账户所属分组。查询结果按 `account + masked_email` 汇总，金额为 USDT 数量。底层按北京时间自然日生成日报缓存，路径为 `state/exchange_history/reports/api_rebate_daily/mybwin139/YYYY-MM-DD.json`；仅当日期已闭合且无未匹配、无多账户冲突、无缺失 `rebate_group` 时持久化缓存。当天或不完整日期每次实时重算。
+12. `/fav` 新增手动交易命令收藏维护，收藏落盘到 `state/manual_trade_command_shortcuts.json`，只保存 `/trade` 参数文本，不接触交易所、不写策略 state。支持 `/fav save NAME TRADE_ARGS`、`/fav show NAME`、`/fav del NAME`、`/fav run NAME`；交易入口支持 `/trade @NAME` 或 `/trade fav NAME` 展开收藏后复用原 `/trade` 解析与 LONG-only 执行路径。`/trade` 不带参数时会展示收藏按钮列表；点选收藏后，若命令中没有 `?` 占位符则直接执行，若包含 `?` 则先要求输入同数量参数并按顺序替换，例如 `SL ? TP ?` 点选后输入 `55.392 61.233`。
+13. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
+14. `/rebate_report GROUP START_DATE END_DATE` 是只读 API 返佣区间报表，标题固定“API返佣报表”。报表从 `mybwin139` 的本地 `income[API_REBATE]` 账本读取返佣流水，用 `symbol + trade_id` 反查系统内账户 `trades`，再从对应 `secrets_{account}.json` 顶层 `rebate_group` 读取账户所属分组。查询结果按 `account + masked_email` 汇总，金额为 USDT 数量。底层按北京时间自然日生成日报缓存，路径为 `state/exchange_history/reports/api_rebate_daily/mybwin139/YYYY-MM-DD.json`；仅当日期已闭合且无未匹配、无多账户冲突、无缺失 `rebate_group` 时持久化缓存。当天或不完整日期每次实时重算。
 
 2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。当前 `/view_history` 的“历史委托”对应 Binance order history / `get_all_orders` 的已成交 LONG order；`get_account_trades` 仅用于按 order id 补充 realized PnL，不是独立的“历史成交”列表。
 

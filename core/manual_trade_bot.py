@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -62,11 +63,13 @@ STOP_SELECT_SYMBOL = 301
 STOP_INPUT_PRICE = 302
 EDIT_SYMBOLS_INPUT = 401
 SET_SYMBOL_INPUT = 501
+TRADE_SHORTCUT_PARAM_INPUT = 601
 
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
 PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
 _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
+_TRADE_SHORTCUT_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -82,6 +85,10 @@ def _symbols_path() -> Path:
 
 def _current_trade_symbol_path() -> Path:
     return state_path("manual_trade_current_symbol.json")
+
+
+def _trade_shortcuts_path() -> Path:
+    return state_path("manual_trade_command_shortcuts.json")
 
 
 def _manual_events_path() -> Path:
@@ -273,6 +280,177 @@ def _current_trade_symbol_text() -> str:
     return f"{row['symbol']} {row['leverage']}x"
 
 
+def _normalize_trade_shortcut_name(name: str) -> str:
+    value = str(name or "").strip()
+    if not _TRADE_SHORTCUT_NAME_RE.fullmatch(value):
+        raise ValueError("favorite name must match [a-z0-9_-] and be 1-32 chars")
+    return value
+
+
+def _trade_shortcut_usage() -> str:
+    return (
+        "Usage:\n"
+        "/fav\n"
+        "/fav save NAME TRADE_ARGS\n"
+        "/fav show NAME\n"
+        "/fav del NAME\n"
+        "/fav run NAME\n"
+        "/trade @NAME\n"
+        "Example:\n"
+        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL 0 TP 0\n"
+        "/fav save open-param open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL ? TP ?\n"
+        "/trade @open-main"
+    )
+
+
+def _canonical_trade_shortcut_body(tokens: list[str]) -> str:
+    parts = [str(x).strip() for x in tokens if str(x).strip()]
+    if not parts:
+        raise ValueError("favorite command must not be empty")
+    if parts[0] == "/trade":
+        parts = parts[1:]
+    elif parts[0].lower() == "trade":
+        parts = parts[1:]
+    if not parts:
+        raise ValueError("favorite command must include /trade args")
+    action = parts[0].lower()
+    if action not in {"open", "close", "sl", "pending", "cancel", "cancle"}:
+        raise ValueError("favorite command must start with a supported /trade action")
+    if action.startswith("@"):
+        raise ValueError("favorite command cannot reference another favorite")
+    return " ".join(parts)
+
+
+def _load_trade_shortcuts() -> dict[str, dict[str, Any]]:
+    path = _trade_shortcuts_path()
+    if not path.exists():
+        return {}
+    data = load_json_file(path, default={})
+    if not isinstance(data, dict):
+        raise ValueError(f"manual_trade_command_shortcuts.json must be object: {path}")
+    if data.get("version") != 1:
+        raise ValueError(f"manual_trade_command_shortcuts.json version must be 1: {path}")
+    rows = data.get("shortcuts")
+    if not isinstance(rows, list):
+        raise ValueError(f"manual_trade_command_shortcuts.json shortcuts must be list: {path}")
+    shortcuts: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            raise ValueError("manual trade favorite item must be object")
+        name = _normalize_trade_shortcut_name(str(item.get("name") or ""))
+        command = _canonical_trade_shortcut_body(str(item.get("command") or "").split())
+        updated_at_bj = str(item.get("updated_at_bj") or "").strip()
+        if name in shortcuts:
+            raise ValueError(f"duplicate manual trade favorite: {name}")
+        shortcuts[name] = {"name": name, "command": command, "updated_at_bj": updated_at_bj}
+    return shortcuts
+
+
+def _save_trade_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> None:
+    rows = []
+    for name in sorted(shortcuts):
+        row = shortcuts[name]
+        rows.append(
+            {
+                "name": _normalize_trade_shortcut_name(name),
+                "command": _canonical_trade_shortcut_body(str(row.get("command") or "").split()),
+                "updated_at_bj": str(row.get("updated_at_bj") or "").strip(),
+            }
+        )
+    save_json_file_atomic(_trade_shortcuts_path(), {"version": 1, "shortcuts": rows})
+
+
+def _trade_shortcut_args(name: str) -> list[str]:
+    shortcut_name = _normalize_trade_shortcut_name(name)
+    shortcuts = _load_trade_shortcuts()
+    row = shortcuts.get(shortcut_name)
+    if row is None:
+        raise ValueError(f"manual trade favorite not found: {shortcut_name}")
+    return str(row["command"]).split()
+
+
+def _trade_shortcut_placeholder_count(args: list[str]) -> int:
+    return sum(1 for token in args if str(token).strip() == "?")
+
+
+def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> list[str]:
+    clean_values = [str(x).strip() for x in values if str(x).strip()]
+    expected = _trade_shortcut_placeholder_count(args)
+    if expected <= 0:
+        return list(args)
+    if len(clean_values) != expected:
+        raise ValueError(f"favorite requires {expected} parameter(s), got {len(clean_values)}")
+    filled: list[str] = []
+    value_idx = 0
+    for token in args:
+        if str(token).strip() == "?":
+            filled.append(clean_values[value_idx])
+            value_idx += 1
+        else:
+            filled.append(str(token))
+    return filled
+
+
+def _expand_trade_shortcut_args(args: list[str]) -> tuple[list[str], str | None, str | None]:
+    if not args:
+        return args, None, None
+    first = str(args[0]).strip()
+    if first.startswith("@"):
+        if len(args) != 1:
+            raise ValueError("/trade @NAME does not accept extra args")
+        name = first[1:]
+        expanded = _trade_shortcut_args(name)
+        return expanded, _normalize_trade_shortcut_name(name), " ".join(expanded)
+    if first.lower() == "fav":
+        if len(args) != 2:
+            raise ValueError("Usage: /trade fav NAME")
+        name = str(args[1]).strip()
+        expanded = _trade_shortcut_args(name)
+        return expanded, _normalize_trade_shortcut_name(name), " ".join(expanded)
+    return args, None, None
+
+
+def _trade_shortcut_button_label(name: str, command: str) -> str:
+    param_count = _trade_shortcut_placeholder_count(str(command).split())
+    suffix = f" ({param_count} params)" if param_count else ""
+    return f"{name}{suffix}"
+
+
+def _format_trade_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> str:
+    if not shortcuts:
+        return "Manual trade favorites: empty\n\n" + _trade_shortcut_usage()
+    lines = ["Manual trade favorites"]
+    for name in sorted(shortcuts):
+        lines.append(f"{name}: /trade {shortcuts[name]['command']}")
+    lines.append("")
+    lines.append("Run: /trade @NAME")
+    return "\n".join(lines)
+
+
+async def _send_trade_shortcut_menu(update: Update) -> None:
+    shortcuts = _load_trade_shortcuts()
+    if not shortcuts:
+        await _reply_text(update, "Manual trade favorites: empty\n\n" + _trade_shortcut_usage())
+        return
+    buttons = [
+        [
+            InlineKeyboardButton(
+                _trade_shortcut_button_label(name, str(shortcuts[name]["command"])),
+                callback_data=f"trade_fav:{name}",
+            )
+        ]
+        for name in sorted(shortcuts)
+    ]
+    lines = ["Command Trade"]
+    try:
+        current = _current_trade_symbol_text()
+    except ValueError:
+        current = "未设置"
+    lines.append(f"当前 symbol: {current}")
+    lines.append("点选收藏后执行；带 ? 的收藏会先要求输入参数。")
+    await _reply_text(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+
+
 def _fmt_usdt(value: Any) -> str:
     try:
         return f"{float(value):.2f}"
@@ -399,6 +577,14 @@ async def _send_lines(update: Update, lines: list[str]) -> None:
         await target.reply_text(chunk)
 
 
+async def _reply_text(update: Update, text: str, **kwargs: Any) -> None:
+    if update.message:
+        await update.message.reply_text(text, **kwargs)
+        return
+    if update.callback_query and update.callback_query.message:
+        await update.callback_query.message.reply_text(text, **kwargs)
+
+
 def _long_positions(account: str) -> list[dict[str, Any]]:
     res = get_positions(account)
     if not res["ok"]:
@@ -512,9 +698,13 @@ def _trade_usage() -> str:
         "/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
         "/trade pending ACCOUNT[ | ACCOUNT...]\n"
         "/trade cancel ACCOUNT[ | ACCOUNT...]\n"
+        "/trade @FAVORITE_NAME\n"
+        "/fav save FAVORITE_NAME TRADE_ARGS\n"
         "Example:\n"
         "/set_s then HYPEUSDT 20x\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 PO SL 55.38 TP 59.39\n"
+        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL ? TP ?\n"
+        "/trade @open-main\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 M SL 55.38 TP 59.39\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 L 57.27\n"
         "/trade close bwin182 | chen912 | junjie2026 M\n"
@@ -912,6 +1102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BotCommand("pending_orders", "Pending Orders"),
         BotCommand("rebate_report", "API Rebate Report"),
         BotCommand("trade", "Command Trade"),
+        BotCommand("fav", "Trade Favorites"),
         BotCommand("edit_symbols", "Edit Symbols"),
         BotCommand("open", "Open"),
         BotCommand("close", "Close"),
@@ -2233,20 +2424,20 @@ async def _run_market_trade_command(
 ) -> None:
     price_res = get_last_price(account, symbol)
     if not price_res["ok"]:
-        await update.message.reply_text(f"price query failed: {price_res['reason']}")
+        await _reply_text(update, f"price query failed: {price_res['reason']}")
         return
     entry_price = float(price_res["data"]["price"])
     try:
         _validate_long_protection_prices(entry_price, sl_price, tp_price)
     except ValueError as exc:
-        await update.message.reply_text(str(exc))
+        await _reply_text(update, str(exc))
         return
     quantity = _entry_qty_from_notional(account, symbol, notional, entry_price)
     root = make_order_root()
     try:
         _prepare_symbol(account, symbol, leverage)
     except Exception as exc:
-        await update.message.reply_text(f"prepare symbol failed: {exc}")
+        await _reply_text(update, f"prepare symbol failed: {exc}")
         return
     entry_res = place_entry_order(
         account,
@@ -2258,11 +2449,12 @@ async def _run_market_trade_command(
     )
     _append_manual_event("manual_trade_market_entry", account=account, symbol=symbol, ok=entry_res["ok"], result=entry_res)
     if not entry_res["ok"]:
-        await update.message.reply_text(f"M entry failed: {entry_res['reason']}")
+        await _reply_text(update, f"M entry failed: {entry_res['reason']}")
         return
     entry = entry_res["data"]
     executed_qty = float(entry.get("executed_qty", 0.0) or entry.get("qty", 0.0) or 0.0)
-    await update.message.reply_text(
+    await _reply_text(
+        update,
         f"M entry submitted\n"
         f"account={account}\n"
         f"symbol={symbol}\n"
@@ -2271,7 +2463,7 @@ async def _run_market_trade_command(
         f"cid={entry.get('client_order_id')}"
     )
     if executed_qty <= 0:
-        await update.message.reply_text("M entry has no executed quantity; SL/TP skipped")
+        await _reply_text(update, "M entry has no executed quantity; SL/TP skipped")
         return
     await _protect_manual_entry(
         context.bot,
@@ -2298,13 +2490,13 @@ async def _run_post_only_trade_command(
 ) -> None:
     key = (account, symbol)
     if key in _ACTIVE_PO_WATCHERS:
-        await update.message.reply_text(f"PO watcher already active: {account} {symbol}")
+        await _reply_text(update, f"PO watcher already active: {account} {symbol}")
         return
     root = make_order_root()
     try:
         _prepare_symbol(account, symbol, leverage)
     except Exception as exc:
-        await update.message.reply_text(f"prepare symbol failed: {exc}")
+        await _reply_text(update, f"prepare symbol failed: {exc}")
         return
 
     best_bid = 0.0
@@ -2312,13 +2504,13 @@ async def _run_post_only_trade_command(
     for attempt in range(1, PO_ENTRY_SUBMIT_MAX_ATTEMPTS + 1):
         book_res = get_order_book_top(account, symbol)
         if not book_res["ok"]:
-            await update.message.reply_text(f"order book query failed: {book_res['reason']}")
+            await _reply_text(update, f"order book query failed: {book_res['reason']}")
             return
         best_bid = float(book_res["data"]["best_bid"])
         try:
             _validate_long_protection_prices(best_bid, sl_price, tp_price)
         except ValueError as exc:
-            await update.message.reply_text(str(exc))
+            await _reply_text(update, str(exc))
             return
         quantity = _entry_qty_from_notional(account, symbol, notional, best_bid)
         leg = "POE" if attempt == 1 else f"PO{attempt}"
@@ -2350,18 +2542,18 @@ async def _run_post_only_trade_command(
             if attempt < PO_ENTRY_SUBMIT_MAX_ATTEMPTS:
                 continue
             break
-        await update.message.reply_text(f"PO entry failed: {entry_res['reason']}")
+        await _reply_text(update, f"PO entry failed: {entry_res['reason']}")
         return
 
     if not entry_res or not entry_res["ok"]:
         reason = entry_res["reason"] if entry_res else "unknown PO entry submit failure"
-        await update.message.reply_text(f"PO entry failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts: {reason}")
+        await _reply_text(update, f"PO entry failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts: {reason}")
         return
     entry = entry_res["data"]
     entry_order_id = entry.get("order_id") or entry.get("exchange_order_id")
     entry_client_order_id = str(entry.get("client_order_id") or "")
     if not entry_client_order_id:
-        await update.message.reply_text("PO entry missing client_order_id; watcher not started")
+        await _reply_text(update, "PO entry missing client_order_id; watcher not started")
         return
     _ACTIVE_PO_WATCHERS.add(key)
     context.application.create_task(
@@ -2378,7 +2570,8 @@ async def _run_post_only_trade_command(
             timeout_secs=PO_WATCH_TIMEOUT_SECS,
         )
     )
-    await update.message.reply_text(
+    await _reply_text(
+        update,
         f"PO entry submitted\n"
         f"account={account}\n"
         f"symbol={symbol}\n"
@@ -2446,7 +2639,7 @@ async def _run_limit_trade_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
@@ -2497,7 +2690,7 @@ async def _run_market_close_command(
         except Exception as exc:
             _append_manual_event("manual_trade_market_close", account=account, symbol=symbol, ok=False, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 async def _run_post_only_close_command(
@@ -2563,7 +2756,7 @@ async def _run_post_only_close_command(
         except Exception as exc:
             _append_manual_event("manual_trade_po_close_submit", account=account, symbol=symbol, ok=False, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 async def _run_limit_close_command(
@@ -2619,7 +2812,7 @@ async def _run_limit_close_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 async def _run_sl_command(
@@ -2674,7 +2867,7 @@ async def _run_sl_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 async def _run_cancel_command(
@@ -2697,7 +2890,7 @@ async def _run_cancel_command(
             lines.append(f"{account}: partial failed cancelled={len(rows) - len(failed)} failed={len(failed)} reason={reasons}")
             continue
         lines.append(f"{account}: cancelled={len(rows)}")
-    await update.message.reply_text("\n".join(lines))
+    await _reply_text(update, "\n".join(lines))
 
 
 async def _run_pending_command(
@@ -2729,9 +2922,7 @@ async def _run_pending_command(
     await _send_lines(update, lines)
 
 
-@_admin_required
-async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = list(context.args or [])
+async def _execute_trade_args(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
     if not args:
         raise ValueError(_trade_usage())
     action = str(args[0]).lower()
@@ -2831,6 +3022,139 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     raise ValueError("unsupported trade command")
 
 
+@_admin_required
+async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw_args = list(context.args or [])
+    if not raw_args:
+        await _send_trade_shortcut_menu(update)
+        return
+    args, favorite_name, favorite_command = _expand_trade_shortcut_args(raw_args)
+    placeholder_count = _trade_shortcut_placeholder_count(args)
+    if favorite_name and placeholder_count:
+        context.user_data["pending_trade_shortcut"] = {
+            "name": favorite_name,
+            "args": args,
+            "placeholder_count": placeholder_count,
+        }
+        await _reply_text(
+            update,
+            f"Favorite {favorite_name} requires {placeholder_count} parameter(s).\n"
+            f"/trade {favorite_command}\n"
+            "Send values separated by spaces.",
+        )
+        return
+    if favorite_name and favorite_command:
+        await _reply_text(update, f"Run favorite {favorite_name}: /trade {favorite_command}")
+    await _execute_trade_args(update, context, args)
+
+
+@_admin_required
+async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    name = _normalize_trade_shortcut_name(query.data.split(":", 1)[1])
+    args = _trade_shortcut_args(name)
+    command = " ".join(args)
+    placeholder_count = _trade_shortcut_placeholder_count(args)
+    if placeholder_count:
+        context.user_data["pending_trade_shortcut"] = {
+            "name": name,
+            "args": args,
+            "placeholder_count": placeholder_count,
+        }
+        await query.message.reply_text(
+            f"Favorite {name} requires {placeholder_count} parameter(s).\n"
+            f"/trade {command}\n"
+            "Send values separated by spaces."
+        )
+        return TRADE_SHORTCUT_PARAM_INPUT
+    await query.message.reply_text(f"Run favorite {name}: /trade {command}")
+    await _execute_trade_args(update, context, args)
+    return ConversationHandler.END
+
+
+@_admin_required
+async def trade_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    pending = context.user_data.get("pending_trade_shortcut")
+    if not isinstance(pending, dict):
+        return ConversationHandler.END
+    name = str(pending.get("name") or "")
+    args = [str(x) for x in list(pending.get("args") or [])]
+    values = str(update.message.text or "").split()
+    try:
+        filled_args = _fill_trade_shortcut_placeholders(args, values)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return TRADE_SHORTCUT_PARAM_INPUT
+    context.user_data.pop("pending_trade_shortcut", None)
+    await update.message.reply_text(f"Run favorite {name}: /trade {' '.join(filled_args)}")
+    await _execute_trade_args(update, context, filled_args)
+    return ConversationHandler.END
+
+
+@_admin_required
+async def fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = [str(x).strip() for x in (context.args or []) if str(x).strip()]
+    if not args:
+        await update.message.reply_text(_format_trade_shortcuts(_load_trade_shortcuts()))
+        return
+    action = args[0].lower()
+    shortcuts = _load_trade_shortcuts()
+    if action == "save":
+        if len(args) < 3:
+            raise ValueError(_trade_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        command = _canonical_trade_shortcut_body(args[2:])
+        shortcuts[name] = {
+            "name": name,
+            "command": command,
+            "updated_at_bj": datetime.now(tz=BJ).isoformat(),
+        }
+        _save_trade_shortcuts(shortcuts)
+        await update.message.reply_text(f"Saved favorite {name}: /trade {command}")
+        return
+    if action in {"del", "delete"}:
+        if len(args) != 2:
+            raise ValueError(_trade_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        if name not in shortcuts:
+            raise ValueError(f"manual trade favorite not found: {name}")
+        del shortcuts[name]
+        _save_trade_shortcuts(shortcuts)
+        await update.message.reply_text(f"Deleted favorite {name}")
+        return
+    if action == "show":
+        if len(args) != 2:
+            raise ValueError(_trade_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        if name not in shortcuts:
+            raise ValueError(f"manual trade favorite not found: {name}")
+        await update.message.reply_text(f"{name}: /trade {shortcuts[name]['command']}")
+        return
+    if action == "run":
+        if len(args) != 2:
+            raise ValueError(_trade_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        trade_args = _trade_shortcut_args(name)
+        placeholder_count = _trade_shortcut_placeholder_count(trade_args)
+        if placeholder_count:
+            context.user_data["pending_trade_shortcut"] = {
+                "name": name,
+                "args": trade_args,
+                "placeholder_count": placeholder_count,
+            }
+            await update.message.reply_text(
+                f"Favorite {name} requires {placeholder_count} parameter(s).\n"
+                f"/trade {' '.join(trade_args)}\n"
+                "Send values separated by spaces."
+            )
+            return
+        await update.message.reply_text(f"Run favorite {name}: /trade {' '.join(trade_args)}")
+        await _execute_trade_args(update, context, trade_args)
+        return
+    raise ValueError(_trade_shortcut_usage())
+
+
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
         await update.message.reply_text("cancelled")
@@ -2860,6 +3184,7 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("view_history", send_history))
     application.add_handler(CommandHandler("rebate_report", rebate_report))
     application.add_handler(CommandHandler("trade", trade_command))
+    application.add_handler(CommandHandler("fav", fav_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(account_detail_selected, pattern=r"^account_action:detail:"))
     application.add_handler(CallbackQueryHandler(pending_orders_selected, pattern=r"^account_action:pending:"))
@@ -2872,6 +3197,19 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(do_cancel_order, pattern=r"^cancel_ok:"))
     application.add_handler(CallbackQueryHandler(abort, pattern=r"^abort$"))
 
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(trade_shortcut_selected, pattern=r"^trade_fav:")],
+            states={
+                TRADE_SHORTCUT_PARAM_INPUT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, trade_shortcut_param_input)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", cancel_conv), CallbackQueryHandler(cancel_conv, pattern=r"^abort$")],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
     application.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("set", set_command), CommandHandler("set_s", set_symbol_command)],
@@ -2935,6 +3273,7 @@ def run_bot() -> None:
             per_user=True,
         )
     )
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, trade_shortcut_param_input))
     application.add_error_handler(error_handler)
     application.run_polling()
 
