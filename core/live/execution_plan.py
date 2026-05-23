@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root
 from core.live.execution_intent import ValidatedLiveExecutionIntent, validate_live_execution_intent
+from core.live.live_state import collect_account_symbol_strategy_activity
 
 POSITION_SIDE_LONG = "LONG"
 LEG_ENTRY = "EN"
@@ -138,6 +139,21 @@ def _exchange_precheck(
     }
 
 
+def _cross_strategy_precheck(*, account: str, symbol: str, strategy_name: str) -> dict[str, Any]:
+    activity = collect_account_symbol_strategy_activity(
+        account,
+        symbol,
+        exclude_strategy_name=strategy_name,
+    )
+    return {
+        "status": "verified",
+        "blocked": bool(activity["blocked"]),
+        "blockers": list(activity["blockers"]),
+        "activity_count": int(activity["activity_count"]),
+        "activities": list(activity["activities"]),
+    }
+
+
 def _order_ids(strategy_code: str, order_root: str) -> dict[str, str]:
     return {
         "order_root": order_root,
@@ -157,6 +173,7 @@ def build_dry_run_execution_plan(
 ) -> dict[str, Any]:
     intent_dict = _intent_to_dict(intent)
     symbol = str(intent_dict["symbol"]).upper().strip()
+    strategy_name = str(intent_dict["strategy_name"]).strip()
     strategy_code = str(intent_dict["strategy_code"]).upper().strip()
     current_time_ms = int(intent_dict["signal_time"])
     base_order_notional_usdt = float(intent_dict["base_order_notional_usdt"])
@@ -168,7 +185,16 @@ def build_dry_run_execution_plan(
         current_time_ms=current_time_ms,
     )
     exchange_precheck = _exchange_precheck(exchange_snapshot=exchange_snapshot, symbol=symbol)
-    precheck_blockers = list(local_precheck["blockers"]) + list(exchange_precheck["blockers"])
+    cross_strategy_precheck = _cross_strategy_precheck(
+        account=str(intent_dict["account"]),
+        symbol=symbol,
+        strategy_name=strategy_name,
+    )
+    precheck_blockers = (
+        list(local_precheck["blockers"])
+        + list(cross_strategy_precheck["blockers"])
+        + list(exchange_precheck["blockers"])
+    )
     exchange_verified = exchange_precheck.get("status") == "verified"
     ok_to_execute = bool(not precheck_blockers and exchange_verified)
     executable_blockers = list(precheck_blockers)
@@ -254,6 +280,7 @@ def build_dry_run_execution_plan(
         "executable_blockers": executable_blockers,
         "precheck": {
             "local_state": local_precheck,
+            "cross_strategy": cross_strategy_precheck,
             "exchange": exchange_precheck,
         },
         "sizing": {

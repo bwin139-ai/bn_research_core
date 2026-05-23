@@ -24,6 +24,7 @@ from core.live.binance_exec import (
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root, parse_client_order_id
 from core.live.execution_runner import is_live_symbol_supported_for_signed_api
 from core.live.live_state import (
+    collect_account_symbol_strategy_activity,
     load_live_state,
     load_symbol_state,
     mark_error,
@@ -2999,6 +3000,45 @@ def _consume_signal_precheck_and_prepare(
             'signal_digest': signal_digest,
             'outcome': 'skipped_cooldown_active',
             'reason': 'cooldown_active',
+        }
+
+    cross_strategy_activity = collect_account_symbol_strategy_activity(
+        account,
+        symbol,
+        exclude_strategy_name='snapback',
+    )
+    if cross_strategy_activity.get('blocked'):
+        reason = ','.join(cross_strategy_activity.get('blockers') or []) or 'cross_strategy_active_symbol'
+        if bool(live_cfg.get('audit_enabled', True)):
+            write_event(account, 'precheck_skip', {
+                'symbol': symbol,
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'reason': reason,
+                'cross_strategy_activity': cross_strategy_activity,
+            })
+            _write_stage_record(account, 'stage7_precheck', {
+                'event': 'precheck_skip',
+                'bar_ts': current_time_ms,
+                'bar_bj': current_time_bj,
+                'symbol': symbol,
+                'precheck_scope': None,
+                'precheck_blocked': True,
+                'precheck_block_reason': reason,
+                'precheck_position_exists': False,
+                'precheck_orders_exist': False,
+                'precheck_any_position_exists': False,
+                'cross_strategy_activity': cross_strategy_activity,
+            })
+        mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj)
+        return {
+            'ok': False,
+            'terminal': True,
+            'symbol': symbol,
+            'signal_digest': signal_digest,
+            'outcome': 'skipped_cross_strategy_active_symbol',
+            'reason': reason,
+            'cross_strategy_activity': cross_strategy_activity,
         }
 
     precheck_scope = require_consumer_precheck_scope(live_cfg)

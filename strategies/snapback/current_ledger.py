@@ -10,7 +10,7 @@ BJ = timezone(timedelta(hours=8))
 
 from core.live.audit_log import write_event
 from core.live.binance_exec import get_open_orders, get_positions
-from core.live.live_state import load_live_state, mark_order_reconcile, mark_position_reconcile
+from core.live.live_state import collect_account_symbol_strategy_activity, load_live_state, mark_order_reconcile, mark_position_reconcile
 
 
 
@@ -463,6 +463,7 @@ def prepare_consumer_loop_gate_impl(
         'exchange_snapshot': dict(scan_gate.get('exchange_snapshot') or exchange_activity_snapshot or {}),
         'active_symbols': active_symbols,
         'local_active_symbols': list(scan_gate.get('local_active_symbols') or []),
+        'cross_strategy_active_symbols': list(scan_gate.get('cross_strategy_active_symbols') or []),
         'exchange_activity_symbols': list(scan_gate.get('exchange_activity_symbols') or []),
     }
 
@@ -504,6 +505,7 @@ def evaluate_consumer_signal_scan_gate_impl(
     local_active_symbols_elapsed_ms = _perf_elapsed_ms(local_active_symbols_started_perf)
 
     local_active_symbols = sorted(set(snapshot.get('local_active_symbols') or []))
+    cross_strategy_active_symbols = sorted(set(snapshot.get('cross_strategy_active_symbols') or []))
     exchange_activity_symbols = sorted(set(snapshot.get('symbols') or set()))
     orphan_audit_symbols = sorted(set(local_active_symbols) | set(exchange_activity_symbols))
 
@@ -533,6 +535,7 @@ def evaluate_consumer_signal_scan_gate_impl(
     total_elapsed_ms = _perf_elapsed_ms(scan_gate_started_perf)
 
     def _return(payload: dict[str, Any]) -> dict[str, Any]:
+        payload.setdefault('cross_strategy_active_symbols', cross_strategy_active_symbols)
         _log_perf_stage(
             'evaluate_consumer_signal_scan_gate',
             account=account,
@@ -712,6 +715,7 @@ def evaluate_consumer_signal_scan_gate_impl(
         'active_state_errors': active_state_errors,
         'exchange_snapshot': snapshot,
         'local_active_symbols': local_active_symbols,
+        'cross_strategy_active_symbols': cross_strategy_active_symbols,
         'exchange_activity_symbols': exchange_activity_symbols,
         'precheck_scope': precheck_scope,
         'strategy_concurrency_scope': strategy_concurrency_scope,
@@ -1172,13 +1176,24 @@ def build_consumer_reconcile_plan(
         for symbol in (candidate_symbols or [])
         if str(symbol).strip()
     }
+    cross_strategy_active_symbols: set[str] = set()
+    for symbol in candidate_symbol_set | exchange_activity_symbols | local_active_symbols:
+        activity = collect_account_symbol_strategy_activity(
+            account,
+            symbol,
+            exclude_strategy_name='snapback',
+        )
+        if activity.get('blocked'):
+            cross_strategy_active_symbols.add(symbol)
     snapshot['symbols'] = exchange_activity_symbols
     snapshot['local_active_symbols'] = sorted(local_active_symbols)
+    snapshot['cross_strategy_active_symbols'] = sorted(cross_strategy_active_symbols)
     return {
         'exchange_snapshot': snapshot,
         'exchange_activity_symbols': sorted(exchange_activity_symbols),
         'local_active_symbols': sorted(local_active_symbols),
-        'extra_reconcile_symbols': sorted((exchange_activity_symbols | local_active_symbols) - candidate_symbol_set),
+        'cross_strategy_active_symbols': sorted(cross_strategy_active_symbols),
+        'extra_reconcile_symbols': sorted((exchange_activity_symbols | local_active_symbols | cross_strategy_active_symbols) - candidate_symbol_set),
     }
 
 
@@ -1187,6 +1202,7 @@ def build_consumer_active_symbols(scan_gate: dict[str, Any]) -> set[str]:
         str(symbol).upper().strip()
         for symbol in (
             list(scan_gate.get('local_active_symbols') or [])
+            + list(scan_gate.get('cross_strategy_active_symbols') or [])
             + list(scan_gate.get('exchange_activity_symbols') or [])
         )
         if str(symbol).strip()

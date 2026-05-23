@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from core.runtime_state import load_runtime_json, save_runtime_json, _normalize_for_json
+from core.runtime_state import get_state_dir, load_json_file, load_runtime_json, save_runtime_json, _normalize_for_json
 
 _BJ = ZoneInfo("Asia/Shanghai")
 
@@ -90,6 +90,73 @@ def load_live_state(account: str, *, strategy_name: str = "snapback") -> dict[st
     if not isinstance(data["symbols"], dict):
         data["symbols"] = {}
     return data
+
+
+def collect_account_symbol_strategy_activity(
+    account: str,
+    symbol: str,
+    *,
+    exclude_strategy_name: str | None = None,
+) -> dict[str, Any]:
+    account_key = str(account).strip()
+    symbol_key = str(symbol).upper().strip()
+    if not account_key:
+        raise ValueError("account must not be empty")
+    if not symbol_key:
+        raise ValueError("symbol must not be empty")
+
+    exclude_key = _strategy_file_key(exclude_strategy_name) if exclude_strategy_name else ""
+    live_dir = get_state_dir() / "live"
+    activities: list[dict[str, Any]] = []
+    if live_dir.is_dir():
+        for path in sorted(live_dir.glob(f"*_{account_key}.state.json")):
+            data = load_json_file(path, default=None)
+            if not isinstance(data, dict):
+                continue
+            strategy_name = str(data.get("strategy_name") or "").strip()
+            if not strategy_name:
+                continue
+            if exclude_key and _strategy_file_key(strategy_name) == exclude_key:
+                continue
+            if str(data.get("account") or account_key).strip() != account_key:
+                continue
+            symbols = data.get("symbols")
+            if not isinstance(symbols, dict):
+                continue
+            payload = symbols.get(symbol_key)
+            if not isinstance(payload, dict):
+                continue
+            pending = payload.get("pending_entry_order")
+            open_trade = payload.get("open_trade")
+            if not pending and not open_trade:
+                continue
+            activities.append(
+                {
+                    "strategy_name": strategy_name,
+                    "symbol": symbol_key,
+                    "state_file": str(path),
+                    "pending_entry_order_present": bool(pending),
+                    "open_trade_present": bool(open_trade),
+                    "pending_order_root": pending.get("order_root") if isinstance(pending, dict) else None,
+                    "open_order_root": open_trade.get("order_root") if isinstance(open_trade, dict) else None,
+                }
+            )
+
+    blockers = []
+    if any(item["pending_entry_order_present"] for item in activities):
+        blockers.append("cross_strategy_pending_entry_order")
+    if any(item["open_trade_present"] for item in activities):
+        blockers.append("cross_strategy_open_trade")
+    return {
+        "ok": not blockers,
+        "blocked": bool(blockers),
+        "blockers": blockers,
+        "account": account_key,
+        "symbol": symbol_key,
+        "exclude_strategy_name": exclude_strategy_name,
+        "activities": activities,
+        "activity_count": len(activities),
+    }
 
 
 def save_live_state(account: str, state: dict[str, Any], *, strategy_name: str = "snapback") -> None:
