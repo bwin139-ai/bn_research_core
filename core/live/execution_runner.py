@@ -28,6 +28,7 @@ from core.live.binance_exec import (
 )
 from core.live.custom_id import BROKER_ID, build_client_order_id
 from core.live.execution_intent import ValidatedLiveExecutionIntent, validate_live_execution_intent
+from core.live.exit_attribution import build_unknown_exit_attribution_detail
 from core.live.live_state import (
     load_live_state,
     mark_error,
@@ -1028,6 +1029,7 @@ def _live_trade_projection_row(
         "exit_order_client_id": closed_trade.get("exit_order_client_id"),
         "exit_order_exchange_id": closed_trade.get("exit_order_exchange_id"),
         "exit_order_status": closed_trade.get("exit_order_status"),
+        "exit_attribution_detail": closed_trade.get("exit_attribution_detail"),
         "pnl_pct": pnl_pct,
         "hold_mins": (exit_ts - entry_ts) / 60000.0 if entry_ts and exit_ts else None,
         "current_time_ms": current_time_ms,
@@ -1201,10 +1203,19 @@ def _finalize_closed_trade(
     current_time_bj: str,
     checked_bj: str,
     source: str,
+    position_res: Mapping[str, Any] | None = None,
+    known_open_orders: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     exit_order = _exit_order_from_checks(exit_reason, order_checks)
     exit_event_time_ms = _extract_event_time_ms(exit_order) or current_time_ms
     exit_price, exit_price_source = _resolve_exit_price(exit_reason, open_trade, exit_order)
+    exit_attribution_detail = build_unknown_exit_attribution_detail(
+        exit_reason=exit_reason,
+        position_res=position_res,
+        known_open_orders=known_open_orders,
+        order_checks=order_checks,
+        cleanup_checks=cleanup_checks,
+    )
     closed_trade = deepcopy(dict(open_trade))
     closed_trade.update({
         "status": "CLOSED",
@@ -1217,6 +1228,7 @@ def _finalize_closed_trade(
         "exit_order_client_id": (exit_order or {}).get("client_order_id"),
         "exit_order_exchange_id": (exit_order or {}).get("order_id"),
         "exit_order_status": (exit_order or {}).get("status"),
+        "exit_attribution_detail": exit_attribution_detail,
     })
     set_open_trade(account, symbol, None, strategy_name=state_strategy_name)
     set_pending_entry_order(account, symbol, None, strategy_name=state_strategy_name)
@@ -1244,6 +1256,7 @@ def _finalize_closed_trade(
         "exit_price_source": exit_price_source,
         "order_checks": dict(order_checks),
         "cleanup_checks": dict(cleanup_checks),
+        "exit_attribution_detail": exit_attribution_detail,
         "live_trade_projection": projection_res,
     })
     if audit_enabled and not projection_res.get("ok"):
@@ -1295,6 +1308,7 @@ def _finalize_closed_trade(
         "outcome": "flat_state_cleared",
         "exit_reason": exit_reason,
         "closed_trade": closed_trade,
+        "exit_attribution_detail": exit_attribution_detail,
         "order_checks": dict(order_checks),
         "cleanup_checks": dict(cleanup_checks),
         "live_trade_projection": projection_res,
@@ -2317,6 +2331,8 @@ def _post_entry_reconcile(
         current_time_bj=current_time_bj,
         checked_bj=checked_bj,
         source=source,
+        position_res=position_res,
+        known_open_orders=open_orders,
     )
 
 
@@ -2569,6 +2585,8 @@ def _reconcile_strategy_pending_entries(
                     current_time_bj=current_time_bj,
                     checked_bj=_now_bj_str(),
                     source=f"{source}_pending_terminal",
+                    position_res=position_res,
+                    known_open_orders=open_orders,
                 )
                 results.append({"symbol": symbol, **finalize_res, "outcome": "pending_terminal_filled_flat_state_cleared"})
             else:

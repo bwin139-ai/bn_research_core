@@ -22,6 +22,7 @@ from core.live.binance_exec import (
     resolve_order_fill_price,
 )
 from core.live.custom_id import BROKER_ID, build_client_order_id, make_order_root, parse_client_order_id
+from core.live.exit_attribution import build_unknown_exit_attribution_detail
 from core.live.execution_runner import is_live_symbol_supported_for_signed_api
 from core.live.live_state import (
     collect_account_symbol_strategy_activity,
@@ -459,6 +460,7 @@ def _build_live_trade_projection_row(
     current_time_ms: int,
     current_time_bj: str,
     source: str,
+    exit_attribution_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     signal_core = _signal_core_fields(signal_snapshot, fallback_time_ms=entry_time_ms or current_time_ms)
     exit_order = _resolve_exit_order_payload(exit_reason, order_checks, tp_cancel, sl_cancel, ts_cancel)
@@ -524,6 +526,7 @@ def _build_live_trade_projection_row(
         'exit_order_exchange_id': (exit_order or {}).get('order_id'),
         'exit_order_status': (exit_order or {}).get('status'),
         'exit_order_leg': _exit_order_leg(exit_reason),
+        'exit_attribution_detail': exit_attribution_detail,
     }
     return row
 
@@ -540,6 +543,7 @@ def append_live_trade_projection_from_open_trade(
     current_time_ms: int,
     current_time_bj: str,
     source: str,
+    exit_attribution_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         signal_snapshot = open_trade.get('signal_snapshot') if isinstance(open_trade.get('signal_snapshot'), dict) else {}
@@ -572,6 +576,7 @@ def append_live_trade_projection_from_open_trade(
             current_time_ms=current_time_ms,
             current_time_bj=current_time_bj,
             source=source,
+            exit_attribution_detail=exit_attribution_detail,
         )
         path = _projection_path(live_cfg, 'live_trades')
         _append_projection_row(path, row)
@@ -593,6 +598,7 @@ def append_live_trade_projection_from_pending_terminal(
     current_time_ms: int,
     current_time_bj: str,
     source: str,
+    exit_attribution_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         signal_snapshot = pending.get('signal_snapshot') if isinstance(pending.get('signal_snapshot'), dict) else {}
@@ -628,6 +634,7 @@ def append_live_trade_projection_from_pending_terminal(
             current_time_ms=current_time_ms,
             current_time_bj=current_time_bj,
             source=source,
+            exit_attribution_detail=exit_attribution_detail,
         )
         path = _projection_path(live_cfg, 'live_trades')
         _append_projection_row(path, row)
@@ -1808,6 +1815,13 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                                 },
                             })
                         continue
+                    exit_attribution_detail = build_unknown_exit_attribution_detail(
+                        exit_reason=exit_reason,
+                        position_res=pos_res,
+                        known_open_orders=known_open_orders,
+                        order_checks=order_checks,
+                        cleanup_checks={'tp': tp_cancel, 'sl': sl_cancel, 'time_stop': ts_cancel},
+                    )
                     set_pending_entry_order(account, symbol, None)
                     _clear_symbol_error(account, symbol)
                     _refresh_exit_cooldown(account, symbol, current_time_ms, cooldown_mins)
@@ -1824,6 +1838,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                         current_time_ms=current_time_ms,
                         current_time_bj=current_time_bj,
                         source=f'{source}_pending_terminal',
+                        exit_attribution_detail=exit_attribution_detail,
                     )
                     if audit_enabled and not trade_projection_res.get('ok'):
                         write_event(account, 'live_trade_projection_write_failed', {
@@ -1858,6 +1873,7 @@ def _reconcile_pending_entries(account: str, live_cfg: dict[str, Any], current_t
                                 'tp_cancel': tp_cancel,
                                 'sl_cancel': sl_cancel,
                                 'ts_cancel': ts_cancel,
+                                'exit_attribution_detail': exit_attribution_detail,
                             },
                         })
                         event_map = {
@@ -2346,6 +2362,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     })
                 continue
 
+            exit_attribution_detail = build_unknown_exit_attribution_detail(
+                exit_reason=exit_reason,
+                position_res=pos_res,
+                known_open_orders=open_orders,
+                order_checks=order_checks,
+                cleanup_checks={'tp': tp_cancel, 'sl': sl_cancel, 'time_stop': ts_cancel},
+            )
             trade_projection_res = append_live_trade_projection_from_open_trade(
                 account,
                 live_cfg,
@@ -2358,6 +2381,7 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                 current_time_ms=current_time_ms,
                 current_time_bj=current_time_bj,
                 source=source,
+                exit_attribution_detail=exit_attribution_detail,
             )
             set_open_trade(account, symbol, None)
             set_pending_entry_order(account, symbol, None)
@@ -2388,12 +2412,13 @@ def _reconcile_open_trades(account: str, live_cfg: dict[str, Any], current_time_
                     'bar_bj': current_time_bj,
                     'source': source,
                     'exit_reason': exit_reason,
+                    'exit_attribution_detail': exit_attribution_detail,
                     'order_root': open_trade.get('order_root'),
                     'entry_client_order_id': open_trade.get('entry_client_order_id'),
                     'tp_client_order_id': open_trade.get('tp_order_client_id'),
                     'sl_client_order_id': open_trade.get('sl_order_client_id'),
                     'time_stop_client_order_id': open_trade.get('time_stop_client_order_id'),
-                    'exchange_snapshot': {'position': pos_res, 'orders': ord_res, 'order_checks': order_checks, 'tp_cancel': tp_cancel, 'sl_cancel': sl_cancel, 'ts_cancel': ts_cancel},
+                    'exchange_snapshot': {'position': pos_res, 'orders': ord_res, 'order_checks': order_checks, 'tp_cancel': tp_cancel, 'sl_cancel': sl_cancel, 'ts_cancel': ts_cancel, 'exit_attribution_detail': exit_attribution_detail},
                 })
                 event_map = {
                     'TAKE_PROFIT': 'tp_filled',
