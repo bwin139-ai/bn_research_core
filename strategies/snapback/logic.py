@@ -30,6 +30,9 @@ class WashoutSnapbackStrategy:
         self.max_history_window_mins = runtime["max_history_window_mins"]
 
         # 基础过滤
+        self.exclude_symbols = {
+            str(x).upper().strip() for x in universe["exclude_symbols"] if str(x).strip()
+        }
         self.min_24h_vol = universe["24h_quote_volume_min"]
         self.min_24h_chg = universe["24h_chg_pct"]["min"]
         self.max_24h_chg = universe["24h_chg_pct"]["max"]
@@ -398,6 +401,10 @@ class WashoutSnapbackStrategy:
                 "market_total_24h_vol": market_total_24h_vol,
                 "market_total_24h_vol_min": self.market_total_24h_vol_min,
             }
+            if sym in self.exclude_symbols:
+                record["fail_reason"] = "symbol_in_exclude_symbols"
+                audits[sym] = record
+                continue
             row = cross_section.loc[sym] if sym in cross_section.index else None
             if row is not None:
                 record["current_price"] = row["close"]
@@ -767,6 +774,8 @@ class WashoutSnapbackStrategy:
 
         # 1. 过滤垃圾币种，保证流动性底线
         cs = cross_section.dropna(subset=["vol_24h", "chg_24h"]).copy()
+        if self.exclude_symbols:
+            cs = cs[~cs.index.isin(self.exclude_symbols)]
         cs = cs[cs["vol_24h"] >= self.min_24h_vol]
         cs = cs[cs["chg_24h"] * 100 >= self.min_24h_chg]
         cs = cs[cs["chg_24h"] * 100 <= self.max_24h_chg]

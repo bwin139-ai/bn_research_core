@@ -5,6 +5,29 @@
   },
   "universe": {
     "24h_quote_volume_min": 30000000,
+    "exclude_symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "BNBUSDT",
+      "XRPUSDT",
+      "SOLUSDT",
+      "XAUUSDT",
+      "DOGEUSDT",
+      "HYPEUSDT",
+      "PAXGUSDT",
+      "ADAUSDT",
+      "SUIUSDT",
+      "AVAXUSDT",
+      "LINKUSDT",
+      "DOTUSDT",
+      "BCHUSDT",
+      "FILUSDT",
+      "XAUTUSDT",
+      "AAVEUSDT",
+      "TRXUSDT",
+      "ARBUSDT",
+      "1000SHIBUSDT"
+    ],
     "24h_chg_pct": {
       "min": -100.0,
       "max": 1000

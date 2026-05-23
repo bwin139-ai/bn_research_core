@@ -16,6 +16,7 @@ class StrategyConfig:
         ("strategy_name",),
         ("runtime", "max_history_window_mins"),
         ("universe", "24h_quote_volume_min"),
+        ("universe", "exclude_symbols"),
         ("universe", "24h_chg_pct", "min"),
         ("universe", "24h_chg_pct", "max"),
         ("universe", "market_total_24h_vol_min"),
@@ -144,6 +145,11 @@ class StrategyConfig:
             raise ValueError('【铁律违背】universe.market_total_24h_vol_min 必须是 number')
         if float(market_total_24h_vol_min) < 0:
             raise ValueError('【铁律违背】universe.market_total_24h_vol_min 必须 >= 0')
+        exclude_symbols = raw_data["universe"]["exclude_symbols"]
+        if not isinstance(exclude_symbols, list):
+            raise ValueError('【铁律违背】universe.exclude_symbols 必须是 list')
+        if any(not isinstance(x, str) or not x.strip() for x in exclude_symbols):
+            raise ValueError('【铁律违背】universe.exclude_symbols 只允许非空字符串 symbol')
         election_rule = str(raw_data["structure"].get("election_rule") or "").strip()
         allowed_election_rules = {
             "drop_pct_top1",
