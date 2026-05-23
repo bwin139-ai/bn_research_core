@@ -1069,7 +1069,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。2026-05-15 已将其语义定位写入 `PROJECT_BASELINE.md`：该进程是账户级管理员门户，管理范围覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水；文件名中的 `manual` 仅为历史命名。
 
 当前迁移边界：
-1. 保留菜单，当前显示顺序为：/set_s、/trade、/status、/account_detail、/view_history、/pending_orders、/rebate_report、/fav、/edit_symbols、/open、/close、/stop_market、/set_current_account。
+1. 保留菜单，当前显示顺序为：/set_s、/trade_open、/trade_close、/trade_other、/status、/account_detail、/view_history、/pending_orders、/rebate_report、/fav、/edit_symbols、/open、/close、/stop_market、/set_current_account；前三个命令显示文案分别为 `Command Open`、`Command Close`、`Command Other`。
 2. 删除旧菜单：/view_monitor_status、/hedge_open、/hedge_close、/view_monitor_config、/edit_monitor_config、/add_viewer、/remove_viewer。
 3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
@@ -1102,7 +1102,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 不填比例时提交全仓 `closePosition=true` SL。
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
-12. `/fav` 新增手动交易命令收藏维护，收藏落盘到 `state/manual_trade_command_shortcuts.json`，只保存 `/trade` 参数文本，不接触交易所、不写策略 state。收藏名支持大小写字母、常用汉字、数字、`_`、`-`，落盘与查找时英文字母统一转为小写，并限制为 1-32 个字符且不超过 48 个 UTF-8 bytes。支持 `/fav save NAME TRADE_ARGS`、`/fav show NAME`、`/fav del NAME`、`/fav run NAME`；交易入口支持 `/trade @NAME` 或 `/trade fav NAME` 展开收藏后复用原 `/trade` 解析与 LONG-only 执行路径。`/trade` 不带参数时以 `Trade: SYMBOL LEVERAGE` 标题展示收藏按钮列表，按钮参数标记使用 `(N p)`；点选收藏后原收藏列表消息会被改写为下一步提示或 `Run: /trade ...`，从而清掉按钮避免误触；若命令中没有 `?` 占位符则直接执行，若包含 `?` 则只提示命令模板与 `Send values separated by spaces.`，输入同数量参数后按顺序替换，支持 token 内占位符，例如 `SL ? TP ?` 点选后输入 `55.392 61.233`，或 `close deepa999 M ?%` 点选后输入 `50` 得到 `50%`。
+12. `/fav` 新增手动交易命令收藏维护，收藏落盘到 `state/manual_trade_command_shortcuts.json`，只保存 `/trade` 参数文本，不接触交易所、不写策略 state。收藏名支持大小写字母、常用汉字、数字、`_`、`-`，落盘与查找时英文字母统一转为小写，并限制为 1-32 个字符且不超过 48 个 UTF-8 bytes。支持 `/fav save NAME TRADE_ARGS`、`/fav show NAME`、`/fav del NAME`、`/fav run NAME`；交易入口支持 `/trade @NAME` 或 `/trade fav NAME` 展开收藏后复用原 `/trade` 解析与 LONG-only 执行路径。菜单展示按收藏命令 action 分类：`/trade_open` 只展示 `open`，`/trade_close` 展示 `close` / `sl`，`/trade_other` 展示 `pending` / `cancel` / `cancle`；旧 `/trade` 不带参数时仍以 `Trade: SYMBOL LEVERAGE` 标题展示全部收藏作为兼容入口。按钮参数标记使用 `(N p)`；点选收藏后原收藏列表消息会被改写为下一步提示或 `Run: /trade ...`，从而清掉按钮避免误触；若命令中没有 `?` 占位符则直接执行，若包含 `?` 则只提示命令模板与 `Send values separated by spaces.`，输入同数量参数后按顺序替换，支持 token 内占位符，例如 `SL ? TP ?` 点选后输入 `55.392 61.233`，或 `close deepa999 M ?%` 点选后输入 `50` 得到 `50%`。
 13. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
 14. `/rebate_report GROUP START_DATE END_DATE` 是只读 API 返佣区间报表，标题固定“API返佣报表”。报表从 `mybwin139` 的本地 `income[API_REBATE]` 账本读取返佣流水，用 `symbol + trade_id` 反查系统内账户 `trades`，再从对应 `secrets_{account}.json` 顶层 `rebate_group` 读取账户所属分组。查询结果按 `account + masked_email` 汇总，金额为 USDT 数量。底层按北京时间自然日生成日报缓存，路径为 `state/exchange_history/reports/api_rebate_daily/mybwin139/YYYY-MM-DD.json`；仅当日期已闭合且无未匹配、无多账户冲突、无缺失 `rebate_group` 时持久化缓存。当天或不完整日期每次实时重算。
 

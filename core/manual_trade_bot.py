@@ -419,6 +419,40 @@ def _trade_shortcut_button_label(name: str, command: str) -> str:
     return f"{name}{suffix}"
 
 
+def _trade_shortcut_action(command: str) -> str:
+    parts = str(command or "").split()
+    if not parts:
+        raise ValueError("favorite command must not be empty")
+    return parts[0].lower()
+
+
+def _filter_trade_shortcuts(shortcuts: dict[str, dict[str, Any]], group: str | None) -> dict[str, dict[str, Any]]:
+    if group is None:
+        return dict(shortcuts)
+    allowed = {
+        "open": {"open"},
+        "close": {"close", "sl"},
+        "other": {"pending", "cancel", "cancle"},
+    }.get(group)
+    if allowed is None:
+        raise ValueError(f"unsupported trade favorite group: {group}")
+    return {
+        name: row
+        for name, row in shortcuts.items()
+        if _trade_shortcut_action(str(row.get("command") or "")) in allowed
+    }
+
+
+def _trade_shortcut_menu_title(group: str | None, current: str) -> str:
+    if group == "open":
+        return f"Open: {current}"
+    if group == "close":
+        return f"Close: {current}"
+    if group == "other":
+        return f"Other: {current}"
+    return f"Trade: {current}"
+
+
 def _format_trade_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> str:
     if not shortcuts:
         return "Manual trade favorites: empty\n\n" + _trade_shortcut_usage()
@@ -430,10 +464,15 @@ def _format_trade_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def _send_trade_shortcut_menu(update: Update) -> None:
-    shortcuts = _load_trade_shortcuts()
+async def _send_trade_shortcut_menu(update: Update, group: str | None = None) -> None:
+    shortcuts = _filter_trade_shortcuts(_load_trade_shortcuts(), group)
+    try:
+        current = _current_trade_symbol_text()
+    except ValueError:
+        current = "未设置"
     if not shortcuts:
-        await _reply_text(update, "Manual trade favorites: empty\n\n" + _trade_shortcut_usage())
+        title = _trade_shortcut_menu_title(group, current)
+        await _reply_text(update, f"{title}\nNo favorites\n\n" + _trade_shortcut_usage())
         return
     buttons = [
         [
@@ -444,11 +483,7 @@ async def _send_trade_shortcut_menu(update: Update) -> None:
         ]
         for name in sorted(shortcuts)
     ]
-    try:
-        current = _current_trade_symbol_text()
-    except ValueError:
-        current = "未设置"
-    await _reply_text(update, f"Trade: {current}", reply_markup=InlineKeyboardMarkup(buttons))
+    await _reply_text(update, _trade_shortcut_menu_title(group, current), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _replace_callback_message(query: Any, text: str) -> None:
@@ -1110,7 +1145,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     commands = [
         BotCommand("set_s", "Set Trade Symbol"),
-        BotCommand("trade", "Command Trade"),
+        BotCommand("trade_open", "Command Open"),
+        BotCommand("trade_close", "Command Close"),
+        BotCommand("trade_other", "Command Other"),
         BotCommand("status", "All Accounts"),
         BotCommand("account_detail", "Account Detail"),
         BotCommand("view_history", "History"),
@@ -3062,6 +3099,21 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 @_admin_required
+async def trade_open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_trade_shortcut_menu(update, group="open")
+
+
+@_admin_required
+async def trade_close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_trade_shortcut_menu(update, group="close")
+
+
+@_admin_required
+async def trade_other_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_trade_shortcut_menu(update, group="other")
+
+
+@_admin_required
 async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -3196,6 +3248,9 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("view_history", send_history))
     application.add_handler(CommandHandler("rebate_report", rebate_report))
     application.add_handler(CommandHandler("trade", trade_command))
+    application.add_handler(CommandHandler("trade_open", trade_open_command))
+    application.add_handler(CommandHandler("trade_close", trade_close_command))
+    application.add_handler(CommandHandler("trade_other", trade_other_command))
     application.add_handler(CommandHandler("fav", fav_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(account_detail_selected, pattern=r"^account_action:detail:"))
