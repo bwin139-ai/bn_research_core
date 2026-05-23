@@ -1,5 +1,5 @@
 # ============== Spring-SABC live  ===============
-ACCOUNT=mybwin139
+ACCOUNT=stark21
 nohup /root/service_env/bin/python strategies/spring/run_live.py \
   --config strategies/spring/config.live_smoke_10u.json \
   --account "$ACCOUNT" \

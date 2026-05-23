@@ -35,7 +35,7 @@ tail -f "output/logs/scheduler.${RUNSET}.console.log"
 # ============== Sweep-Reclaim live ===============
 git pull --ff-only origin main
 
-ACCOUNT=mybwin139
+ACCOUNT=stark21
 nohup /root/service_env/bin/python strategies/sweep_reclaim/run_live.py \
   --config strategies/sweep_reclaim/config_smoke_10u.json \
   --account "$ACCOUNT" \
