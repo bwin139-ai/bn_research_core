@@ -373,7 +373,7 @@ def _trade_shortcut_args(name: str) -> list[str]:
 
 
 def _trade_shortcut_placeholder_count(args: list[str]) -> int:
-    return sum(1 for token in args if str(token).strip() == "?")
+    return sum(str(token).count("?") for token in args)
 
 
 def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> list[str]:
@@ -386,11 +386,11 @@ def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> lis
     filled: list[str] = []
     value_idx = 0
     for token in args:
-        if str(token).strip() == "?":
-            filled.append(clean_values[value_idx])
+        text = str(token)
+        while "?" in text:
+            text = text.replace("?", clean_values[value_idx], 1)
             value_idx += 1
-        else:
-            filled.append(str(token))
+        filled.append(text)
     return filled
 
 
