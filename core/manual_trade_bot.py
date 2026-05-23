@@ -412,7 +412,7 @@ def _expand_trade_shortcut_args(args: list[str]) -> tuple[list[str], str | None,
 
 def _trade_shortcut_button_label(name: str, command: str) -> str:
     param_count = _trade_shortcut_placeholder_count(str(command).split())
-    suffix = f" ({param_count} params)" if param_count else ""
+    suffix = f" ({param_count} p)" if param_count else ""
     return f"{name}{suffix}"
 
 
@@ -441,14 +441,11 @@ async def _send_trade_shortcut_menu(update: Update) -> None:
         ]
         for name in sorted(shortcuts)
     ]
-    lines = ["Command Trade"]
     try:
         current = _current_trade_symbol_text()
     except ValueError:
         current = "未设置"
-    lines.append(f"当前 symbol: {current}")
-    lines.append("点选收藏后执行；带 ? 的收藏会先要求输入参数。")
-    await _reply_text(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+    await _reply_text(update, f"Trade: {current}", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def _fmt_usdt(value: Any) -> str:
@@ -1096,12 +1093,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     commands = [
         BotCommand("set_s", "Set Trade Symbol"),
+        BotCommand("trade", "Command Trade"),
         BotCommand("status", "All Accounts"),
         BotCommand("account_detail", "Account Detail"),
         BotCommand("view_history", "History"),
         BotCommand("pending_orders", "Pending Orders"),
         BotCommand("rebate_report", "API Rebate Report"),
-        BotCommand("trade", "Command Trade"),
         BotCommand("fav", "Trade Favorites"),
         BotCommand("edit_symbols", "Edit Symbols"),
         BotCommand("open", "Open"),
@@ -3038,13 +3035,12 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         }
         await _reply_text(
             update,
-            f"Favorite {favorite_name} requires {placeholder_count} parameter(s).\n"
             f"/trade {favorite_command}\n"
             "Send values separated by spaces.",
         )
         return
     if favorite_name and favorite_command:
-        await _reply_text(update, f"Run favorite {favorite_name}: /trade {favorite_command}")
+        await _reply_text(update, f"Run: /trade {favorite_command}")
     await _execute_trade_args(update, context, args)
 
 
@@ -3063,12 +3059,11 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
             "placeholder_count": placeholder_count,
         }
         await query.message.reply_text(
-            f"Favorite {name} requires {placeholder_count} parameter(s).\n"
             f"/trade {command}\n"
             "Send values separated by spaces."
         )
         return TRADE_SHORTCUT_PARAM_INPUT
-    await query.message.reply_text(f"Run favorite {name}: /trade {command}")
+    await query.message.reply_text(f"Run: /trade {command}")
     await _execute_trade_args(update, context, args)
     return ConversationHandler.END
 
@@ -3087,7 +3082,7 @@ async def trade_shortcut_param_input(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text(str(exc))
         return TRADE_SHORTCUT_PARAM_INPUT
     context.user_data.pop("pending_trade_shortcut", None)
-    await update.message.reply_text(f"Run favorite {name}: /trade {' '.join(filled_args)}")
+    await update.message.reply_text(f"Run: /trade {' '.join(filled_args)}")
     await _execute_trade_args(update, context, filled_args)
     return ConversationHandler.END
 
@@ -3144,12 +3139,11 @@ async def fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "placeholder_count": placeholder_count,
             }
             await update.message.reply_text(
-                f"Favorite {name} requires {placeholder_count} parameter(s).\n"
                 f"/trade {' '.join(trade_args)}\n"
                 "Send values separated by spaces."
             )
             return
-        await update.message.reply_text(f"Run favorite {name}: /trade {' '.join(trade_args)}")
+        await update.message.reply_text(f"Run: /trade {' '.join(trade_args)}")
         await _execute_trade_args(update, context, trade_args)
         return
     raise ValueError(_trade_shortcut_usage())
