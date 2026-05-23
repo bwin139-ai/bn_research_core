@@ -451,6 +451,20 @@ async def _send_trade_shortcut_menu(update: Update) -> None:
     await _reply_text(update, f"Trade: {current}", reply_markup=InlineKeyboardMarkup(buttons))
 
 
+async def _replace_callback_message(query: Any, text: str) -> None:
+    if not query or not query.message:
+        return
+    try:
+        await query.edit_message_text(text)
+        return
+    except Exception:
+        pass
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
 def _fmt_usdt(value: Any) -> str:
     try:
         return f"{float(value):.2f}"
@@ -3061,12 +3075,13 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
             "args": args,
             "placeholder_count": placeholder_count,
         }
-        await query.message.reply_text(
+        await _replace_callback_message(
+            query,
             f"/trade {command}\n"
             "Send values separated by spaces."
         )
         return TRADE_SHORTCUT_PARAM_INPUT
-    await query.message.reply_text(f"Run: /trade {command}")
+    await _replace_callback_message(query, f"Run: /trade {command}")
     await _execute_trade_args(update, context, args)
     return ConversationHandler.END
 
