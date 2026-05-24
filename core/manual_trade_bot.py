@@ -1546,6 +1546,16 @@ def _prepare_symbol(account: str, symbol: str, leverage: int) -> None:
     if not bool(mode_res["data"].get("dual_side")):
         mode = mode_res["data"].get("position_side_mode")
         raise RuntimeError(f"account position mode must be HEDGE before manual LONG trade: mode={mode}")
+    pos_res = get_positions(account, symbol)
+    if not pos_res["ok"]:
+        raise RuntimeError(pos_res["reason"])
+    has_position = any(float(row.get("qty", 0.0) or 0.0) != 0.0 for row in pos_res["data"])
+    order_res = get_open_orders(account, symbol)
+    if not order_res["ok"]:
+        raise RuntimeError(order_res["reason"])
+    has_open_orders = bool(order_res.get("data") or [])
+    if has_position or has_open_orders:
+        return
     for res in (
         ensure_cross_margin(account, symbol),
         ensure_leverage(account, symbol, leverage),
