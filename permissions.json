@@ -10,5 +10,15 @@
             "name": "我自己",
             "accounts": ["junj1208"]
         }
+    },
+    "group_viewers": {
+        "6482576849": {
+            "name": "Head",
+            "group": "Head"
+        },
+        "8105456673": {
+            "name": "chen",
+            "group": "Chen"
+        }
     }
 }
