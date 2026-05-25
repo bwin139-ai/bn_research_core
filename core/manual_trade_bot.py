@@ -509,7 +509,11 @@ async def _send_trade_shortcut_menu(update: Update, group: str | None = None) ->
         current = "未设置"
     if not shortcuts:
         title = _trade_shortcut_menu_title(group, current)
-        await _reply_text(update, f"{title}\nNo favorites\n\n" + _trade_shortcut_usage())
+        await _reply_text(
+            update,
+            f"{title}\nNo favorites\n\n" + _trade_shortcut_usage(),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Abort", callback_data="abort")]]),
+        )
         return
     buttons = [
         [
@@ -520,6 +524,7 @@ async def _send_trade_shortcut_menu(update: Update, group: str | None = None) ->
         ]
         for name in sorted(shortcuts)
     ]
+    buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
     await _reply_text(update, _trade_shortcut_menu_title(group, current), reply_markup=InlineKeyboardMarkup(buttons))
 
 
