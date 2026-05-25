@@ -129,9 +129,36 @@ def _admin_ids() -> set[str]:
     return {str(x).strip() for x in _load_permissions()["admins"]}
 
 
+def _group_viewer_groups() -> dict[str, str]:
+    raw_viewers = _load_permissions().get("group_viewers", {})
+    if raw_viewers is None:
+        return {}
+    if not isinstance(raw_viewers, dict):
+        raise ValueError("permissions.json group_viewers must be an object")
+    viewers: dict[str, str] = {}
+    for user_id, info in raw_viewers.items():
+        uid = str(user_id).strip()
+        if not uid:
+            raise ValueError("permissions.json group_viewers contains empty user id")
+        if not isinstance(info, dict):
+            raise ValueError("permissions.json group_viewers entries must be objects")
+        group = str(info.get("group") or "").strip()
+        if not group:
+            raise ValueError(f"permissions.json group_viewers[{uid}].group is required")
+        viewers[uid] = group
+    return viewers
+
+
 def _is_admin(update: Update) -> bool:
     user = update.effective_user
     return bool(user and str(user.id) in _admin_ids())
+
+
+def _group_viewer_group(update: Update) -> str | None:
+    user = update.effective_user
+    if not user:
+        return None
+    return _group_viewer_groups().get(str(user.id))
 
 
 def _admin_required(
@@ -1140,26 +1167,31 @@ async def post_init(application: Application) -> None:
     )
 
 
-@_admin_required
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    commands = [
-        BotCommand("set_s", "Set Trade Symbol"),
-        BotCommand("trade_open", "Command Open"),
-        BotCommand("trade_close", "Command Close"),
-        BotCommand("trade_other", "Command Other"),
-        BotCommand("status", "All Accounts"),
-        BotCommand("account_detail", "Account Detail"),
-        BotCommand("view_history", "History"),
-        BotCommand("pending_orders", "Pending Orders"),
-        BotCommand("rebate_report", "API Rebate Report"),
-        BotCommand("fav", "Trade Favorites"),
-        BotCommand("edit_symbols", "Edit Symbols"),
-        BotCommand("open", "Open"),
-        BotCommand("close", "Close"),
-        BotCommand("stop_market", "Stop Market"),
-        BotCommand("set_current_account", "Select"),
-    ]
+    if _is_admin(update):
+        commands = [
+            BotCommand("set_s", "Set Trade Symbol"),
+            BotCommand("trade_open", "Command Open"),
+            BotCommand("trade_close", "Command Close"),
+            BotCommand("trade_other", "Command Other"),
+            BotCommand("status", "All Accounts"),
+            BotCommand("account_detail", "Account Detail"),
+            BotCommand("view_history", "History"),
+            BotCommand("pending_orders", "Pending Orders"),
+            BotCommand("rebate_report", "API Rebate Report"),
+            BotCommand("fav", "Trade Favorites"),
+            BotCommand("edit_symbols", "Edit Symbols"),
+            BotCommand("open", "Open"),
+            BotCommand("close", "Close"),
+            BotCommand("stop_market", "Stop Market"),
+            BotCommand("set_current_account", "Select"),
+        ]
+    elif _group_viewer_group(update):
+        commands = [BotCommand("rebate_report", "API Rebate Report")]
+    else:
+        await update.message.reply_text("unauthorized")
+        return
     await context.bot.set_my_commands(commands=commands, scope=BotCommandScopeChat(chat_id=chat_id))
     await update.message.reply_text("menu updated")
 
@@ -2285,16 +2317,29 @@ def _merge_rebate_reports(group: str, daily_reports: list[dict[str, Any]]) -> di
     }
 
 
-@_admin_required
 async def rebate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = list(context.args or [])
-    if len(args) != 3:
-        await update.message.reply_text("用法: /rebate_report GROUP START_DATE END_DATE，例如 /rebate_report partner_a 2026-05-22 2026-05-22")
+    try:
+        if _is_admin(update):
+            if len(args) != 3:
+                await update.message.reply_text("用法: /rebate_report GROUP START_DATE END_DATE，例如 /rebate_report partner_a 2026-05-22 2026-05-22")
+                return
+            group, start_day, end_day = args
+        else:
+            group = _group_viewer_group(update)
+            if not group:
+                await update.message.reply_text("unauthorized")
+                return
+            if len(args) != 2:
+                await update.message.reply_text("用法: /rebate_report START_DATE END_DATE，例如 /rebate_report 2026-05-22 2026-05-22")
+                return
+            start_day, end_day = args
+        days = _rebate_report_days(start_day, end_day)
+        reports = [_rebate_daily_report(API_REBATE_ACCOUNT, day) for day in days]
+        merged = _merge_rebate_reports(group, reports)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
         return
-    group, start_day, end_day = args
-    days = _rebate_report_days(start_day, end_day)
-    reports = [_rebate_daily_report(API_REBATE_ACCOUNT, day) for day in days]
-    merged = _merge_rebate_reports(group, reports)
     lines = [
         "API返佣报表",
         f"组: {group}",
