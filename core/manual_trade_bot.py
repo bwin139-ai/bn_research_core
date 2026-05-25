@@ -226,6 +226,16 @@ def _account_rebate_group(account: str) -> str:
     return group or NO_REBATE_GROUP
 
 
+def _rebate_groups() -> list[str]:
+    groups = {
+        _account_rebate_group(account)
+        for account in _discover_accounts()
+        if account != API_REBATE_ACCOUNT
+    }
+    groups.discard(NO_REBATE_GROUP)
+    return sorted(groups, key=lambda x: x.casefold())
+
+
 def _selected_account(context: ContextTypes.DEFAULT_TYPE) -> str:
     account = str(context.user_data.get("current_account") or "").strip()
     if not account:
@@ -659,6 +669,20 @@ async def _reply_text(update: Update, text: str, **kwargs: Any) -> None:
         return
     if update.callback_query and update.callback_query.message:
         await update.callback_query.message.reply_text(text, **kwargs)
+
+
+async def _edit_or_reply_text(update: Update, text: str, **kwargs: Any) -> None:
+    query = update.callback_query
+    if query and query.message:
+        try:
+            await query.edit_message_text(text, **kwargs)
+            return
+        except Exception:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+    await _reply_text(update, text, **kwargs)
 
 
 def _long_positions(account: str) -> list[dict[str, Any]]:
@@ -2317,28 +2341,55 @@ def _merge_rebate_reports(group: str, daily_reports: list[dict[str, Any]]) -> di
     }
 
 
-async def rebate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = list(context.args or [])
+def _rebate_start_days() -> list[str]:
+    today = datetime.now(tz=BJ).date()
+    return [(today - timedelta(days=i)).isoformat() for i in range(7)]
+
+
+def _rebate_start_markup() -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for day in _rebate_start_days():
+        row.append(InlineKeyboardButton(day, callback_data=f"rebate_start:{day}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="abort")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _send_rebate_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    groups = _rebate_groups()
+    if not groups:
+        await _reply_text(update, "no rebate groups found")
+        return
+    context.user_data["rebate_report_groups"] = groups
+    buttons = [
+        [InlineKeyboardButton(group, callback_data=f"rebate_group:{idx}")]
+        for idx, group in enumerate(groups)
+    ]
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="abort")])
+    await _reply_text(update, "API返佣报表\n选择组", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def _send_rebate_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, group: str) -> None:
+    context.user_data["rebate_report_group"] = group
+    await _edit_or_reply_text(
+        update,
+        f"API返佣报表\n组: {group}\n选择起始日期",
+        reply_markup=_rebate_start_markup(),
+    )
+
+
+async def _send_rebate_report(update: Update, group: str, start_day: str, end_day: str) -> None:
     try:
-        if _is_admin(update):
-            if len(args) != 3:
-                await update.message.reply_text("用法: /rebate_report GROUP START_DATE END_DATE，例如 /rebate_report partner_a 2026-05-22 2026-05-22")
-                return
-            group, start_day, end_day = args
-        else:
-            group = _group_viewer_group(update)
-            if not group:
-                await update.message.reply_text("unauthorized")
-                return
-            if len(args) != 2:
-                await update.message.reply_text("用法: /rebate_report START_DATE END_DATE，例如 /rebate_report 2026-05-22 2026-05-22")
-                return
-            start_day, end_day = args
         days = _rebate_report_days(start_day, end_day)
         reports = [_rebate_daily_report(API_REBATE_ACCOUNT, day) for day in days]
         merged = _merge_rebate_reports(group, reports)
     except ValueError as exc:
-        await update.message.reply_text(str(exc))
+        await _reply_text(update, str(exc))
         return
     lines = [
         "API返佣报表",
@@ -2365,6 +2416,70 @@ async def rebate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if warnings:
         lines.extend(["", "注意: " + "；".join(warnings)])
     await _send_lines(update, lines)
+
+
+async def rebate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = list(context.args or [])
+    if _is_admin(update):
+        if not args:
+            await _send_rebate_group_menu(update, context)
+            return
+        if len(args) != 3:
+            await update.message.reply_text("用法: /rebate_report GROUP START_DATE END_DATE，例如 /rebate_report partner_a 2026-05-22 2026-05-22")
+            return
+        group, start_day, end_day = args
+        await _send_rebate_report(update, group, start_day, end_day)
+        return
+    group = _group_viewer_group(update)
+    if not group:
+        await update.message.reply_text("unauthorized")
+        return
+    if not args:
+        await _send_rebate_start_menu(update, context, group)
+        return
+    if len(args) != 2:
+        await update.message.reply_text("用法: /rebate_report START_DATE END_DATE，例如 /rebate_report 2026-05-22 2026-05-22")
+        return
+    start_day, end_day = args
+    await _send_rebate_report(update, group, start_day, end_day)
+
+
+async def rebate_group_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(update):
+        await query.edit_message_text("unauthorized")
+        return
+    groups = context.user_data.get("rebate_report_groups")
+    if not isinstance(groups, list):
+        await query.edit_message_text("rebate group selection expired")
+        return
+    raw_idx = str(query.data or "").split(":", 1)[1]
+    try:
+        group = str(groups[int(raw_idx)])
+    except Exception:
+        await query.edit_message_text("invalid rebate group selection")
+        return
+    await _send_rebate_start_menu(update, context, group)
+
+
+async def rebate_start_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if _is_admin(update):
+        group = str(context.user_data.get("rebate_report_group") or "").strip()
+        if not group:
+            await query.edit_message_text("rebate group selection expired")
+            return
+    else:
+        group = _group_viewer_group(update)
+        if not group:
+            await query.edit_message_text("unauthorized")
+            return
+    start_day = str(query.data or "").split(":", 1)[1]
+    end_day = _today_bj_text()
+    await _edit_or_reply_text(update, f"API返佣报表\n组: {group}\n日期: {start_day} ~ {end_day}")
+    await _send_rebate_report(update, group, start_day, end_day)
 
 
 def _manual_order_type(order: dict[str, Any]) -> str | None:
@@ -3313,6 +3428,8 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(send_history_selected, pattern=r"^account_action:history:"))
     application.add_handler(CallbackQueryHandler(detail_pending, pattern=r"^detail_pending:"))
     application.add_handler(CallbackQueryHandler(detail_history, pattern=r"^detail_history:"))
+    application.add_handler(CallbackQueryHandler(rebate_group_selected, pattern=r"^rebate_group:"))
+    application.add_handler(CallbackQueryHandler(rebate_start_selected, pattern=r"^rebate_start:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_group, pattern=r"^cancel_group:"))
     application.add_handler(CallbackQueryHandler(do_cancel_group, pattern=r"^cancel_group_ok:"))
     application.add_handler(CallbackQueryHandler(confirm_cancel_order, pattern=r"^cancel:"))
