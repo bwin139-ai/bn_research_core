@@ -3451,6 +3451,15 @@ def run_bot() -> None:
     )
     application.add_handler(
         ConversationHandler(
+            entry_points=[CommandHandler("edit_symbols", edit_symbols)],
+            states={EDIT_SYMBOLS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_symbols_input)]},
+            fallbacks=[CommandHandler("cancel", cancel_conv)],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
+    application.add_handler(
+        ConversationHandler(
             entry_points=[CommandHandler("set", set_command), CommandHandler("set_s", set_symbol_command)],
             states={
                 SET_SYMBOL_INPUT: [
@@ -3499,15 +3508,6 @@ def run_bot() -> None:
                 STOP_INPUT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, stop_input_price)],
             },
             fallbacks=[CommandHandler("cancel", cancel_conv), CallbackQueryHandler(cancel_conv, pattern=r"^abort$")],
-            allow_reentry=True,
-            per_user=True,
-        )
-    )
-    application.add_handler(
-        ConversationHandler(
-            entry_points=[CommandHandler("edit_symbols", edit_symbols)],
-            states={EDIT_SYMBOLS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_symbols_input)]},
-            fallbacks=[CommandHandler("cancel", cancel_conv)],
             allow_reentry=True,
             per_user=True,
         )
