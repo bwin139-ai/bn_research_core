@@ -71,6 +71,7 @@ PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
 _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
 _TRADE_SHORTCUT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,32}$")
 _TRADE_SHORTCUT_NAME_MAX_BYTES = 48
+_EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -3457,7 +3458,7 @@ def run_bot() -> None:
     application.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("edit_symbols", edit_symbols)],
-            states={EDIT_SYMBOLS_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_symbols_input)]},
+            states={EDIT_SYMBOLS_INPUT: [MessageHandler(_EDIT_SYMBOLS_INPUT_FILTER, edit_symbols_input)]},
             fallbacks=[CommandHandler("cancel", cancel_conv)],
             allow_reentry=True,
             per_user=True,
