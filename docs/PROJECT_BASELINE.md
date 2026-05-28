@@ -59,12 +59,12 @@
 1.6.3 若发现 `sim` 语义错误，必须先修 `sim`，再重跑验证，再要求 `live` 对齐。  
 1.6.4 禁止用 `live` 现实限制掩盖 `sim` 语义错误。  
 
-### 1.7 方向语义
-1.7.1 本项目当前及未来统一只允许 LONG，不允许 SHORT。  
-1.7.2 本项目不定义 SHORT 语义，不实现 SHORT 代码路径，不接受以 SHORT 为目标的 patch、review、audit、sim、live 设计。  
-1.7.3 凡涉及方向的分析、对话、方案、代码实现、审计与交付，只讨论 LONG。  
-1.7.4 未显式声明为 LONG-only 的字段、分支、行为，若引入 SHORT 语义，一律视为违规。  
-1.7.5 禁止以“多空对称”“通用化”“未来扩展”为理由引入 SHORT 相关语义、字段、分支或实现。
+### 1.7 策略方向语义
+1.7.1 本项目策略 alpha 统一只允许 LONG，不允许 SHORT。
+1.7.2 Spring / Snapback / SWR / TVR 等策略不定义 SHORT alpha 语义，不实现 SHORT signal / entry / exit / reconcile / state 路径，不接受以 SHORT 策略化为目标的 patch、review、audit、sim、live 设计。
+1.7.3 凡涉及策略方向的分析、对话、方案、代码实现、审计与交付，只讨论 LONG。
+1.7.4 未显式声明为非策略管理员门户 hedge overlay 例外的字段、分支、行为，若引入 SHORT 语义，一律视为违规。
+1.7.5 禁止以“多空对称”“通用化”“未来扩展”为理由向既有策略路径引入 SHORT 相关语义、字段、分支或实现。
 
 ### 1.8 live 分层语义
 1.8.1 live 侧公共架构分为四段：`Live Data Gate -> Signal Gate -> Strategy Signal Logic -> Execution Lifecycle`。
@@ -80,6 +80,10 @@
 1.9.2 管理员门户必须以 Binance 账户事实为主，覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水。
 1.9.3 管理员门户的查询类能力（例如 status / pending orders / history）不得只按本地手动事件或策略 state 判断账户事实；必须优先读取交易所事实，并用本地 state / audit / manual event 只作为 symbol discovery、可读性补充或交叉核查。
 1.9.4 管理员门户仍必须遵守项目 LONG-only 基线；若查询到非 LONG 方向或与 LONG-only 冲突的交易所事实，必须显式暴露为异常事实，不得混入正常 LONG 历史或静默忽略。
+1.9.5 管理员门户允许存在独立、手动、账户级 `hedge_short` overlay 例外；该例外只服务账户风险对冲，不属于策略 alpha，不得反向调用 Spring / Snapback / SWR / TVR 策略逻辑，也不得写入任何策略 state。
+1.9.6 `hedge_short` overlay 必须默认关闭，必须使用独立命令 namespace、独立白名单、独立 current symbol、独立 client order id 前缀、独立 audit/event 落盘；不得复用 `/trade` 的 LONG-only action 分支，不得复用 LONG 当前 symbol。
+1.9.7 `hedge_short` overlay 必须同时经过白名单与 current symbol 双闸：白名单决定理论允许做空的 symbol，current symbol 决定当前实际开放的手动做空入口；current symbol 为 `null` / 未设置时，所有做空执行入口必须 fail-fast。
+1.9.8 `hedge_short` overlay 第一阶段只允许手动触发，不允许自动策略触发；后续若考虑自动化，必须先另行更新基线与审计边界。
 
 ## 2. 行动纪律（铁律）
 

@@ -987,7 +987,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 
 ## 4. 当前明确不做
 
-1. 不引入 SHORT 语义、字段、分支或实现。
+1. 不向策略路径引入 SHORT 语义、字段、分支或实现；手动 `hedge_short` 仅作为账户级管理员门户例外。
 2. 不把旧归档报告反向覆盖当前活跃文档。
 3. 不再依赖旧聊天记忆推进长任务。
 4. 不在未锁基线时进入正式 patch。
@@ -1069,9 +1069,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 2026-05-12 已在当前项目新增 root `run_manual_trade_bot.py` 与 `core/manual_trade_bot.py`，用于替代旧项目 `/root/BN_strategy/main.py` 的账户查询与必要手动交易入口。2026-05-15 已将其语义定位写入 `PROJECT_BASELINE.md`：该进程是账户级管理员门户，管理范围覆盖 API 手动订单、API 自动策略订单，以及通过 Binance App / Web 产生的订单、成交、持仓、挂单与资金流水；文件名中的 `manual` 仅为历史命名。
 
 当前迁移边界：
-1. 保留菜单，当前显示顺序为：/set_s、/trade_open、/trade_close、/trade_other、/status、/account_detail、/view_history、/pending_orders、/rebate_report、/fav、/edit_symbols、/open、/close、/stop_market、/set_current_account；前三个命令显示文案分别为 `Command Open`、`Command Close`、`Command Other`。`/edit_symbols` 由独立 conversation 处理并优先于 `/set_s` 输入会话，且只接收 `ADD` / `DEL` / `LIST` / `DONE` 文本，避免从其它会话切换后误抢 `/open` 的 `Q` / notional 等输入。
+1. 保留菜单，当前显示顺序为：/set_s、/trade_open、/trade_close、/trade_other、/hedge_short、/status、/account_detail、/view_history、/pending_orders、/rebate_report、/fav、/hs_fav、/hs_set_s、/hs_edit_symbols、/edit_symbols、/open、/close、/stop_market、/set_current_account；前三个交易命令显示文案分别为 `Command Open`、`Command Close`、`Command Other`。`/edit_symbols` 由独立 conversation 处理并优先于 `/set_s` 输入会话，且只接收 `ADD` / `DEL` / `LIST` / `DONE` 文本，避免从其它会话切换后误抢 `/open` 的 `Q` / notional 等输入。
 2. 删除旧菜单：/view_monitor_status、/hedge_open、/hedge_close、/view_monitor_config、/edit_monitor_config、/add_viewer、/remove_viewer。
-3. 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders。
+3. `/trade` 与旧 `/open` / `/close` / `/stop_market` 手动交易入口固定 LONG-only，只展示和处理 LONG position / LONG pending orders；手动 hedge short overlay 必须走独立 `/hedge_short` namespace。
 4. 手动交易不再接入旧项目 `my_binance.py`，统一复用 `core/live/binance_exec.py` 与 Binance REST Gateway。
 5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
 6. 新增 `/set_s` 菜单命令与 `/set s` 当前交易 symbol 入口：输入后显示当前 `SYMBOL LEVERAGE`，并从 `manual_trade_symbols.json` 弹出 symbol/leverage 按钮供点选；也可继续手动输入 `HYPEUSDT 20x`，写入 `state/manual_trade_current_symbol.json`。这里的杠杆只作为 `/trade` 简化命令的记录；设置入口本身不调用 Binance API 修改任何账户或品种杠杆。
@@ -1104,8 +1104,9 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - 末尾 `PCT%` 表示按当前 LONG 持仓比例提交指定数量 SL，例如 `50%` 只保护当前 LONG 数量的一半。
    - 多账户用 `|` 分隔，逐账户顺序执行；某个账户失败不阻断后续账户。
 12. `/fav` 新增手动交易命令收藏维护，收藏落盘到 `state/manual_trade_command_shortcuts.json`，只保存 `/trade` 参数文本，不接触交易所、不写策略 state。收藏名支持大小写字母、常用汉字、数字、`_`、`-`，落盘与查找时英文字母统一转为小写，并限制为 1-32 个字符且不超过 48 个 UTF-8 bytes。支持 `/fav save NAME TRADE_ARGS`、`/fav show NAME`、`/fav del NAME`、`/fav run NAME`；交易入口支持 `/trade @NAME` 或 `/trade fav NAME` 展开收藏后复用原 `/trade` 解析与 LONG-only 执行路径。菜单展示按收藏命令 action 分类：`/trade_open` 只展示 `open`，`/trade_close` 展示 `close` / `sl`，`/trade_other` 展示 `pending` / `cancel` / `cancle`；旧 `/trade` 不带参数时仍以 `Trade: SYMBOL LEVERAGE` 标题展示全部收藏作为兼容入口。收藏按钮列表末尾固定追加 `Abort`。按钮参数标记使用 `(N p)`；点选收藏后原收藏列表消息会被改写为下一步提示或 `Run: /trade ...`，从而清掉按钮避免误触；若命令中没有 `?` 占位符则直接执行，若包含 `?` 则只提示命令模板与 `Send values separated by spaces.`，输入同数量参数后按顺序替换，支持 token 内占位符，例如 `SL ? TP ?` 点选后输入 `55.392 61.233`，或 `close deepa999 M ?%` 点选后输入 `50` 得到 `50%`。
-13. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
-14. `/rebate_report GROUP START_DATE END_DATE` 是只读 API 返佣区间报表，标题固定“API返佣报表”。报表从 `mybwin139` 的本地 `income[API_REBATE]` 账本读取返佣流水，用 `symbol + trade_id` 反查系统内账户 `trades`，再从对应 `secrets_{account}.json` 顶层 `rebate_group` 读取账户所属分组。查询结果按 `account + masked_email` 汇总，金额为 USDT 数量。底层按北京时间自然日生成日报缓存，路径为 `state/exchange_history/reports/api_rebate_daily/mybwin139/YYYY-MM-DD.json`；仅当日期已闭合且无未匹配、无多账户冲突、无缺失 `rebate_group` 时持久化缓存。当天或不完整日期每次实时重算。`/rebate_report` 无参数时进入向导：admin 先选择 group、再选择起始日期，group viewer 直接选择起始日期；向导的截止日期固定为查询当天北京时间日期，命令式完整参数入口仍保留。`permissions.json` 可配置 `group_viewers` 只读角色，格式为 `"telegram_user_id": {"group": "Chen", "name": "..."}`；group viewer 只能查询绑定 group，`/start` 也只下发 `rebate_report` 菜单。
+13. 2026-05-28 新增独立手动 `/hedge_short` overlay，作为账户级管理员门户例外，不属于 Spring / Snapback / SWR / TVR 策略 alpha，不写策略 state。语义边界：`PROJECT_BASELINE.md` 已改为“策略 LONG-only”，手动 hedge short 必须独立 namespace、独立白名单、独立 current symbol、独立 client id 前缀 `HSH`、独立 audit/event 落盘。文件为 `state/hedge_short_symbols.json`、`state/hedge_short_current_symbol.json`、`state/hedge_short_command_shortcuts.json`、`state/hedge_short/orders/YYYY-MM-DD.jsonl`。`hedge_short_current_symbol.json` 允许为 `null`，此时 `/hedge_short open/close/sl/cancel/pending` 均 fail-fast；即使 symbol 在白名单里，只要 current 为 `null`，执行入口也不可用。`/hs_edit_symbols` 维护白名单，支持 `ADD SYMBOL LEVERAGE`、`DEL SYMBOL`、`LIST`、`DONE`；`/hs_set_s` 从白名单选择当前做空 symbol，并提供 `OFF`。`/hedge_short` 支持 `open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO`、`open ... L PRICE`、`close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]`、`close ... L PRICE [PCT%]`、`sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]`、`pending ACCOUNT[ | ACCOUNT...]`、`cancel ACCOUNT[ | ACCOUNT...]`。`/hs_fav` 维护独立收藏，只保存不含 symbol 的 hedge-short 参数文本，支持 `?` 占位符；`/hedge_short @NAME` 或菜单按钮执行收藏。`/hedge_short cancel` 只撤该 current symbol 的 SHORT open orders，不撤 LONG 挂单。
+14. `/account_detail`、`/view_history`、`/pending_orders` 不再依赖 `current_account`；用户点击命令后先弹出账户列表，点选账户后对该账户执行查询。`/account_detail` 结果页内的 Pending / History 按钮会携带本次选择的账户继续查询。
+15. `/rebate_report GROUP START_DATE END_DATE` 是只读 API 返佣区间报表，标题固定“API返佣报表”。报表从 `mybwin139` 的本地 `income[API_REBATE]` 账本读取返佣流水，用 `symbol + trade_id` 反查系统内账户 `trades`，再从对应 `secrets_{account}.json` 顶层 `rebate_group` 读取账户所属分组。查询结果按 `account + masked_email` 汇总，金额为 USDT 数量。底层按北京时间自然日生成日报缓存，路径为 `state/exchange_history/reports/api_rebate_daily/mybwin139/YYYY-MM-DD.json`；仅当日期已闭合且无未匹配、无多账户冲突、无缺失 `rebate_group` 时持久化缓存。当天或不完整日期每次实时重算。`/rebate_report` 无参数时进入向导：admin 先选择 group、再选择起始日期，group viewer 直接选择起始日期；向导的截止日期固定为查询当天北京时间日期，命令式完整参数入口仍保留。`permissions.json` 可配置 `group_viewers` 只读角色，格式为 `"telegram_user_id": {"group": "Chen", "name": "..."}`；group viewer 只能查询绑定 group，`/start` 也只下发 `rebate_report` 菜单。
 
 2026-05-15 已修补 `/view_history` 的 symbol discovery：最近 24h 历史查询除手动 symbol、当前持仓和当前挂单外，还会从 `state/manual_trade/orders/YYYY-MM-DD.jsonl` 与 `state/live_audit/*_{account}.YYYY-MM-DD.jsonl` 的真实交易生命周期事件中补充 symbol，避免已离场且不在手动列表中的品种被漏查。当前 `/view_history` 的“历史委托”对应 Binance order history / `get_all_orders` 的已成交 LONG order；`get_account_trades` 仅用于按 order id 补充 realized PnL，不是独立的“历史成交”列表。
 

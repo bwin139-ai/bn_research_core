@@ -37,8 +37,10 @@ baseline documents.
 
 ## 3. Non-Negotiable Project Rules
 
-- LONG-only: do not introduce SHORT semantics, fields, branches, tests, or
-  implementation paths.
+- Strategy LONG-only: do not introduce SHORT semantics, fields, branches, tests,
+  or implementation paths into strategy alpha / live / sim paths. The only
+  allowed SHORT exception is the explicitly documented manual `hedge_short`
+  admin-portal overlay in `docs/PROJECT_BASELINE.md`.
 - Fact-first: code, logs, state files, persisted outputs, and command results
   are facts. Missing facts must be gathered before conclusions.
 - Fail fast: missing config, missing fields, semantic conflicts, bad data, and

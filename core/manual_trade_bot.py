@@ -45,6 +45,7 @@ from core.runtime_state import load_json_file, save_json_file_atomic, state_path
 
 BJ = timezone(timedelta(hours=8))
 LONG = "LONG"
+SHORT = "SHORT"
 NOTIFY_LABEL = "manual"
 POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
 API_REBATE_ACCOUNT = "mybwin139"
@@ -64,6 +65,9 @@ STOP_INPUT_PRICE = 302
 EDIT_SYMBOLS_INPUT = 401
 SET_SYMBOL_INPUT = 501
 TRADE_SHORTCUT_PARAM_INPUT = 601
+HS_SET_SYMBOL_INPUT = 701
+HS_EDIT_SYMBOLS_INPUT = 702
+HS_SHORTCUT_PARAM_INPUT = 703
 
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
@@ -72,6 +76,7 @@ _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
 _TRADE_SHORTCUT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,32}$")
 _TRADE_SHORTCUT_NAME_MAX_BYTES = 48
 _EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
+_HS_EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -91,6 +96,23 @@ def _current_trade_symbol_path() -> Path:
 
 def _trade_shortcuts_path() -> Path:
     return state_path("manual_trade_command_shortcuts.json")
+
+
+def _hedge_short_symbols_path() -> Path:
+    return state_path("hedge_short_symbols.json")
+
+
+def _current_hedge_short_symbol_path() -> Path:
+    return state_path("hedge_short_current_symbol.json")
+
+
+def _hedge_short_shortcuts_path() -> Path:
+    return state_path("hedge_short_command_shortcuts.json")
+
+
+def _hedge_short_events_path() -> Path:
+    day = datetime.now(tz=BJ).strftime("%Y-%m-%d")
+    return state_path("hedge_short", "orders", f"{day}.jsonl")
 
 
 def _manual_events_path() -> Path:
@@ -319,6 +341,100 @@ def _current_trade_symbol_text() -> str:
     return f"{row['symbol']} {row['leverage']}x"
 
 
+def _load_hedge_short_symbol_rows() -> list[dict[str, Any]]:
+    path = _hedge_short_symbols_path()
+    if not path.exists():
+        return []
+    data = load_json_file(path, default=[])
+    if not isinstance(data, list):
+        raise ValueError(f"hedge_short_symbols.json must be a list: {path}")
+    rows = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("hedge_short_symbols.json item must be object")
+        symbol = str(item.get("symbol") or "").upper().strip()
+        leverage = int(item.get("leverage"))
+        if not symbol.endswith("USDT") or leverage <= 0:
+            raise ValueError(f"invalid hedge short symbol row: {item}")
+        rows.append({"symbol": symbol, "leverage": leverage})
+    rows.sort(key=lambda x: x["symbol"])
+    return rows
+
+
+def _save_hedge_short_symbol_rows(rows: list[dict[str, Any]]) -> None:
+    clean: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper().strip()
+        leverage = int(row.get("leverage"))
+        if not symbol.endswith("USDT"):
+            raise ValueError(f"symbol must end with USDT: {symbol}")
+        if leverage <= 0:
+            raise ValueError(f"leverage must be positive: {symbol}")
+        clean[symbol] = {"symbol": symbol, "leverage": leverage}
+    save_json_file_atomic(_hedge_short_symbols_path(), sorted(clean.values(), key=lambda x: x["symbol"]))
+
+
+def _hedge_short_symbol_row(symbol: str) -> dict[str, Any]:
+    su = str(symbol or "").upper().strip()
+    for row in _load_hedge_short_symbol_rows():
+        if row["symbol"] == su:
+            return row
+    raise ValueError(f"symbol not configured for hedge short: {su}")
+
+
+def _parse_hedge_short_symbol_leverage(symbol_text: str, leverage_text: str) -> dict[str, Any]:
+    symbol = str(symbol_text or "").upper().strip()
+    if not symbol.endswith("USDT"):
+        raise ValueError(f"symbol must end with USDT: {symbol}")
+    text = str(leverage_text or "").lower().strip()
+    if not text.endswith("x"):
+        raise ValueError("leverage must look like 20x")
+    leverage = int(text[:-1])
+    if leverage <= 0:
+        raise ValueError("leverage must be positive")
+    return {"symbol": symbol, "leverage": leverage}
+
+
+def _load_current_hedge_short_symbol() -> dict[str, Any]:
+    path = _current_hedge_short_symbol_path()
+    if not path.exists():
+        raise ValueError("hedge short symbol is not set")
+    data = load_json_file(path, default=None)
+    if data is None:
+        raise ValueError("hedge short symbol is not set")
+    if not isinstance(data, dict):
+        raise ValueError(f"hedge_short_current_symbol.json must be object or null: {path}")
+    current = _parse_hedge_short_symbol_leverage(str(data.get("symbol") or ""), f"{data.get('leverage')}x")
+    allowed = _hedge_short_symbol_row(current["symbol"])
+    if int(allowed["leverage"]) != int(current["leverage"]):
+        raise ValueError(
+            f"hedge short current leverage must match whitelist: "
+            f"{current['symbol']} current={current['leverage']} allowed={allowed['leverage']}"
+        )
+    return current
+
+
+def _save_current_hedge_short_symbol(symbol: str | None, leverage: int | None = None) -> dict[str, Any] | None:
+    if symbol is None:
+        save_json_file_atomic(_current_hedge_short_symbol_path(), None)
+        return None
+    row = _hedge_short_symbol_row(symbol)
+    if leverage is not None and int(leverage) != int(row["leverage"]):
+        raise ValueError(f"hedge short leverage must come from whitelist: {row['symbol']} {row['leverage']}x")
+    save_json_file_atomic(_current_hedge_short_symbol_path(), row)
+    return row
+
+
+def _current_hedge_short_symbol_text() -> str:
+    try:
+        row = _load_current_hedge_short_symbol()
+    except ValueError as exc:
+        if str(exc) != "hedge short symbol is not set":
+            raise
+        return "OFF"
+    return f"{row['symbol']} {row['leverage']}x"
+
+
 def _normalize_trade_shortcut_name(name: str) -> str:
     value = str(name or "").strip()
     if not _TRADE_SHORTCUT_NAME_RE.fullmatch(value):
@@ -529,6 +645,152 @@ async def _send_trade_shortcut_menu(update: Update, group: str | None = None) ->
     await _reply_text(update, _trade_shortcut_menu_title(group, current), reply_markup=InlineKeyboardMarkup(buttons))
 
 
+def _hedge_short_usage() -> str:
+    return (
+        "Usage:\n"
+        "/hedge_short\n"
+        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO\n"
+        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
+        "/hedge_short close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
+        "/hedge_short close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
+        "/hedge_short sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
+        "/hedge_short pending ACCOUNT[ | ACCOUNT...]\n"
+        "/hedge_short cancel ACCOUNT[ | ACCOUNT...]\n"
+        "/hedge_short @FAVORITE_NAME\n"
+        "/hs_fav save FAVORITE_NAME HEDGE_SHORT_ARGS\n"
+        "/hs_set_s or /hs_edit_symbols"
+    )
+
+
+def _hedge_short_shortcut_usage() -> str:
+    return (
+        "Usage:\n"
+        "/hs_fav\n"
+        "/hs_fav save NAME HEDGE_SHORT_ARGS\n"
+        "/hs_fav show NAME\n"
+        "/hs_fav del NAME\n"
+        "/hs_fav run NAME\n"
+        "/hedge_short @NAME\n"
+        "Example:\n"
+        "/hs_fav save open-main open chen912 12000 | junjie2026 400 PO\n"
+        "/hs_fav save close-half close chen912 | junjie2026 PO ?%\n"
+        "/hedge_short @open-main"
+    )
+
+
+def _canonical_hedge_short_shortcut_body(tokens: list[str]) -> str:
+    parts = [str(x).strip() for x in tokens if str(x).strip()]
+    if not parts:
+        raise ValueError("hedge short favorite command must not be empty")
+    if parts[0] == "/hedge_short":
+        parts = parts[1:]
+    elif parts[0].lower() == "hedge_short":
+        parts = parts[1:]
+    if not parts:
+        raise ValueError("hedge short favorite command must include /hedge_short args")
+    action = parts[0].lower()
+    if action not in {"open", "close", "sl", "pending", "cancel", "cancle"}:
+        raise ValueError("hedge short favorite command must start with a supported action")
+    if action.startswith("@"):
+        raise ValueError("hedge short favorite cannot reference another favorite")
+    return " ".join(parts)
+
+
+def _load_hedge_short_shortcuts() -> dict[str, dict[str, Any]]:
+    path = _hedge_short_shortcuts_path()
+    if not path.exists():
+        return {}
+    data = load_json_file(path, default={})
+    if not isinstance(data, dict):
+        raise ValueError(f"hedge_short_command_shortcuts.json must be object: {path}")
+    if data.get("version") != 1:
+        raise ValueError(f"hedge_short_command_shortcuts.json version must be 1: {path}")
+    rows = data.get("shortcuts")
+    if not isinstance(rows, list):
+        raise ValueError(f"hedge_short_command_shortcuts.json shortcuts must be list: {path}")
+    shortcuts: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            raise ValueError("hedge short favorite item must be object")
+        name = _normalize_trade_shortcut_name(str(item.get("name") or ""))
+        command = _canonical_hedge_short_shortcut_body(str(item.get("command") or "").split())
+        updated_at_bj = str(item.get("updated_at_bj") or "").strip()
+        if name in shortcuts:
+            raise ValueError(f"duplicate hedge short favorite: {name}")
+        shortcuts[name] = {"name": name, "command": command, "updated_at_bj": updated_at_bj}
+    return shortcuts
+
+
+def _save_hedge_short_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> None:
+    rows = []
+    for name in sorted(shortcuts):
+        row = shortcuts[name]
+        rows.append(
+            {
+                "name": _normalize_trade_shortcut_name(name),
+                "command": _canonical_hedge_short_shortcut_body(str(row.get("command") or "").split()),
+                "updated_at_bj": str(row.get("updated_at_bj") or "").strip(),
+            }
+        )
+    save_json_file_atomic(_hedge_short_shortcuts_path(), {"version": 1, "shortcuts": rows})
+
+
+def _hedge_short_shortcut_args(name: str) -> list[str]:
+    shortcut_name = _normalize_trade_shortcut_name(name)
+    shortcuts = _load_hedge_short_shortcuts()
+    row = shortcuts.get(shortcut_name)
+    if row is None:
+        raise ValueError(f"hedge short favorite not found: {shortcut_name}")
+    return str(row["command"]).split()
+
+
+def _expand_hedge_short_shortcut_args(args: list[str]) -> tuple[list[str], str | None, str | None]:
+    if not args:
+        return args, None, None
+    first = str(args[0]).strip()
+    if first.startswith("@"):
+        if len(args) != 1:
+            raise ValueError("/hedge_short @NAME does not accept extra args")
+        name = first[1:]
+        expanded = _hedge_short_shortcut_args(name)
+        return expanded, _normalize_trade_shortcut_name(name), " ".join(expanded)
+    if first.lower() == "fav":
+        if len(args) != 2:
+            raise ValueError("Usage: /hedge_short fav NAME")
+        name = str(args[1]).strip()
+        expanded = _hedge_short_shortcut_args(name)
+        return expanded, _normalize_trade_shortcut_name(name), " ".join(expanded)
+    return args, None, None
+
+
+def _format_hedge_short_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> str:
+    if not shortcuts:
+        return "Hedge short favorites: empty\n\n" + _hedge_short_shortcut_usage()
+    lines = ["Hedge short favorites"]
+    for name in sorted(shortcuts):
+        lines.append(f"{name}: /hedge_short {shortcuts[name]['command']}")
+    lines.append("")
+    lines.append("Run: /hedge_short @NAME")
+    return "\n".join(lines)
+
+
+async def _send_hedge_short_menu(update: Update) -> None:
+    shortcuts = _load_hedge_short_shortcuts()
+    current = _current_hedge_short_symbol_text()
+    buttons = [
+        [
+            InlineKeyboardButton(
+                _trade_shortcut_button_label(name, str(shortcuts[name]["command"])),
+                callback_data=f"hs_fav:{name}",
+            )
+        ]
+        for name in sorted(shortcuts)
+    ]
+    buttons.append([InlineKeyboardButton("Set Symbol", callback_data="hs_menu_set_symbol")])
+    buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
+    await _reply_text(update, f"Hedge Short: {current}", reply_markup=InlineKeyboardMarkup(buttons))
+
+
 async def _replace_callback_message(query: Any, text: str) -> None:
     if not query or not query.message:
         return
@@ -713,6 +975,10 @@ def _client_order_id(leg: str, root: str) -> str:
     return build_client_order_id(strat="MAN", leg=leg, root=root)
 
 
+def _hedge_short_client_order_id(leg: str, root: str) -> str:
+    return build_client_order_id(strat="HSH", leg=leg, root=root)
+
+
 def _append_manual_event(event: str, **payload: Any) -> None:
     record = {
         "event": event,
@@ -721,6 +987,21 @@ def _append_manual_event(event: str, **payload: Any) -> None:
     }
     record.update(payload)
     path = _manual_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _append_hedge_short_event(event: str, **payload: Any) -> None:
+    record = {
+        "event": event,
+        "ts_utc_ms": int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+        "ts_bj": datetime.now(tz=BJ).isoformat(),
+    }
+    record.update(payload)
+    path = _hedge_short_events_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -986,6 +1267,97 @@ def _parse_trade_pending_args(args: list[str]) -> dict[str, Any]:
     }
 
 
+def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 3 or str(args[0]).lower() != "open":
+        raise ValueError(_hedge_short_usage())
+    mode_idx = next((idx for idx, token in enumerate(args[1:], start=1) if str(token).upper().strip() in {"M", "PO", "L"}), -1)
+    if mode_idx <= 1:
+        raise ValueError(_hedge_short_usage())
+    entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+    current = _load_current_hedge_short_symbol()
+    mode = str(args[mode_idx]).upper().strip()
+    tail = [str(x).strip() for x in args[mode_idx + 1 :]]
+    limit_price: float | None = None
+    if mode in {"M", "PO"}:
+        if tail:
+            raise ValueError(_hedge_short_usage())
+    else:
+        if len(tail) != 1:
+            raise ValueError(_hedge_short_usage())
+        limit_price = float(tail[0])
+        if limit_price <= 0:
+            raise ValueError("limit open price must be positive")
+    return {
+        "entries": entries,
+        "symbol": current["symbol"],
+        "leverage": int(current["leverage"]),
+        "mode": mode,
+        "limit_price": limit_price,
+    }
+
+
+def _parse_hedge_short_close_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 3 or str(args[0]).lower() != "close":
+        raise ValueError(_hedge_short_usage())
+    tokens, close_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="close")
+    if len(tokens) < 2:
+        raise ValueError(_hedge_short_usage())
+    limit_price: float | None = None
+    tail_mode = str(tokens[-1]).upper().strip()
+    if tail_mode in {"M", "PO"}:
+        mode = tail_mode
+        account_tokens = tokens[:-1]
+    else:
+        if len(tokens) < 3:
+            raise ValueError(_hedge_short_usage())
+        mode = str(tokens[-2]).upper().strip()
+        if mode != "L":
+            raise ValueError("hedge short close mode must be M, PO, or L")
+        limit_price = float(tokens[-1])
+        if limit_price <= 0:
+            raise ValueError("limit close price must be positive")
+        account_tokens = tokens[:-2]
+    current = _load_current_hedge_short_symbol()
+    accounts = _parse_trade_accounts(account_tokens)
+    return {
+        "accounts": accounts,
+        "symbol": current["symbol"],
+        "mode": mode,
+        "limit_price": limit_price,
+        "close_ratio": close_ratio,
+    }
+
+
+def _parse_hedge_short_sl_args(args: list[str]) -> dict[str, Any]:
+    if len(args) < 3 or str(args[0]).lower() != "sl":
+        raise ValueError(_hedge_short_usage())
+    tokens, sl_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="sl")
+    if len(tokens) < 2:
+        raise ValueError(_hedge_short_usage())
+    stop_price = float(tokens[-1])
+    if stop_price <= 0:
+        raise ValueError("SL price must be positive")
+    current = _load_current_hedge_short_symbol()
+    accounts = _parse_trade_accounts(tokens[:-1])
+    return {
+        "accounts": accounts,
+        "symbol": current["symbol"],
+        "stop_price": stop_price,
+        "sl_ratio": sl_ratio,
+    }
+
+
+def _parse_hedge_short_accounts_args(args: list[str], action: str) -> dict[str, Any]:
+    if len(args) < 2 or str(args[0]).lower() != action:
+        raise ValueError(_hedge_short_usage())
+    current = _load_current_hedge_short_symbol()
+    accounts = _parse_trade_accounts([str(x) for x in args[1:]])
+    return {
+        "accounts": accounts,
+        "symbol": current["symbol"],
+    }
+
+
 def _entry_qty_from_notional(account: str, symbol: str, notional: float, price: float) -> float:
     if price <= 0:
         raise ValueError("entry price must be positive")
@@ -1205,12 +1577,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             BotCommand("trade_open", "Command Open"),
             BotCommand("trade_close", "Command Close"),
             BotCommand("trade_other", "Command Other"),
+            BotCommand("hedge_short", "Hedge Short"),
             BotCommand("status", "All Accounts"),
             BotCommand("account_detail", "Account Detail"),
             BotCommand("view_history", "History"),
             BotCommand("pending_orders", "Pending Orders"),
             BotCommand("rebate_report", "API Rebate Report"),
             BotCommand("fav", "Trade Favorites"),
+            BotCommand("hs_fav", "Hedge Short Favorites"),
+            BotCommand("hs_set_s", "Set Hedge Short Symbol"),
+            BotCommand("hs_edit_symbols", "Edit Hedge Short Symbols"),
             BotCommand("edit_symbols", "Edit Symbols"),
             BotCommand("open", "Open"),
             BotCommand("close", "Close"),
@@ -1607,7 +1983,7 @@ def _prepare_symbol(account: str, symbol: str, leverage: int) -> None:
         raise RuntimeError(mode_res["reason"])
     if not bool(mode_res["data"].get("dual_side")):
         mode = mode_res["data"].get("position_side_mode")
-        raise RuntimeError(f"account position mode must be HEDGE before manual LONG trade: mode={mode}")
+        raise RuntimeError(f"account position mode must be HEDGE before manual trade: mode={mode}")
     pos_res = get_positions(account, symbol)
     if not pos_res["ok"]:
         raise RuntimeError(pos_res["reason"])
@@ -2884,6 +3260,21 @@ def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> f
     return qty if close_ratio == 1.0 else qty * close_ratio
 
 
+def _short_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
+    if close_ratio <= 0 or close_ratio > 1:
+        raise ValueError(f"close_ratio must be > 0 and <= 1: {close_ratio}")
+    pos_res = get_positions(account, symbol)
+    if not pos_res["ok"]:
+        raise RuntimeError(pos_res["reason"])
+    pos = next((p for p in pos_res["data"] if p.get("position_side") == SHORT), None)
+    if not pos:
+        raise ValueError(f"no SHORT position: {symbol}")
+    qty = float(pos["qty"])
+    if qty <= 0:
+        raise ValueError(f"invalid SHORT position qty: {symbol} qty={qty}")
+    return qty if close_ratio == 1.0 else qty * close_ratio
+
+
 async def _run_market_close_command(
     update: Update,
     *,
@@ -3149,6 +3540,420 @@ async def _run_pending_command(
     await _send_lines(update, lines)
 
 
+async def _run_hedge_short_market_open_command(
+    update: Update,
+    *,
+    account: str,
+    symbol: str,
+    leverage: int,
+    notional: float,
+) -> None:
+    price_res = get_last_price(account, symbol)
+    if not price_res["ok"]:
+        await _reply_text(update, f"price query failed: {price_res['reason']}")
+        return
+    entry_price = float(price_res["data"]["price"])
+    quantity = _entry_qty_from_notional(account, symbol, notional, entry_price)
+    root = make_order_root()
+    try:
+        _prepare_symbol(account, symbol, leverage)
+    except Exception as exc:
+        await _reply_text(update, f"prepare symbol failed: {exc}")
+        return
+    res = place_entry_order(
+        account,
+        symbol,
+        SHORT,
+        quantity,
+        client_order_id=_hedge_short_client_order_id("ENT", root),
+        notify_label=NOTIFY_LABEL,
+    )
+    _append_hedge_short_event("hedge_short_market_open", account=account, symbol=symbol, ok=res["ok"], notional=notional, result=res)
+    if not res["ok"]:
+        await _reply_text(update, f"Hedge short M open failed: {res['reason']}")
+        return
+    data = res["data"]
+    await _reply_text(
+        update,
+        f"Hedge short M open submitted\n"
+        f"account={account}\n"
+        f"symbol={symbol}\n"
+        f"qty={_fmt_float(data.get('executed_qty') or data.get('qty') or quantity)}\n"
+        f"avg={_fmt_float(data.get('avg_price') or entry_price)}\n"
+        f"cid={data.get('client_order_id')}"
+    )
+
+
+async def _run_hedge_short_post_only_open_command(
+    update: Update,
+    *,
+    account: str,
+    symbol: str,
+    leverage: int,
+    notional: float,
+) -> None:
+    root = make_order_root()
+    try:
+        _prepare_symbol(account, symbol, leverage)
+    except Exception as exc:
+        await _reply_text(update, f"prepare symbol failed: {exc}")
+        return
+    entry_res: dict[str, Any] | None = None
+    best_ask = 0.0
+    for attempt in range(1, PO_ENTRY_SUBMIT_MAX_ATTEMPTS + 1):
+        book_res = get_order_book_top(account, symbol)
+        if not book_res["ok"]:
+            await _reply_text(update, f"order book query failed: {book_res['reason']}")
+            return
+        best_ask = float(book_res["data"]["best_ask"])
+        quantity = _entry_qty_from_notional(account, symbol, notional, best_ask)
+        leg = "POE" if attempt == 1 else f"PO{attempt}"
+        entry_res = place_limit_order(
+            account,
+            symbol,
+            SHORT,
+            "SELL",
+            quantity,
+            best_ask,
+            order_role="HEDGE_SHORT_PO_OPEN",
+            time_in_force="GTX",
+            client_order_id=_hedge_short_client_order_id(leg, root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_hedge_short_event(
+            "hedge_short_po_open_submit",
+            account=account,
+            symbol=symbol,
+            ok=entry_res["ok"],
+            attempt=attempt,
+            max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
+            notional=notional,
+            price=best_ask,
+            result=entry_res,
+        )
+        if entry_res["ok"]:
+            break
+        if _is_po_maker_reject(entry_res["reason"]):
+            if attempt < PO_ENTRY_SUBMIT_MAX_ATTEMPTS:
+                continue
+            break
+        await _reply_text(update, f"Hedge short PO open failed: {entry_res['reason']}")
+        return
+    if not entry_res or not entry_res["ok"]:
+        reason = entry_res["reason"] if entry_res else "unknown PO open submit failure"
+        await _reply_text(update, f"Hedge short PO open failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts: {reason}")
+        return
+    data = entry_res["data"]
+    await _reply_text(
+        update,
+        f"Hedge short PO open submitted\n"
+        f"account={account}\n"
+        f"symbol={symbol}\n"
+        f"price={_fmt_float(data.get('price') or best_ask)}\n"
+        f"qty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
+        f"cid={data.get('client_order_id')}"
+    )
+
+
+async def _run_hedge_short_limit_open_command(
+    update: Update,
+    *,
+    entries: list[dict[str, Any]],
+    symbol: str,
+    leverage: int,
+    limit_price: float,
+) -> None:
+    lines = [f"Hedge short L open {symbol} {leverage}x price={_fmt_float(limit_price)}"]
+    for entry in entries:
+        account = str(entry["account"])
+        notional = float(entry["notional"])
+        try:
+            quantity = _entry_qty_from_notional(account, symbol, notional, limit_price)
+            _prepare_symbol(account, symbol, leverage)
+            root = make_order_root()
+            res = place_limit_order(
+                account,
+                symbol,
+                SHORT,
+                "SELL",
+                quantity,
+                limit_price,
+                order_role="HEDGE_SHORT_LIMIT_OPEN",
+                time_in_force="GTC",
+                client_order_id=_hedge_short_client_order_id("ENT", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_limit_open", account=account, symbol=symbol, ok=res["ok"], notional=notional, price=limit_price, result=res)
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted notional={_fmt_float(notional)} "
+                f"qty={_fmt_float(data.get('qty') or data.get('orig_qty') or quantity)} "
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event("hedge_short_limit_open", account=account, symbol=symbol, ok=False, notional=notional, price=limit_price, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_hedge_short_market_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    close_ratio: float,
+) -> None:
+    lines = [f"Hedge short M close {symbol}"]
+    for account in accounts:
+        try:
+            qty = _short_position_qty(account, symbol, close_ratio)
+            root = make_order_root()
+            res = place_time_stop_order(
+                account,
+                symbol,
+                SHORT,
+                qty,
+                order_role="HEDGE_SHORT_CLOSE",
+                client_order_id=_hedge_short_client_order_id("CLS", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_market_close", account=account, symbol=symbol, ok=res["ok"], close_ratio=close_ratio, result=res)
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or qty)} "
+                f"avg={_fmt_float(data.get('avg_price'))} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event("hedge_short_market_close", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_hedge_short_post_only_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    close_ratio: float,
+) -> None:
+    lines = [f"Hedge short PO close {symbol}"]
+    for account in accounts:
+        try:
+            qty = _short_position_qty(account, symbol, close_ratio)
+            root = make_order_root()
+            close_res: dict[str, Any] | None = None
+            best_bid = 0.0
+            for attempt in range(1, PO_ENTRY_SUBMIT_MAX_ATTEMPTS + 1):
+                book_res = get_order_book_top(account, symbol)
+                if not book_res["ok"]:
+                    raise RuntimeError(f"order book query failed: {book_res['reason']}")
+                best_bid = float(book_res["data"]["best_bid"])
+                leg = "CPO" if attempt == 1 else f"CP{attempt}"
+                close_res = place_limit_order(
+                    account,
+                    symbol,
+                    SHORT,
+                    "BUY",
+                    qty,
+                    best_bid,
+                    order_role="HEDGE_SHORT_PO_CLOSE",
+                    time_in_force="GTX",
+                    client_order_id=_hedge_short_client_order_id(leg, root),
+                    notify_label=NOTIFY_LABEL,
+                )
+                _append_hedge_short_event(
+                    "hedge_short_po_close_submit",
+                    account=account,
+                    symbol=symbol,
+                    ok=close_res["ok"],
+                    attempt=attempt,
+                    max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
+                    price=best_bid,
+                    close_ratio=close_ratio,
+                    result=close_res,
+                )
+                if close_res["ok"]:
+                    break
+                if _is_po_maker_reject(close_res["reason"]):
+                    if attempt < PO_ENTRY_SUBMIT_MAX_ATTEMPTS:
+                        continue
+                    break
+                lines.append(f"{account}: failed reason={close_res['reason']}")
+                close_res = None
+                break
+            if not close_res or not close_res["ok"]:
+                reason = close_res["reason"] if close_res else "unknown PO close submit failure"
+                lines.append(f"{account}: failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts reason={reason}")
+                continue
+            data = close_res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"price={_fmt_float(data.get('price') or best_bid)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event("hedge_short_po_close_submit", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_hedge_short_limit_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    limit_price: float,
+    close_ratio: float,
+) -> None:
+    lines = [f"Hedge short L close {symbol} price={_fmt_float(limit_price)}"]
+    for account in accounts:
+        try:
+            qty = _short_position_qty(account, symbol, close_ratio)
+            root = make_order_root()
+            res = place_limit_order(
+                account,
+                symbol,
+                SHORT,
+                "BUY",
+                qty,
+                limit_price,
+                order_role="HEDGE_SHORT_LIMIT_CLOSE",
+                time_in_force="GTC",
+                client_order_id=_hedge_short_client_order_id("CLS", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_limit_close", account=account, symbol=symbol, ok=res["ok"], price=limit_price, close_ratio=close_ratio, result=res)
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            lines.append(
+                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event("hedge_short_limit_close", account=account, symbol=symbol, ok=False, price=limit_price, close_ratio=close_ratio, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_hedge_short_sl_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    stop_price: float,
+    sl_ratio: float,
+) -> None:
+    lines = [f"Hedge short SL {symbol} stop={_fmt_float(stop_price)}"]
+    for account in accounts:
+        try:
+            price_res = get_last_price(account, symbol)
+            if not price_res["ok"]:
+                raise RuntimeError(f"price query failed: {price_res['reason']}")
+            last_price = float(price_res["data"]["price"])
+            if stop_price <= last_price:
+                raise ValueError(f"SHORT SL must be above current price: stop={stop_price} current={last_price}")
+            quantity = None if sl_ratio == 1.0 else _short_position_qty(account, symbol, sl_ratio)
+            root = make_order_root()
+            res = place_sl_order(
+                account,
+                symbol,
+                SHORT,
+                stop_price,
+                quantity=quantity,
+                client_order_id=_hedge_short_client_order_id("SL", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_sl", account=account, symbol=symbol, ok=res["ok"], stop_price=stop_price, sl_ratio=sl_ratio, quantity=quantity, result=res)
+            if not res["ok"]:
+                lines.append(f"{account}: failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            lines.append(
+                f"{account}: submitted qty={qty_text} "
+                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event("hedge_short_sl", account=account, symbol=symbol, ok=False, stop_price=stop_price, sl_ratio=sl_ratio, reason=str(exc))
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_hedge_short_pending_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"Hedge short pending {symbol}"]
+    for account in accounts:
+        res = get_open_orders(account, symbol)
+        if not res["ok"]:
+            lines.append(f"{account}: 查询失败 reason={res['reason']}")
+            continue
+        orders = [row for row in list(res.get("data") or []) if str(row.get("position_side") or "").upper() == SHORT]
+        if not orders:
+            lines.append(f"{account}: 无 SHORT 挂单")
+            continue
+        lines.append(f"{account}:")
+        for order in sorted(orders, key=lambda x: (str(x.get("side") or ""), _order_display_price(x))):
+            side = str(order.get("side") or "")
+            order_type = str(order.get("type") or order.get("orig_type") or "")
+            price = _order_display_price(order)
+            qty = _order_qty(order)
+            oid = order.get("order_id")
+            cid = order.get("client_order_id")
+            lines.append(
+                f"  {side} {order_type} {_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid} cid={cid}"
+            )
+    await _send_lines(update, lines)
+
+
+async def _run_hedge_short_cancel_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+) -> None:
+    lines = [f"Hedge short cancel {symbol}"]
+    for account in accounts:
+        res = get_open_orders(account, symbol)
+        if not res["ok"]:
+            lines.append(f"{account}: query failed reason={res['reason']}")
+            continue
+        orders = [row for row in list(res.get("data") or []) if str(row.get("position_side") or "").upper() == SHORT]
+        if not orders:
+            lines.append(f"{account}: cancelled=0")
+            continue
+        cancelled = 0
+        failed: list[str] = []
+        for order in orders:
+            cancel_res = cancel_order(
+                account,
+                symbol,
+                exchange_order_id=order.get("order_id"),
+                client_order_id=order.get("client_order_id"),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_cancel_order", account=account, symbol=symbol, ok=cancel_res["ok"], order=order, result=cancel_res)
+            if cancel_res["ok"]:
+                cancelled += 1
+            else:
+                failed.append(str(cancel_res.get("reason") or "unknown"))
+        if failed:
+            lines.append(f"{account}: partial cancelled={cancelled} failed={len(failed)} reason={'; '.join(failed[:3])}")
+        else:
+            lines.append(f"{account}: cancelled={cancelled}")
+    await _reply_text(update, "\n".join(lines))
+
+
 async def _execute_trade_args(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
     if not args:
         raise ValueError(_trade_usage())
@@ -3247,6 +4052,91 @@ async def _execute_trade_args(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     raise ValueError("unsupported trade command")
+
+
+async def _execute_hedge_short_args(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
+    if not args:
+        raise ValueError(_hedge_short_usage())
+    action = str(args[0]).lower()
+    if action == "open":
+        spec = _parse_hedge_short_open_args(args)
+        mode = spec["mode"]
+        if mode == "M":
+            for entry in spec["entries"]:
+                await _run_hedge_short_market_open_command(
+                    update,
+                    account=entry["account"],
+                    symbol=spec["symbol"],
+                    leverage=spec["leverage"],
+                    notional=entry["notional"],
+                )
+            return
+        if mode == "PO":
+            for entry in spec["entries"]:
+                await _run_hedge_short_post_only_open_command(
+                    update,
+                    account=entry["account"],
+                    symbol=spec["symbol"],
+                    leverage=spec["leverage"],
+                    notional=entry["notional"],
+                )
+            return
+        if mode == "L":
+            await _run_hedge_short_limit_open_command(
+                update,
+                entries=spec["entries"],
+                symbol=spec["symbol"],
+                leverage=spec["leverage"],
+                limit_price=spec["limit_price"],
+            )
+            return
+    if action == "close":
+        spec = _parse_hedge_short_close_args(args)
+        mode = spec["mode"]
+        if mode == "M":
+            await _run_hedge_short_market_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
+        if mode == "PO":
+            await _run_hedge_short_post_only_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
+        if mode == "L":
+            await _run_hedge_short_limit_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                limit_price=spec["limit_price"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
+    if action == "sl":
+        spec = _parse_hedge_short_sl_args(args)
+        await _run_hedge_short_sl_command(
+            update,
+            accounts=spec["accounts"],
+            symbol=spec["symbol"],
+            stop_price=spec["stop_price"],
+            sl_ratio=spec["sl_ratio"],
+        )
+        return
+    if action == "pending":
+        spec = _parse_hedge_short_accounts_args(args, "pending")
+        await _run_hedge_short_pending_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+        return
+    if action in {"cancel", "cancle"}:
+        spec = _parse_hedge_short_accounts_args(args, action)
+        await _run_hedge_short_cancel_command(update, accounts=spec["accounts"], symbol=spec["symbol"])
+        return
+    raise ValueError("unsupported hedge short command")
 
 
 @_admin_required
@@ -3395,12 +4285,281 @@ async def fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     raise ValueError(_trade_shortcut_usage())
 
 
+@_admin_required
+async def hedge_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw_args = list(context.args or [])
+    if not raw_args:
+        await _send_hedge_short_menu(update)
+        return
+    args, favorite_name, favorite_command = _expand_hedge_short_shortcut_args(raw_args)
+    placeholder_count = _trade_shortcut_placeholder_count(args)
+    if favorite_name and placeholder_count:
+        context.user_data["pending_hedge_short_shortcut"] = {
+            "name": favorite_name,
+            "args": args,
+            "placeholder_count": placeholder_count,
+        }
+        await _reply_text(
+            update,
+            f"/hedge_short {favorite_command}\n"
+            "Send values separated by spaces.",
+        )
+        return
+    if favorite_name and favorite_command:
+        await _reply_text(update, f"Run: /hedge_short {favorite_command}")
+    await _execute_hedge_short_args(update, context, args)
+
+
+@_admin_required
+async def hedge_short_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    name = _normalize_trade_shortcut_name(query.data.split(":", 1)[1])
+    args = _hedge_short_shortcut_args(name)
+    command = " ".join(args)
+    placeholder_count = _trade_shortcut_placeholder_count(args)
+    if placeholder_count:
+        context.user_data["pending_hedge_short_shortcut"] = {
+            "name": name,
+            "args": args,
+            "placeholder_count": placeholder_count,
+        }
+        await _replace_callback_message(
+            query,
+            f"/hedge_short {command}\n"
+            "Send values separated by spaces.",
+        )
+        return HS_SHORTCUT_PARAM_INPUT
+    await _replace_callback_message(query, f"Run: /hedge_short {command}")
+    await _execute_hedge_short_args(update, context, args)
+    return ConversationHandler.END
+
+
+@_admin_required
+async def hedge_short_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    pending = context.user_data.get("pending_hedge_short_shortcut")
+    if not isinstance(pending, dict):
+        return ConversationHandler.END
+    args = [str(x) for x in list(pending.get("args") or [])]
+    values = str(update.message.text or "").split()
+    try:
+        filled_args = _fill_trade_shortcut_placeholders(args, values)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return HS_SHORTCUT_PARAM_INPUT
+    context.user_data.pop("pending_hedge_short_shortcut", None)
+    await update.message.reply_text(f"Run: /hedge_short {' '.join(filled_args)}")
+    await _execute_hedge_short_args(update, context, filled_args)
+    return ConversationHandler.END
+
+
+@_admin_required
+async def hs_fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = [str(x).strip() for x in (context.args or []) if str(x).strip()]
+    if not args:
+        await update.message.reply_text(_format_hedge_short_shortcuts(_load_hedge_short_shortcuts()))
+        return
+    action = args[0].lower()
+    shortcuts = _load_hedge_short_shortcuts()
+    if action == "save":
+        if len(args) < 3:
+            raise ValueError(_hedge_short_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        command = _canonical_hedge_short_shortcut_body(args[2:])
+        shortcuts[name] = {
+            "name": name,
+            "command": command,
+            "updated_at_bj": datetime.now(tz=BJ).isoformat(),
+        }
+        _save_hedge_short_shortcuts(shortcuts)
+        await update.message.reply_text(f"Saved hedge short favorite {name}: /hedge_short {command}")
+        return
+    if action in {"del", "delete"}:
+        if len(args) != 2:
+            raise ValueError(_hedge_short_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        if name not in shortcuts:
+            raise ValueError(f"hedge short favorite not found: {name}")
+        del shortcuts[name]
+        _save_hedge_short_shortcuts(shortcuts)
+        await update.message.reply_text(f"Deleted hedge short favorite {name}")
+        return
+    if action == "show":
+        if len(args) != 2:
+            raise ValueError(_hedge_short_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        if name not in shortcuts:
+            raise ValueError(f"hedge short favorite not found: {name}")
+        await update.message.reply_text(f"{name}: /hedge_short {shortcuts[name]['command']}")
+        return
+    if action == "run":
+        if len(args) != 2:
+            raise ValueError(_hedge_short_shortcut_usage())
+        name = _normalize_trade_shortcut_name(args[1])
+        hs_args = _hedge_short_shortcut_args(name)
+        placeholder_count = _trade_shortcut_placeholder_count(hs_args)
+        if placeholder_count:
+            context.user_data["pending_hedge_short_shortcut"] = {
+                "name": name,
+                "args": hs_args,
+                "placeholder_count": placeholder_count,
+            }
+            await update.message.reply_text(
+                f"/hedge_short {' '.join(hs_args)}\n"
+                "Send values separated by spaces."
+            )
+            return
+        await update.message.reply_text(f"Run: /hedge_short {' '.join(hs_args)}")
+        await _execute_hedge_short_args(update, context, hs_args)
+        return
+    raise ValueError(_hedge_short_shortcut_usage())
+
+
+async def _prompt_hs_set_symbol(update: Update) -> int:
+    rows = _load_hedge_short_symbol_rows()
+    buttons = [
+        [InlineKeyboardButton(f"{row['symbol']} {row['leverage']}x", callback_data=f"hs_set_symbol:{row['symbol']}")]
+        for row in rows
+    ]
+    buttons.append([InlineKeyboardButton("OFF", callback_data="hs_set_symbol:OFF")])
+    buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
+    text = f"Hedge Short: {_current_hedge_short_symbol_text()}\nSelect hedge short symbol"
+    await _reply_text(update, text, reply_markup=InlineKeyboardMarkup(buttons))
+    return HS_SET_SYMBOL_INPUT
+
+
+@_admin_required
+async def hs_menu_set_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    rows = _load_hedge_short_symbol_rows()
+    buttons = [
+        [InlineKeyboardButton(f"{row['symbol']} {row['leverage']}x", callback_data=f"hs_set_symbol:{row['symbol']}")]
+        for row in rows
+    ]
+    buttons.append([InlineKeyboardButton("OFF", callback_data="hs_set_symbol:OFF")])
+    buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
+    await query.edit_message_text(
+        f"Hedge Short: {_current_hedge_short_symbol_text()}\nSelect hedge short symbol",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return HS_SET_SYMBOL_INPUT
+
+
+@_admin_required
+async def hs_set_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _prompt_hs_set_symbol(update)
+
+
+@_admin_required
+async def hs_set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    raw = query.data.split(":", 1)[1]
+    if raw == "OFF":
+        _save_current_hedge_short_symbol(None)
+        await query.edit_message_text("Hedge Short: OFF")
+        return ConversationHandler.END
+    row = _save_current_hedge_short_symbol(raw)
+    await query.edit_message_text(f"Hedge Short: {row['symbol']} {row['leverage']}x")
+    return ConversationHandler.END
+
+
+@_admin_required
+async def hs_set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = str(update.message.text or "").strip()
+    if text.upper() in {"OFF", "NONE", "NULL"}:
+        _save_current_hedge_short_symbol(None)
+        await update.message.reply_text("Hedge Short: OFF")
+        return ConversationHandler.END
+    parts = text.split()
+    if len(parts) not in {1, 2}:
+        await update.message.reply_text("Input SYMBOL or OFF")
+        return HS_SET_SYMBOL_INPUT
+    symbol = parts[0].upper()
+    row = _hedge_short_symbol_row(symbol)
+    if len(parts) == 2:
+        parsed = _parse_hedge_short_symbol_leverage(symbol, parts[1])
+        if int(parsed["leverage"]) != int(row["leverage"]):
+            await update.message.reply_text(f"leverage must match whitelist: {row['leverage']}x")
+            return HS_SET_SYMBOL_INPUT
+    _save_current_hedge_short_symbol(symbol)
+    await update.message.reply_text(f"Hedge Short: {row['symbol']} {row['leverage']}x")
+    return ConversationHandler.END
+
+
+@_admin_required
+async def hs_edit_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "Edit Hedge Short Symbols\n"
+        "ADD XRPUSDT 100\n"
+        "DEL XRPUSDT\n"
+        "LIST\n"
+        "DONE"
+    )
+    return HS_EDIT_SYMBOLS_INPUT
+
+
+@_admin_required
+async def hs_edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = str(update.message.text or "").strip()
+    parts = text.split()
+    action = parts[0].upper() if parts else ""
+    rows = _load_hedge_short_symbol_rows()
+    if action == "DONE":
+        await update.message.reply_text("done")
+        return ConversationHandler.END
+    if action == "LIST":
+        if not rows:
+            await update.message.reply_text("hedge_short_symbols.json is empty")
+        else:
+            await update.message.reply_text("\n".join(f"{row['symbol']} {row['leverage']}x" for row in rows))
+        return HS_EDIT_SYMBOLS_INPUT
+    if action == "ADD":
+        if len(parts) != 3:
+            await update.message.reply_text("Usage: ADD SYMBOL LEVERAGE")
+            return HS_EDIT_SYMBOLS_INPUT
+        row = _parse_hedge_short_symbol_leverage(parts[1], parts[2])
+        rows = [x for x in rows if x["symbol"] != row["symbol"]]
+        rows.append(row)
+        _save_hedge_short_symbol_rows(rows)
+        await update.message.reply_text(f"added {row['symbol']} {row['leverage']}x")
+        return HS_EDIT_SYMBOLS_INPUT
+    if action == "DEL":
+        if len(parts) != 2:
+            await update.message.reply_text("Usage: DEL SYMBOL")
+            return HS_EDIT_SYMBOLS_INPUT
+        symbol = parts[1].upper().strip()
+        rows = [x for x in rows if x["symbol"] != symbol]
+        _save_hedge_short_symbol_rows(rows)
+        try:
+            current = _load_current_hedge_short_symbol()
+        except ValueError:
+            current = None
+        if current and current["symbol"] == symbol:
+            _save_current_hedge_short_symbol(None)
+            await update.message.reply_text(f"deleted {symbol}; Hedge Short: OFF")
+        else:
+            await update.message.reply_text(f"deleted {symbol}")
+        return HS_EDIT_SYMBOLS_INPUT
+    await update.message.reply_text("Usage: ADD SYMBOL LEVERAGE | DEL SYMBOL | LIST | DONE")
+    return HS_EDIT_SYMBOLS_INPUT
+
+
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message:
         await update.message.reply_text("cancelled")
     elif update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("cancelled")
+    return ConversationHandler.END
+
+
+async def shortcut_param_input_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if isinstance(context.user_data.get("pending_hedge_short_shortcut"), dict):
+        return await hedge_short_shortcut_param_input(update, context)
+    if isinstance(context.user_data.get("pending_trade_shortcut"), dict):
+        return await trade_shortcut_param_input(update, context)
     return ConversationHandler.END
 
 
@@ -3428,6 +4587,8 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("trade_close", trade_close_command))
     application.add_handler(CommandHandler("trade_other", trade_other_command))
     application.add_handler(CommandHandler("fav", fav_command))
+    application.add_handler(CommandHandler("hedge_short", hedge_short_command))
+    application.add_handler(CommandHandler("hs_fav", hs_fav_command))
     application.add_handler(CallbackQueryHandler(select_account, pattern=r"^acct:"))
     application.add_handler(CallbackQueryHandler(account_detail_selected, pattern=r"^account_action:detail:"))
     application.add_handler(CallbackQueryHandler(pending_orders_selected, pattern=r"^account_action:pending:"))
@@ -3442,6 +4603,45 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(do_cancel_order, pattern=r"^cancel_ok:"))
     application.add_handler(CallbackQueryHandler(abort, pattern=r"^abort$"))
 
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(hedge_short_shortcut_selected, pattern=r"^hs_fav:")],
+            states={
+                HS_SHORTCUT_PARAM_INPUT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, hedge_short_shortcut_param_input)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", cancel_conv), CallbackQueryHandler(cancel_conv, pattern=r"^abort$")],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[
+                CommandHandler("hs_set_s", hs_set_symbol_command),
+                CallbackQueryHandler(hs_menu_set_symbol, pattern=r"^hs_menu_set_symbol$"),
+            ],
+            states={
+                HS_SET_SYMBOL_INPUT: [
+                    CallbackQueryHandler(hs_set_symbol_selected, pattern=r"^hs_set_symbol:"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, hs_set_symbol_input),
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", cancel_conv), CallbackQueryHandler(cancel_conv, pattern=r"^abort$")],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("hs_edit_symbols", hs_edit_symbols)],
+            states={HS_EDIT_SYMBOLS_INPUT: [MessageHandler(_HS_EDIT_SYMBOLS_INPUT_FILTER, hs_edit_symbols_input)]},
+            fallbacks=[CommandHandler("cancel", cancel_conv)],
+            allow_reentry=True,
+            per_user=True,
+        )
+    )
     application.add_handler(
         ConversationHandler(
             entry_points=[CallbackQueryHandler(trade_shortcut_selected, pattern=r"^trade_fav:")],
@@ -3518,7 +4718,7 @@ def run_bot() -> None:
             per_user=True,
         )
     )
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, trade_shortcut_param_input))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_param_input_dispatch))
     application.add_error_handler(error_handler)
     application.run_polling()
 
