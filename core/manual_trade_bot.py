@@ -2919,12 +2919,14 @@ async def rebate_start_selected(update: Update, context: ContextTypes.DEFAULT_TY
 def _manual_order_type(order: dict[str, Any]) -> str | None:
     side = str(order.get("side") or "").upper()
     position_side = str(order.get("position_side") or "").upper()
-    if position_side != LONG:
-        return None
-    if side == "BUY":
+    if position_side == LONG and side == "BUY":
         return "开多"
-    if side == "SELL":
+    if position_side == LONG and side == "SELL":
         return "平多"
+    if position_side == SHORT and side == "SELL":
+        return "开空"
+    if position_side == SHORT and side == "BUY":
+        return "平空"
     return None
 
 
@@ -2963,15 +2965,15 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
         oid = str(row.get("order_id") or "")
         trade_pnl_by_order[oid] = trade_pnl_by_order.get(oid, 0.0) + float(row.get("realized_pnl", 0.0) or 0.0)
 
-    long_positions = [
+    history_positions = [
         row
         for row in position_rows
-        if str(row.get("position_side") or "").upper() == LONG
+        if str(row.get("position_side") or "").upper() in {LONG, SHORT}
         and str(row.get("status") or "").upper() in {"CLOSED", "INCOMPLETE"}
     ]
-    long_positions.sort(key=lambda x: _history_display_ms(x, "close_time_ms", "last_trade_time_ms"), reverse=True)
+    history_positions.sort(key=lambda x: _history_display_ms(x, "close_time_ms", "last_trade_time_ms"), reverse=True)
     income_start_ms = start_ms
-    for position in long_positions:
+    for position in history_positions:
         open_time_ms = _int_ms(position.get("open_time_ms"))
         if open_time_ms > 0:
             income_start_ms = min(income_start_ms, max(0, open_time_ms - 60_000))
@@ -3005,16 +3007,17 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
                 f"                 量{_fmt_float(qty)}  价{_fmt_float(price)}{pnl_text}"
             )
     else:
-        lines.append("本地账本无 LONG 成交委托" if not orders_missing else "本地账本缺少 orders 落盘")
+        lines.append("本地账本无成交委托" if not orders_missing else "本地账本缺少 orders 落盘")
 
     lines.extend(["", "📌 仓位历史:"])
-    if long_positions:
-        for position in long_positions[:60]:
+    if history_positions:
+        for position in history_positions[:60]:
             symbol = str(position.get("symbol") or "").upper()
+            position_side = str(position.get("position_side") or "").upper()
             status = str(position.get("status") or "").upper()
             status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
             lines.append(
-                f"{symbol} | {status_text} | 盈亏 {_fmt_history_usdt(_position_net_pnl(position, income_rows))}\n"
+                f"{symbol} {position_side} | {status_text} | 盈亏 {_fmt_history_usdt(_position_net_pnl(position, income_rows))}\n"
                 f"  开仓价: {_fmt_history_float(position.get('entry_price'))}  平仓价: {_fmt_history_float(position.get('average_close_price'))}\n"
                 f"  开仓时间: {_bj_short_second(position.get('open_time_ms'))}\n"
                 f"  平仓时间: {_bj_short_second(position.get('close_time_ms'))}\n"

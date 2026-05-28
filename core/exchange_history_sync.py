@@ -33,6 +33,7 @@ MIN_INCOME_QUERY_WINDOW_MS = 60 * 60 * 1000
 QUERY_LIMIT = 1000
 DEFAULT_REQUEST_SLEEP_SECS = 0.3
 POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
+POSITION_SIDES = {"LONG", "SHORT"}
 
 
 def _now_ms() -> int:
@@ -654,6 +655,7 @@ def _trade_sort_key(row: dict[str, Any]) -> tuple[int, str, int]:
 
 def _position_row(position: dict[str, Any], *, status: str, close_trade: dict[str, Any]) -> dict[str, Any]:
     symbol = str(position["symbol"])
+    position_side = str(position["position_side"])
     trade_ids = list(position["trade_ids"])
     order_ids = list(position["order_ids"])
     open_time_ms = int(position["open_time_ms"])
@@ -664,10 +666,13 @@ def _position_row(position: dict[str, Any], *, status: str, close_trade: dict[st
     close_notional = Decimal(position["close_notional"])
     entry_price = entry_notional / entry_qty
     average_close_price = close_notional / closed_qty
-    position_id = f"{symbol}|{open_time_ms}|{close_time_ms}|{trade_ids[0]}|{trade_ids[-1]}"
+    if position_side == "LONG":
+        position_id = f"{symbol}|{open_time_ms}|{close_time_ms}|{trade_ids[0]}|{trade_ids[-1]}"
+    else:
+        position_id = f"{symbol}|{position_side}|{open_time_ms}|{close_time_ms}|{trade_ids[0]}|{trade_ids[-1]}"
     return {
         "symbol": symbol,
-        "position_side": "LONG",
+        "position_side": position_side,
         "status": status,
         "position_id": position_id,
         "open_time_ms": open_time_ms,
@@ -688,16 +693,20 @@ def _position_row(position: dict[str, Any], *, status: str, close_trade: dict[st
 
 def _incomplete_position_row(trade: dict[str, Any], reason: str) -> dict[str, Any]:
     symbol = str(trade.get("symbol") or "").upper().strip()
+    position_side = str(trade.get("position_side") or "").upper().strip()
     trade_id = _int_value(trade, "trade_id", context=symbol)
     order_id = _int_value(trade, "order_id", context=symbol)
     close_time_ms = _int_value(trade, "time_ms", context=symbol)
     qty = _decimal_value(trade, "qty", context=symbol)
     price = _decimal_value(trade, "price", context=symbol)
     realized_pnl = _decimal_value(trade, "realized_pnl", context=symbol)
-    position_id = f"{symbol}|INCOMPLETE|{close_time_ms}|{trade_id}"
+    if position_side == "LONG":
+        position_id = f"{symbol}|INCOMPLETE|{close_time_ms}|{trade_id}"
+    else:
+        position_id = f"{symbol}|{position_side}|INCOMPLETE|{close_time_ms}|{trade_id}"
     return {
         "symbol": symbol,
-        "position_side": "LONG",
+        "position_side": position_side,
         "status": "INCOMPLETE",
         "position_id": position_id,
         "open_time_ms": None,
@@ -742,7 +751,23 @@ def _position_net_pnl_from_income(position: dict[str, Any], incomes: list[dict[s
     return total if matched else None
 
 
-def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
+def _open_side_for_position(position_side: str) -> str:
+    if position_side == "LONG":
+        return "BUY"
+    if position_side == "SHORT":
+        return "SELL"
+    raise ValueError(f"unsupported position_side: {position_side}")
+
+
+def _close_side_for_position(position_side: str) -> str:
+    if position_side == "LONG":
+        return "SELL"
+    if position_side == "SHORT":
+        return "BUY"
+    raise ValueError(f"unsupported position_side: {position_side}")
+
+
+def _derive_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
     active: dict[str, dict[str, Any]] = {}
     positions: list[dict[str, Any]] = []
     open_positions = 0
@@ -751,8 +776,8 @@ def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
         if not symbol.endswith("USDT"):
             raise ValueError(f"trade symbol must be USDT: {symbol}")
         position_side = str(trade.get("position_side") or "").upper().strip()
-        if position_side != "LONG":
-            raise ValueError(f"positions derivation only supports LONG trades: symbol={symbol} position_side={position_side}")
+        if position_side not in POSITION_SIDES:
+            raise ValueError(f"positions derivation only supports LONG/SHORT trades: symbol={symbol} position_side={position_side}")
         side = str(trade.get("side") or "").upper().strip()
         qty = _decimal_value(trade, "qty", context=symbol)
         price = _decimal_value(trade, "price", context=symbol)
@@ -762,11 +787,13 @@ def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
         order_id = _int_value(trade, "order_id", context=symbol)
         if qty <= 0 or price <= 0:
             raise ValueError(f"invalid trade qty/price: symbol={symbol} trade_id={trade_id}")
-        current = active.get(symbol)
-        if side == "BUY":
+        active_key = f"{symbol}|{position_side}"
+        current = active.get(active_key)
+        if side == _open_side_for_position(position_side):
             if current is None:
                 current = {
                     "symbol": symbol,
+                    "position_side": position_side,
                     "open_time_ms": time_ms,
                     "open_qty": Decimal("0"),
                     "entry_qty": Decimal("0"),
@@ -778,21 +805,21 @@ def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
                     "trade_ids": [],
                     "order_ids": [],
                 }
-                active[symbol] = current
+                active[active_key] = current
             current["open_qty"] += qty
             current["entry_qty"] += qty
             current["entry_notional"] += qty * price
             current["max_open_qty"] = max(current["max_open_qty"], current["open_qty"])
             current["trade_ids"].append(trade_id)
             current["order_ids"].append(order_id)
-        elif side == "SELL":
+        elif side == _close_side_for_position(position_side):
             if current is None:
                 positions.append(_incomplete_position_row(trade, "missing_open_trade"))
                 continue
             if qty > current["open_qty"]:
                 raise ValueError(
-                    f"SELL qty exceeds open LONG qty: symbol={symbol} trade_id={trade_id} "
-                    f"sell_qty={qty} open_qty={current['open_qty']}"
+                    f"{side} qty exceeds open {position_side} qty: symbol={symbol} trade_id={trade_id} "
+                    f"close_qty={qty} open_qty={current['open_qty']}"
                 )
             current["open_qty"] -= qty
             current["closed_qty"] += qty
@@ -802,7 +829,7 @@ def _derive_long_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
             current["order_ids"].append(order_id)
             if current["open_qty"] == 0:
                 positions.append(_position_row(current, status="CLOSED", close_trade=trade))
-                active.pop(symbol)
+                active.pop(active_key)
         else:
             raise ValueError(f"unsupported trade side: symbol={symbol} trade_id={trade_id} side={side}")
     open_positions = len(active)
@@ -813,7 +840,7 @@ def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
     trades = _history_raw_rows(account, SOURCE_TRADES)
     incomes = _history_raw_rows(account, SOURCE_INCOME)
     try:
-        derived = _derive_long_positions(trades)
+        derived = _derive_positions(trades)
     except Exception as exc:
         return {"ok": False, "reason": str(exc), "rows_seen": len(trades), "rows_written": 0, "open_positions_skipped": 0}
     rows = list(derived["positions"])
