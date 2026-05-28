@@ -967,6 +967,51 @@ def _long_orders(account: str) -> list[dict[str, Any]]:
     return [o for o in res["data"] if str(o.get("position_side") or "").upper() == LONG]
 
 
+def _account_positions(account: str) -> list[dict[str, Any]]:
+    res = get_positions(account)
+    if not res["ok"]:
+        raise RuntimeError(res["reason"])
+    positions: list[dict[str, Any]] = []
+    for row in res["data"]:
+        position_side = str(row.get("position_side") or "").upper().strip()
+        if position_side not in {LONG, SHORT}:
+            raise RuntimeError(f"unexpected position_side in account positions: {position_side or 'EMPTY'}")
+        positions.append(row)
+    return positions
+
+
+def _account_orders(account: str) -> list[dict[str, Any]]:
+    res = get_open_orders(account)
+    if not res["ok"]:
+        raise RuntimeError(res["reason"])
+    orders: list[dict[str, Any]] = []
+    for row in res["data"]:
+        position_side = str(row.get("position_side") or "").upper().strip()
+        if position_side not in {LONG, SHORT}:
+            raise RuntimeError(f"unexpected position_side in account orders: {position_side or 'EMPTY'}")
+        orders.append(row)
+    return orders
+
+
+def _position_notional(position: dict[str, Any]) -> int:
+    return int(float(position["qty"]) * float(position["entry_price"]))
+
+
+def _position_signed_notional(position: dict[str, Any]) -> int:
+    position_side = str(position.get("position_side") or "").upper().strip()
+    sign = -1 if position_side == SHORT else 1
+    return sign * _position_notional(position)
+
+
+def _position_detail_tail(position: dict[str, Any], orders: list[dict[str, Any]]) -> str:
+    position_side = str(position.get("position_side") or "").upper().strip()
+    if position_side == SHORT:
+        return "SHORT"
+    if position_side == LONG:
+        return _tp_ratio(float(position["entry_price"]), orders)
+    raise RuntimeError(f"unexpected position_side in account detail: {position_side or 'EMPTY'}")
+
+
 def _order_root(leg: str) -> str:
     return build_client_order_id(strat="MAN", leg=leg, root=make_order_root())
 
@@ -1707,19 +1752,26 @@ async def _send_account_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         f"🔷{account}  M: {_fmt_intish(data['margin_usdt'])}  "
         f"uPnL: {_fmt_intish(data['unrealized_usdt'])}"
     )
-    positions = _long_positions(account)
-    orders = _long_orders(account)
+    positions = _account_positions(account)
+    orders = _account_orders(account)
     if positions:
-        net_amount = sum(int(float(p["qty"]) * float(p["entry_price"])) for p in positions)
+        net_amount = sum(_position_signed_notional(p) for p in positions)
         lines.append(f"      W: {_fmt_intish(data['wallet_usdt'])}      净持仓: {_fmt_intish(net_amount)}")
         lines.append("")
-        for p in sorted(positions, key=lambda x: float(x["qty"]) * float(x["entry_price"]), reverse=True):
-            amount = int(float(p["qty"]) * float(p["entry_price"]))
-            symbol_orders = [o for o in orders if o.get("symbol") == p["symbol"]]
+        for p in sorted(positions, key=lambda x: abs(_position_notional(x)), reverse=True):
+            position_side = str(p.get("position_side") or "").upper().strip()
+            icon = "🔴" if position_side == SHORT else "🟢"
+            side_label = f" {position_side}" if position_side == SHORT else ""
+            amount = _position_signed_notional(p)
+            symbol_orders = [
+                o
+                for o in orders
+                if o.get("symbol") == p["symbol"] and str(o.get("position_side") or "").upper().strip() == position_side
+            ]
             lines.append(
-                f"🟢{p['symbol']}    uPnL: {_fmt_intish(p['unrealized_usdt'])}\n"
+                f"{icon}{p['symbol']}{side_label}    uPnL: {_fmt_intish(p['unrealized_usdt'])}\n"
                 f"     {_fmt_float(p['qty'])} | {_fmt_float(p['entry_price'])} "
-                f"| {amount} | {_tp_ratio(float(p['entry_price']), symbol_orders)}"
+                f"| {amount} | {_position_detail_tail(p, symbol_orders)}"
             )
     else:
         lines.append("ℹ️ 无持仓信息")
