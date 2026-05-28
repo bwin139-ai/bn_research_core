@@ -744,6 +744,24 @@ def _hedge_short_shortcut_args(name: str) -> list[str]:
     return str(row["command"]).split()
 
 
+def _hedge_short_shortcut_sort_key(item: tuple[str, dict[str, Any]]) -> tuple[int, str]:
+    name, row = item
+    action = str(row.get("command") or "").split()[0].lower()
+    action_order = {
+        "open": 0,
+        "close": 1,
+        "sl": 1,
+        "pending": 2,
+        "cancel": 3,
+        "cancle": 3,
+    }.get(action, 9)
+    return action_order, name
+
+
+def _ordered_hedge_short_shortcut_names(shortcuts: dict[str, dict[str, Any]]) -> list[str]:
+    return [name for name, _ in sorted(shortcuts.items(), key=_hedge_short_shortcut_sort_key)]
+
+
 def _expand_hedge_short_shortcut_args(args: list[str]) -> tuple[list[str], str | None, str | None]:
     if not args:
         return args, None, None
@@ -767,7 +785,7 @@ def _format_hedge_short_shortcuts(shortcuts: dict[str, dict[str, Any]]) -> str:
     if not shortcuts:
         return "Hedge short favorites: empty\n\n" + _hedge_short_shortcut_usage()
     lines = ["Hedge short favorites"]
-    for name in sorted(shortcuts):
+    for name in _ordered_hedge_short_shortcut_names(shortcuts):
         lines.append(f"{name}: /hedge_short {shortcuts[name]['command']}")
     lines.append("")
     lines.append("Run: /hedge_short @NAME")
@@ -784,7 +802,7 @@ async def _send_hedge_short_menu(update: Update) -> None:
                 callback_data=f"hs_fav:{name}",
             )
         ]
-        for name in sorted(shortcuts)
+        for name in _ordered_hedge_short_shortcut_names(shortcuts)
     ]
     buttons.append([InlineKeyboardButton("Set Symbol", callback_data="hs_menu_set_symbol")])
     buttons.append([InlineKeyboardButton("Abort", callback_data="abort")])
