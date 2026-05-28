@@ -894,6 +894,22 @@ def _tp_ratio(entry_price: float, orders: list[dict[str, Any]]) -> str:
     return f"{ratio:.1f}🎯"
 
 
+def _short_tp_ratio(entry_price: float, orders: list[dict[str, Any]]) -> str:
+    tp_orders = [
+        o
+        for o in orders
+        if str(o.get("side") or "").upper() == "BUY" and _order_display_price(o) < entry_price
+    ]
+    weighted_qty = sum(_order_qty(o) for o in tp_orders)
+    if weighted_qty <= 0 or entry_price <= 0:
+        return "⚪"
+    weighted_price = sum(_order_display_price(o) * _order_qty(o) for o in tp_orders) / weighted_qty
+    ratio = ((entry_price - weighted_price) / entry_price) * 100.0
+    if abs(ratio) < 0.05:
+        return "🟡"
+    return f"{ratio:.1f}🎯"
+
+
 def _bj_minute(ts_ms: Any) -> str:
     try:
         value = int(ts_ms)
@@ -1024,7 +1040,7 @@ def _position_signed_notional(position: dict[str, Any]) -> int:
 def _position_detail_tail(position: dict[str, Any], orders: list[dict[str, Any]]) -> str:
     position_side = str(position.get("position_side") or "").upper().strip()
     if position_side == SHORT:
-        return "SHORT"
+        return _short_tp_ratio(float(position["entry_price"]), orders)
     if position_side == LONG:
         return _tp_ratio(float(position["entry_price"]), orders)
     raise RuntimeError(f"unexpected position_side in account detail: {position_side or 'EMPTY'}")
@@ -1779,7 +1795,6 @@ async def _send_account_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         for p in sorted(positions, key=lambda x: abs(_position_notional(x)), reverse=True):
             position_side = str(p.get("position_side") or "").upper().strip()
             icon = "🔴" if position_side == SHORT else "🟢"
-            side_label = f" {position_side}" if position_side == SHORT else ""
             amount = _position_signed_notional(p)
             symbol_orders = [
                 o
@@ -1787,7 +1802,7 @@ async def _send_account_detail(update: Update, context: ContextTypes.DEFAULT_TYP
                 if o.get("symbol") == p["symbol"] and str(o.get("position_side") or "").upper().strip() == position_side
             ]
             lines.append(
-                f"{icon}{p['symbol']}{side_label}    uPnL: {_fmt_intish(p['unrealized_usdt'])}\n"
+                f"{icon}{p['symbol']}    uPnL: {_fmt_intish(p['unrealized_usdt'])}\n"
                 f"     {_fmt_float(p['qty'])} | {_fmt_float(p['entry_price'])} "
                 f"| {amount} | {_position_detail_tail(p, symbol_orders)}"
             )
