@@ -39,6 +39,7 @@ _FINALIZE_QUALITY_STATS_WINDOW = 30
 _FINALIZE_QUALITY_ROLLING: dict[str, list[dict[str, Any]]] = {}
 _BINANCE_REST_USAGE_STATS_WINDOW = 30
 _BINANCE_REST_USAGE_ROLLING: dict[str, list[dict[str, Any]]] = {}
+_BINANCE_REST_USAGE_PEAK_WARN = 1800
 
 
 def _extract_binance_ban_until_utc_ms(exc: Exception) -> int | None:
@@ -283,26 +284,106 @@ def _record_market_total_24h_vol_sample(
     body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
     logging.info('[market_total_24h_vol_stats] %s', body)
 
-    msg = (
-        f'[DataHub] market_total_24h_vol 30轮统计 | account={account_key} | '
-        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
-        f'status={payload["market_total_24h_vol_last_status"]} | '
-        f'ready/warming/not_ready={payload["ready_round_count"]}/{payload["warming_round_count"]}/{payload["not_ready_round_count"]} | '
-        f'min={min_value:.2f} | max={max_value:.2f} | avg={avg_value:.2f}'
-    )
-    if min_value_api is not None and max_value_api is not None and avg_value_api is not None:
-        msg += (
-            f' | api_min={min_value_api:.2f}'
-            f' | api_max={max_value_api:.2f}'
-            f' | api_avg={avg_value_api:.2f}'
+    _notify(bool(notify_enabled), _format_market_total_24h_vol_stats(payload))
+
+
+def _format_market_total_24h_vol_stats(payload: dict[str, Any]) -> str:
+    lines = [
+        '📊 [DataHub] market_total_24h_vol (B)',
+        f'min={_fmt_billions_floor(payload["market_total_24h_vol_min_observed"])} | '
+        f'max={_fmt_billions_floor(payload["market_total_24h_vol_max_observed"])} | '
+        f'avg={_fmt_billions_floor(payload["market_total_24h_vol_avg_observed"])}',
+    ]
+    anomaly_parts: list[str] = []
+    if int(payload.get('not_ready_round_count') or 0) > 0 or int(payload.get('warming_round_count') or 0) > 0:
+        anomaly_parts.append(
+            f'ready/warming/not_ready='
+            f'{int(payload.get("ready_round_count") or 0)}/'
+            f'{int(payload.get("warming_round_count") or 0)}/'
+            f'{int(payload.get("not_ready_round_count") or 0)}'
         )
-    msg += (
-        f' | missing/partial/stale/new={payload["missing_symbol_count_max"]}/'
-        f'{payload["partial_symbol_count_max"]}/'
-        f'{payload["stale_symbol_count_max"]}/'
-        f'{payload["newly_listed_symbol_count_max"]}'
-    )
-    _notify(bool(notify_enabled), msg)
+    data_issue_parts = [
+        int(payload.get('missing_symbol_count_max') or 0),
+        int(payload.get('partial_symbol_count_max') or 0),
+        int(payload.get('stale_symbol_count_max') or 0),
+        int(payload.get('newly_listed_symbol_count_max') or 0),
+    ]
+    if any(value > 0 for value in data_issue_parts):
+        anomaly_parts.append('missing/partial/stale/new=' + '/'.join(str(value) for value in data_issue_parts))
+    if anomaly_parts:
+        lines.append('⚠️ ' + ' | '.join(anomaly_parts))
+    return '\n'.join(lines)
+
+
+def _fmt_billions_floor(value: Any) -> str:
+    billions = float(value) / 1_000_000_000.0
+    return f'{int(billions * 100.0) / 100.0:.2f}'
+
+
+def _format_finalize_quality_warning(payload: dict[str, Any]) -> str:
+    window_rounds = int(payload.get('window_rounds') or 0)
+    all_passed_count = int(payload.get('all_passed_count') or 0)
+    deadline_hit_count = int(payload.get('deadline_hit_count') or 0)
+    timeout_round_count = int(payload.get('timeout_round_count') or 0)
+    timeout_max = int(payload.get('timeout_not_finalized_count_max') or 0)
+    verify_failed_max = int(payload.get('verify_failed_count_max') or 0)
+    delayed_max = int(payload.get('delayed_finalize_count_max') or 0)
+    removed_max = int(payload.get('finalize_removed_symbol_count_max') or 0)
+
+    if (
+        deadline_hit_count <= 0
+        and timeout_round_count <= 0
+        and all_passed_count >= window_rounds
+        and timeout_max <= 0
+        and verify_failed_max <= 0
+        and delayed_max <= 0
+    ):
+        return ''
+
+    lines = [
+        '⏱️ [DataHub] finalize warning',
+        f'window: {payload.get("first_bar_bj")} ~ {payload.get("last_bar_bj")}',
+        f'all_passed: {all_passed_count}/{window_rounds}',
+        f'deadline/timeout: {deadline_hit_count}/{timeout_round_count}',
+    ]
+    if payload.get('all_passed_elapsed_ms_max') is not None:
+        lines.append(f'elapsed_max: {int(payload["all_passed_elapsed_ms_max"])} ms')
+    detail_parts: list[str] = []
+    if timeout_max > 0:
+        detail_parts.append(f'timeout_max={timeout_max}')
+    if verify_failed_max > 0:
+        detail_parts.append(f'verify_failed_max={verify_failed_max}')
+    if delayed_max > 0:
+        detail_parts.append(f'delayed_max={delayed_max}')
+    if removed_max > 0:
+        detail_parts.append(f'removed_max={removed_max}')
+    if detail_parts:
+        lines.append('detail: ' + ' | '.join(detail_parts))
+    return '\n'.join(lines)
+
+
+def _format_binance_rest_usage_warning(payload: dict[str, Any]) -> str:
+    error_count = int(payload.get('error_count') or 0)
+    rejected_count = int(payload.get('rejected_by_gateway_count') or 0)
+    peak_1m = int(payload.get('used_weight_1m_peak') or 0)
+    if error_count <= 0 and rejected_count <= 0 and peak_1m < _BINANCE_REST_USAGE_PEAK_WARN:
+        return ''
+
+    latest_1m = payload.get('latest_used_weight_1m')
+    latest_text = str(int(latest_1m)) if latest_1m is not None else 'NA'
+    lines = [
+        '🚦 [Gateway] REST warning',
+        f'window: {payload.get("start_bj")} ~ {payload.get("end_bj")}',
+        f'peak_1m: {peak_1m}',
+        f'error/reject: {error_count}/{rejected_count}',
+        f'requests: {int(payload.get("request_count") or 0)}',
+        f'latest_1m: {latest_text}',
+    ]
+    order_10s = int(payload.get('order_count_10s_max') or 0)
+    order_1m = int(payload.get('order_count_1m_max') or 0)
+    if order_10s > 0 or order_1m > 0:
+        lines.append(f'orders 10s/1m: {order_10s}/{order_1m}')
+    return '\n'.join(lines)
 
 
 def _record_finalize_quality_sample(
@@ -396,31 +477,9 @@ def _record_finalize_quality_sample(
     body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
     logging.info('[finalize_quality_stats] %s', body)
 
-    msg = (
-        f'[DataHub] finalize 30轮统计 | account={account_key} | '
-        f'window={payload["first_bar_bj"]} ~ {payload["last_bar_bj"]} | '
-        f'all_passed={all_passed_count}/{len(window)} | '
-        f'deadline_hit={deadline_hit_count} | '
-        f'timeout_rounds={timeout_round_count}'
-    )
-    if payload['all_passed_elapsed_ms_min'] is not None:
-        msg += (
-            f' | elapsed_ms(min/max/avg)='
-            f'{int(payload["all_passed_elapsed_ms_min"])}/'
-            f'{int(payload["all_passed_elapsed_ms_max"])}/'
-            f'{float(payload["all_passed_elapsed_ms_avg"]):.1f}'
-        )
-    if payload['candidate_symbol_count_before_finalize_avg'] is not None and payload['candidate_symbol_count_after_finalize_avg'] is not None:
-        msg += (
-            f' | candidates_avg='
-            f'{float(payload["candidate_symbol_count_before_finalize_avg"]):.1f}'
-            f'->{float(payload["candidate_symbol_count_after_finalize_avg"]):.1f}'
-        )
-    msg += (
-        f' | removed_max={int(payload["finalize_removed_symbol_count_max"])}'
-        f' | timeout_max={int(payload["timeout_not_finalized_count_max"])}'
-    )
-    _notify(bool(notify_enabled), msg)
+    msg = _format_finalize_quality_warning(payload)
+    if msg:
+        _notify(bool(notify_enabled), msg)
 
 
 def _record_binance_rest_usage_sample(
@@ -471,21 +530,9 @@ def _record_binance_rest_usage_sample(
     body = _json_safe_dumps(payload, sort_keys=True, separators=(',', ':'))
     logging.info('[binance_rest_gateway_usage_stats] %s', body)
 
-    msg = (
-        f'[Gateway] Binance REST usage {int(payload["window_minutes"])}m | '
-        f'window={payload["start_bj"]} ~ {payload["end_bj"]} | '
-        f'requests={int(payload["request_count"])} '
-        f'ok/error/reject='
-        f'{int(payload["ok_count"])}/'
-        f'{int(payload["error_count"])}/'
-        f'{int(payload["rejected_by_gateway_count"])} | '
-        f'weight_total={int(payload["used_weight_1m_total_by_minute_max"])} | '
-        f'peak_1m={int(payload["used_weight_1m_peak"])} | '
-        f'latest_1m={payload["latest_used_weight_1m"] if payload["latest_used_weight_1m"] is not None else "NA"} | '
-        f'order10s/1m_max={int(payload["order_count_10s_max"])}/{int(payload["order_count_1m_max"])} | '
-        f'priority={_json_safe_dumps(payload["priority_counts"], sort_keys=True, separators=(",", ":"))}'
-    )
-    _notify(bool(notify_enabled), msg)
+    msg = _format_binance_rest_usage_warning(payload)
+    if msg:
+        _notify(bool(notify_enabled), msg)
 
 
 def _write_empty_hub_inputs_snapshot(

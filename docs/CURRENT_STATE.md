@@ -927,9 +927,13 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
 18. 废除 DataHub 局部 `binance_rest_quota 30轮统计` 推送，改为 Gateway usage ledger 真实用量汇总：
     - 新增 `read_binance_rest_usage_summary()`，从 `output/shared_market/binance_rest_usage/YYYY-MM-DD/binance_rest_usage.jsonl` 聚合窗口内所有 Gateway consumer 请求。
     - 窗口真实 weight 口径为每个 UTC minute bucket 的 `max(used_weight_1m)`，再对窗口内 minute 求和；同时输出 `request_count`、`ok/error/rejected_by_gateway`、`priority_counts`、`peak_1m`、`latest_1m`、order count 峰值。
-    - `market_data_hub_runner.py` 不再发送 `[DataHub] binance_rest_quota 30轮统计`；新推送为 `[Gateway] Binance REST usage {N}m`。
+    - `market_data_hub_runner.py` 不再发送 `[DataHub] binance_rest_quota 30轮统计`；新 Gateway 口径记录为 `binance_rest_gateway_usage_stats`。2026-05-29 起 Telegram 仅在 `error_count > 0`、`rejected_by_gateway_count > 0` 或 `peak_1m >= 1800` 时发送精简 `🚦 [Gateway] REST warning`，健康窗口静默；完整 payload 仍写 audit/log。
     - 本地 180m ledger smoke 成功：可聚合 request/priority/weight 峰值；该口径来自 Gateway usage ledger，不再是 DataHub 对 latest quota snapshot 的局部采样。
 19. 2026-05-09 部署后服务器 smoke 发现订单类 REST 响应可能带出 `used_weight_1m=-1`，会污染 Gateway latest/delta 记账。已在 `core/live/rate_limit_guard.py` 增加非负 weight 护栏：usage summary 忽略负数 weight；quota snapshot 遇到同一分钟无有效 weight 但有 order-count 的响应时保留上一条有效 weight，避免分级 gate 失去最近总用量事实。
+
+2026-05-29 起，`market_data_hub_runner.py` 的 finalize 质量 Telegram 推送改为健康窗口静默：只有 `deadline_hit_count > 0`、`timeout_round_count > 0`、`all_passed_count < window_rounds`、`verify_failed_count_max > 0` 或 `delayed_finalize_count_max > 0` 时发送精简 `⏱️ [DataHub] finalize warning`；完整 `finalize_quality_stats` payload 仍写 audit/log。
+
+2026-05-29 起，`market_data_hub_runner.py` 的 `market_total_24h_vol` Telegram 推送保留每 30 轮固定输出，但展示改为精简 B 口径：`📊 [DataHub] market_total_24h_vol (B)` + `min/max/avg`；API 与落盘双口径字段不再进入常规 Telegram 文本，完整 `market_total_24h_vol_stats` payload 仍写 audit/log。若窗口内出现 warming/not_ready 或 missing/partial/stale/new 非零，消息追加一行 `⚠️` 异常摘要。
 
 当前边界：
 
