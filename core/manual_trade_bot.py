@@ -107,6 +107,54 @@ def _start_command_context(context: ContextTypes.DEFAULT_TYPE, namespace: str) -
     context.user_data[COMMAND_CONTEXT_KEY] = namespace
 
 
+async def _route_active_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE, active: str) -> int:
+    if active == "trade_shortcut":
+        return await trade_shortcut_param_input(update, context)
+    if active == "hedge_short_shortcut":
+        return await hedge_short_shortcut_param_input(update, context)
+    if active == "open":
+        if "open_symbol" not in context.user_data or "open_type" not in context.user_data:
+            return ConversationHandler.END
+        if (
+            str(context.user_data.get("open_type") or "").upper() == "LIMIT"
+            and "open_price" not in context.user_data
+            and "open_price_match" not in context.user_data
+        ):
+            return await open_input_price(update, context)
+        return await open_input_notional(update, context)
+    if active == "close":
+        if "close_symbol" not in context.user_data:
+            return ConversationHandler.END
+        if "close_price" not in context.user_data and "close_price_match" not in context.user_data:
+            return await close_input_price(update, context)
+        return await close_input_qty(update, context)
+    if active == "stop_market":
+        if "stop_symbol" not in context.user_data:
+            return ConversationHandler.END
+        return await stop_input_price(update, context)
+    if active == "edit_symbols":
+        return await edit_symbols_input(update, context)
+    if active == "set_symbol":
+        return await set_symbol_input(update, context)
+    if active == "hs_set_symbol":
+        return await hs_set_symbol_input(update, context)
+    if active == "hs_edit_symbols":
+        return await hs_edit_symbols_input(update, context)
+    return ConversationHandler.END
+
+
+async def _guard_text_command_context(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *expected_namespaces: str,
+) -> int | None:
+    active = str(context.user_data.get(COMMAND_CONTEXT_KEY) or "")
+    if not active or active in expected_namespaces:
+        return None
+    await _route_active_text_input(update, context, active)
+    return ConversationHandler.END
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -2095,6 +2143,9 @@ async def open_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @_admin_required
 async def open_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "open")
+    if routed is not None:
+        return routed
     raw_price = update.message.text.strip()
     price_match = _parse_price_match(raw_price)
     if price_match:
@@ -2134,6 +2185,9 @@ def _prepare_symbol(account: str, symbol: str, leverage: int) -> None:
 
 @_admin_required
 async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "open")
+    if routed is not None:
+        return routed
     account = _selected_account(context)
     symbol = str(context.user_data["open_symbol"])
     leverage = int(context.user_data["open_leverage"])
@@ -2278,6 +2332,9 @@ async def close_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @_admin_required
 async def close_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "close")
+    if routed is not None:
+        return routed
     raw_price = update.message.text.strip()
     price_match = _parse_price_match(raw_price)
     if price_match:
@@ -2292,6 +2349,9 @@ async def close_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 @_admin_required
 async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "close")
+    if routed is not None:
+        return routed
     account = _selected_account(context)
     symbol = str(context.user_data["close_symbol"])
     price_match = context.user_data.get("close_price_match")
@@ -2367,6 +2427,9 @@ async def stop_symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @_admin_required
 async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "stop_market")
+    if routed is not None:
+        return routed
     account = _selected_account(context)
     symbol = str(context.user_data["stop_symbol"])
     stop_price = float(update.message.text.strip())
@@ -2405,6 +2468,9 @@ async def edit_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 @_admin_required
 async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "edit_symbols")
+    if routed is not None:
+        return routed
     text = update.message.text.strip().upper()
     rows = _load_symbol_rows()
     if text == "DONE":
@@ -2491,6 +2557,9 @@ async def set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @_admin_required
 async def set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "set_symbol")
+    if routed is not None:
+        return routed
     text = update.message.text.strip().upper()
     parts = text.split()
     if len(parts) != 2:
@@ -4374,6 +4443,9 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
 
 @_admin_required
 async def trade_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "trade_shortcut")
+    if routed is not None:
+        return routed
     pending = context.user_data.get("pending_trade_shortcut")
     if not isinstance(pending, dict):
         if isinstance(context.user_data.get("pending_hedge_short_shortcut"), dict):
@@ -4509,6 +4581,9 @@ async def hedge_short_shortcut_selected(update: Update, context: ContextTypes.DE
 
 @_admin_required
 async def hedge_short_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "hedge_short_shortcut")
+    if routed is not None:
+        return routed
     pending = context.user_data.get("pending_hedge_short_shortcut")
     if not isinstance(pending, dict):
         if isinstance(context.user_data.get("pending_trade_shortcut"), dict):
@@ -4645,6 +4720,9 @@ async def hs_set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_T
 
 @_admin_required
 async def hs_set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "hs_set_symbol")
+    if routed is not None:
+        return routed
     text = str(update.message.text or "").strip()
     if text.upper() in {"OFF", "NONE", "NULL"}:
         _save_current_hedge_short_symbol(None)
@@ -4683,6 +4761,9 @@ async def hs_edit_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 @_admin_required
 async def hs_edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    routed = await _guard_text_command_context(update, context, "hs_edit_symbols")
+    if routed is not None:
+        return routed
     text = str(update.message.text or "").strip()
     parts = text.split()
     action = parts[0].upper() if parts else ""
