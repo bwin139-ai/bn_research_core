@@ -610,16 +610,27 @@ def _trade_shortcut_placeholder_count(args: list[str]) -> int:
     return sum(str(token).count("?") for token in args)
 
 
+def _trade_shortcut_required_placeholder_count(args: list[str]) -> int:
+    required_args = list(args)
+    while required_args and str(required_args[-1]).strip() == "?%":
+        required_args.pop()
+    return _trade_shortcut_placeholder_count(required_args)
+
+
 def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> list[str]:
     clean_values = [str(x).strip() for x in values if str(x).strip()]
-    expected = _trade_shortcut_placeholder_count(args)
+    fill_args = list(args)
+    expected = _trade_shortcut_placeholder_count(fill_args)
     if expected <= 0:
-        return list(args)
+        return fill_args
+    while len(clean_values) < expected and fill_args and str(fill_args[-1]).strip() == "?%":
+        fill_args.pop()
+        expected -= 1
     if len(clean_values) != expected:
         raise ValueError(f"favorite requires {expected} parameter(s), got {len(clean_values)}")
     filled: list[str] = []
     value_idx = 0
-    for token in args:
+    for token in fill_args:
         text = str(token)
         while "?" in text:
             text = text.replace("?", clean_values[value_idx], 1)
@@ -658,8 +669,13 @@ def _expand_trade_shortcut_args(args: list[str]) -> tuple[list[str], str | None,
 
 
 def _trade_shortcut_button_label(name: str, command: str) -> str:
-    param_count = _trade_shortcut_placeholder_count(str(command).split())
-    suffix = f" ({param_count} p)" if param_count else ""
+    args = str(command).split()
+    param_count = _trade_shortcut_placeholder_count(args)
+    required_count = _trade_shortcut_required_placeholder_count(args)
+    if param_count and required_count != param_count:
+        suffix = f" ({required_count}-{param_count} p)"
+    else:
+        suffix = f" ({param_count} p)" if param_count else ""
     return f"{name}{suffix}"
 
 
