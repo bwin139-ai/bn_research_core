@@ -3567,6 +3567,48 @@ def _short_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> 
     return qty if close_ratio == 1.0 else qty * close_ratio
 
 
+def _cancel_existing_close_limit_orders(
+    account: str,
+    symbol: str,
+    *,
+    position_side: str,
+    side: str,
+    event_name: str,
+    event_writer: Callable[..., None],
+) -> int:
+    res = get_open_orders(account, symbol)
+    if not res["ok"]:
+        raise RuntimeError(f"query existing close orders failed: {res['reason']}")
+    orders = [
+        row
+        for row in list(res.get("data") or [])
+        if str(row.get("position_side") or "").upper() == position_side
+        and str(row.get("side") or "").upper() == side
+        and str(row.get("type") or "").upper() == "LIMIT"
+    ]
+    cancelled = 0
+    failed: list[str] = []
+    for order in orders:
+        cancel_res = cancel_order(
+            account,
+            symbol,
+            exchange_order_id=order.get("order_id"),
+            client_order_id=order.get("client_order_id"),
+            notify_label=NOTIFY_LABEL,
+        )
+        event_writer(event_name, account=account, symbol=symbol, ok=cancel_res["ok"], order=order, result=cancel_res)
+        if cancel_res["ok"]:
+            cancelled += 1
+        else:
+            failed.append(str(cancel_res.get("reason") or "unknown"))
+    if failed:
+        raise RuntimeError(
+            f"cancel existing close orders failed: cancelled={cancelled} failed={len(failed)} "
+            f"reason={'; '.join(failed[:3])}"
+        )
+    return cancelled
+
+
 async def _run_market_close_command(
     update: Update,
     *,
@@ -3613,6 +3655,14 @@ async def _run_post_only_close_command(
     lines = [f"PO close {symbol}"]
     for account in accounts:
         try:
+            cancelled_existing = _cancel_existing_close_limit_orders(
+                account,
+                symbol,
+                position_side=LONG,
+                side="SELL",
+                event_name="manual_trade_po_close_cancel_existing",
+                event_writer=_append_manual_event,
+            )
             qty = _long_position_qty(account, symbol, close_ratio)
             root = make_order_root()
             entry_res: dict[str, Any] | None = None
@@ -3659,8 +3709,11 @@ async def _run_post_only_close_command(
                 lines.append(f"{account}: failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts reason={reason}")
                 continue
             data = entry_res["data"]
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
                 f"price={_fmt_float(data.get('price') or best_ask)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
@@ -4037,6 +4090,14 @@ async def _run_hedge_short_post_only_close_command(
     lines = [f"Hedge short PO close {symbol}"]
     for account in accounts:
         try:
+            cancelled_existing = _cancel_existing_close_limit_orders(
+                account,
+                symbol,
+                position_side=SHORT,
+                side="BUY",
+                event_name="hedge_short_po_close_cancel_existing",
+                event_writer=_append_hedge_short_event,
+            )
             qty = _short_position_qty(account, symbol, close_ratio)
             root = make_order_root()
             close_res: dict[str, Any] | None = None
@@ -4084,8 +4145,11 @@ async def _run_hedge_short_post_only_close_command(
                 lines.append(f"{account}: failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts reason={reason}")
                 continue
             data = close_res["data"]
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
                 f"price={_fmt_float(data.get('price') or best_bid)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
