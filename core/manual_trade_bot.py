@@ -78,6 +78,35 @@ _TRADE_SHORTCUT_NAME_MAX_BYTES = 48
 _EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
 _HS_EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
 
+COMMAND_CONTEXT_KEY = "active_command_context"
+_COMMAND_CONTEXT_TRANSIENT_KEYS = {
+    "pending_trade_shortcut",
+    "pending_hedge_short_shortcut",
+    "open_symbol",
+    "open_leverage",
+    "open_type",
+    "open_price",
+    "open_price_match",
+    "close_symbol",
+    "close_price",
+    "close_price_match",
+    "stop_symbol",
+    "rebate_report_groups",
+    "rebate_report_group",
+}
+
+
+def _clear_command_context(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(COMMAND_CONTEXT_KEY, None)
+    for key in _COMMAND_CONTEXT_TRANSIENT_KEYS:
+        context.user_data.pop(key, None)
+
+
+def _start_command_context(context: ContextTypes.DEFAULT_TYPE, namespace: str) -> None:
+    _clear_command_context(context)
+    context.user_data[COMMAND_CONTEXT_KEY] = namespace
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -189,9 +218,12 @@ def _admin_required(
 ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, Any]]:
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Any:
         if _is_admin(update):
+            if update.message and str(update.message.text or "").lstrip().startswith("/"):
+                _clear_command_context(context)
             try:
                 return await fn(update, context)
             except ValueError as exc:
+                _clear_command_context(context)
                 if update.callback_query:
                     await update.callback_query.answer(str(exc), show_alert=True)
                 elif update.message:
@@ -549,12 +581,12 @@ def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> lis
 
 
 def _set_pending_trade_shortcut(context: ContextTypes.DEFAULT_TYPE, pending: dict[str, Any]) -> None:
-    context.user_data.pop("pending_hedge_short_shortcut", None)
+    _start_command_context(context, "trade_shortcut")
     context.user_data["pending_trade_shortcut"] = pending
 
 
 def _set_pending_hedge_short_shortcut(context: ContextTypes.DEFAULT_TYPE, pending: dict[str, Any]) -> None:
-    context.user_data.pop("pending_trade_shortcut", None)
+    _start_command_context(context, "hedge_short_shortcut")
     context.user_data["pending_hedge_short_shortcut"] = pending
 
 
@@ -2006,6 +2038,7 @@ async def do_cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 @_admin_required
 async def abort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _clear_command_context(context)
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("aborted")
@@ -2014,10 +2047,12 @@ async def abort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 @_admin_required
 async def open_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "open")
     _selected_account(context)
     rows = _load_symbol_rows()
     if not rows:
         await update.message.reply_text("manual_trade_symbols.json is empty. Use /edit_symbols first.")
+        _clear_command_context(context)
         return ConversationHandler.END
     buttons = [
         [InlineKeyboardButton(f"{row['symbol']} {row['leverage']}x", callback_data=f"open_symbol:{row['symbol']}")]
@@ -2113,6 +2148,7 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
         price_res = get_last_price(account, symbol)
         if not price_res["ok"]:
             await update.message.reply_text(price_res["reason"])
+            _clear_command_context(context)
             return ConversationHandler.END
         price = float(price_res["data"]["price"])
     quantity = notional / price
@@ -2143,9 +2179,11 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
     except Exception as exc:
         await update.message.reply_text(f"open failed: {exc}")
+        _clear_command_context(context)
         return ConversationHandler.END
     if not res["ok"]:
         await update.message.reply_text(f"open failed: {res['reason']}")
+        _clear_command_context(context)
         return ConversationHandler.END
     data = res["data"]
     await update.message.reply_text(
@@ -2153,15 +2191,18 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"price={data.get('price_match') or _fmt_float(data.get('price') or data.get('avg_price') or price)}\n"
         f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
     )
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
 @_admin_required
 async def close_position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "close")
     account = _selected_account(context)
     positions = _long_positions(account)
     if not positions:
         await update.message.reply_text(f"{account}: no LONG positions")
+        _clear_command_context(context)
         return ConversationHandler.END
     buttons = [
         [InlineKeyboardButton(f"{p['symbol']} qty={_fmt_float(p['qty'])}", callback_data=f"close_symbol:{p['symbol']}")]
@@ -2199,17 +2240,21 @@ async def close_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         res = cancel_all_orders(account, symbol, notify_label=NOTIFY_LABEL)
         if not res["ok"]:
             await query.edit_message_text(f"cancel orders failed: {res['reason']}")
+            _clear_command_context(context)
             return ConversationHandler.END
         await query.edit_message_text(f"cancel orders submitted: {symbol}")
+        _clear_command_context(context)
         return ConversationHandler.END
     if close_type == "MARKET":
         pos_res = get_positions(account, symbol)
         if not pos_res["ok"]:
             await query.edit_message_text(pos_res["reason"])
+            _clear_command_context(context)
             return ConversationHandler.END
         pos = next((p for p in pos_res["data"] if p.get("position_side") == LONG), None)
         if not pos:
             await query.edit_message_text(f"no LONG position: {symbol}")
+            _clear_command_context(context)
             return ConversationHandler.END
         res = place_time_stop_order(
             account,
@@ -2222,8 +2267,10 @@ async def close_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         if not res["ok"]:
             await query.edit_message_text(f"market close failed: {res['reason']}")
+            _clear_command_context(context)
             return ConversationHandler.END
         await query.edit_message_text(f"market close submitted: {symbol}")
+        _clear_command_context(context)
         return ConversationHandler.END
     await query.edit_message_text("Input limit close price (Q=QUEUE, Q5=QUEUE_5)")
     return CLOSE_INPUT_PRICE
@@ -2252,10 +2299,12 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     pos_res = get_positions(account, symbol)
     if not pos_res["ok"]:
         await update.message.reply_text(pos_res["reason"])
+        _clear_command_context(context)
         return ConversationHandler.END
     pos = next((p for p in pos_res["data"] if p.get("position_side") == LONG), None)
     if not pos:
         await update.message.reply_text(f"no LONG position: {symbol}")
+        _clear_command_context(context)
         return ConversationHandler.END
     raw_qty = update.message.text.strip().upper()
     qty = float(pos["qty"]) if raw_qty == "ALL" else float(raw_qty)
@@ -2277,6 +2326,7 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     if not res["ok"]:
         await update.message.reply_text(f"limit close failed: {res['reason']}")
+        _clear_command_context(context)
         return ConversationHandler.END
     data = res["data"]
     await update.message.reply_text(
@@ -2284,15 +2334,18 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"price={data.get('price_match') or _fmt_float(data.get('price'))}\n"
         f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
     )
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
 @_admin_required
 async def stop_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "stop_market")
     account = _selected_account(context)
     positions = _long_positions(account)
     if not positions:
         await update.message.reply_text(f"{account}: no LONG positions")
+        _clear_command_context(context)
         return ConversationHandler.END
     buttons = [
         [InlineKeyboardButton(f"{p['symbol']} qty={_fmt_float(p['qty'])}", callback_data=f"stop_symbol:{p['symbol']}")]
@@ -2327,17 +2380,20 @@ async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     if not res["ok"]:
         await update.message.reply_text(f"stop failed: {res['reason']}")
+        _clear_command_context(context)
         return ConversationHandler.END
     data = res["data"]
     await update.message.reply_text(
         f"stop market submitted {symbol}\ntrigger={_fmt_float(data.get('stop_price'))}\n"
         f"oid={data.get('exchange_order_id')}\ncid={data.get('client_order_id')}"
     )
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
 @_admin_required
 async def edit_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "edit_symbols")
     rows = _load_symbol_rows()
     lines = ["Manual Symbols"]
     lines.extend(f"{row['symbol']} {row['leverage']}x" for row in rows)
@@ -2353,6 +2409,7 @@ async def edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     rows = _load_symbol_rows()
     if text == "DONE":
         await update.message.reply_text("done")
+        _clear_command_context(context)
         return ConversationHandler.END
     if text == "LIST":
         lines = ["Manual Symbols"]
@@ -2387,11 +2444,13 @@ async def set_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if len(args) != 1 or args[0].lower() != "s":
         await update.message.reply_text("Usage: /set s")
         return ConversationHandler.END
+    _start_command_context(context, "set_symbol")
     return await _prompt_set_symbol(update)
 
 
 @_admin_required
 async def set_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "set_symbol")
     return await _prompt_set_symbol(update)
 
 
@@ -2423,8 +2482,10 @@ async def set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         saved = _save_current_trade_symbol(row["symbol"], int(row["leverage"]))
     except Exception as exc:
         await query.edit_message_text(f"设置失败: {exc}")
+        _clear_command_context(context)
         return ConversationHandler.END
     await query.edit_message_text(f"当前 symbol 已设置: {saved['symbol']} {saved['leverage']}x")
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
@@ -2442,6 +2503,7 @@ async def set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"设置失败: {exc}")
         return SET_SYMBOL_INPUT
     await update.message.reply_text(f"当前 symbol 已设置: {saved['symbol']} {saved['leverage']}x")
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
@@ -2838,6 +2900,7 @@ def _rebate_start_markup() -> InlineKeyboardMarkup:
 
 
 async def _send_rebate_group_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _start_command_context(context, "rebate_report")
     groups = _rebate_groups()
     if not groups:
         await _reply_text(update, "no rebate groups found")
@@ -2852,6 +2915,7 @@ async def _send_rebate_group_menu(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def _send_rebate_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, group: str) -> None:
+    _start_command_context(context, "rebate_report")
     context.user_data["rebate_report_group"] = group
     await _edit_or_reply_text(
         update,
@@ -2957,6 +3021,7 @@ async def rebate_start_selected(update: Update, context: ContextTypes.DEFAULT_TY
     end_day = _today_bj_text()
     await _edit_or_reply_text(update, f"API返佣报表\n组: {group}\n日期: {start_day} ~ {end_day}")
     await _send_rebate_report(update, group, start_day, end_day)
+    _clear_command_context(context)
 
 
 def _manual_order_type(order: dict[str, Any]) -> str | None:
@@ -4241,6 +4306,7 @@ async def _execute_hedge_short_args(update: Update, context: ContextTypes.DEFAUL
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     raw_args = list(context.args or [])
     if not raw_args:
+        _start_command_context(context, "trade_menu")
         await _send_trade_shortcut_menu(update)
         return
     args, favorite_name, favorite_command = _expand_trade_shortcut_args(raw_args)
@@ -4264,16 +4330,19 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @_admin_required
 async def trade_open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _start_command_context(context, "trade_menu")
     await _send_trade_shortcut_menu(update, group="open")
 
 
 @_admin_required
 async def trade_close_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _start_command_context(context, "trade_menu")
     await _send_trade_shortcut_menu(update, group="close")
 
 
 @_admin_required
 async def trade_other_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _start_command_context(context, "trade_menu")
     await _send_trade_shortcut_menu(update, group="other")
 
 
@@ -4298,6 +4367,7 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
         )
         return TRADE_SHORTCUT_PARAM_INPUT
     await _replace_callback_message(query, f"Run: /trade {command}")
+    _clear_command_context(context)
     await _execute_trade_args(update, context, args)
     return ConversationHandler.END
 
@@ -4306,6 +4376,8 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
 async def trade_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pending = context.user_data.get("pending_trade_shortcut")
     if not isinstance(pending, dict):
+        if isinstance(context.user_data.get("pending_hedge_short_shortcut"), dict):
+            return await hedge_short_shortcut_param_input(update, context)
         return ConversationHandler.END
     name = str(pending.get("name") or "")
     args = [str(x) for x in list(pending.get("args") or [])]
@@ -4315,7 +4387,7 @@ async def trade_shortcut_param_input(update: Update, context: ContextTypes.DEFAU
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return TRADE_SHORTCUT_PARAM_INPUT
-    context.user_data.pop("pending_trade_shortcut", None)
+    _clear_command_context(context)
     await update.message.reply_text(f"Run: /trade {' '.join(filled_args)}")
     await _execute_trade_args(update, context, filled_args)
     return ConversationHandler.END
@@ -4387,6 +4459,7 @@ async def fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def hedge_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     raw_args = list(context.args or [])
     if not raw_args:
+        _start_command_context(context, "hedge_short_menu")
         await _send_hedge_short_menu(update)
         return
     args, favorite_name, favorite_command = _expand_hedge_short_shortcut_args(raw_args)
@@ -4429,6 +4502,7 @@ async def hedge_short_shortcut_selected(update: Update, context: ContextTypes.DE
         )
         return HS_SHORTCUT_PARAM_INPUT
     await _replace_callback_message(query, f"Run: /hedge_short {command}")
+    _clear_command_context(context)
     await _execute_hedge_short_args(update, context, args)
     return ConversationHandler.END
 
@@ -4437,6 +4511,8 @@ async def hedge_short_shortcut_selected(update: Update, context: ContextTypes.DE
 async def hedge_short_shortcut_param_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pending = context.user_data.get("pending_hedge_short_shortcut")
     if not isinstance(pending, dict):
+        if isinstance(context.user_data.get("pending_trade_shortcut"), dict):
+            return await trade_shortcut_param_input(update, context)
         return ConversationHandler.END
     args = [str(x) for x in list(pending.get("args") or [])]
     values = str(update.message.text or "").split()
@@ -4445,7 +4521,7 @@ async def hedge_short_shortcut_param_input(update: Update, context: ContextTypes
     except ValueError as exc:
         await update.message.reply_text(str(exc))
         return HS_SHORTCUT_PARAM_INPUT
-    context.user_data.pop("pending_hedge_short_shortcut", None)
+    _clear_command_context(context)
     await update.message.reply_text(f"Run: /hedge_short {' '.join(filled_args)}")
     await _execute_hedge_short_args(update, context, filled_args)
     return ConversationHandler.END
@@ -4528,6 +4604,7 @@ async def _prompt_hs_set_symbol(update: Update) -> int:
 
 @_admin_required
 async def hs_menu_set_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "hs_set_symbol")
     query = update.callback_query
     await query.answer()
     rows = _load_hedge_short_symbol_rows()
@@ -4546,6 +4623,7 @@ async def hs_menu_set_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @_admin_required
 async def hs_set_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "hs_set_symbol")
     return await _prompt_hs_set_symbol(update)
 
 
@@ -4557,9 +4635,11 @@ async def hs_set_symbol_selected(update: Update, context: ContextTypes.DEFAULT_T
     if raw == "OFF":
         _save_current_hedge_short_symbol(None)
         await query.edit_message_text("Hedge Short: OFF")
+        _clear_command_context(context)
         return ConversationHandler.END
     row = _save_current_hedge_short_symbol(raw)
     await query.edit_message_text(f"Hedge Short: {row['symbol']} {row['leverage']}x")
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
@@ -4569,6 +4649,7 @@ async def hs_set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text.upper() in {"OFF", "NONE", "NULL"}:
         _save_current_hedge_short_symbol(None)
         await update.message.reply_text("Hedge Short: OFF")
+        _clear_command_context(context)
         return ConversationHandler.END
     parts = text.split()
     if len(parts) not in {1, 2}:
@@ -4583,11 +4664,13 @@ async def hs_set_symbol_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             return HS_SET_SYMBOL_INPUT
     _save_current_hedge_short_symbol(symbol)
     await update.message.reply_text(f"Hedge Short: {row['symbol']} {row['leverage']}x")
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
 @_admin_required
 async def hs_edit_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _start_command_context(context, "hs_edit_symbols")
     await update.message.reply_text(
         "Edit Hedge Short Symbols\n"
         "ADD XRPUSDT 100\n"
@@ -4606,6 +4689,7 @@ async def hs_edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TY
     rows = _load_hedge_short_symbol_rows()
     if action == "DONE":
         await update.message.reply_text("done")
+        _clear_command_context(context)
         return ConversationHandler.END
     if action == "LIST":
         if not rows:
@@ -4645,6 +4729,7 @@ async def hs_edit_symbols_input(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _clear_command_context(context)
     if update.message:
         await update.message.reply_text("cancelled")
     elif update.callback_query:
@@ -4654,10 +4739,17 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def shortcut_param_input_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if isinstance(context.user_data.get("pending_hedge_short_shortcut"), dict):
-        return await hedge_short_shortcut_param_input(update, context)
-    if isinstance(context.user_data.get("pending_trade_shortcut"), dict):
+    active = str(context.user_data.get(COMMAND_CONTEXT_KEY) or "")
+    has_trade = isinstance(context.user_data.get("pending_trade_shortcut"), dict)
+    has_hedge_short = isinstance(context.user_data.get("pending_hedge_short_shortcut"), dict)
+    if active == "trade_shortcut" and has_trade:
         return await trade_shortcut_param_input(update, context)
+    if active == "hedge_short_shortcut" and has_hedge_short:
+        return await hedge_short_shortcut_param_input(update, context)
+    if has_trade:
+        return await trade_shortcut_param_input(update, context)
+    if has_hedge_short:
+        return await hedge_short_shortcut_param_input(update, context)
     return ConversationHandler.END
 
 
