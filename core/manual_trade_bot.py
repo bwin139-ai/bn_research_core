@@ -548,6 +548,16 @@ def _fill_trade_shortcut_placeholders(args: list[str], values: list[str]) -> lis
     return filled
 
 
+def _set_pending_trade_shortcut(context: ContextTypes.DEFAULT_TYPE, pending: dict[str, Any]) -> None:
+    context.user_data.pop("pending_hedge_short_shortcut", None)
+    context.user_data["pending_trade_shortcut"] = pending
+
+
+def _set_pending_hedge_short_shortcut(context: ContextTypes.DEFAULT_TYPE, pending: dict[str, Any]) -> None:
+    context.user_data.pop("pending_trade_shortcut", None)
+    context.user_data["pending_hedge_short_shortcut"] = pending
+
+
 def _expand_trade_shortcut_args(args: list[str]) -> tuple[list[str], str | None, str | None]:
     if not args:
         return args, None, None
@@ -4236,11 +4246,11 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     args, favorite_name, favorite_command = _expand_trade_shortcut_args(raw_args)
     placeholder_count = _trade_shortcut_placeholder_count(args)
     if favorite_name and placeholder_count:
-        context.user_data["pending_trade_shortcut"] = {
+        _set_pending_trade_shortcut(context, {
             "name": favorite_name,
             "args": args,
             "placeholder_count": placeholder_count,
-        }
+        })
         await _reply_text(
             update,
             f"/trade {favorite_command}\n"
@@ -4276,11 +4286,11 @@ async def trade_shortcut_selected(update: Update, context: ContextTypes.DEFAULT_
     command = " ".join(args)
     placeholder_count = _trade_shortcut_placeholder_count(args)
     if placeholder_count:
-        context.user_data["pending_trade_shortcut"] = {
+        _set_pending_trade_shortcut(context, {
             "name": name,
             "args": args,
             "placeholder_count": placeholder_count,
-        }
+        })
         await _replace_callback_message(
             query,
             f"/trade {command}\n"
@@ -4357,11 +4367,11 @@ async def fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         trade_args = _trade_shortcut_args(name)
         placeholder_count = _trade_shortcut_placeholder_count(trade_args)
         if placeholder_count:
-            context.user_data["pending_trade_shortcut"] = {
+            _set_pending_trade_shortcut(context, {
                 "name": name,
                 "args": trade_args,
                 "placeholder_count": placeholder_count,
-            }
+            })
             await update.message.reply_text(
                 f"/trade {' '.join(trade_args)}\n"
                 "Send values separated by spaces."
@@ -4382,11 +4392,11 @@ async def hedge_short_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     args, favorite_name, favorite_command = _expand_hedge_short_shortcut_args(raw_args)
     placeholder_count = _trade_shortcut_placeholder_count(args)
     if favorite_name and placeholder_count:
-        context.user_data["pending_hedge_short_shortcut"] = {
+        _set_pending_hedge_short_shortcut(context, {
             "name": favorite_name,
             "args": args,
             "placeholder_count": placeholder_count,
-        }
+        })
         await _reply_text(
             update,
             f"/hedge_short {favorite_command}\n"
@@ -4407,11 +4417,11 @@ async def hedge_short_shortcut_selected(update: Update, context: ContextTypes.DE
     command = " ".join(args)
     placeholder_count = _trade_shortcut_placeholder_count(args)
     if placeholder_count:
-        context.user_data["pending_hedge_short_shortcut"] = {
+        _set_pending_hedge_short_shortcut(context, {
             "name": name,
             "args": args,
             "placeholder_count": placeholder_count,
-        }
+        })
         await _replace_callback_message(
             query,
             f"/hedge_short {command}\n"
@@ -4487,11 +4497,11 @@ async def hs_fav_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         hs_args = _hedge_short_shortcut_args(name)
         placeholder_count = _trade_shortcut_placeholder_count(hs_args)
         if placeholder_count:
-            context.user_data["pending_hedge_short_shortcut"] = {
+            _set_pending_hedge_short_shortcut(context, {
                 "name": name,
                 "args": hs_args,
                 "placeholder_count": placeholder_count,
-            }
+            })
             await update.message.reply_text(
                 f"/hedge_short {' '.join(hs_args)}\n"
                 "Send values separated by spaces."
