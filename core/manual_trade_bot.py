@@ -755,8 +755,10 @@ def _hedge_short_usage() -> str:
     return (
         "Usage:\n"
         "/hedge_short\n"
+        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO]\n"
         "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO\n"
         "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
+        "/hedge_short close ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/hedge_short close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
         "/hedge_short close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
         "/hedge_short sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
@@ -1270,6 +1272,7 @@ def _trade_usage() -> str:
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO]\n"
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE TP PRICE]\n"
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
+        "/trade close ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
         "/trade sl ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
@@ -1392,26 +1395,31 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
 
 
 def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 3 or str(args[0]).lower() != "close":
+    if len(args) < 2 or str(args[0]).lower() != "close":
         raise ValueError(_trade_usage())
     tokens, close_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="close")
-    if len(tokens) < 2:
+    if not tokens:
         raise ValueError(_trade_usage())
     limit_price: float | None = None
     tail_mode = str(tokens[-1]).upper().strip()
     if tail_mode in {"M", "PO"}:
+        if len(tokens) < 2:
+            raise ValueError(_trade_usage())
         mode = tail_mode
         account_tokens = tokens[:-1]
-    else:
-        if len(tokens) < 3:
-            raise ValueError(_trade_usage())
-        mode = str(tokens[-2]).upper().strip()
-        if mode != "L":
-            raise ValueError("close mode must be M, PO, or L")
+    elif tail_mode == "L":
+        raise ValueError(_trade_usage())
+    elif len(tokens) >= 2 and str(tokens[-2]).upper().strip() == "L":
+        mode = "L"
         limit_price = float(tokens[-1])
         if limit_price <= 0:
             raise ValueError("limit close price must be positive")
         account_tokens = tokens[:-2]
+    else:
+        if len(tokens) >= 2 and str(tokens[-2]).upper().strip() in {"M", "PO"}:
+            raise ValueError(_trade_usage())
+        mode = "PO"
+        account_tokens = tokens
     symbol = _load_current_trade_symbol()["symbol"]
     accounts = _parse_trade_accounts(account_tokens)
     return {
@@ -1468,12 +1476,17 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 3 or str(args[0]).lower() != "open":
         raise ValueError(_hedge_short_usage())
     mode_idx = next((idx for idx, token in enumerate(args[1:], start=1) if str(token).upper().strip() in {"M", "PO", "L"}), -1)
-    if mode_idx <= 1:
+    if mode_idx == 1:
         raise ValueError(_hedge_short_usage())
-    entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+    if mode_idx < 0:
+        entries = _parse_trade_open_account_notionals([str(x) for x in args[1:]])
+        mode = "PO"
+        tail: list[str] = []
+    else:
+        entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+        mode = str(args[mode_idx]).upper().strip()
+        tail = [str(x).strip() for x in args[mode_idx + 1 :]]
     current = _load_current_hedge_short_symbol()
-    mode = str(args[mode_idx]).upper().strip()
-    tail = [str(x).strip() for x in args[mode_idx + 1 :]]
     limit_price: float | None = None
     if mode in {"M", "PO"}:
         if tail:
@@ -1494,26 +1507,31 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
 
 
 def _parse_hedge_short_close_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 3 or str(args[0]).lower() != "close":
+    if len(args) < 2 or str(args[0]).lower() != "close":
         raise ValueError(_hedge_short_usage())
     tokens, close_ratio = _parse_percent_suffix([str(x) for x in args[1:]], field_name="close")
-    if len(tokens) < 2:
+    if not tokens:
         raise ValueError(_hedge_short_usage())
     limit_price: float | None = None
     tail_mode = str(tokens[-1]).upper().strip()
     if tail_mode in {"M", "PO"}:
+        if len(tokens) < 2:
+            raise ValueError(_hedge_short_usage())
         mode = tail_mode
         account_tokens = tokens[:-1]
-    else:
-        if len(tokens) < 3:
-            raise ValueError(_hedge_short_usage())
-        mode = str(tokens[-2]).upper().strip()
-        if mode != "L":
-            raise ValueError("hedge short close mode must be M, PO, or L")
+    elif tail_mode == "L":
+        raise ValueError(_hedge_short_usage())
+    elif len(tokens) >= 2 and str(tokens[-2]).upper().strip() == "L":
+        mode = "L"
         limit_price = float(tokens[-1])
         if limit_price <= 0:
             raise ValueError("limit close price must be positive")
         account_tokens = tokens[:-2]
+    else:
+        if len(tokens) >= 2 and str(tokens[-2]).upper().strip() in {"M", "PO"}:
+            raise ValueError(_hedge_short_usage())
+        mode = "PO"
+        account_tokens = tokens
     current = _load_current_hedge_short_symbol()
     accounts = _parse_trade_accounts(account_tokens)
     return {
