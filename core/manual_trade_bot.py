@@ -534,7 +534,7 @@ def _trade_shortcut_usage() -> str:
         "/fav run NAME\n"
         "/trade @NAME\n"
         "Example:\n"
-        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL 0 TP 0\n"
+        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500\n"
         "/fav save open-param open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL ? TP ?\n"
         "/trade @open-main"
     )
@@ -1208,7 +1208,11 @@ def _manual_po_pending_entries() -> list[dict[str, Any]]:
                 key = f"{account}|{symbol}|{client_order_id}"
                 if not account or not symbol or not client_order_id:
                     continue
-                if event == "manual_trade_po_entry_submit" and record.get("ok") is True:
+                if (
+                    event == "manual_trade_po_entry_submit"
+                    and record.get("ok") is True
+                    and record.get("watcher_enabled") is not False
+                ):
                     pending[key] = {
                         "account": account,
                         "symbol": symbol,
@@ -1247,7 +1251,8 @@ def _trade_usage() -> str:
     return (
         "Usage:\n"
         "/set_s or /set s\n"
-        "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO SL PRICE TP PRICE\n"
+        "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO]\n"
+        "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE TP PRICE]\n"
         "/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
         "/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
@@ -1258,8 +1263,9 @@ def _trade_usage() -> str:
         "/fav save FAVORITE_NAME TRADE_ARGS\n"
         "Example:\n"
         "/set_s then HYPEUSDT 20x\n"
+        "/trade open deepa999 500\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 PO SL 55.38 TP 59.39\n"
-        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500 PO SL ? TP ?\n"
+        "/fav save open-main open deepa999 9000 | chen912 15000 | junjie2026 500\n"
         "/trade @open-main\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 M SL 55.38 TP 59.39\n"
         "/trade open deepa999 500 | chen912 1500 | mybwin139 750 L 57.27\n"
@@ -1323,25 +1329,31 @@ def _parse_percent_suffix(tokens: list[str], *, field_name: str) -> tuple[list[s
 
 
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
-    if len(args) < 5 or str(args[0]).lower() != "open":
+    if len(args) < 3 or str(args[0]).lower() != "open":
         raise ValueError(_trade_usage())
     mode_idx = next((idx for idx, token in enumerate(args[1:], start=1) if str(token).upper().strip() in {"M", "PO", "L"}), -1)
-    if mode_idx <= 1:
+    if mode_idx == 1:
         raise ValueError(_trade_usage())
-    entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+    if mode_idx < 0:
+        entries = _parse_trade_open_account_notionals([str(x) for x in args[1:]])
+        mode = "PO"
+        tail: list[str] = []
+    else:
+        entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
+        mode = str(args[mode_idx]).upper().strip()
+        tail = [str(x).strip() for x in args[mode_idx + 1 :]]
     current = _load_current_trade_symbol()
     symbol = current["symbol"]
     leverage = int(current["leverage"])
-    mode = str(args[mode_idx]).upper().strip()
-    tail = [str(x).strip() for x in args[mode_idx + 1 :]]
     sl_price = 0.0
     tp_price = 0.0
     limit_price: float | None = None
     if mode in {"M", "PO"}:
-        if len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP":
+        if tail and (len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP"):
             raise ValueError(_trade_usage())
-        sl_price = float(tail[1])
-        tp_price = float(tail[3])
+        if tail:
+            sl_price = float(tail[1])
+            tp_price = float(tail[3])
         if sl_price < 0:
             raise ValueError("SL price must be >= 0")
         if tp_price < 0:
@@ -3327,6 +3339,7 @@ async def _run_post_only_trade_command(
     if key in _ACTIVE_PO_WATCHERS:
         await _reply_text(update, f"PO watcher already active: {account} {symbol}")
         return
+    watcher_enabled = sl_price > 0 or tp_price > 0
     root = make_order_root()
     try:
         _prepare_symbol(account, symbol, leverage)
@@ -3369,6 +3382,7 @@ async def _run_post_only_trade_command(
             attempt=attempt,
             max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
             price=best_bid,
+            watcher_enabled=watcher_enabled,
             result=entry_res,
         )
         if entry_res["ok"]:
@@ -3389,6 +3403,18 @@ async def _run_post_only_trade_command(
     entry_client_order_id = str(entry.get("client_order_id") or "")
     if not entry_client_order_id:
         await _reply_text(update, "PO entry missing client_order_id; watcher not started")
+        return
+    if not watcher_enabled:
+        await _reply_text(
+            update,
+            f"PO entry submitted\n"
+            f"account={account}\n"
+            f"symbol={symbol}\n"
+            f"price={_fmt_float(best_bid)}\n"
+            f"wait=none\n"
+            f"protection=none\n"
+            f"cid={entry_client_order_id}"
+        )
         return
     _ACTIVE_PO_WATCHERS.add(key)
     context.application.create_task(

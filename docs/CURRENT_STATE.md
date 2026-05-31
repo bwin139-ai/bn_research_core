@@ -1080,13 +1080,14 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 5. 服务器旧进程 `/root/service_env/bin/python -u main.py` 仍属于 `/root/BN_strategy`，未停止、未切换；部署和切换需要单独授权。
 6. 新增 `/set_s` 菜单命令与 `/set s` 当前交易 symbol 入口：输入后显示当前 `SYMBOL LEVERAGE`，并从 `manual_trade_symbols.json` 弹出 symbol/leverage 按钮供点选；也可继续手动输入 `HYPEUSDT 20x`，写入 `state/manual_trade_current_symbol.json`。这里的杠杆只作为 `/trade` 简化命令的记录；设置入口本身不调用 Binance API 修改任何账户或品种杠杆。
 7. `/trade open` 改为使用 `/set s` 维护的当前 symbol / leverage，命令中不再携带 symbol 与杠杆；支持多账户开仓：
-   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M SL PRICE TP PRICE`
-   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] PO SL PRICE TP PRICE`
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...]`，默认等价于 `PO`，只提交 post-only 长挂单，不启动 watcher，不自动撤单，不自动挂 SL/TP。
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M [SL PRICE TP PRICE]`
+   - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] PO [SL PRICE TP PRICE]`
    - `/trade open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE`
    - `M` 使用市价 entry，成交后按输入挂 SL/TP；`SL 0` / `TP 0` 表示跳过对应保护单。
    - `PO` 表示 post-only entry，使用 order book best bid 提交 `LIMIT + GTX` maker 单；命令立即返回，后台 watcher 按 `account + symbol` 并行追踪。
    - `L` 表示普通 `LIMIT + GTC` LONG entry，只提交限价开仓，不自动挂 SL/TP。
-   - PO watcher 默认等待 60 秒；成交后挂 SL/TP，部分成交时取消剩余并保护已成交数量，超时未成交则取消 entry。
+   - 只有 `PO` 命令显式携带 `SL PRICE TP PRICE` 且 `SL` / `TP` 任意一个大于 0 时，才启动 PO watcher；watcher 默认等待 60 秒，成交后挂 SL/TP，部分成交时取消剩余并保护已成交数量，超时未成交则取消 entry。`SL 0 TP 0` 与省略 `SL/TP` 均表示纯 PO 长挂单，不启动 watcher。
    - 同一 `account + symbol` 同时只允许一个 PO watcher；不同账户或不同 symbol 可以并行。
    - 手动命令事件落盘到 `state/manual_trade/orders/YYYY-MM-DD.jsonl`，不写入策略 live state / strategy audit。
    - bot 启动时会扫描最近手动交易事件；若发现 PO entry 已提交但没有 watcher done 终态，fail-fast 停止启动并要求人工核查交易所挂单。
