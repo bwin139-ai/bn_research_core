@@ -2219,14 +2219,13 @@ def _prepare_symbol(account: str, symbol: str, leverage: int) -> None:
     if not order_res["ok"]:
         raise RuntimeError(order_res["reason"])
     has_open_orders = bool(order_res.get("data") or [])
-    if has_position or has_open_orders:
-        return
-    for res in (
-        ensure_cross_margin(account, symbol),
-        ensure_leverage(account, symbol, leverage),
-    ):
-        if not res["ok"]:
-            raise RuntimeError(res["reason"])
+    if not has_position and not has_open_orders:
+        margin_res = ensure_cross_margin(account, symbol)
+        if not margin_res["ok"]:
+            raise RuntimeError(margin_res["reason"])
+    leverage_res = ensure_leverage(account, symbol, leverage)
+    if not leverage_res["ok"]:
+        raise RuntimeError(leverage_res["reason"])
 
 
 @_admin_required

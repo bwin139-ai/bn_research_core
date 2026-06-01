@@ -1094,7 +1094,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
    - LONG 手动开仓会先按 entry reference price 校验 `SL < entry`、`TP > entry`；`SL 0` / `TP 0` 仍表示跳过对应保护单。
    - PO entry 提交遇到 Binance `-5022` maker reject 时，会重新读取 order book best bid 并重试提交；当前硬编码最多 3 次，只对 `-5022` 类 post-only maker reject 重试。
    - 2026-05-12 已将手动 open 前的账户 position mode 处理改为只读校验：若账户不是 Hedge Mode，fail-fast 提示；不再在每次 open 前自动调用 `futures_change_position_mode`，避免已有 open orders 时触发 Binance `-4067`。
-   - 2026-05-24 手动 open 前的 symbol preparation 增加 exchange activity 只读检查：若该账户该 symbol 已有 position 或 open orders，则跳过 `change_margin_type` / `change_leverage` 修改调用，直接沿用交易所当前 symbol 配置继续下单，避免已有持仓/挂单时触发 Binance `-4067`；若无活动仓位/挂单，则仍按当前 symbol/leverage 设置流程执行。
+   - 2026-05-24 手动 open 前的 symbol preparation 增加 exchange activity 只读检查：若该账户该 symbol 已有 position 或 open orders，则跳过 `change_margin_type`，避免已有持仓/挂单时触发 Binance `-4067`；`change_leverage` 仍按当前 bot 配置值执行，避免交易所残留旧杠杆导致新开仓触发 `-2027` 最大可持仓限制。若无活动仓位/挂单，则仍按当前 symbol/leverage 设置流程执行。
 8. `/trade close` 改为使用 `/set s` 维护的当前 symbol，命令中不再携带 symbol；支持 `/trade close ACCOUNT[ | ACCOUNT...] [PO] [PCT%]`、`/trade close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]` 与 `/trade close ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]` 命令式 LONG 平仓入口；省略 `M/PO/L` 时默认 `PO`：
    - `M` 对每个指定账户查询该 symbol 的 LONG position qty，并提交 `MANUAL_CLOSE` market reduce 平仓。
    - `PO` 对每个指定账户查询该 symbol 的 LONG position qty，读取 order book best ask，并提交 `LIMIT + GTX` maker 平仓单。
