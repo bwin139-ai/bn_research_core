@@ -1973,7 +1973,7 @@ async def account_detail_selected(update: Update, context: ContextTypes.DEFAULT_
 
 async def _send_pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, account: str) -> None:
     query = update.callback_query
-    orders = _long_orders(account)
+    orders = _account_orders(account)
     if not orders:
         text = "📄 当前挂单\n\n✅ 当前无挂单"
         if query:
@@ -1981,27 +1981,38 @@ async def _send_pending_orders(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_text(text)
         return
-    lines = [f"📄 当前挂单 {account}"]
-    buttons = []
-    order_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for order in sorted(orders, key=lambda x: (str(x.get("symbol")), str(x.get("side")), _order_display_price(x)), reverse=False):
-        key = (str(order.get("symbol")), str(order.get("side")))
+    lines = [f"📄 当前挂单 {account}", f"合计: {len(orders)}"]
+    buttons: list[list[InlineKeyboardButton]] = []
+    order_groups: dict[str, list[dict[str, Any]]] = {}
+    for order in sorted(
+        orders,
+        key=lambda x: (
+            str(x.get("symbol")),
+            str(x.get("position_side")),
+            str(x.get("side")),
+            _order_display_price(x),
+        ),
+        reverse=False,
+    ):
+        key = str(order.get("symbol"))
         order_groups.setdefault(key, []).append(order)
-    for (symbol, side), group in order_groups.items():
-        buttons.append([InlineKeyboardButton(f"📌 {symbol} {side} 撤单 ↓↓↓", callback_data=f"cancel_group:{account}:{symbol}")])
+    for symbol, group in order_groups.items():
+        buttons.append([InlineKeyboardButton(f"📌 {symbol} 全部挂单撤单 ↓↓↓", callback_data=f"cancel_group:{account}:{symbol}")])
         row_buttons = []
         for order in sorted(group, key=_order_display_price, reverse=True):
+            position_side = str(order.get("position_side") or "").upper().strip()
+            side = str(order.get("side") or "").upper().strip()
             oid = order.get("order_id")
             price = _order_display_price(order)
             qty = _order_qty(order)
             lines.append(
-                f"{symbol} {side} {order.get('type')} "
+                f"{symbol} {position_side} {side} {order.get('type')} "
                 f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid}"
             )
             if oid is not None:
                 row_buttons.append(
                     InlineKeyboardButton(
-                        f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})",
+                        f"{position_side} {side} {_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})",
                         callback_data=f"cancel:{account}:{symbol}:{oid}",
                     )
                 )
@@ -2010,12 +2021,26 @@ async def _send_pending_orders(update: Update, context: ContextTypes.DEFAULT_TYP
                 row_buttons = []
         if row_buttons:
             buttons.append(row_buttons)
-    text = "\n".join(lines[:60])
-    markup = InlineKeyboardMarkup(buttons[:40])
+    limited_buttons: list[list[InlineKeyboardButton]] = []
+    button_count = 0
+    for row in buttons:
+        if button_count + len(row) > 90:
+            break
+        limited_buttons.append(row)
+        button_count += len(row)
+    if len(limited_buttons) < len(buttons):
+        lines.append("")
+        lines.append(f"⚠️ 撤单按钮过多，仅显示前 {button_count} 个；文本已列出全部挂单。")
+    markup = InlineKeyboardMarkup(limited_buttons)
+    chunks = _chunk_lines(lines)
     if query:
-        await query.edit_message_text(text, reply_markup=markup)
+        await query.edit_message_text(chunks[0], reply_markup=markup)
+        for chunk in chunks[1:]:
+            await query.message.reply_text(chunk)
     else:
-        await update.message.reply_text(text, reply_markup=markup)
+        await update.message.reply_text(chunks[0], reply_markup=markup)
+        for chunk in chunks[1:]:
+            await update.message.reply_text(chunk)
 
 
 @_admin_required
@@ -2067,7 +2092,7 @@ async def confirm_cancel_group(update: Update, context: ContextTypes.DEFAULT_TYP
         _, symbol = parts
         account = _selected_account(context)
     await query.edit_message_text(
-        f"Confirm cancel all LONG orders for {account} {symbol}?",
+        f"Confirm cancel all open orders for {account} {symbol}?",
         reply_markup=InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("Confirm", callback_data=f"cancel_group_ok:{account}:{symbol}")],
