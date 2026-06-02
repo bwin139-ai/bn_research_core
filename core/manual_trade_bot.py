@@ -82,6 +82,7 @@ COMMAND_CONTEXT_KEY = "active_command_context"
 _COMMAND_CONTEXT_TRANSIENT_KEYS = {
     "pending_trade_shortcut",
     "pending_hedge_short_shortcut",
+    "pending_history_filter",
     "open_symbol",
     "open_leverage",
     "open_type",
@@ -2050,6 +2051,7 @@ async def detail_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if account not in _discover_accounts():
         await query.edit_message_text(f"account not found: {account}")
         return ConversationHandler.END
+    _clear_command_context(context)
     await _send_history(update, context, account)
     return ConversationHandler.END
 
@@ -2653,6 +2655,73 @@ def _today_bj_text() -> str:
     return datetime.now(tz=BJ).date().isoformat()
 
 
+def _is_bj_date_text(text: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(text or "").strip()))
+
+
+def _history_usage_text() -> str:
+    return (
+        "用法: /view_history [ACCOUNT] [SYMBOL] [DATE_BEGIN] [DATE_END]\n"
+        "示例:\n"
+        "/view_history chen912\n"
+        "/view_history 2026-06-01\n"
+        "/view_history chen912 2026-06-01\n"
+        "/view_history 2026-06-01 2026-06-02\n"
+        "/view_history ESPORTSUSDT 2026-06-01\n"
+        "/view_history chen912 ESPORTSUSDT 2026-06-01\n"
+        "/view_history ESPORTSUSDT 2026-06-01 2026-06-02"
+    )
+
+
+def _parse_history_filter_args(args: list[str]) -> dict[str, Any] | None:
+    tokens = [str(x or "").strip() for x in args if str(x or "").strip()]
+    if not tokens:
+        return None
+    if len(tokens) > 4:
+        raise ValueError(_history_usage_text())
+
+    account: str | None = None
+    accounts_by_lower = {account_name.lower(): account_name for account_name in _discover_accounts()}
+    if tokens[0].lower() in accounts_by_lower:
+        account = accounts_by_lower[tokens[0].lower()]
+        tokens = tokens[1:]
+    if not tokens:
+        return {"account": account} if account else None
+    if len(tokens) > 3:
+        raise ValueError(_history_usage_text())
+
+    symbol: str | None = None
+    if _is_bj_date_text(tokens[0]):
+        start_day = tokens[0]
+        if len(tokens) == 1:
+            end_day = _today_bj_text()
+        elif len(tokens) == 2 and _is_bj_date_text(tokens[1]):
+            end_day = tokens[1]
+        else:
+            raise ValueError(_history_usage_text())
+    else:
+        symbol = tokens[0].upper()
+        if len(tokens) < 2:
+            raise ValueError(_history_usage_text())
+        start_day = tokens[1]
+        end_day = tokens[2] if len(tokens) == 3 else _today_bj_text()
+
+    start = _parse_bj_date(start_day)
+    end = _parse_bj_date(end_day)
+    if end < start:
+        raise ValueError("截止日期不能早于起始日期")
+
+    end_exclusive = end + timedelta(days=1)
+    return {
+        "account": account,
+        "symbol": symbol,
+        "start_day": start_day,
+        "end_day": end_day,
+        "start_ms": int(start.astimezone(timezone.utc).timestamp() * 1000),
+        "end_ms": int(end_exclusive.astimezone(timezone.utc).timestamp() * 1000) - 1,
+    }
+
+
 def _exchange_history_root(account: str) -> Path:
     account_key = str(account or "").strip()
     if not account_key:
@@ -3154,7 +3223,25 @@ def _manual_order_type(order: dict[str, Any]) -> str | None:
 
 @_admin_required
 async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await _prompt_account_action(update, "history", "History")
+    try:
+        history_filter = _parse_history_filter_args(list(context.args or []))
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return ConversationHandler.END
+    title = "History"
+    if history_filter:
+        account = str(history_filter.get("account") or "").strip()
+        kwargs = {k: v for k, v in history_filter.items() if k != "account"}
+        if account:
+            await _send_history(update, context, account, **kwargs)
+            _clear_command_context(context)
+            return ConversationHandler.END
+        _start_command_context(context, "view_history")
+        context.user_data["pending_history_filter"] = history_filter
+        symbol_text = history_filter.get("symbol") or "ALL"
+        if history_filter.get("start_day") and history_filter.get("end_day"):
+            title = f"History {symbol_text} {history_filter['start_day']}~{history_filter['end_day']}"
+    await _prompt_account_action(update, "history", title)
     return ConversationHandler.END
 
 
@@ -3163,17 +3250,38 @@ async def send_history_selected(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     _, account = _account_action_parts(update, "history")
-    await _send_history(update, context, account)
+    history_filter = context.user_data.get("pending_history_filter")
+    kwargs = {k: v for k, v in history_filter.items() if k != "account"} if isinstance(history_filter, dict) else {}
+    await _send_history(update, context, account, **kwargs)
+    _clear_command_context(context)
     return ConversationHandler.END
 
 
-async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, account: str) -> int:
+async def _send_history(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    account: str,
+    *,
+    symbol: str | None = None,
+    start_day: str | None = None,
+    end_day: str | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> int:
     now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    start_ms = now_ms - 48 * 60 * 60 * 1000
-    order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", start_ms, now_ms)
-    trade_rows, trades_missing = _load_exchange_history_rows_or_missing(account, "trades", start_ms, now_ms)
-    transfer_rows, transfers_missing = _load_exchange_history_rows_or_missing(account, "transfers", start_ms, now_ms)
-    position_rows, positions_missing = _load_exchange_history_rows_or_missing(account, "positions", start_ms, now_ms)
+    query_start_ms = start_ms if start_ms is not None else now_ms - 48 * 60 * 60 * 1000
+    query_end_ms = end_ms if end_ms is not None else now_ms
+    symbol_filter = str(symbol or "").upper().strip()
+    order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", query_start_ms, query_end_ms)
+    trade_rows, trades_missing = _load_exchange_history_rows_or_missing(account, "trades", query_start_ms, query_end_ms)
+    transfer_rows, transfers_missing = _load_exchange_history_rows_or_missing(account, "transfers", query_start_ms, query_end_ms)
+    position_rows, positions_missing = _load_exchange_history_rows_or_missing(
+        account, "positions", query_start_ms, query_end_ms
+    )
+    if symbol_filter:
+        order_rows = [row for row in order_rows if str(row.get("symbol") or "").upper().strip() == symbol_filter]
+        trade_rows = [row for row in trade_rows if str(row.get("symbol") or "").upper().strip() == symbol_filter]
+        position_rows = [row for row in position_rows if str(row.get("symbol") or "").upper().strip() == symbol_filter]
 
     filled_orders = [
         row
@@ -3194,12 +3302,12 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
         and str(row.get("status") or "").upper() in {"CLOSED", "INCOMPLETE"}
     ]
     history_positions.sort(key=lambda x: _history_display_ms(x, "close_time_ms", "last_trade_time_ms"), reverse=True)
-    income_start_ms = start_ms
+    income_start_ms = query_start_ms
     for position in history_positions:
         open_time_ms = _int_ms(position.get("open_time_ms"))
         if open_time_ms > 0:
             income_start_ms = min(income_start_ms, max(0, open_time_ms - 60_000))
-    income_rows, _ = _load_exchange_history_rows_or_missing(account, "income", income_start_ms, now_ms)
+    income_rows, _ = _load_exchange_history_rows_or_missing(account, "income", income_start_ms, query_end_ms)
     transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
     deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
     withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
@@ -3209,8 +3317,15 @@ async def _send_history(update: Update, context: ContextTypes.DEFAULT_TYPE, acco
         _latest_loaded_rows_sync_ms(order_rows, trade_rows, transfer_rows, position_rows),
     )
     sync_text = _bj_second(latest_sync_ms) if latest_sync_ms > 0 else "未发现本地同步数据"
+    if start_day and end_day:
+        title = f"📜 {account} 历史记录 {start_day} ~ {end_day}"
+        scope_text = f"品种: {symbol_filter or 'ALL'}"
+    else:
+        title = f"📜 {account} 最近48小时历史记录"
+        scope_text = None
     lines = [
-        f"📜 {account} 最近48小时历史记录",
+        title,
+        *(["", scope_text] if scope_text else []),
         f"数据同步时间: {sync_text}",
         "说明: 以下为本地 exchange_history 账本数据，常驻同步存在分钟级延迟。",
         "",
