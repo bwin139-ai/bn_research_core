@@ -931,7 +931,7 @@ Binance REST Gateway 是项目内 Binance REST 出口治理层，目标是成为
     - 本地 180m ledger smoke 成功：可聚合 request/priority/weight 峰值；该口径来自 Gateway usage ledger，不再是 DataHub 对 latest quota snapshot 的局部采样。
 19. 2026-05-09 部署后服务器 smoke 发现订单类 REST 响应可能带出 `used_weight_1m=-1`，会污染 Gateway latest/delta 记账。已在 `core/live/rate_limit_guard.py` 增加非负 weight 护栏：usage summary 忽略负数 weight；quota snapshot 遇到同一分钟无有效 weight 但有 order-count 的响应时保留上一条有效 weight，避免分级 gate 失去最近总用量事实。
 
-2026-05-29 起，`market_data_hub_runner.py` 的 finalize 质量 Telegram 推送改为健康窗口静默：只有 `deadline_hit_count > 0`、`timeout_round_count > 0`、`all_passed_count < window_rounds`、`verify_failed_count_max > 0` 或 `delayed_finalize_count_max > 0` 时发送精简 `⏱️ [DataHub] finalize warning`；完整 `finalize_quality_stats` payload 仍写 audit/log。
+2026-05-29 起，`market_data_hub_runner.py` 的 finalize 质量 Telegram 推送改为健康窗口静默：只有 `deadline_hit_count > 0`、`timeout_round_count > 0`、`all_passed_count < window_rounds` 或 `verify_failed_count_max > 0` 时发送精简 `⏱️ [DataHub] finalize warning`；仅 `delayed_finalize_count_max > 0` 不再触发 Telegram warning，完整 `finalize_quality_stats` payload 仍写 audit/log。
 
 2026-05-29 起，`market_data_hub_runner.py` 的 `market_total_24h_vol` Telegram 推送保留每 30 轮固定输出，但展示改为精简 B 口径：`📊 [DataHub] market_total_24h_vol (B)` + `min/max/avg`；API 与落盘双口径字段不再进入常规 Telegram 文本，完整 `market_total_24h_vol_stats` payload 仍写 audit/log。若窗口内出现 warming/not_ready 或 missing/partial/stale/new 非零，消息追加一行 `⚠️` 异常摘要。
 

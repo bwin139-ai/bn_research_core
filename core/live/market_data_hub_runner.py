@@ -336,7 +336,6 @@ def _format_finalize_quality_warning(payload: dict[str, Any]) -> str:
         and all_passed_count >= window_rounds
         and timeout_max <= 0
         and verify_failed_max <= 0
-        and delayed_max <= 0
     ):
         return ''
 
