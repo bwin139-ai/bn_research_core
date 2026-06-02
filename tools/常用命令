@@ -37,16 +37,14 @@ nohup /root/service_env/bin/python -m core.exchange_history_sync \
   --account mybwin139 \
   --account chen912 \
   --account junjie2026 \
-  --account bwin182 \
   --account deepa999 \
-  --account dp \
   --account stark21 \
   --loop \
   --interval-secs 600 \
   --request-sleep-secs 2 \
   --account-sleep-secs 120 \
   >> output/logs/exchange_history_multi.log 2>&1 &
-tail -n 50 -f output/logs/exchange_history_multi.log
+tail -n 10 -f output/logs/exchange_history_multi.log
 
 # ============== Market dataHub 进程  ===============
 nohup bash -lc '
