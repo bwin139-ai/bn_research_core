@@ -3294,7 +3294,7 @@ async def _send_history(
     end_ms: int | None = None,
 ) -> int:
     now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
-    query_start_ms = start_ms if start_ms is not None else now_ms - 48 * 60 * 60 * 1000
+    query_start_ms = start_ms if start_ms is not None else now_ms - 24 * 60 * 60 * 1000
     query_end_ms = end_ms if end_ms is not None else now_ms
     symbol_filter = str(symbol or "").upper().strip()
     order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", query_start_ms, query_end_ms)
@@ -3346,7 +3346,7 @@ async def _send_history(
         title = f"📜 {account} 历史记录 {start_day} ~ {end_day}"
         scope_text = f"品种: {symbol_filter or 'ALL'}"
     else:
-        title = f"📜 {account} 最近48小时历史记录"
+        title = f"📜 {account} 最近24小时历史记录"
         scope_text = None
     lines = [
         title,
