@@ -636,7 +636,7 @@ strategies/spring/config.live_loose.json:
 strategies/spring/config.live_smoke_10u.json:
 - 小仓位实盘 smoke 专用 Spring 策略配置
 - 继承 loose signal 门槛以尽快出信号
-- `base_order_notional_usdt = 10`
+- 2026-06-06 起 stark21 smoke 实盘开仓金额调整为 `base_order_notional_usdt = 20`；文件名中的 `10u` 仅保留历史命名
 - 不得作为 Spring 策略基线或绩效结论
 
 strategies/spring/live_execution.smoke_10u.json:
@@ -646,9 +646,11 @@ strategies/spring/live_execution.smoke_10u.json:
 - `precheck_scope = symbol`
 - `strategy_concurrency_scope = symbol`
 - `pre_entry_min_sl_distance_pct = 0.003`
-- `max_position_notional_usdt = 11.0`
+- `min_position_notional_usdt = 16`
+- `max_position_notional_usdt = 24.0`
 - `leverage = 5`
 - 要求 local/exchange/symbol filters 均 verified
+- 同日 Snapback stark21 `live_config.highfreq.json` 的 `entry_notional_usdt` 与 SWR stark21 `config_smoke_10u.json` / `live_execution.smoke_10u.json` 同步调整为 20U 口径。
 ```
 
 ### 3.7 TVR / TradFi Value Reclaim

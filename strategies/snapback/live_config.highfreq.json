@@ -24,7 +24,7 @@
     "ARBUSDT",
     "1000SHIBUSDT"
   ],
-  "entry_notional_usdt": 10.0,
+  "entry_notional_usdt": 20.0,
   "leverage": 5,
   "cooldown_mins": 240,
   "order_retry_max": 2,
