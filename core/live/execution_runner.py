@@ -2889,7 +2889,71 @@ def execute_live_execution_plan(
             current_price=float(pre_entry_price),
         )
         if not filters_precheck["ok"]:
-            raise ValueError(f"symbol filter precheck blockers present: {filters_precheck['blockers']}")
+            blockers = list(filters_precheck.get("blockers") or [])
+            reason = f"symbol filter precheck blockers present: {blockers}"
+            signal_digest = _signal_digest(signal)
+            mark_signal(
+                account,
+                symbol,
+                signal_side=POSITION_SIDE_LONG,
+                signal_time_ts=int(intent_dict["signal_time"]),
+                signal_time_bj=str(intent_dict["signal_time_bj"]),
+                c_bar_ts=int(intent_dict["c_bar_ts"]) if intent_dict.get("c_bar_ts") else None,
+                c_bar_bj=intent_dict.get("c_bar_bj"),
+                signal_digest=signal_digest,
+                signal_snapshot=signal,
+                strategy_name=state_strategy_name,
+            )
+            mark_error(
+                account,
+                symbol,
+                error_code="symbol_filter_precheck_failed",
+                error_message=reason,
+                error_bj=_now_bj_str(),
+                strategy_name=state_strategy_name,
+            )
+            _write_exec_event(audit_enabled, account, "spring_symbol_filter_precheck_skip", {
+                "symbol": symbol,
+                "source": source,
+                "bar_ts": current_time_ms,
+                "bar_bj": current_time_bj,
+                "order_root": order_root,
+                "position_notional_usdt": notional,
+                "raw_quantity": raw_quantity,
+                "pre_entry_price": float(pre_entry_price),
+                "sizing": sizing,
+                "symbol_filter_precheck": filters_precheck,
+                "reason": reason,
+            })
+            mark_last_processed_bar(account, symbol, bar_ts=current_time_ms, bar_bj=current_time_bj, strategy_name=state_strategy_name)
+            logging.warning(
+                "Live execution skipped by symbol filters | account=%s | strategy=%s | symbol=%s | blockers=%s | notional=%s | raw_qty=%s | floored_qty=%s",
+                account,
+                state_strategy_name,
+                symbol,
+                blockers,
+                notional,
+                raw_quantity,
+                filters_precheck.get("quantity"),
+            )
+            if _notify_enabled(cfg, "notify_on_order_error"):
+                _send_spring_notify(
+                    f"[{_fmt_hms_from_ms(current_time_ms)} {state_strategy_name}] {account}\n"
+                    f"LIVE skipped by exchange filters\n"
+                    f"symbol={symbol}\n"
+                    f"notional={_fmt_notify_float(notional)} | qty={_fmt_notify_float(filters_precheck.get('quantity'))}\n"
+                    f"blockers={','.join(str(x) for x in blockers)}",
+                    strategy_name=state_strategy_name,
+                )
+            return {
+                "ok": False,
+                "outcome": "skipped_symbol_filter_precheck_failed",
+                "reason": reason,
+                "symbol": symbol,
+                "position_notional_usdt": notional,
+                "raw_quantity": raw_quantity,
+                "symbol_filter_precheck": filters_precheck,
+            }
         quantity = float(filters_precheck["quantity"])
     else:
         filters_precheck = None
