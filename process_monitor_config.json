@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "notify_label": "admin",
+  "log_path": "output/logs/process_monitor.log",
+  "state_path": "state/process_monitor_state.json",
+  "default_alert_repeat_secs": 1800,
+  "checks": [
+    {
+      "name": "manual_trade_bot",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "run_manual_trade_bot.py"
+      ]
+    },
+    {
+      "name": "tg_queue_sender",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "core/notify/tg_queue_sender.py"
+      ]
+    },
+    {
+      "name": "exchange_history_sync",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "core.exchange_history_sync",
+        "--account mybwin139",
+        "--account chen912",
+        "--account junjie2026",
+        "--account deepa999",
+        "--account stark21",
+        "--loop"
+      ]
+    },
+    {
+      "name": "market_data_hub",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "core/live/market_data_hub_runner.py",
+        "--hub-config market_data_hub_config.json"
+      ]
+    },
+    {
+      "name": "snapback_stark21_highfreq",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/snapback/run_live.py",
+        "--config strategies/snapback/config.highfreq.json",
+        "--live-config strategies/snapback/live_config.highfreq.json"
+      ],
+      "heartbeat": {
+        "path_glob": "state/live/snapback_stark21.state.json",
+        "timestamp_field": "last_loop_bj",
+        "timestamp_type": "bj_datetime",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "snapback_chen912",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/snapback/run_live.py",
+        "--config strategies/snapback/config.profit.json",
+        "--live-config strategies/snapback/live_config.chen912.json"
+      ],
+      "heartbeat": {
+        "path_glob": "state/live/snapback_chen912.state.json",
+        "timestamp_field": "last_loop_bj",
+        "timestamp_type": "bj_datetime",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "snapback_junjie2026",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/snapback/run_live.py",
+        "--config strategies/snapback/config.profit.json",
+        "--live-config strategies/snapback/live_config.junjie2026.json"
+      ],
+      "heartbeat": {
+        "path_glob": "state/live/snapback_junjie2026.state.json",
+        "timestamp_field": "last_loop_bj",
+        "timestamp_type": "bj_datetime",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "spring_chen912",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/spring/run_live.py",
+        "--config strategies/spring/config_12000u.json",
+        "--account chen912",
+        "--live-execution-config strategies/spring/live_execution.chen912.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/spring_live_heartbeat.SPRINGLIVE_CHEN912_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "spring_stark21",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/spring/run_live.py",
+        "--config strategies/spring/config.live_smoke_10u.json",
+        "--account stark21",
+        "--live-execution-config strategies/spring/live_execution.smoke_10u.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/spring_live_heartbeat.SPRINGLIVE_STARK21_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "spring_junjie2026",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/spring/run_live.py",
+        "--config strategies/spring/config_500u.json",
+        "--account junjie2026",
+        "--live-execution-config strategies/spring/live_execution.junjie2026.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/spring_live_heartbeat.SPRINGLIVE_JUNJIE2026_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "sweep_reclaim_chen912",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/sweep_reclaim/run_live.py",
+        "--config strategies/sweep_reclaim/config_12000u.json",
+        "--account chen912",
+        "--live-execution-config strategies/sweep_reclaim/live_execution.chen912.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/sweep_reclaim_live_heartbeat.SWRLIVE_CHEN912_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "sweep_reclaim_stark21",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/sweep_reclaim/run_live.py",
+        "--config strategies/sweep_reclaim/config_smoke_10u.json",
+        "--account stark21",
+        "--live-execution-config strategies/sweep_reclaim/live_execution.smoke_10u.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/sweep_reclaim_live_heartbeat.SWRLIVE_STARK21_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    },
+    {
+      "name": "sweep_reclaim_junjie2026",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/sweep_reclaim/run_live.py",
+        "--config strategies/sweep_reclaim/config_500u.json",
+        "--account junjie2026",
+        "--live-execution-config strategies/sweep_reclaim/live_execution.junjie2026.json"
+      ],
+      "heartbeat": {
+        "path_glob": "output/live_projection/sweep_reclaim_live_heartbeat.SWRLIVE_JUNJIE2026_*.json",
+        "timestamp_field": "updated_utc_ms",
+        "timestamp_type": "utc_ms",
+        "max_age_secs": 180
+      }
+    }
+  ]
+}

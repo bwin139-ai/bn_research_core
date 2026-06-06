@@ -13,6 +13,7 @@ ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[s]trategies/spring/run_live.py'
 ps aux | grep '[s]trategies/sweep_reclaim/run_live.py'
+ps aux | grep '[c]ore/process_monitor.py'
 
 ps aux | grep '[s]trategies/tvr/data_hub.py'
 ps aux | grep '[s]trategies/tvr/live_trader.py'
@@ -55,6 +56,18 @@ PYTHONPATH=/root/bn_research_core \
 ' >> output/logs/market_data_hub.console.log 2>&1 &
 
 tail -n 20 -f output/logs/market_data_hub.console.log
+
+# ============== 生产进程监控 进程 ===============
+nohup bash -lc '
+cd /root/bn_research_core &&
+PYTHONPATH=/root/bn_research_core \
+/root/service_env/bin/python -u core/process_monitor.py \
+  --config process_monitor_config.json \
+  --loop \
+  --interval-secs 60
+' >> output/logs/process_monitor.console.log 2>&1 &
+
+tail -n 50 -f output/logs/process_monitor.console.log
 
 # ============== TVR dataHub 进程  ===============
 mkdir -p output/tvr

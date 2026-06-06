@@ -1045,6 +1045,16 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 15. 后续若继续推进 Spring live 逻辑 patch，仍需按单问题框架重新锁定 `strategies/spring/run_live.py` 与 `core/live/execution_runner.py` 基线。
 ```
 
+### 5.3.1 Production process monitor
+
+```text
+2026-06-06 新增 `core/process_monitor.py` 与 `process_monitor_config.json`，用于生产常驻进程巡检。监控器只读 `ps` 进程表与策略 heartbeat/state 文件，不接触交易所、不启停进程、不修改策略 state。每轮写 `output/logs/process_monitor.log`，异常或恢复时通过 `core.message_bridge.send_to_bot(..., label="admin")` 进入 bot 队列，重复异常按 `default_alert_repeat_secs` 抑制刷屏。
+
+当前显式纳入巡检的生产进程：`run_manual_trade_bot.py`、`core/notify/tg_queue_sender.py`、`core.exchange_history_sync`、`core/live/market_data_hub_runner.py`、Snapback 三账户 live、Spring 三账户 live、Sweep-Reclaim 三账户 live。TVR 仍处于实验阶段，暂不纳入 `process_monitor_config.json`，避免未上线进程产生生产误报。
+
+Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查心跳鲜度；Snapback 通过 `state/live/snapback_{account}.state.json` 的 `last_loop_bj` 检查心跳鲜度。若目标进程缺失、重复、命令行参数不匹配，或 heartbeat 超过配置阈值未更新，则记录 warning 并推送 admin bot 消息。
+```
+
 ### 5.4 TVR live lifecycle
 
 ```text
