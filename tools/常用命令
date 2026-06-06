@@ -30,7 +30,7 @@ set -a
 set +a
 nohup /root/service_env/bin/python -u run_manual_trade_bot.py \
   >> output/logs/manual_trade_bot.log 2>&1 &
-tail -n 50 -f output/logs/manual_trade_bot.log
+tail -n 20 -f output/logs/manual_trade_bot.log
 
 # ============== binance 历史数据同步 进程  ===============
 nohup /root/service_env/bin/python -m core.exchange_history_sync \

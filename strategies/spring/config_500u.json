@@ -87,7 +87,7 @@
   },
   "risk_controls": {
     "cooldown_hours": 4,
-    "base_order_notional_usdt": 333,
+    "base_order_notional_usdt": 833,
     "full_notional_risk_pct": 0.99
   }
 }
