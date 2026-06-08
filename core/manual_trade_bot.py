@@ -72,6 +72,18 @@ HS_SHORTCUT_PARAM_INPUT = 703
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
 PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
+CLOSE_REPLACE_ORDER_TYPES = {
+    "LIMIT",
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_MARKET",
+}
+STOP_REPLACE_ORDER_TYPES = {
+    "STOP",
+    "STOP_MARKET",
+    "TAKE_PROFIT",
+    "TAKE_PROFIT_MARKET",
+    "TRAILING_STOP_MARKET",
+}
 _ACTIVE_PO_WATCHERS: set[tuple[str, str]] = set()
 _TRADE_SHORTCUT_NAME_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,32}$")
 _TRADE_SHORTCUT_NAME_MAX_BYTES = 48
@@ -2443,6 +2455,20 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if qty <= 0 or qty > float(pos["qty"]):
         await update.message.reply_text("invalid qty")
         return CLOSE_INPUT_QTY
+    try:
+        _cancel_existing_exit_orders(
+            account,
+            symbol,
+            position_side=LONG,
+            side="SELL",
+            order_types=CLOSE_REPLACE_ORDER_TYPES,
+            event_name="manual_trade_interactive_limit_close_cancel_existing",
+            event_writer=_append_manual_event,
+        )
+    except Exception as exc:
+        await update.message.reply_text(f"cancel existing close orders failed: {exc}")
+        _clear_command_context(context)
+        return ConversationHandler.END
     res = place_limit_order(
         account,
         symbol,
@@ -2505,6 +2531,21 @@ async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     account = _selected_account(context)
     symbol = str(context.user_data["stop_symbol"])
     stop_price = float(update.message.text.strip())
+    try:
+        _long_position_qty(account, symbol, 1.0)
+        _cancel_existing_exit_orders(
+            account,
+            symbol,
+            position_side=LONG,
+            side="SELL",
+            order_types=STOP_REPLACE_ORDER_TYPES,
+            event_name="manual_trade_interactive_sl_cancel_existing",
+            event_writer=_append_manual_event,
+        )
+    except Exception as exc:
+        await update.message.reply_text(f"cancel existing stop orders failed: {exc}")
+        _clear_command_context(context)
+        return ConversationHandler.END
     res = place_sl_order(
         account,
         symbol,
@@ -3706,24 +3747,26 @@ def _short_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> 
     return qty if close_ratio == 1.0 else qty * close_ratio
 
 
-def _cancel_existing_close_limit_orders(
+def _cancel_existing_exit_orders(
     account: str,
     symbol: str,
     *,
     position_side: str,
     side: str,
+    order_types: set[str],
     event_name: str,
     event_writer: Callable[..., None],
 ) -> int:
     res = get_open_orders(account, symbol)
     if not res["ok"]:
         raise RuntimeError(f"query existing close orders failed: {res['reason']}")
+    order_type_values = {str(x).upper().strip() for x in order_types}
     orders = [
         row
         for row in list(res.get("data") or [])
         if str(row.get("position_side") or "").upper() == position_side
         and str(row.get("side") or "").upper() == side
-        and str(row.get("type") or "").upper() == "LIMIT"
+        and str(row.get("type") or "").upper() in order_type_values
     ]
     cancelled = 0
     failed: list[str] = []
@@ -3746,7 +3789,6 @@ def _cancel_existing_close_limit_orders(
             f"reason={'; '.join(failed[:3])}"
         )
     return cancelled
-
 
 async def _run_market_close_command(
     update: Update,
@@ -3794,11 +3836,12 @@ async def _run_post_only_close_command(
     lines = [f"PO close {symbol}"]
     for account in accounts:
         try:
-            cancelled_existing = _cancel_existing_close_limit_orders(
+            cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
                 position_side=LONG,
                 side="SELL",
+                order_types=CLOSE_REPLACE_ORDER_TYPES,
                 event_name="manual_trade_po_close_cancel_existing",
                 event_writer=_append_manual_event,
             )
@@ -3873,6 +3916,15 @@ async def _run_limit_close_command(
     for account in accounts:
         try:
             qty = _long_position_qty(account, symbol, close_ratio)
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=LONG,
+                side="SELL",
+                order_types=CLOSE_REPLACE_ORDER_TYPES,
+                event_name="manual_trade_limit_close_cancel_existing",
+                event_writer=_append_manual_event,
+            )
             root = make_order_root()
             res = place_limit_order(
                 account,
@@ -3899,8 +3951,11 @@ async def _run_limit_close_command(
                 lines.append(f"{account}: failed reason={res['reason']}")
                 continue
             data = res["data"]
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
                 f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
@@ -3928,7 +3983,17 @@ async def _run_sl_command(
     lines = [f"SL {symbol} stop={_fmt_float(stop_price)}"]
     for account in accounts:
         try:
-            quantity = None if sl_ratio == 1.0 else _long_position_qty(account, symbol, sl_ratio)
+            position_qty = _long_position_qty(account, symbol, 1.0)
+            quantity = None if sl_ratio == 1.0 else position_qty * sl_ratio
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=LONG,
+                side="SELL",
+                order_types=STOP_REPLACE_ORDER_TYPES,
+                event_name="manual_trade_sl_cancel_existing",
+                event_writer=_append_manual_event,
+            )
             root = make_order_root()
             res = place_sl_order(
                 account,
@@ -3954,8 +4019,11 @@ async def _run_sl_command(
                 continue
             data = res["data"]
             qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={qty_text} "
+                f"{prefix}submitted qty={qty_text} "
                 f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
@@ -4229,11 +4297,12 @@ async def _run_hedge_short_post_only_close_command(
     lines = [f"Hedge short PO close {symbol}"]
     for account in accounts:
         try:
-            cancelled_existing = _cancel_existing_close_limit_orders(
+            cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
                 position_side=SHORT,
                 side="BUY",
+                order_types=CLOSE_REPLACE_ORDER_TYPES,
                 event_name="hedge_short_po_close_cancel_existing",
                 event_writer=_append_hedge_short_event,
             )
@@ -4309,6 +4378,15 @@ async def _run_hedge_short_limit_close_command(
     for account in accounts:
         try:
             qty = _short_position_qty(account, symbol, close_ratio)
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=SHORT,
+                side="BUY",
+                order_types=CLOSE_REPLACE_ORDER_TYPES,
+                event_name="hedge_short_limit_close_cancel_existing",
+                event_writer=_append_hedge_short_event,
+            )
             root = make_order_root()
             res = place_limit_order(
                 account,
@@ -4327,8 +4405,11 @@ async def _run_hedge_short_limit_close_command(
                 lines.append(f"{account}: failed reason={res['reason']}")
                 continue
             data = res["data"]
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
                 f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
@@ -4354,7 +4435,17 @@ async def _run_hedge_short_sl_command(
             last_price = float(price_res["data"]["price"])
             if stop_price <= last_price:
                 raise ValueError(f"SHORT SL must be above current price: stop={stop_price} current={last_price}")
-            quantity = None if sl_ratio == 1.0 else _short_position_qty(account, symbol, sl_ratio)
+            position_qty = _short_position_qty(account, symbol, 1.0)
+            quantity = None if sl_ratio == 1.0 else position_qty * sl_ratio
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=SHORT,
+                side="BUY",
+                order_types=STOP_REPLACE_ORDER_TYPES,
+                event_name="hedge_short_sl_cancel_existing",
+                event_writer=_append_hedge_short_event,
+            )
             root = make_order_root()
             res = place_sl_order(
                 account,
@@ -4371,8 +4462,11 @@ async def _run_hedge_short_sl_command(
                 continue
             data = res["data"]
             qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            prefix = f"{account}: "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
-                f"{account}: submitted qty={qty_text} "
+                f"{prefix}submitted qty={qty_text} "
                 f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
             )
         except Exception as exc:
