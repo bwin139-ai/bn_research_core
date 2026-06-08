@@ -768,8 +768,8 @@ def _hedge_short_usage() -> str:
     return (
         "Usage:\n"
         "/hedge_short\n"
-        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO]\n"
-        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO\n"
+        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO] [SL PRICE TP PRICE]\n"
+        "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE TP PRICE]\n"
         "/hedge_short open ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/hedge_short close ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/hedge_short close ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
@@ -1492,18 +1492,34 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
     if mode_idx == 1:
         raise ValueError(_hedge_short_usage())
     if mode_idx < 0:
-        entries = _parse_trade_open_account_notionals([str(x) for x in args[1:]])
+        raw_tokens = [str(x).strip() for x in args[1:]]
+        if len(raw_tokens) >= 4 and raw_tokens[-4].upper() == "SL" and raw_tokens[-2].upper() == "TP":
+            entries = _parse_trade_open_account_notionals(raw_tokens[:-4])
+            tail = raw_tokens[-4:]
+        else:
+            if any(token.upper() in {"SL", "TP"} for token in raw_tokens):
+                raise ValueError(_hedge_short_usage())
+            entries = _parse_trade_open_account_notionals(raw_tokens)
+            tail = []
         mode = "PO"
-        tail: list[str] = []
     else:
         entries = _parse_trade_open_account_notionals([str(x) for x in args[1:mode_idx]])
         mode = str(args[mode_idx]).upper().strip()
         tail = [str(x).strip() for x in args[mode_idx + 1 :]]
     current = _load_current_hedge_short_symbol()
+    sl_price = 0.0
+    tp_price = 0.0
     limit_price: float | None = None
     if mode in {"M", "PO"}:
-        if tail:
+        if tail and (len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP"):
             raise ValueError(_hedge_short_usage())
+        if tail:
+            sl_price = float(tail[1])
+            tp_price = float(tail[3])
+        if sl_price < 0:
+            raise ValueError("SL price must be >= 0")
+        if tp_price < 0:
+            raise ValueError("TP price must be >= 0")
     else:
         if len(tail) != 1:
             raise ValueError(_hedge_short_usage())
@@ -1515,6 +1531,8 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
         "symbol": current["symbol"],
         "leverage": int(current["leverage"]),
         "mode": mode,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
         "limit_price": limit_price,
     }
 
@@ -1599,6 +1617,13 @@ def _validate_long_protection_prices(reference_price: float, sl_price: float, tp
         raise ValueError(f"LONG TP must be above entry reference price: tp={tp_price} ref={reference_price}")
 
 
+def _validate_short_protection_prices(reference_price: float, sl_price: float, tp_price: float) -> None:
+    if sl_price > 0 and sl_price <= reference_price:
+        raise ValueError(f"SHORT SL must be above entry reference price: sl={sl_price} ref={reference_price}")
+    if tp_price > 0 and tp_price >= reference_price:
+        raise ValueError(f"SHORT TP must be below entry reference price: tp={tp_price} ref={reference_price}")
+
+
 def _is_po_maker_reject(reason: str) -> bool:
     text = str(reason or "")
     return (
@@ -1656,6 +1681,57 @@ async def _protect_manual_entry(
     else:
         messages.append("TP skipped")
     await bot.send_message(chat_id=chat_id, text="\n".join([f"Manual protection {account} {symbol}", *messages]))
+    return messages
+
+
+async def _protect_hedge_short_entry(
+    bot: Any,
+    chat_id: int,
+    *,
+    account: str,
+    symbol: str,
+    quantity: float,
+    sl_price: float,
+    tp_price: float,
+    root: str,
+) -> list[str]:
+    messages: list[str] = []
+    if quantity <= 0:
+        raise ValueError("executed quantity must be positive before hedge short SL/TP")
+    if sl_price > 0:
+        sl_res = place_sl_order(
+            account,
+            symbol,
+            SHORT,
+            sl_price,
+            client_order_id=_hedge_short_client_order_id("SL", root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_hedge_short_event("hedge_short_sl_submit", account=account, symbol=symbol, ok=sl_res["ok"], result=sl_res)
+        if sl_res["ok"]:
+            messages.append(f"SL ok stop={_fmt_float(sl_res['data'].get('stop_price'))}")
+        else:
+            messages.append(f"SL failed reason={sl_res['reason']}")
+    else:
+        messages.append("SL skipped")
+    if tp_price > 0:
+        tp_res = place_tp_order(
+            account,
+            symbol,
+            SHORT,
+            quantity,
+            tp_price,
+            client_order_id=_hedge_short_client_order_id("TP", root),
+            notify_label=NOTIFY_LABEL,
+        )
+        _append_hedge_short_event("hedge_short_tp_submit", account=account, symbol=symbol, ok=tp_res["ok"], result=tp_res)
+        if tp_res["ok"]:
+            messages.append(f"TP ok price={_fmt_float(tp_res['data'].get('price'))}")
+        else:
+            messages.append(f"TP failed reason={tp_res['reason']}")
+    else:
+        messages.append("TP skipped")
+    await bot.send_message(chat_id=chat_id, text="\n".join([f"Hedge short protection {account} {symbol}", *messages]))
     return messages
 
 
@@ -1778,6 +1854,133 @@ async def _watch_po_entry(
             reason=str(exc),
         )
         await bot.send_message(chat_id=chat_id, text=f"PO watcher error {account} {symbol}: {exc}")
+    finally:
+        _ACTIVE_PO_WATCHERS.discard(key)
+
+
+async def _watch_hedge_short_po_entry(
+    bot: Any,
+    chat_id: int,
+    *,
+    account: str,
+    symbol: str,
+    entry_order_id: int | None,
+    entry_client_order_id: str,
+    root: str,
+    sl_price: float,
+    tp_price: float,
+    timeout_secs: int = PO_WATCH_TIMEOUT_SECS,
+) -> None:
+    key = (account, symbol)
+
+    async def finish(outcome: str, **payload: Any) -> None:
+        _append_hedge_short_event(
+            "hedge_short_po_watcher_done",
+            account=account,
+            symbol=symbol,
+            entry_client_order_id=entry_client_order_id,
+            outcome=outcome,
+            **payload,
+        )
+
+    try:
+        deadline = asyncio.get_running_loop().time() + float(timeout_secs)
+        last_order: dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(PO_WATCH_POLL_SECS)
+            order_res = get_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+            )
+            _append_hedge_short_event("hedge_short_po_poll", account=account, symbol=symbol, ok=order_res["ok"], result=order_res)
+            if not order_res["ok"]:
+                continue
+            last_order = order_res["data"]
+            status = str(last_order.get("status") or "").upper()
+            executed_qty = float(last_order.get("executed_qty", 0.0) or 0.0)
+            if status == "FILLED" and executed_qty > 0:
+                await _protect_hedge_short_entry(
+                    bot,
+                    chat_id,
+                    account=account,
+                    symbol=symbol,
+                    quantity=executed_qty,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    root=root,
+                )
+                await bot.send_message(chat_id=chat_id, text=f"Hedge short PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
+                await finish("filled", status=status, executed_qty=executed_qty)
+                return
+            if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+                if executed_qty > 0:
+                    await _protect_hedge_short_entry(
+                        bot,
+                        chat_id,
+                        account=account,
+                        symbol=symbol,
+                        quantity=executed_qty,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        root=root,
+                    )
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"Hedge short PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}",
+                    )
+                    await finish("terminal_with_fill", status=status, executed_qty=executed_qty)
+                else:
+                    await bot.send_message(chat_id=chat_id, text=f"Hedge short PO entry terminal no fill {account} {symbol} status={status}")
+                    await finish("terminal_no_fill", status=status, executed_qty=executed_qty)
+                return
+
+        executed_qty = float((last_order or {}).get("executed_qty", 0.0) or 0.0)
+        status = str((last_order or {}).get("status") or "").upper()
+        if status in {"NEW", "PARTIALLY_FILLED", ""}:
+            cancel_res = cancel_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event("hedge_short_po_timeout_cancel", account=account, symbol=symbol, ok=cancel_res["ok"], result=cancel_res)
+            final_res = get_order(
+                account,
+                symbol,
+                exchange_order_id=entry_order_id,
+                client_order_id=entry_client_order_id,
+            )
+            if final_res["ok"]:
+                executed_qty = max(executed_qty, float(final_res["data"].get("executed_qty", 0.0) or 0.0))
+        if executed_qty > 0:
+            await _protect_hedge_short_entry(
+                bot,
+                chat_id,
+                account=account,
+                symbol=symbol,
+                quantity=executed_qty,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                root=root,
+            )
+            await bot.send_message(chat_id=chat_id, text=f"Hedge short PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
+            await finish("timeout_partial_fill", status=status, executed_qty=executed_qty)
+        else:
+            await bot.send_message(chat_id=chat_id, text=f"Hedge short PO timeout canceled no fill {account} {symbol}")
+            await finish("timeout_no_fill", status=status, executed_qty=executed_qty)
+    except Exception as exc:
+        logging.error("[hedge_short_po_watcher] failed: %s", exc, exc_info=True)
+        _append_hedge_short_event(
+            "hedge_short_po_watcher_error",
+            account=account,
+            symbol=symbol,
+            entry_client_order_id=entry_client_order_id,
+            reason=str(exc),
+        )
+        await bot.send_message(chat_id=chat_id, text=f"Hedge short PO watcher error {account} {symbol}: {exc}")
     finally:
         _ACTIVE_PO_WATCHERS.discard(key)
 
@@ -4094,17 +4297,25 @@ async def _run_pending_command(
 
 async def _run_hedge_short_market_open_command(
     update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     account: str,
     symbol: str,
     leverage: int,
     notional: float,
+    sl_price: float,
+    tp_price: float,
 ) -> None:
     price_res = get_last_price(account, symbol)
     if not price_res["ok"]:
         await _reply_text(update, f"price query failed: {price_res['reason']}")
         return
     entry_price = float(price_res["data"]["price"])
+    try:
+        _validate_short_protection_prices(entry_price, sl_price, tp_price)
+    except ValueError as exc:
+        await _reply_text(update, str(exc))
+        return
     quantity = _entry_qty_from_notional(account, symbol, notional, entry_price)
     root = make_order_root()
     try:
@@ -4134,16 +4345,40 @@ async def _run_hedge_short_market_open_command(
         f"avg={_fmt_float(data.get('avg_price') or entry_price)}\n"
         f"cid={data.get('client_order_id')}"
     )
+    executed_qty = float(data.get("executed_qty", 0.0) or data.get("qty", 0.0) or quantity or 0.0)
+    if sl_price <= 0 and tp_price <= 0:
+        return
+    if executed_qty <= 0:
+        await _reply_text(update, "Hedge short M open has no executed quantity; SL/TP skipped")
+        return
+    await _protect_hedge_short_entry(
+        context.bot,
+        update.effective_chat.id,
+        account=account,
+        symbol=symbol,
+        quantity=executed_qty,
+        sl_price=sl_price,
+        tp_price=tp_price,
+        root=root,
+    )
 
 
 async def _run_hedge_short_post_only_open_command(
     update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     account: str,
     symbol: str,
     leverage: int,
     notional: float,
+    sl_price: float,
+    tp_price: float,
 ) -> None:
+    key = (account, symbol)
+    if key in _ACTIVE_PO_WATCHERS:
+        await _reply_text(update, f"PO watcher already active: {account} {symbol}")
+        return
+    watcher_enabled = sl_price > 0 or tp_price > 0
     root = make_order_root()
     try:
         _prepare_symbol(account, symbol, leverage)
@@ -4158,6 +4393,11 @@ async def _run_hedge_short_post_only_open_command(
             await _reply_text(update, f"order book query failed: {book_res['reason']}")
             return
         best_ask = float(book_res["data"]["best_ask"])
+        try:
+            _validate_short_protection_prices(best_ask, sl_price, tp_price)
+        except ValueError as exc:
+            await _reply_text(update, str(exc))
+            return
         quantity = _entry_qty_from_notional(account, symbol, notional, best_ask)
         leg = "POE" if attempt == 1 else f"PO{attempt}"
         entry_res = place_limit_order(
@@ -4181,6 +4421,7 @@ async def _run_hedge_short_post_only_open_command(
             max_attempts=PO_ENTRY_SUBMIT_MAX_ATTEMPTS,
             notional=notional,
             price=best_ask,
+            watcher_enabled=watcher_enabled,
             result=entry_res,
         )
         if entry_res["ok"]:
@@ -4196,6 +4437,39 @@ async def _run_hedge_short_post_only_open_command(
         await _reply_text(update, f"Hedge short PO open failed after {PO_ENTRY_SUBMIT_MAX_ATTEMPTS} attempts: {reason}")
         return
     data = entry_res["data"]
+    entry_order_id = data.get("order_id") or data.get("exchange_order_id")
+    entry_client_order_id = str(data.get("client_order_id") or "")
+    if not entry_client_order_id:
+        await _reply_text(update, "Hedge short PO open missing client_order_id; watcher not started")
+        return
+    if not watcher_enabled:
+        await _reply_text(
+            update,
+            f"Hedge short PO open submitted\n"
+            f"account={account}\n"
+            f"symbol={symbol}\n"
+            f"price={_fmt_float(data.get('price') or best_ask)}\n"
+            f"qty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
+            f"wait=none\n"
+            f"protection=none\n"
+            f"cid={entry_client_order_id}"
+        )
+        return
+    _ACTIVE_PO_WATCHERS.add(key)
+    context.application.create_task(
+        _watch_hedge_short_po_entry(
+            context.bot,
+            update.effective_chat.id,
+            account=account,
+            symbol=symbol,
+            entry_order_id=int(entry_order_id) if entry_order_id is not None else None,
+            entry_client_order_id=entry_client_order_id,
+            root=root,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            timeout_secs=PO_WATCH_TIMEOUT_SECS,
+        )
+    )
     await _reply_text(
         update,
         f"Hedge short PO open submitted\n"
@@ -4203,7 +4477,8 @@ async def _run_hedge_short_post_only_open_command(
         f"symbol={symbol}\n"
         f"price={_fmt_float(data.get('price') or best_ask)}\n"
         f"qty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
-        f"cid={data.get('client_order_id')}"
+        f"wait={PO_WATCH_TIMEOUT_SECS}s\n"
+        f"cid={entry_client_order_id}"
     )
 
 
@@ -4654,20 +4929,26 @@ async def _execute_hedge_short_args(update: Update, context: ContextTypes.DEFAUL
             for entry in spec["entries"]:
                 await _run_hedge_short_market_open_command(
                     update,
+                    context,
                     account=entry["account"],
                     symbol=spec["symbol"],
                     leverage=spec["leverage"],
                     notional=entry["notional"],
+                    sl_price=spec["sl_price"],
+                    tp_price=spec["tp_price"],
                 )
             return
         if mode == "PO":
             for entry in spec["entries"]:
                 await _run_hedge_short_post_only_open_command(
                     update,
+                    context,
                     account=entry["account"],
                     symbol=spec["symbol"],
                     leverage=spec["leverage"],
                     notional=entry["notional"],
+                    sl_price=spec["sl_price"],
+                    tp_price=spec["tp_price"],
                 )
             return
         if mode == "L":
