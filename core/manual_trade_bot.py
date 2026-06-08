@@ -1391,9 +1391,16 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     if mode_idx == 0:
         raise ValueError(_trade_usage())
     if mode_idx < 0:
-        entries = _parse_trade_open_account_notionals(tokens)
+        raw_tokens = tokens
+        if len(raw_tokens) >= 4 and raw_tokens[-4].upper() == "SL" and raw_tokens[-2].upper() == "TP":
+            entries = _parse_trade_open_account_notionals(raw_tokens[:-4])
+            tail = raw_tokens[-4:]
+        else:
+            if any(token.upper() in {"SL", "TP"} for token in raw_tokens):
+                raise ValueError(_trade_usage())
+            entries = _parse_trade_open_account_notionals(raw_tokens)
+            tail = []
         mode = "PO"
-        tail: list[str] = []
     else:
         entries = _parse_trade_open_account_notionals(tokens[:mode_idx])
         mode = str(tokens[mode_idx]).upper().strip()
