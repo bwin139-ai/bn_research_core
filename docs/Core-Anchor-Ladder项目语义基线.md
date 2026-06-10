@@ -81,9 +81,9 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
   "ladder": {
     "lookback_hours": 48,
     "levels": [
-      {"level": "P1", "drop_pct": 0.03, "notional_usdt": 10},
-      {"level": "P2", "drop_pct": 0.02, "notional_usdt": 12},
-      {"level": "P3", "drop_pct": 0.05, "notional_usdt": 15}
+      {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
+      {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12},
+      {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15}
     ],
     "symbol_levels": {
       "SKHYNIXUSDT": [

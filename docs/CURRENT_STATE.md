@@ -86,7 +86,7 @@ strategies/cal/live_trader.py
 实现边界：
 
 1. `config.decision_audit.json` 当前账户为 `stark21`，交易 symbol 为 `MUUSDT` 与 `SKHYNIXUSDT`。
-2. `MUUSDT` ladder 参数为 `P1 drop_pct=0.03 / 10U`、`P2 drop_pct=0.02 / 12U`、`P3 drop_pct=0.05 / 15U`，TP 为 `0.03`；`SKHYNIXUSDT` 显式覆盖为 `P1 drop_pct=0.02 / 15U`、`P2 drop_pct=0.01 / 20U`、`P3 drop_pct=0.025 / 25U`，TP 为 `0.01`；两品种 `max_symbol_strategy_notional_usdt` 分别为 `MUUSDT=37U`、`SKHYNIXUSDT=60U`，`max_total_strategy_notional_usdt=97U`。
+2. `MUUSDT` ladder 参数为 `P1 drop_pct=0.02 / 10U`、`P2 drop_pct=0.01 / 12U`、`P3 drop_pct=0.025 / 15U`，TP 为 `0.03`；`SKHYNIXUSDT` 显式覆盖为 `P1 drop_pct=0.02 / 15U`、`P2 drop_pct=0.01 / 20U`、`P3 drop_pct=0.025 / 25U`，TP 为 `0.01`；两品种 `max_symbol_strategy_notional_usdt` 分别为 `MUUSDT=37U`、`SKHYNIXUSDT=60U`，`max_total_strategy_notional_usdt=97U`。
 3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
 4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
 5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
