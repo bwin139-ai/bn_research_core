@@ -86,20 +86,21 @@ strategies/cal/live_trader.py
 实现边界：
 
 1. `config.decision_audit.json` 当前账户为 `stark21`，交易 symbol 为 `MUUSDT` 与 `SKHYNIXUSDT`。
-2. `MUUSDT` ladder 参数为 `P1 drop_pct=0.03 / 10U`、`P2 drop_pct=0.02 / 12U`、`P3 drop_pct=0.05 / 15U`，TP 为 `0.03`；`SKHYNIXUSDT` 显式覆盖为 `P1 drop_pct=0.02 / 10U`、`P2 drop_pct=0.01 / 12U`、`P3 drop_pct=0.025 / 15U`，TP 为 `0.01`；两品种 `max_symbol_strategy_notional_usdt=37U`，`max_total_strategy_notional_usdt=74U`。
+2. `MUUSDT` ladder 参数为 `P1 drop_pct=0.03 / 10U`、`P2 drop_pct=0.02 / 12U`、`P3 drop_pct=0.05 / 15U`，TP 为 `0.03`；`SKHYNIXUSDT` 显式覆盖为 `P1 drop_pct=0.02 / 15U`、`P2 drop_pct=0.01 / 20U`、`P3 drop_pct=0.025 / 25U`，TP 为 `0.01`；两品种 `max_symbol_strategy_notional_usdt` 分别为 `MUUSDT=37U`、`SKHYNIXUSDT=60U`，`max_total_strategy_notional_usdt=97U`。
 3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
 4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
 5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
 6. `H` 每小时刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
 7. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
-8. 新增 `live_trader.py`，配置入口为 `config.live_trader.stark21.json`，显式 `allow_live_order=true`。
-9. live trader 每轮先 reconcile pending entry / open lots，再构建 decision；真实下单只走公共 BN_EXEC/Gateway 的 `LIMIT + GTX`。
-10. entry 因 maker-only 约束挂单失败、`EXPIRED` 或 `REJECTED` 时，live trader 会重读 best bid 并继续重试，直到交易所接受 maker entry；非 maker 约束类错误仍记录并中断本次 entry。
-11. `POST_ONLY` BUY entry 若部分成交，不撤剩余单，不提前挂部分 TP；继续等待整张 entry 完全成交后再建立策略 lot 与 TP。完全未成交且超过 TTL 的 entry 可撤销并清理 pending。
-12. 信号、entry submitted、open/TP submitted、exit 均写 audit / stdout log，并推送 bot 消息；BN_EXEC 仍负责交易所执行层通知。
-13. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
-14. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过；live mock 验证 entry pending 写入、部分成交不撤单不提前挂 TP、maker reject 后重读 best bid 并重试成功。
-15. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成首笔 `MUUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 P1 open lot entry `909.94`、TP `937.23`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
+8. 若 entry size 因交易所 step size、min qty 或 min notional 归一化后无效，live trader 自动暂停对应 symbol，记录日志并推送 bot；进程继续运行。
+9. 新增 `live_trader.py`，配置入口为 `config.live_trader.stark21.json`，显式 `allow_live_order=true`。
+10. live trader 每轮先 reconcile pending entry / open lots，再构建 decision；真实下单只走公共 BN_EXEC/Gateway 的 `LIMIT + GTX`。
+11. entry 因 maker-only 约束挂单失败、`EXPIRED` 或 `REJECTED` 时，live trader 会重读 best bid 并继续重试，直到交易所接受 maker entry；非 maker 约束类错误仍记录并中断本次 entry。
+12. `POST_ONLY` BUY entry 若部分成交，不撤剩余单，不提前挂部分 TP；继续等待整张 entry 完全成交后再建立策略 lot 与 TP。完全未成交且超过 TTL 的 entry 可撤销并清理 pending。
+13. 信号、entry submitted、open/TP submitted、exit 均写 audit / stdout log，并推送 bot 消息；BN_EXEC 仍负责交易所执行层通知。
+14. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
+15. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过；live mock 验证 entry pending 写入、部分成交不撤单不提前挂 TP、maker reject 后重读 best bid 并重试成功。
+16. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成首笔 `MUUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 P1 open lot entry `909.94`、TP `937.23`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
 
 当前下一步：
 

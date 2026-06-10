@@ -84,7 +84,14 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
       {"level": "P1", "drop_pct": 0.03, "notional_usdt": 10},
       {"level": "P2", "drop_pct": 0.02, "notional_usdt": 12},
       {"level": "P3", "drop_pct": 0.05, "notional_usdt": 15}
-    ]
+    ],
+    "symbol_levels": {
+      "SKHYNIXUSDT": [
+        {"level": "P1", "drop_pct": 0.02, "notional_usdt": 15},
+        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20},
+        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25}
+      ]
+    }
   },
   "exit_policy": {
     "symbol_take_profit_pct": {
@@ -167,12 +174,12 @@ P3 = 15 USDT
 ```
 
 5. `MUUSDT` 使用默认 ladder，TP 为 `0.03`。
-6. `SKHYNIXUSDT` 使用自定义 ladder drop `0.02/0.01/0.025`，TP 为 `0.01`。
+6. `SKHYNIXUSDT` 使用自定义 ladder drop `0.02/0.01/0.025`，notional 为 `15/20/25`，TP 为 `0.01`。
 
-5. 当前 leverage 显式配置为 `25`。
-6. live trader 必须显式 `allow_live_order=true` 才允许真实下单。
-7. live trader 必须在每轮先 reconcile pending / open lots，再构建新 decision。
-8. live trader 信号、入场、开仓、离场必须写 audit、写 stdout log，并推送 bot 消息。
+7. 当前 leverage 显式配置为 `25`。
+8. live trader 必须显式 `allow_live_order=true` 才允许真实下单。
+9. live trader 必须在每轮先 reconcile pending / open lots，再构建新 decision。
+10. live trader 信号、入场、开仓、离场必须写 audit、写 stdout log，并推送 bot 消息。
 9. entry 因 maker-only 约束挂单失败时，必须重读 best bid 并重试，直到交易所接受 maker entry；非 maker 约束类错误仍必须记录并中断本次 entry。
 
 ## 7. 异常与暂停

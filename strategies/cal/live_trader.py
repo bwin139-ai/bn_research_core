@@ -380,6 +380,15 @@ def _normalize_size(account: str, symbol: str, *, notional_usdt: float, price: f
     return {"qty": float(qty), "price": float(limit_price), "notional_usdt": float(actual_notional), "filters": filters}
 
 
+def _is_entry_size_config_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "CAL normalized qty <= 0:" in text
+        or "CAL qty below min_qty:" in text
+        or "CAL notional below min_notional:" in text
+    )
+
+
 def _is_post_only_reject(reason: Any) -> bool:
     text = str(reason or "")
     upper = text.upper()
@@ -765,12 +774,24 @@ def _place_entry(cfg: Mapping[str, Any], state: dict[str, Any], intent: Mapping[
         if not book.get("ok"):
             raise RuntimeError(f"CAL order book query failed: {symbol} | {book.get('reason')}")
         best_bid = float(book["data"]["best_bid"])
-        order_size = _normalize_size(
-            account,
-            symbol,
-            notional_usdt=float(intent["proposed_order_notional_usdt"]),
-            price=best_bid,
-        )
+        try:
+            order_size = _normalize_size(
+                account,
+                symbol,
+                notional_usdt=float(intent["proposed_order_notional_usdt"]),
+                price=best_bid,
+            )
+        except RuntimeError as exc:
+            if not _is_entry_size_config_error(exc):
+                raise
+            _pause_symbol(
+                cfg=cfg,
+                state=state,
+                symbol=symbol,
+                reason="entry_size_invalid",
+                detail={"error": str(exc), "intent": dict(intent), "best_bid": float(best_bid)},
+            )
+            return
         entry_res = place_limit_order(
             account,
             symbol,

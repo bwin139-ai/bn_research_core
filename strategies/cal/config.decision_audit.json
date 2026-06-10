@@ -24,9 +24,9 @@
     ],
     "symbol_levels": {
       "SKHYNIXUSDT": [
-        {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
-        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12},
-        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15}
+        {"level": "P1", "drop_pct": 0.02, "notional_usdt": 15},
+        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20},
+        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25}
       ]
     }
   },
@@ -39,9 +39,9 @@
   "risk": {
     "max_symbol_strategy_notional_usdt": {
       "MUUSDT": 37,
-      "SKHYNIXUSDT": 37
+      "SKHYNIXUSDT": 60
     },
-    "max_total_strategy_notional_usdt": 74
+    "max_total_strategy_notional_usdt": 97
   },
   "execution": {
     "position_side": "LONG",
