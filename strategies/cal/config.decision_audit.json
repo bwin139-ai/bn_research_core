@@ -4,7 +4,7 @@
   "account": "stark21",
   "audit_enabled": true,
   "universe": {
-    "tradable_symbols": ["MUUSDT"]
+    "tradable_symbols": ["MUUSDT", "SKHYNIXUSDT"]
   },
   "collection": {
     "interval_secs": 10
@@ -21,16 +21,27 @@
       {"level": "P1", "drop_pct": 0.03, "notional_usdt": 10},
       {"level": "P2", "drop_pct": 0.02, "notional_usdt": 12},
       {"level": "P3", "drop_pct": 0.05, "notional_usdt": 15}
-    ]
+    ],
+    "symbol_levels": {
+      "SKHYNIXUSDT": [
+        {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
+        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12},
+        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15}
+      ]
+    }
   },
   "exit_policy": {
-    "take_profit_pct": 0.03
+    "symbol_take_profit_pct": {
+      "MUUSDT": 0.03,
+      "SKHYNIXUSDT": 0.01
+    }
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
-      "MUUSDT": 37
+      "MUUSDT": 37,
+      "SKHYNIXUSDT": 37
     },
-    "max_total_strategy_notional_usdt": 37
+    "max_total_strategy_notional_usdt": 74
   },
   "execution": {
     "position_side": "LONG",

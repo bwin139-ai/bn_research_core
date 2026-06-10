@@ -255,32 +255,49 @@ def _require_symbol_float_map(cfg: Mapping[str, Any], path: str, key: str) -> di
     return out
 
 
-def _load_levels(raw_levels: Any, path: str) -> list[dict[str, Any]]:
+def _load_levels(raw_levels: Any, path: str, *, label: str = "ladder.levels") -> list[dict[str, Any]]:
     if not isinstance(raw_levels, list) or not raw_levels:
-        raise TypeError(f"CAL ladder.levels must be non-empty list | {path}")
+        raise TypeError(f"CAL {label} must be non-empty list | {path}")
     levels: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw_levels:
         if not isinstance(item, dict):
-            raise TypeError(f"CAL ladder level item must be object | {path}")
+            raise TypeError(f"CAL {label} item must be object | {path}")
         level = str(item.get("level") or "").upper().strip()
         if level not in {"P1", "P2", "P3"}:
-            raise ValueError(f"CAL unsupported ladder level: {level!r} | {path}")
+            raise ValueError(f"CAL unsupported ladder level: {level!r} | {label} | {path}")
         if level in seen:
-            raise ValueError(f"CAL duplicated ladder level: {level} | {path}")
+            raise ValueError(f"CAL duplicated ladder level: {level} | {label} | {path}")
         seen.add(level)
         drop_pct = _require_float(item, path, "drop_pct", positive=True)
         notional = _require_float(item, path, "notional_usdt", positive=True)
         levels.append({"level": level, "drop_pct": float(drop_pct), "notional_usdt": float(notional)})
     if "P1" not in seen:
-        raise ValueError(f"CAL ladder.levels must include P1 | {path}")
+        raise ValueError(f"CAL {label} must include P1 | {path}")
     order = {"P1": 1, "P2": 2, "P3": 3}
     levels.sort(key=lambda row: order[str(row["level"])])
     p2 = next((row for row in levels if row["level"] == "P2"), None)
     p3 = next((row for row in levels if row["level"] == "P3"), None)
     if p2 is not None and p3 is not None and float(p3["drop_pct"]) <= float(p2["drop_pct"]):
-        raise ValueError(f"CAL P3 drop_pct must be greater than P2 drop_pct | {path}")
+        raise ValueError(f"CAL P3 drop_pct must be greater than P2 drop_pct | {label} | {path}")
     return levels
+
+
+def _load_symbol_levels(ladder: Mapping[str, Any], path: str) -> dict[str, list[dict[str, Any]]]:
+    raw = ladder.get("symbol_levels", {})
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError(f"CAL ladder.symbol_levels must be object | {path}")
+    out: dict[str, list[dict[str, Any]]] = {}
+    for raw_symbol, raw_levels in raw.items():
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            raise ValueError(f"CAL ladder.symbol_levels contains empty symbol | {path}")
+        if symbol in out:
+            raise ValueError(f"CAL ladder.symbol_levels duplicated symbol: {symbol} | {path}")
+        out[symbol] = _load_levels(raw_levels, path, label=f"ladder.symbol_levels.{symbol}")
+    return out
 
 
 def load_config(path: str) -> dict[str, Any]:
@@ -310,8 +327,15 @@ def load_config(path: str) -> dict[str, Any]:
             "h_anchor_refresh_secs": _require_int(data, path, "h_anchor_refresh_secs", positive=True),
             "kline_limit": _require_int(data, path, "kline_limit", positive=True),
         },
-        "ladder": {"levels": _load_levels(ladder.get("levels"), path)},
-        "exit_policy": {"take_profit_pct": _require_float(exit_policy, path, "take_profit_pct", positive=True)},
+        "ladder": {
+            "levels": _load_levels(ladder.get("levels"), path),
+            "symbol_levels": _load_symbol_levels(ladder, path),
+        },
+        "exit_policy": {
+            "symbol_take_profit_pct": _require_symbol_float_map(
+                exit_policy, path, "symbol_take_profit_pct"
+            ),
+        },
         "risk": {
             "max_symbol_strategy_notional_usdt": _require_symbol_float_map(
                 risk, path, "max_symbol_strategy_notional_usdt"
@@ -353,8 +377,14 @@ def load_config(path: str) -> dict[str, Any]:
     cap_set = set(out["risk"]["max_symbol_strategy_notional_usdt"])
     if cap_set != tradable_set:
         raise ValueError(f"CAL max_symbol_strategy_notional_usdt keys must match tradable_symbols | {path}")
-    total_level_notional = sum(float(row["notional_usdt"]) for row in out["ladder"]["levels"])
+    override_symbols = set(out["ladder"]["symbol_levels"])
+    if not override_symbols.issubset(tradable_set):
+        raise ValueError(f"CAL ladder.symbol_levels keys must be subset of tradable_symbols: {sorted(override_symbols - tradable_set)} | {path}")
+    tp_override_symbols = set(out["exit_policy"]["symbol_take_profit_pct"])
+    if tp_override_symbols != tradable_set:
+        raise ValueError(f"CAL symbol_take_profit_pct keys must match tradable_symbols | {path}")
     for symbol in sorted(tradable_set):
+        total_level_notional = sum(float(row["notional_usdt"]) for row in _levels_for_symbol(out, symbol))
         symbol_cap = float(out["risk"]["max_symbol_strategy_notional_usdt"][symbol])
         if symbol_cap < total_level_notional:
             raise ValueError(
@@ -432,12 +462,25 @@ def _state_open_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
-def _level_map(cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    return {str(row["level"]): dict(row) for row in cfg["ladder"]["levels"]}
+def _levels_for_symbol(cfg: Mapping[str, Any], symbol: str) -> list[dict[str, Any]]:
+    symbol_key = str(symbol).upper().strip()
+    symbol_levels = cfg.get("ladder", {}).get("symbol_levels", {})
+    if isinstance(symbol_levels, Mapping) and symbol_key in symbol_levels:
+        return [dict(row) for row in symbol_levels[symbol_key]]
+    return [dict(row) for row in cfg["ladder"]["levels"]]
 
 
-def _next_level(cfg: Mapping[str, Any], existing_levels: set[str]) -> dict[str, Any] | None:
-    for row in cfg["ladder"]["levels"]:
+def _take_profit_pct_for_symbol(cfg: Mapping[str, Any], symbol: str) -> float:
+    symbol_key = str(symbol).upper().strip()
+    return float(cfg["exit_policy"]["symbol_take_profit_pct"][symbol_key])
+
+
+def _level_map(cfg: Mapping[str, Any], symbol: str) -> dict[str, dict[str, Any]]:
+    return {str(row["level"]): dict(row) for row in _levels_for_symbol(cfg, symbol)}
+
+
+def _next_level(cfg: Mapping[str, Any], symbol: str, existing_levels: set[str]) -> dict[str, Any] | None:
+    for row in _levels_for_symbol(cfg, symbol):
         if str(row["level"]) not in existing_levels:
             return dict(row)
     return None
@@ -454,7 +497,7 @@ def _validate_open_lots(
     seen_ids: set[str] = set()
     seen_levels: set[str] = set()
     tp_by_level: dict[str, float] = {}
-    level_cfg = _level_map(cfg)
+    level_cfg = _level_map(cfg, symbol)
 
     for lot in lots:
         lot_id = str(lot.get("lot_id") or "").strip()
@@ -842,7 +885,7 @@ def _build_symbol_decision(
     best_bid = _fetch_best_bid(account, symbol, int(cfg["execution"]["order_book_limit"]))
     current_price = float(best_bid["price"])
     existing_levels = {str(lot.get("level") or "").upper().strip() for lot in open_lots}
-    next_level = _next_level(cfg, existing_levels)
+    next_level = _next_level(cfg, symbol, existing_levels)
     p1_lot = next((lot for lot in open_lots if str(lot.get("level") or "").upper() == "P1"), None)
 
     if non_cal_open_orders:
@@ -875,7 +918,7 @@ def _build_symbol_decision(
     if next_level is not None and anchor_price > 0:
         trigger_price = anchor_price * (1.0 - float(next_level["drop_pct"]))
         next_notional = float(next_level["notional_usdt"])
-        tp_price_estimate = current_price * (1.0 + float(cfg["exit_policy"]["take_profit_pct"]))
+        tp_price_estimate = current_price * (1.0 + _take_profit_pct_for_symbol(cfg, symbol))
 
     open_symbol_notional = _cal_open_notional(open_lots)
     open_total_notional = _total_open_notional(state)
@@ -907,7 +950,7 @@ def _build_symbol_decision(
             "current_price_source": "BEST_BID",
             "current_price": float(current_price),
             "proposed_order_notional_usdt": float(next_notional),
-            "take_profit_pct": float(cfg["exit_policy"]["take_profit_pct"]),
+            "take_profit_pct": _take_profit_pct_for_symbol(cfg, symbol),
             "estimated_tp_price": float(tp_price_estimate),
         }
 

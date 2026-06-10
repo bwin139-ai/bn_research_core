@@ -87,7 +87,10 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
     ]
   },
   "exit_policy": {
-    "take_profit_pct": 0.03
+    "symbol_take_profit_pct": {
+      "MUUSDT": 0.03,
+      "SKHYNIXUSDT": 0.01
+    }
   }
 }
 ```
@@ -108,6 +111,8 @@ sum(open CAL lots entry_notional_usdt for symbol) + next_entry_notional_usdt
 ```
 
 8. `P0` 本金不计入 `max_symbol_strategy_notional_usdt`，但 live audit 必须记录交易所 LONG position 中存在外部数量的事实。
+9. 不同核心资产可以通过 `ladder.symbol_levels` 显式覆盖自己的 ladder 参数。
+10. 每个核心资产必须通过 `exit_policy.symbol_take_profit_pct` 显式配置自己的 TP 参数，键必须与 `tradable_symbols` 完全一致。
 
 ## 5. 止盈语义
 
@@ -152,14 +157,17 @@ strategies/cal/config.live_trader.stark21.json
 ```
 
 2. 当前账户为 `stark21`。
-3. 当前交易 symbol 仅为 `MUUSDT`。
-4. 当前 ladder notional 为：
+3. 当前交易 symbol 为 `MUUSDT` 与 `SKHYNIXUSDT`。
+4. 当前默认 ladder notional 为：
 
 ```text
 P1 = 10 USDT
 P2 = 12 USDT
 P3 = 15 USDT
 ```
+
+5. `MUUSDT` 使用默认 ladder，TP 为 `0.03`。
+6. `SKHYNIXUSDT` 使用自定义 ladder drop `0.02/0.01/0.025`，TP 为 `0.01`。
 
 5. 当前 leverage 显式配置为 `25`。
 6. live trader 必须显式 `allow_live_order=true` 才允许真实下单。

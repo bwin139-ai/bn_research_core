@@ -510,7 +510,11 @@ def _submit_tp_for_fill(
     if not filters_res.get("ok"):
         raise RuntimeError(f"CAL symbol filters query failed before TP: {symbol} | {filters_res.get('reason')}")
     filters = dict(filters_res["data"])
-    tp_price = _round_down_to_tick(entry_price * (1.0 + float(decision_cfg["exit_policy"]["take_profit_pct"])), filters.get("tick_size"))
+    intent = pending.get("intent") if isinstance(pending.get("intent"), Mapping) else {}
+    take_profit_pct = _as_float(intent.get("take_profit_pct"))
+    if take_profit_pct is None or take_profit_pct <= 0:
+        raise RuntimeError(f"CAL pending intent missing valid take_profit_pct: {symbol}")
+    tp_price = _round_down_to_tick(entry_price * (1.0 + float(take_profit_pct)), filters.get("tick_size"))
     tp_res = place_limit_order(
         account,
         symbol,
@@ -546,7 +550,7 @@ def _submit_tp_for_fill(
         "tp_client_order_id": tp_order.get("client_order_id") or pending.get("tp_client_order_id"),
         "tp_exchange_order_id": tp_order.get("exchange_order_id") or tp_order.get("order_id"),
         "tp_order_snapshot": tp_order,
-        "take_profit_pct": float(decision_cfg["exit_policy"]["take_profit_pct"]),
+        "take_profit_pct": float(take_profit_pct),
         "opened_utc_ms": _now_utc_ms(),
         "opened_bj": _fmt_bj_from_ms(_now_utc_ms()),
     }
