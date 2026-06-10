@@ -325,6 +325,8 @@ def load_config(path: str) -> dict[str, Any]:
         "execution": {
             "position_side": _require_non_empty_str(execution, path, "position_side").upper(),
             "position_mode": _require_non_empty_str(execution, path, "position_mode").upper(),
+            "margin_type": _require_non_empty_str(execution, path, "margin_type").upper(),
+            "leverage": _require_int(execution, path, "leverage", positive=True),
             "post_only_time_in_force": _require_non_empty_str(execution, path, "post_only_time_in_force").upper(),
             "current_price_source": _require_non_empty_str(execution, path, "current_price_source").upper(),
             "order_book_limit": _require_int(execution, path, "order_book_limit", positive=True),
@@ -342,6 +344,8 @@ def load_config(path: str) -> dict[str, Any]:
         raise ValueError(f"CAL only supports LONG position_side | {path}")
     if out["execution"]["position_mode"] != "HEDGE":
         raise ValueError(f"CAL position_mode must be HEDGE | {path}")
+    if out["execution"]["margin_type"] != "CROSSED":
+        raise ValueError(f"CAL margin_type must be CROSSED | {path}")
     if out["execution"]["post_only_time_in_force"] != "GTX":
         raise ValueError(f"CAL post_only_time_in_force must be GTX | {path}")
     if out["execution"]["current_price_source"] != "BEST_BID":

@@ -133,9 +133,38 @@ P3.tp_price < P2.tp_price < P1.tp_price
 1. 所有 `CAL` BUY entry 必须使用 `POST_ONLY` maker order。
 2. 所有 `CAL` SELL TP 必须使用 `POST_ONLY` maker order。
 3. 当前 Binance USD-M 对应 `LIMIT + GTX`。
-4. 若 entry 因 post-only 约束被拒绝或过期，可在本次 attempt window 内重新读取 best bid 后重试。
+4. 若 entry 因 post-only 约束被拒绝、`EXPIRED` 或 `REJECTED`，必须重新读取 best bid 后继续重试，直到成功挂出 maker entry。
 5. 若 TP 因 post-only 约束无法建立，必须进入异常状态，不得裸奔持有策略 lot。
 6. 第一版不设置价格止损，不设置 time stop，不做 market flatten。
+7. 若 `POST_ONLY` BUY entry 只有部分成交，不撤销剩余 entry，不为部分成交数量提前挂 TP；必须继续等待该 entry 全部成交后，再一次性建立对应策略 lot 与 TP。
+8. 若 entry 在 TTL 内完全未成交，可以撤销并清理 pending entry。
+
+## 6.1 实盘 smoke 第一版
+
+第一版 live trader 固定为小账户小资金 smoke：
+
+1. 配置入口：
+
+```text
+strategies/cal/config.decision_audit.json
+strategies/cal/config.live_trader.stark21.json
+```
+
+2. 当前账户为 `stark21`。
+3. 当前交易 symbol 仅为 `MUUSDT`。
+4. 当前 ladder notional 为：
+
+```text
+P1 = 10 USDT
+P2 = 12 USDT
+P3 = 15 USDT
+```
+
+5. 当前 leverage 显式配置为 `25`。
+6. live trader 必须显式 `allow_live_order=true` 才允许真实下单。
+7. live trader 必须在每轮先 reconcile pending / open lots，再构建新 decision。
+8. live trader 信号、入场、开仓、离场必须写 audit、写 stdout log，并推送 bot 消息。
+9. entry 因 maker-only 约束挂单失败时，必须重读 best bid 并重试，直到交易所接受 maker entry；非 maker 约束类错误仍必须记录并中断本次 entry。
 
 ## 7. 异常与暂停
 
@@ -210,14 +239,14 @@ PAUSED_BY_INVARIANT_VIOLATION
 
 ## 10. 第一阶段工程目标
 
-第一阶段只实现以下内容：
+第一阶段已从 dry-run / audit-only 推进到小账户 live smoke。固定边界如下：
 
 1. 新增 `CAL` 独立配置。
 2. 新增 `CAL` dry-run / audit-only decision。
-3. 读取核心资产白名单 symbol 的 1h contract bars，计算 48h `H`。
+3. 新增 `CAL` maker-only live trader。
 4. 读取交易所账户 LONG position / open orders，用于识别外部 `P0` 与阻断异常状态。
 5. 判断 `P1/P2/P3` 是否 ready。
-6. 落盘 audit，不提交 Binance 订单。
+6. live trader 只允许 `POST_ONLY` BUY entry 与 `POST_ONLY` SELL TP。
 7. 不修改 Snapback / Spring / Sweep-Reclaim / TVR 现有交易语义。
 
 后续 live trader 必须复用公共 Binance execution / Gateway / BN_EXEC 能力，不得私有绕过公共下单入口。

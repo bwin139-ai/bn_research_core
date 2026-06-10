@@ -74,28 +74,36 @@ docs/Core-Anchor-Ladder项目语义基线.md
 10. 第一阶段不做历史 backtest 参数准入，参数由用户基于核心资产基本面和个人经验显式配置；但必须先做 dry-run / audit-only。
 11. 若 TP 单调关系异常、`P1` TP 已成交但 `P2/P3` 仍未关闭、TP 丢失/被撤/终态异常、lot state 无法归属等 invariant violation 出现，策略进入 `PAUSED_BY_INVARIANT_VIOLATION`：进程必须持续运行并继续 reconcile / audit / bot CRITICAL，但禁止任何新 BUY 和新 ladder。
 
-当前第一阶段已进入代码：
+当前第一阶段已进入代码并推进到小账户 live smoke：
 
 ```text
 strategies/cal/config.decision_audit.json
+strategies/cal/config.live_trader.stark21.json
 strategies/cal/decision_audit.py
+strategies/cal/live_trader.py
 ```
 
 实现边界：
 
-1. 只实现 dry-run / audit-only decision，不提交 Binance 订单。
-2. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
-3. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
-4. `H` 每小时刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
-5. 当前配置白名单为 `MUUSDT`、`NVDAUSDT`、`GOOGLUSDT`，后续真实启用前应按用户指定缩到 1-2 个 symbol。
-6. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
-7. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
-8. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过。
+1. `config.decision_audit.json` 当前账户为 `stark21`，交易 symbol 仅 `MUUSDT`。
+2. Ladder notional 为 `P1=10U`、`P2=12U`、`P3=15U`；`max_symbol_strategy_notional_usdt=37U`，`max_total_strategy_notional_usdt=37U`。
+3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
+4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
+5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
+6. `H` 每小时刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
+7. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
+8. 新增 `live_trader.py`，配置入口为 `config.live_trader.stark21.json`，显式 `allow_live_order=true`。
+9. live trader 每轮先 reconcile pending entry / open lots，再构建 decision；真实下单只走公共 BN_EXEC/Gateway 的 `LIMIT + GTX`。
+10. entry 因 maker-only 约束挂单失败、`EXPIRED` 或 `REJECTED` 时，live trader 会重读 best bid 并继续重试，直到交易所接受 maker entry；非 maker 约束类错误仍记录并中断本次 entry。
+11. `POST_ONLY` BUY entry 若部分成交，不撤剩余单，不提前挂部分 TP；继续等待整张 entry 完全成交后再建立策略 lot 与 TP。完全未成交且超过 TTL 的 entry 可撤销并清理 pending。
+12. 信号、entry submitted、open/TP submitted、exit 均写 audit / stdout log，并推送 bot 消息；BN_EXEC 仍负责交易所执行层通知。
+13. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
+14. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过；live mock 验证 entry pending 写入、部分成交不撤单不提前挂 TP、maker reject 后重读 best bid 并重试成功。
 
 当前下一步：
 
 ```text
-在用户确认具体账户、symbol 和参数后，运行 CAL --once dry-run 读取真实 Binance facts，审计输出 ready / blocked reason，再决定是否进入 maker-only live trader。
+先运行 CAL live trader `--once` 读取真实 Binance facts 并做一轮 reconcile / decision；若输出符合预期，再用 `--loop` 进入 10 秒常驻 smoke。
 ```
 
 ### 1.5 2026-05-23 三策略 sim/live 一致性审计闭环
