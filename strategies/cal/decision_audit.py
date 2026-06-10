@@ -754,10 +754,11 @@ def _calc_h_anchor(
     if cached is not None:
         return cached
     start_ms = int(latest_anchor_open) - (lookback_bars - 1) * step_ms
+    fetch_start_ms = int(start_ms - step_ms if include_current_bar else start_ms)
     rows = _fetch_klines(
         account,
         symbol,
-        start_ms=start_ms,
+        start_ms=fetch_start_ms,
         end_ms=int(now_ms if include_current_bar else latest_anchor_open + step_ms - 1),
         interval=interval,
         limit=int(cfg["data"]["kline_limit"]),
@@ -765,6 +766,8 @@ def _calc_h_anchor(
     if len(rows) < lookback_bars:
         raise RuntimeError(f"CAL insufficient 48h 1h bars: {symbol} | {len(rows)} < {lookback_bars}")
     rows = rows[-lookback_bars:]
+    latest_anchor_open = int(rows[-1][KLINE_OPEN_TIME_INDEX])
+    start_ms = int(latest_anchor_open) - (lookback_bars - 1) * step_ms
     expected = start_ms
     highs: list[float] = []
     h_time: int | None = None

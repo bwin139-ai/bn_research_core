@@ -104,6 +104,7 @@ strategies/cal/live_trader.py
 17. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成 `MUUSDT` 与 `SKHYNIXUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 `MUUSDT` P1 open lot entry `909.94`、TP `937.23`，`SKHYNIXUSDT` P1 open lot entry `1351.1`、TP `1364.61`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
 18. 2026-06-10 修复 live entry gating 后，服务器 `SKHYNIXUSDT` P2 已成功进入真实下单路径：第一次 `POST_ONLY` maker reject 后重读 best bid 重试成功，P2 open lot entry `1331.78`、TP `1345.09`，state 显示 pending entry 为 `None`。
 19. 2026-06-10 将 `MUUSDT` 默认 ladder drop 调整为 `0.02/0.01/0.025` 后，服务器已同步并重启 CAL；新配置生效，`MUUSDT` P2 已触发并 open，entry `890.15`、TP `916.85`。同轮观察到 `SKHYNIXUSDT` P3 触发、open 后 TP 离场。
+20. 2026-06-10 修复 CAL H anchor 整点刷新边界：当 Binance 在整点后短时间未返回当前未闭合 1h bar 时，decision audit 会向前多取 1 根，并使用最近可用的 48 根连续 1h bar 计算 H，避免 `47 < 48` 导致 live loop 异常。
 
 当前下一步：
 
