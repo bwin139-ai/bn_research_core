@@ -1,7 +1,7 @@
 # 当前项目状态
 （`CURRENT_STATE.md`）
 
-更新时间：2026-05-23
+更新时间：2026-06-10
 
 ## 0. 文档定位
 
@@ -44,6 +44,7 @@ bn_research_core
 5. `tvr` 的 TradFi Value Reclaim live-first 数据端建设。
 6. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
 7. Codex 多线程交接文档体系。
+8. `core-anchor-ladder` / CAL / 锚梯策略的核心资产阶梯策略语义设计。
 
 ### 1.3 当前阶段目标
 
@@ -51,7 +52,53 @@ bn_research_core
 让 live 数据链路、hub 共享数据、策略信号、交易执行、审计落盘与文档交接都进入可复核、可续接、可长期维护状态。
 ```
 
-### 1.4 2026-05-23 三策略 sim/live 一致性审计闭环
+### 1.4 Core Anchor Ladder 当前设计现场
+
+当前新增核心资产阶梯策略语义基线：
+
+```text
+docs/Core-Anchor-Ladder项目语义基线.md
+```
+
+已确认语义：
+
+1. CAL 面向黄金、原油、优质美股映射合约等核心资产，例如 `XAUUSDT`、`CLUSDT`、`BZUSDT`、`MUUSDT`、`NVDAUSDT`、`GOOGLUSDT`。
+2. CAL 与 Snapback / Spring / SWR 山寨币短周期结构策略分离，不复用其结构语义、止损或持仓时间语义。
+3. `P0` 是外部手动底仓，可来自 Binance App / Web 或管理员门户手动 LONG 入口；CAL 不管理、不止盈、不平仓、不写入策略 state。
+4. `P1/P2/P3` 是 CAL 自动策略 lot，必须通过策略专属 client order id 与本地 lot state 区分。
+5. 每个账户每个 symbol 同一时间最多一个 active ladder；无 active `P1` 时用最近 48 根 1h contract bars 的最高价 `H` 触发 `P1`，允许包含当前未闭合 1h bar。
+6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；只有当前 ladder 全部策略 lot 关闭后，才允许重新计算最新 48h `H` 开启下一轮 `P1`。
+7. 每个策略 lot 独立 TP，TP 价格为 `entry_price * (1 + take_profit_pct)`；同一 ladder 内必须满足 `P3.tp_price < P2.tp_price < P1.tp_price`。
+8. 所有 entry / TP 必须 maker-only，当前 Binance USD-M 对应 `LIMIT + GTX`。
+9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。48h `H` 锚点每小时刷新一次，每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。
+10. 第一阶段不做历史 backtest 参数准入，参数由用户基于核心资产基本面和个人经验显式配置；但必须先做 dry-run / audit-only。
+11. 若 TP 单调关系异常、`P1` TP 已成交但 `P2/P3` 仍未关闭、TP 丢失/被撤/终态异常、lot state 无法归属等 invariant violation 出现，策略进入 `PAUSED_BY_INVARIANT_VIOLATION`：进程必须持续运行并继续 reconcile / audit / bot CRITICAL，但禁止任何新 BUY 和新 ladder。
+
+当前第一阶段已进入代码：
+
+```text
+strategies/cal/config.decision_audit.json
+strategies/cal/decision_audit.py
+```
+
+实现边界：
+
+1. 只实现 dry-run / audit-only decision，不提交 Binance 订单。
+2. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
+3. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
+4. `H` 每小时刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
+5. 当前配置白名单为 `MUUSDT`、`NVDAUSDT`、`GOOGLUSDT`，后续真实启用前应按用户指定缩到 1-2 个 symbol。
+6. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
+7. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
+8. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过。
+
+当前下一步：
+
+```text
+在用户确认具体账户、symbol 和参数后，运行 CAL --once dry-run 读取真实 Binance facts，审计输出 ready / blocked reason，再决定是否进入 maker-only live trader。
+```
+
+### 1.5 2026-05-23 三策略 sim/live 一致性审计闭环
 
 本轮围绕 `sweep-reclaim` / `spring-sabc` / `snapback-sabc` 的 mybwin139 重叠窗口完成复跑收尾。服务器执行环境为 `/root/bn_research_core`，审计窗口保持与前轮一致：
 

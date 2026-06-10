@@ -1,0 +1,223 @@
+# Core Anchor Ladder 项目语义基线
+
+本文档是 Core Anchor Ladder（中文名：锚梯策略，简称 `CAL`）的唯一活跃语义基线。
+
+若本文档与 `docs/PROJECT_BASELINE.md` 冲突，以 `docs/PROJECT_BASELINE.md` 为准。
+
+## 1. 策略定位
+
+1. `CAL` 是 Binance USD-M 核心资产永续合约的 LONG-only 策略路线。
+2. `CAL` 面向黄金、原油、优质美股映射合约等核心资产，例如 `XAUUSDT`、`CLUSDT`、`BZUSDT`、`MUUSDT`、`NVDAUSDT`、`GOOGLUSDT`。
+3. `CAL` 不属于 Snapback / Spring / Sweep-Reclaim 山寨币短周期结构策略，不复用其结构语义、候选池或止损/持仓时间语义。
+4. `CAL` 的核心前提是标的存在基本面价值锚，允许在低杠杆、显式本金上限、maker-only、无价格止损前提下做分段式高抛低吸。
+5. `CAL` 当前仍受项目 LONG-only 总规则约束，不定义 SHORT、对冲或双向 CTA 语义。
+
+## 2. P0 / 策略 lot 边界
+
+`CAL` 必须区分外部底仓 `P0` 与策略自动 lot `P1/P2/P3`。
+
+### 2.1 P0
+
+1. `P0` 是外部手动底仓。
+2. `P0` 可以来自 Binance App / Web，也可以来自本项目账户级管理员门户的手动 LONG 入口。
+3. `P0` 不写入 `CAL` strategy state。
+4. `CAL` 不为 `P0` 挂 TP，不主动平 `P0`，不使用 `P0` 成本、数量或盈亏计算策略 lot 的入场和止盈。
+5. 交易所层面同一 symbol 的 LONG position 会聚合；因此 `CAL` 只能通过本地 lot state、策略专属 `client_order_id`、订单数量与 TP 归属来保证不主动影响 `P0`。
+
+### 2.2 P1 / P2 / P3
+
+1. `P1/P2/P3` 是 `CAL` 自动策略 lot。
+2. 每个策略 lot 必须有唯一 `lot_id`，并记录：
+   - `ladder_id`
+   - `level`
+   - `entry_order`
+   - `entry_price`
+   - `entry_qty`
+   - `entry_notional_usdt`
+   - `tp_price`
+   - `tp_order`
+   - `opened_utc_ms`
+   - `status`
+3. 所有 `CAL` entry / TP order 必须使用策略专属 `client_order_id` 前缀。当前建议前缀为 `CAL`。
+4. Reconcile 只能把带有 `CAL` 策略身份且已写入本地 state 的订单归入 `P1/P2/P3`。
+5. 任何非 `CAL` client order id 的订单、成交或持仓只能作为外部账户事实，不得自动归入策略 lot。
+
+## 3. Ladder 与锚点
+
+每个账户、每个 symbol 同一时间最多允许一个 active ladder。
+
+### 3.1 H 锚点
+
+1. 当 symbol 没有 active `P1` 时，`CAL` 使用最近 48 根 1h contract bars 的最高价作为 `H`。
+2. `CAL` 的 `H` 允许包含当前未闭合 1h bar。该字段只作为核心资产 ladder 的执行锚点，不属于 Snapback / Spring / SWR 的 1m 结构信号语义。
+3. `P1` 入场触发条件：
+
+```text
+current_price <= H * (1 - p1_drop_pct)
+```
+
+4. `current_price` 属于执行生命周期事实，应来自 live 盘口或交易所当前价格，不得写入策略结构 HBs 语义。
+
+### 3.2 P1 entry 锚点
+
+1. 一旦 `P1` 建立并处于 active ladder，该 ladder 的后续加仓锚点固定为 `P1.entry_price`。
+2. `P2` / `P3` 不再使用最新 48h `H` 作为锚点。
+3. `P2` / `P3` 入场触发条件：
+
+```text
+P2: current_price <= P1.entry_price * (1 - p2_drop_pct)
+P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
+```
+
+4. 每个 level 在同一 ladder 内最多开一次。
+5. 只有该 ladder 的全部策略 lot 都已关闭后，才允许重新读取最新 48h `H` 并开启下一轮 `P1`。
+
+## 4. 配置语义
+
+第一版 ladder 配置应显式表达每个 level 的入场回撤和本金：
+
+```json
+{
+  "ladder": {
+    "lookback_hours": 48,
+    "levels": [
+      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 1000},
+      {"level": "P2", "drop_pct": 0.07, "notional_usdt": 1200},
+      {"level": "P3", "drop_pct": 0.10, "notional_usdt": 1500}
+    ]
+  },
+  "exit_policy": {
+    "take_profit_pct": 0.03
+  }
+}
+```
+
+配置要求：
+
+1. `levels` 必须非空，level 名称不得重复。
+2. 第一版固定支持 `P1/P2/P3`，不得隐式扩展到未配置 level。
+3. `P1` 必须存在。
+4. `P2/P3` 的 `drop_pct` 必须大于 `P1.drop_pct`，且若同时存在 `P2/P3`，必须满足 `P3.drop_pct > P2.drop_pct > P1.drop_pct`。
+5. 每个 level 的 `notional_usdt` 必须显式配置，不允许默认值。
+6. 每个 symbol 必须有显式最大策略本金上限：
+
+```text
+sum(open CAL lots entry_notional_usdt for symbol) + next_entry_notional_usdt
+<= max_symbol_strategy_notional_usdt[symbol]
+```
+
+7. `P0` 本金不计入 `max_symbol_strategy_notional_usdt`，但 live audit 必须记录交易所 LONG position 中存在外部数量的事实。
+
+## 5. 止盈语义
+
+1. 每个策略 lot 独立止盈。
+2. 每个 lot 的 TP 价格固定为：
+
+```text
+tp_price = entry_price * (1 + take_profit_pct)
+```
+
+3. `P1/P2/P3` 的 TP order 必须各自独立，不能使用账户聚合 LONG position 均价。
+4. TP 只允许 `POST_ONLY` maker SELL，当前 Binance USD-M 语义为 `LIMIT + GTX`。
+5. TP SELL 数量必须等于对应策略 lot 的剩余数量，不得按账户聚合 position 全量卖出。
+6. 同一 ladder 内已存在的 TP 价格必须满足：
+
+```text
+P3.tp_price < P2.tp_price < P1.tp_price
+```
+
+7. 若某个 level 不存在，只校验已存在 levels 的 TP 单调关系。
+
+## 6. Maker-only 执行
+
+1. 所有 `CAL` BUY entry 必须使用 `POST_ONLY` maker order。
+2. 所有 `CAL` SELL TP 必须使用 `POST_ONLY` maker order。
+3. 当前 Binance USD-M 对应 `LIMIT + GTX`。
+4. 若 entry 因 post-only 约束被拒绝或过期，可在本次 attempt window 内重新读取 best bid 后重试。
+5. 若 TP 因 post-only 约束无法建立，必须进入异常状态，不得裸奔持有策略 lot。
+6. 第一版不设置价格止损，不设置 time stop，不做 market flatten。
+
+## 7. 异常与暂停
+
+`CAL` 暂停策略不等于杀进程。进程必须持续运行，继续 reconcile、继续记录事实、继续推送异常，但禁止新 BUY。
+
+触发以下任一情况时，策略必须进入：
+
+```text
+PAUSED_BY_INVARIANT_VIOLATION
+```
+
+触发条件：
+
+1. 同一 ladder 内 TP 价格顺序不满足 `P3.tp_price < P2.tp_price < P1.tp_price`。
+2. `P1` TP 已成交，但仍存在未关闭的 `P2/P3` 策略 lot。
+3. `P2` TP 已成交，但仍存在未关闭的 `P3` 策略 lot。
+4. 策略 lot 的 TP 订单丢失、被撤销、终态异常或数量不匹配。
+5. 本地 state 中存在重复 `lot_id`、重复 active level 或无法归属的 `CAL` client order id。
+6. 交易所 LONG position 事实与本地 `CAL` open lots 的最小可解释数量冲突，且无法由外部 `P0` 解释。
+
+进入暂停后：
+
+1. 禁止提交任何新的 `CAL` BUY。
+2. 禁止开启新的 ladder。
+3. 已有 lot 只允许继续 reconcile。
+4. 必须写 live audit / error state。
+5. 必须推送 bot `CRITICAL` 消息。
+6. 进程必须继续运行，除非遇到项目级 fail-fast 且无法安全读取账户事实。
+
+## 8. P0 共存 precheck
+
+第一版 `CAL` 不要求 symbol flat。
+
+允许的账户事实：
+
+1. 同一 symbol 已有外部 LONG position。
+2. 同一 symbol 存在非 `CAL` 历史成交。
+
+禁止或需阻断新开仓的账户事实：
+
+1. 同一 symbol 存在无法识别归属的 open order，且该订单可能影响 `CAL` TP / entry 数量判断。
+2. 同一 symbol 存在其它自动策略 active lot，除非后续文档显式允许共存。
+3. 同一 symbol 存在 `CAL` state 外的 `CAL` client order id open order。
+4. 账户 position mode、margin type、leverage 不满足显式配置。
+
+## 9. live-first 与验证
+
+1. `CAL` 第一阶段不以历史 backtest 作为参数准入条件。
+2. 参数由用户基于核心资产基本面、估值重定价和个人经验显式配置。
+3. 不做 backtest 不等于无验证；第一阶段必须先实现 dry-run / audit-only。
+4. dry-run / audit-only 必须落盘：
+   - 48h `H`
+   - `P1.entry_price` anchor
+   - 每个 level 的 trigger price
+   - 当前 price
+   - ready / blocked reason
+   - 外部 `P0` position fact
+   - `CAL` open lots
+   - risk cap usage
+5. live 下单前必须先经过 dry-run 同源 decision 构建。
+6. 后续若增加 replay / scenario test，只能用于验证状态机和风险边界，不自动改写用户配置参数。
+
+## 9.1 轮询频率
+
+1. `CAL` 不绑定每分钟开头运行。
+2. 第一版默认可以按 `collection.interval_secs=10` 高频轮询。
+3. 高频轮询的前提是显式核心资产白名单很小，通常只监控 1-2 个 symbol。
+4. REST 请求必须继续走 Binance REST Gateway，并保留 quota / ban guard。
+5. 48h `H` 锚点每小时刷新一次即可，不应在每个 10 秒循环中重复拉取 1h bars。
+6. 每 10 秒循环只需要刷新盘口、账户 position / open orders、本地 state 与触发判断。
+7. 若后续扩大 universe，必须先重新评估 API 消耗，不得静默扩大扫描面。
+
+## 10. 第一阶段工程目标
+
+第一阶段只实现以下内容：
+
+1. 新增 `CAL` 独立配置。
+2. 新增 `CAL` dry-run / audit-only decision。
+3. 读取核心资产白名单 symbol 的 1h contract bars，计算 48h `H`。
+4. 读取交易所账户 LONG position / open orders，用于识别外部 `P0` 与阻断异常状态。
+5. 判断 `P1/P2/P3` 是否 ready。
+6. 落盘 audit，不提交 Binance 订单。
+7. 不修改 Snapback / Spring / Sweep-Reclaim / TVR 现有交易语义。
+
+后续 live trader 必须复用公共 Binance execution / Gateway / BN_EXEC 能力，不得私有绕过公共下单入口。

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "mybwin139",
+  "audit_enabled": true,
+  "universe": {
+    "tradable_symbols": ["MUUSDT", "NVDAUSDT", "GOOGLUSDT"]
+  },
+  "collection": {
+    "interval_secs": 10
+  },
+  "data": {
+    "klines_interval": "1h",
+    "lookback_hours": 48,
+    "include_current_bar": true,
+    "h_anchor_refresh_secs": 3600,
+    "kline_limit": 1500
+  },
+  "ladder": {
+    "levels": [
+      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 1000},
+      {"level": "P2", "drop_pct": 0.07, "notional_usdt": 1200},
+      {"level": "P3", "drop_pct": 0.10, "notional_usdt": 1500}
+    ]
+  },
+  "exit_policy": {
+    "take_profit_pct": 0.03
+  },
+  "risk": {
+    "max_symbol_strategy_notional_usdt": {
+      "MUUSDT": 3700,
+      "NVDAUSDT": 3700,
+      "GOOGLUSDT": 3700
+    },
+    "max_total_strategy_notional_usdt": 11100
+  },
+  "execution": {
+    "position_side": "LONG",
+    "position_mode": "HEDGE",
+    "post_only_time_in_force": "GTX",
+    "current_price_source": "BEST_BID",
+    "order_book_limit": 5
+  },
+  "decision": {
+    "max_candidates": 3
+  }
+}

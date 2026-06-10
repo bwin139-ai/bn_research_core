@@ -38,6 +38,10 @@
   - TradFi Value Reclaim / TVR 的唯一活跃语义基线。
   - 涉及 TVR data_hub、TradFi funding、rolling 24h 或后续 TVR live 时必须阅读。
 
+- `Core-Anchor-Ladder项目语义基线.md`
+  - Core Anchor Ladder / 锚梯策略 / CAL 的唯一活跃语义基线。
+  - 涉及 P0 手动底仓、P1/P2/P3 阶梯 lot、maker-only 核心资产 live 或 dry-run audit 时必须阅读。
+
 ## 代码理解材料
 
 - `snapback-sabc_代码流程.md`
