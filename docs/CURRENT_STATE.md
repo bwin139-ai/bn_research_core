@@ -100,12 +100,12 @@ strategies/cal/live_trader.py
 13. 信号、entry submitted、open/TP submitted、exit 均写 audit / stdout log，并推送 bot 消息；BN_EXEC 仍负责交易所执行层通知。
 14. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
 15. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过；live mock 验证 entry pending 写入、部分成交不撤单不提前挂 TP、maker reject 后重读 best bid 并重试成功。
-16. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成首笔 `MUUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 P1 open lot entry `909.94`、TP `937.23`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
+16. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成 `MUUSDT` 与 `SKHYNIXUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 `MUUSDT` P1 open lot entry `909.94`、TP `937.23`，`SKHYNIXUSDT` P1 open lot entry `1351.1`、TP `1364.61`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
 
 当前下一步：
 
 ```text
-先运行 CAL live trader `--once` 读取真实 Binance facts 并做一轮 reconcile / decision；若输出符合预期，再用 `--loop` 进入 10 秒常驻 smoke。
+CAL live trader 已在服务器常驻运行；继续观察 `MUUSDT` / `SKHYNIXUSDT` P1 的 TP 成交、P2/P3 后续触发，以及交易所最小下单粒度对新增核心资产参数的影响。
 ```
 
 ### 1.5 2026-05-23 三策略 sim/live 一致性审计闭环
