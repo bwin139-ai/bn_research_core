@@ -33,6 +33,14 @@ nohup /root/service_env/bin/python -u run_manual_trade_bot.py \
   >> output/logs/manual_trade_bot.log 2>&1 &
 tail -n 20 -f output/logs/manual_trade_bot.log
 
+# ============== CAL 进程  ===============
+ACCOUNT=stark21
+nohup /root/service_env/bin/python strategies/cal/live_trader.py \
+  --config strategies/cal/config.live_trader.stark21.json \
+  --loop \
+  >> "output/live_projection/cal_live.${ACCOUNT}.log" 2>&1 &
+tail -n 20 -f output/live_projection/cal_live.stark21.log
+
 # ============== binance 历史数据同步 进程  ===============
 nohup /root/service_env/bin/python -m core.exchange_history_sync \
   --account mybwin139 \

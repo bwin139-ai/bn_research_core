@@ -276,12 +276,10 @@ def _load_levels(raw_levels: Any, path: str) -> list[dict[str, Any]]:
         raise ValueError(f"CAL ladder.levels must include P1 | {path}")
     order = {"P1": 1, "P2": 2, "P3": 3}
     levels.sort(key=lambda row: order[str(row["level"])])
-    previous_drop = 0.0
-    for row in levels:
-        drop = float(row["drop_pct"])
-        if drop <= previous_drop:
-            raise ValueError(f"CAL ladder drop_pct must increase by level | {path}")
-        previous_drop = drop
+    p2 = next((row for row in levels if row["level"] == "P2"), None)
+    p3 = next((row for row in levels if row["level"] == "P3"), None)
+    if p2 is not None and p3 is not None and float(p3["drop_pct"]) <= float(p2["drop_pct"]):
+        raise ValueError(f"CAL P3 drop_pct must be greater than P2 drop_pct | {path}")
     return levels
 
 

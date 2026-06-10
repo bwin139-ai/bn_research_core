@@ -86,7 +86,7 @@ strategies/cal/live_trader.py
 实现边界：
 
 1. `config.decision_audit.json` 当前账户为 `stark21`，交易 symbol 仅 `MUUSDT`。
-2. Ladder notional 为 `P1=10U`、`P2=12U`、`P3=15U`；`max_symbol_strategy_notional_usdt=37U`，`max_total_strategy_notional_usdt=37U`。
+2. Ladder 参数为 `P1 drop_pct=0.03 / 10U`、`P2 drop_pct=0.02 / 12U`、`P3 drop_pct=0.05 / 15U`；`max_symbol_strategy_notional_usdt=37U`，`max_total_strategy_notional_usdt=37U`。
 3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
 4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
 5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。

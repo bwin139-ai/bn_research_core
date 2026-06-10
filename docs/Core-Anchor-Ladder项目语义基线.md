@@ -81,9 +81,9 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
   "ladder": {
     "lookback_hours": 48,
     "levels": [
-      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 1000},
-      {"level": "P2", "drop_pct": 0.07, "notional_usdt": 1200},
-      {"level": "P3", "drop_pct": 0.10, "notional_usdt": 1500}
+      {"level": "P1", "drop_pct": 0.03, "notional_usdt": 10},
+      {"level": "P2", "drop_pct": 0.02, "notional_usdt": 12},
+      {"level": "P3", "drop_pct": 0.05, "notional_usdt": 15}
     ]
   },
   "exit_policy": {
@@ -97,16 +97,17 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
 1. `levels` 必须非空，level 名称不得重复。
 2. 第一版固定支持 `P1/P2/P3`，不得隐式扩展到未配置 level。
 3. `P1` 必须存在。
-4. `P2/P3` 的 `drop_pct` 必须大于 `P1.drop_pct`，且若同时存在 `P2/P3`，必须满足 `P3.drop_pct > P2.drop_pct > P1.drop_pct`。
-5. 每个 level 的 `notional_usdt` 必须显式配置，不允许默认值。
-6. 每个 symbol 必须有显式最大策略本金上限：
+4. `P1.drop_pct` 作用于 48h `H` 锚点；`P2/P3.drop_pct` 作用于 `P1.entry_price` 锚点，因此 `P2.drop_pct` 不要求大于 `P1.drop_pct`。
+5. 若同时存在 `P2/P3`，必须满足 `P3.drop_pct > P2.drop_pct`。
+6. 每个 level 的 `notional_usdt` 必须显式配置，不允许默认值。
+7. 每个 symbol 必须有显式最大策略本金上限：
 
 ```text
 sum(open CAL lots entry_notional_usdt for symbol) + next_entry_notional_usdt
 <= max_symbol_strategy_notional_usdt[symbol]
 ```
 
-7. `P0` 本金不计入 `max_symbol_strategy_notional_usdt`，但 live audit 必须记录交易所 LONG position 中存在外部数量的事实。
+8. `P0` 本金不计入 `max_symbol_strategy_notional_usdt`，但 live audit 必须记录交易所 LONG position 中存在外部数量的事实。
 
 ## 5. 止盈语义
 
