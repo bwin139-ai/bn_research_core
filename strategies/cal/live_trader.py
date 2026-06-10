@@ -747,17 +747,22 @@ def _place_entry(cfg: Mapping[str, Any], state: dict[str, Any], intent: Mapping[
     account = str(cfg["account"])
     decision_cfg = cfg["decision_cfg"]
     symbol = str(intent["symbol"]).upper().strip()
+    level = str(intent.get("level") or "").upper().strip()
     if not bool(cfg["allow_live_order"]):
         _write_event(cfg, "entry_blocked_allow_live_order_false", {"symbol": symbol, "intent": dict(intent)})
         return
-    _emit_signal(cfg, intent)
     symbol_state = _symbol_state(state, symbol)
     if str(symbol_state.get("status") or "").upper() == "PAUSED_BY_INVARIANT_VIOLATION":
         _write_event(cfg, "entry_blocked_symbol_paused", {"symbol": symbol})
         return
-    if _pending(symbol_state) is not None or _open_lots(symbol_state):
-        _write_event(cfg, "entry_blocked_existing_activity", {"symbol": symbol})
+    if _pending(symbol_state) is not None:
+        _write_event(cfg, "entry_blocked_pending_entry", {"symbol": symbol, "intent": dict(intent)})
         return
+    existing_levels = {str(lot.get("level") or "").upper().strip() for lot in _open_lots(symbol_state)}
+    if level in existing_levels:
+        _write_event(cfg, "entry_blocked_existing_level", {"symbol": symbol, "level": level, "intent": dict(intent)})
+        return
+    _emit_signal(cfg, intent)
     _prepare_symbol(cfg, symbol)
     attempt = 0
     entry_order: dict[str, Any] | None = None
