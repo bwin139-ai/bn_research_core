@@ -41,6 +41,7 @@ from strategies.cal.decision_audit import (
 )
 
 BJ = timezone(timedelta(hours=8))
+STRATEGY_LOGO = "⚓"
 POSITION_SIDE_LONG = "LONG"
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"}
 ACTIVE_TP_STATUSES = {"NEW", "PARTIALLY_FILLED"}
@@ -134,7 +135,7 @@ def _write_event(cfg: Mapping[str, Any], action: str, payload: Mapping[str, Any]
 
 
 def _notify_cal(account: str, title: str, lines: list[str]) -> bool:
-    content = "\n".join([f"[CAL] {account}", str(title), *[str(x) for x in lines]])
+    content = "\n".join([f"[{STRATEGY_LOGO} CAL] {account}", str(title), *[str(x) for x in lines]])
     return send_to_bot(content, label="cal")
 
 
@@ -465,7 +466,8 @@ def _emit_signal(cfg: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
     account = str(cfg["account"])
     symbol = str(intent.get("symbol") or "").upper().strip()
     logging.info(
-        "CAL SIGNAL | account=%s | symbol=%s | level=%s | current=%s | trigger=%s | anchor=%s:%s | notional=%s | tp_pct=%s",
+        "%s CAL SIGNAL | account=%s | symbol=%s | level=%s | current=%s | trigger=%s | anchor=%s:%s | notional=%s | tp_pct=%s",
+        STRATEGY_LOGO,
         account,
         symbol,
         intent.get("level"),
@@ -536,13 +538,13 @@ def _submit_tp_for_fill(
         "level": str(pending["level"]),
         "status": "OPEN",
         "entry_client_order_id": entry_order.get("client_order_id") or pending.get("entry_client_order_id"),
-        "entry_exchange_order_id": entry_order.get("exchange_order_id"),
+        "entry_exchange_order_id": entry_order.get("exchange_order_id") or entry_order.get("order_id"),
         "entry_price": float(entry_price),
         "entry_qty": float(qty),
         "entry_notional_usdt": float(entry_price) * float(qty),
         "tp_price": float(tp_price),
         "tp_client_order_id": tp_order.get("client_order_id") or pending.get("tp_client_order_id"),
-        "tp_exchange_order_id": tp_order.get("exchange_order_id"),
+        "tp_exchange_order_id": tp_order.get("exchange_order_id") or tp_order.get("order_id"),
         "tp_order_snapshot": tp_order,
         "take_profit_pct": float(decision_cfg["exit_policy"]["take_profit_pct"]),
         "opened_utc_ms": _now_utc_ms(),
@@ -555,7 +557,8 @@ def _submit_tp_for_fill(
     _save_state(account, state)
     _write_event(cfg, "tp_submitted", {"symbol": symbol, "lot": lot})
     logging.info(
-        "CAL OPEN | account=%s | symbol=%s | level=%s | entry=%s | qty=%s | tp=%s | lot_id=%s",
+        "%s CAL OPEN | account=%s | symbol=%s | level=%s | entry=%s | qty=%s | tp=%s | lot_id=%s",
+        STRATEGY_LOGO,
         account,
         symbol,
         lot["level"],
@@ -638,7 +641,8 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
                 cancel_order(account, symbol, client_order_id=tp_cid, notify_label="cal")
             _append_closed_lot(symbol_state, lot, reason="POSITION_CLOSED", order=None)
             logging.info(
-                "CAL EXIT | account=%s | symbol=%s | level=%s | reason=POSITION_CLOSED | lot_id=%s",
+                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=POSITION_CLOSED | lot_id=%s",
+                STRATEGY_LOGO,
                 account,
                 symbol,
                 lot.get("level"),
@@ -702,7 +706,8 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
         if row["status"] == "FILLED":
             _append_closed_lot(symbol_state, lot, reason="TAKE_PROFIT", order=row["order"])
             logging.info(
-                "CAL EXIT | account=%s | symbol=%s | level=%s | reason=TAKE_PROFIT | lot_id=%s",
+                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=TAKE_PROFIT | lot_id=%s",
+                STRATEGY_LOGO,
                 account,
                 symbol,
                 lot.get("level"),
@@ -828,7 +833,8 @@ def _place_entry(cfg: Mapping[str, Any], state: dict[str, Any], intent: Mapping[
     _save_state(account, state)
     _write_event(cfg, "entry_submitted", {"symbol": symbol, "pending": pending})
     logging.info(
-        "CAL ENTRY SUBMITTED | account=%s | symbol=%s | level=%s | price=%s | qty=%s | cid=%s",
+        "%s CAL ENTRY SUBMITTED | account=%s | symbol=%s | level=%s | price=%s | qty=%s | cid=%s",
+        STRATEGY_LOGO,
         account,
         symbol,
         pending["level"],
@@ -864,8 +870,7 @@ def run_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     state["last_loop_utc_ms"] = _now_utc_ms()
     state["last_loop_bj"] = _fmt_bj_from_ms(state["last_loop_utc_ms"])
     _save_state(account, state)
-    event = _write_event(cfg, "loop_finished", {"selected_count": len(selected), "decision_run_id": decision.get("run_id")})
-    return event
+    return {"selected_count": len(selected), "decision_run_id": decision.get("run_id")}
 
 
 def main() -> None:
@@ -878,11 +883,21 @@ def main() -> None:
     if bool(args.once) == bool(args.loop):
         raise SystemExit("Specify exactly one of --once or --loop")
     cfg = load_config(str(args.config))
-    logging.info("CAL live trader started | account=%s | config=%s | allow_live_order=%s", cfg["account"], args.config, cfg["allow_live_order"])
+    logging.info("%s CAL live trader started | account=%s | config=%s | allow_live_order=%s", STRATEGY_LOGO, cfg["account"], args.config, cfg["allow_live_order"])
+    last_summary_ms = 0
     while True:
         try:
             event = run_once(cfg)
-            logging.info("CAL live loop finished | account=%s | selected=%s", cfg["account"], event.get("selected_count"))
+            now_ms = _now_utc_ms()
+            should_log_summary = (
+                bool(args.once)
+                or int(event.get("selected_count") or 0) > 0
+                or now_ms - int(last_summary_ms) >= int(cfg["logging"]["summary_interval_secs"]) * 1000
+            )
+            if should_log_summary:
+                _write_event(cfg, "loop_summary", {"selected_count": event.get("selected_count"), "decision_run_id": event.get("decision_run_id")})
+                logging.info("%s CAL live loop summary | account=%s | selected=%s", STRATEGY_LOGO, cfg["account"], event.get("selected_count"))
+                last_summary_ms = now_ms
         except Exception as exc:
             logging.exception("CAL live loop failed: %s", exc)
             _write_event(cfg, "loop_exception", {"reason": str(exc)})

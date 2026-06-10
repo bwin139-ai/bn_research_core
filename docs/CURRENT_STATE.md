@@ -99,6 +99,7 @@ strategies/cal/live_trader.py
 12. 信号、entry submitted、open/TP submitted、exit 均写 audit / stdout log，并推送 bot 消息；BN_EXEC 仍负责交易所执行层通知。
 13. 非 CAL open order、CAL state 外的 CAL client order id、TP 单调关系异常、P2/P3 无 P1、策略 lot 数量大于交易所 LONG position 等都会阻断新 intent 或进入 paused/invariant 路径。
 14. 本地最小验证已完成：`py_compile` 通过，配置加载通过，mock 决策验证 P1 ready 与 H anchor cache 命中行为通过；live mock 验证 entry pending 写入、部分成交不撤单不提前挂 TP、maker reject 后重读 best bid 并重试成功。
+15. 2026-06-10 服务器 `stark21` CAL 进程已启动并完成首笔 `MUUSDT` P1 smoke：SIGNAL、ENTRY maker、OPEN/TP maker 均有 stdout log 与 bot 推送；state 显示 P1 open lot entry `909.94`、TP `937.23`。本轮新增 stdout 降噪：普通 10 秒空循环不再每轮输出 `loop finished`，只按 `logging.summary_interval_secs=3600` 输出 summary；signal / entry / open / exit / exception 仍即时输出。公共 BN_EXEC 识别新增 `CAL` client order id，避免 CAL 订单显示为 `BN`；CAL 策略侧日志、bot 标题与 BN_EXEC 消息统一显示 `⚓ CAL`。
 
 当前下一步：
 

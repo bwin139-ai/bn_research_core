@@ -71,6 +71,8 @@ def _extract_order_event_time_ms(*payloads: Any) -> int | None:
 
 def _strategy_code_from_client_order_id(client_order_id: str | None) -> str:
     cid = str(client_order_id or "").upper()
+    if "_CAL_" in cid:
+        return "CAL"
     if "_TVR_" in cid:
         return "TVR"
     if "_HSH_" in cid:
@@ -93,6 +95,8 @@ def _strategy_icon(strategy_code: str) -> str:
         return "📈"
     if strategy_code == "TVR":
         return "🏛"
+    if strategy_code == "CAL":
+        return "⚓"
     if strategy_code == "HSH":
         return "HSH"
     return "BN"

@@ -9,6 +9,8 @@ ps aux | grep '[c]ore.exchange_history_sync'
 
 ps aux | grep '[r]un_manual_trade_bot.py'
 
+ps aux | grep '[s]trategies/cal/live_trader.py'
+
 ps aux | grep '[c]ore/live/market_data_hub_runner.py'
 ps aux | grep '[s]trategies/snapback/run_live.py'
 ps aux | grep '[s]trategies/spring/run_live.py'
