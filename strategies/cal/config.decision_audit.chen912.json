@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "chen912",
+  "audit_enabled": true,
+  "universe": {
+    "tradable_symbols": ["SKHYNIXUSDT"]
+  },
+  "collection": {
+    "interval_secs": 10
+  },
+  "data": {
+    "klines_interval": "1h",
+    "lookback_hours": 48,
+    "include_current_bar": true,
+    "h_anchor_refresh_secs": 3600,
+    "kline_limit": 1500
+  },
+  "ladder": {
+    "levels": [
+      {"level": "P1", "drop_pct": 0.03, "notional_usdt": 3000},
+      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 3000},
+      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 4000}
+    ],
+    "symbol_levels": {}
+  },
+  "exit_policy": {
+    "symbol_take_profit_pct": {
+      "SKHYNIXUSDT": 0.02
+    }
+  },
+  "risk": {
+    "max_symbol_strategy_notional_usdt": {
+      "SKHYNIXUSDT": 10000
+    },
+    "max_total_strategy_notional_usdt": 10000
+  },
+  "execution": {
+    "position_side": "LONG",
+    "position_mode": "HEDGE",
+    "margin_type": "CROSSED",
+    "leverage": 25,
+    "post_only_time_in_force": "GTX",
+    "current_price_source": "BEST_BID",
+    "order_book_limit": 5
+  },
+  "decision": {
+    "max_candidates": 3
+  }
+}

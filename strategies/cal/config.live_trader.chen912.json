@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "account": "chen912",
+  "allow_live_order": true,
+  "audit_enabled": true,
+  "decision_config_path": "strategies/cal/config.decision_audit.chen912.json",
+  "collection": {
+    "interval_secs": 10
+  },
+  "execution": {
+    "entry_order_ttl_secs": 120,
+    "entry_retry_sleep_secs": 0.5,
+    "partial_fill_wait_secs": 0,
+    "order_retry_max": 1,
+    "api_retry_delay_secs": 1.0
+  },
+  "logging": {
+    "summary_interval_secs": 3600
+  }
+}

@@ -105,11 +105,12 @@ strategies/cal/live_trader.py
 18. 2026-06-10 修复 live entry gating 后，服务器 `SKHYNIXUSDT` P2 已成功进入真实下单路径：第一次 `POST_ONLY` maker reject 后重读 best bid 重试成功，P2 open lot entry `1331.78`、TP `1345.09`，state 显示 pending entry 为 `None`。
 19. 2026-06-10 将 `MUUSDT` 默认 ladder drop 调整为 `0.02/0.01/0.025` 后，服务器已同步并重启 CAL；新配置生效，`MUUSDT` P2 已触发并 open，entry `890.15`、TP `916.85`。同轮观察到 `SKHYNIXUSDT` P3 触发、open 后 TP 离场。
 20. 2026-06-10 修复 CAL H anchor 整点刷新边界：当 Binance 在整点后短时间未返回当前未闭合 1h bar 时，decision audit 会向前多取 1 根，并使用最近可用的 48 根连续 1h bar 计算 H，避免 `47 < 48` 导致 live loop 异常。
+21. 2026-06-10 新增 `chen912` 与 `junjie2026` 两个 CAL live 配置，均只交易 `SKHYNIXUSDT`，ladder drop 为 `0.03/0.05/0.12`，TP 为 `0.02`，杠杆 `25`。`chen912` 三档 notional 为 `3000/3000/4000U`，策略本金上限 `10000U`；`junjie2026` 三档 notional 为 `250/250/333U`，策略本金上限 `833U`。
 
 当前下一步：
 
 ```text
-CAL live trader 已在服务器常驻运行；继续观察 `MUUSDT` / `SKHYNIXUSDT` P1 的 TP 成交、P2/P3 后续触发，以及交易所最小下单粒度对新增核心资产参数的影响。
+CAL live trader 已在服务器常驻运行；继续观察 `stark21`、`chen912`、`junjie2026` 的 `SKHYNIXUSDT` ladder 触发、TP 成交、重启恢复，以及交易所最小下单粒度对新增核心资产参数的影响。
 ```
 
 ### 1.5 2026-05-23 三策略 sim/live 一致性审计闭环
