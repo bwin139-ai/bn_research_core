@@ -106,6 +106,7 @@ strategies/cal/live_trader.py
 19. 2026-06-10 将 `MUUSDT` 默认 ladder drop 调整为 `0.02/0.01/0.025` 后，服务器已同步并重启 CAL；新配置生效，`MUUSDT` P2 已触发并 open，entry `890.15`、TP `916.85`。同轮观察到 `SKHYNIXUSDT` P3 触发、open 后 TP 离场。
 20. 2026-06-10 修复 CAL H anchor 整点刷新边界：当 Binance 在整点后短时间未返回当前未闭合 1h bar 时，decision audit 会向前多取 1 根，并使用最近可用的 48 根连续 1h bar 计算 H，避免 `47 < 48` 导致 live loop 异常。
 21. 2026-06-10 新增 `chen912` 与 `junjie2026` 两个 CAL live 配置，均只交易 `SKHYNIXUSDT`，ladder drop 为 `0.03/0.05/0.12`，TP 为 `0.02`，杠杆 `25`。`chen912` 三档 notional 为 `3000/3000/4000U`，策略本金上限 `10000U`；`junjie2026` 三档 notional 为 `250/250/333U`，策略本金上限 `833U`。
+22. 2026-06-11 修复 CAL open lot reconcile 顺序：先查询每个策略 lot 的 TP 订单并关闭已 `FILLED` 的 lot，再用剩余 open lots 与交易所 LONG position 做 `position_qty_below_cal_open_lot_qty` invariant 检查。该修复覆盖 `chen912` / `junjie2026` 的 `SKHYNIXUSDT` P2 已 TP 成交但 P1 仍持有时被误暂停的问题；仅当该误暂停原因已恢复一致时自动解除对应 symbol 暂停。
 
 当前下一步：
 

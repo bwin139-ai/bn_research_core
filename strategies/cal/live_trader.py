@@ -436,6 +436,23 @@ def _pause_symbol(
     _notify_cal(str(cfg["account"]), "CRITICAL paused", [f"symbol={symbol}", f"reason={reason}"])
 
 
+def _clear_resolved_position_qty_pause(account: str, state: dict[str, Any], symbol_state: dict[str, Any]) -> None:
+    if str(symbol_state.get("paused_reason") or "") != "position_qty_below_cal_open_lot_qty":
+        return
+    symbol_state["status"] = "RUNNING"
+    symbol_state.pop("paused_reason", None)
+    symbol_state.pop("paused_detail", None)
+    symbol_state.pop("paused_utc_ms", None)
+    symbol_state.pop("paused_bj", None)
+    if all(
+        str(item.get("status") or "").upper().strip() != "PAUSED_BY_INVARIANT_VIOLATION"
+        for item in (state.get("symbols") or {}).values()
+        if isinstance(item, Mapping)
+    ):
+        state["status"] = "RUNNING"
+    _save_state(account, state)
+
+
 def _query_long_position(account: str, symbol: str) -> dict[str, Any] | None:
     res = get_position(account, symbol, POSITION_SIDE_LONG)
     if not res.get("ok"):
@@ -645,40 +662,6 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
     lots = _open_lots(symbol_state)
     if not lots:
         return
-    position = _query_long_position(account, symbol)
-    position_qty = _position_qty(position)
-    if position_qty <= 0:
-        for lot in lots:
-            tp_cid = str(lot.get("tp_client_order_id") or "").strip()
-            if tp_cid:
-                cancel_order(account, symbol, client_order_id=tp_cid, notify_label="cal")
-            _append_closed_lot(symbol_state, lot, reason="POSITION_CLOSED", order=None)
-            logging.info(
-                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=POSITION_CLOSED | lot_id=%s",
-                STRATEGY_LOGO,
-                account,
-                symbol,
-                lot.get("level"),
-                lot.get("lot_id"),
-            )
-            _notify_cal(
-                account,
-                "EXIT",
-                [f"symbol={symbol}", f"level={lot.get('level')}", "reason=POSITION_CLOSED", f"lot_id={lot.get('lot_id')}"],
-            )
-        symbol_state["open_lots"] = []
-        _save_state(account, state)
-        _write_event(cfg, "open_lots_position_closed", {"symbol": symbol, "closed_count": len(lots)})
-        return
-    if position_qty + 1e-12 < _cal_qty(lots):
-        _pause_symbol(
-            cfg=cfg,
-            state=state,
-            symbol=symbol,
-            reason="position_qty_below_cal_open_lot_qty",
-            detail={"position_qty": position_qty, "cal_qty": _cal_qty(lots)},
-        )
-        return
 
     rows: list[dict[str, Any]] = []
     for lot in lots:
@@ -735,6 +718,41 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
         else:
             remaining.append(lot)
     symbol_state["open_lots"] = remaining
+    position = _query_long_position(account, symbol)
+    position_qty = _position_qty(position)
+    if remaining and position_qty <= 0:
+        for lot in remaining:
+            tp_cid = str(lot.get("tp_client_order_id") or "").strip()
+            if tp_cid:
+                cancel_order(account, symbol, client_order_id=tp_cid, notify_label="cal")
+            _append_closed_lot(symbol_state, lot, reason="POSITION_CLOSED", order=None)
+            logging.info(
+                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=POSITION_CLOSED | lot_id=%s",
+                STRATEGY_LOGO,
+                account,
+                symbol,
+                lot.get("level"),
+                lot.get("lot_id"),
+            )
+            _notify_cal(
+                account,
+                "EXIT",
+                [f"symbol={symbol}", f"level={lot.get('level')}", "reason=POSITION_CLOSED", f"lot_id={lot.get('lot_id')}"],
+            )
+        symbol_state["open_lots"] = []
+        _save_state(account, state)
+        _write_event(cfg, "open_lots_position_closed", {"symbol": symbol, "closed_count": len(remaining)})
+        return
+    if position_qty + 1e-12 < _cal_qty(remaining):
+        _pause_symbol(
+            cfg=cfg,
+            state=state,
+            symbol=symbol,
+            reason="position_qty_below_cal_open_lot_qty",
+            detail={"position_qty": position_qty, "cal_qty": _cal_qty(remaining)},
+        )
+        return
+    _clear_resolved_position_qty_pause(account, state, symbol_state)
     _save_state(account, state)
     _write_event(
         cfg,
