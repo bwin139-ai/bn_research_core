@@ -98,6 +98,12 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
       "MUUSDT": 0.03,
       "SKHYNIXUSDT": 0.01
     }
+  },
+  "execution": {
+    "symbol_leverage": {
+      "MUUSDT": 25,
+      "SKHYNIXUSDT": 25
+    }
   }
 }
 ```
@@ -120,6 +126,7 @@ sum(open CAL lots entry_notional_usdt for symbol) + next_entry_notional_usdt
 8. `P0` 本金不计入 `max_symbol_strategy_notional_usdt`，但 live audit 必须记录交易所 LONG position 中存在外部数量的事实。
 9. 不同核心资产可以通过 `ladder.symbol_levels` 显式覆盖自己的 ladder 参数。
 10. 每个核心资产必须通过 `exit_policy.symbol_take_profit_pct` 显式配置自己的 TP 参数，键必须与 `tradable_symbols` 完全一致。
+11. 每个核心资产必须通过 `execution.symbol_leverage` 显式配置自己的杠杆，键必须与 `tradable_symbols` 完全一致；同一账户不同 symbol 允许使用不同杠杆。
 
 ## 5. 止盈语义
 
@@ -176,7 +183,7 @@ P3 = 15 USDT
 5. `MUUSDT` 使用默认 ladder，TP 为 `0.03`。
 6. `SKHYNIXUSDT` 使用自定义 ladder drop `0.02/0.01/0.025`，notional 为 `15/20/25`，TP 为 `0.01`。
 
-7. 当前 leverage 显式配置为 `25`。
+7. 当前 leverage 通过 `execution.symbol_leverage` 按 symbol 显式配置，`stark21` 的 `MUUSDT` 与 `SKHYNIXUSDT` 均为 `25`。
 8. live trader 必须显式 `allow_live_order=true` 才允许真实下单。
 9. live trader 必须在每轮先 reconcile pending / open lots，再构建新 decision。
 10. live trader 信号、入场、开仓、离场必须写 audit、写 stdout log，并推送 bot 消息。

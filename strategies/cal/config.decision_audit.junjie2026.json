@@ -4,7 +4,7 @@
   "account": "junjie2026",
   "audit_enabled": true,
   "universe": {
-    "tradable_symbols": ["SKHYNIXUSDT"]
+    "tradable_symbols": ["MUUSDT", "SPCXUSDT"]
   },
   "collection": {
     "interval_secs": 10
@@ -18,28 +18,33 @@
   },
   "ladder": {
     "levels": [
-      {"level": "P1", "drop_pct": 0.03, "notional_usdt": 250},
-      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 250},
-      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 333}
+      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 600},
+      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600},
+      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600}
     ],
     "symbol_levels": {}
   },
   "exit_policy": {
     "symbol_take_profit_pct": {
-      "SKHYNIXUSDT": 0.02
+      "MUUSDT": 0.025,
+      "SPCXUSDT": 0.025
     }
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
-      "SKHYNIXUSDT": 833
+      "MUUSDT": 1800,
+      "SPCXUSDT": 1800
     },
-    "max_total_strategy_notional_usdt": 833
+    "max_total_strategy_notional_usdt": 3600
   },
   "execution": {
     "position_side": "LONG",
     "position_mode": "HEDGE",
     "margin_type": "CROSSED",
-    "leverage": 25,
+    "symbol_leverage": {
+      "MUUSDT": 25,
+      "SPCXUSDT": 20
+    },
     "post_only_time_in_force": "GTX",
     "current_price_source": "BEST_BID",
     "order_book_limit": 5

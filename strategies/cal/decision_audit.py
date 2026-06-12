@@ -255,6 +255,31 @@ def _require_symbol_float_map(cfg: Mapping[str, Any], path: str, key: str) -> di
     return out
 
 
+def _require_symbol_int_map(cfg: Mapping[str, Any], path: str, key: str, *, positive: bool) -> dict[str, int]:
+    if key not in cfg:
+        raise KeyError(f"CAL decision audit config missing required field: {key} | {path}")
+    value = cfg[key]
+    if not isinstance(value, dict) or not value:
+        raise TypeError(f"CAL decision audit config field must be non-empty object: {key} | {path}")
+    out: dict[str, int] = {}
+    for raw_symbol, raw_value in value.items():
+        symbol = str(raw_symbol).upper().strip()
+        if not symbol:
+            raise ValueError(f"CAL decision audit config contains empty symbol key: {key} | {path}")
+        if symbol in out:
+            raise ValueError(f"CAL decision audit config duplicated symbol key: {symbol} | {path}")
+        if isinstance(raw_value, bool):
+            raise TypeError(f"CAL decision audit config symbol value must be integer: {key}.{symbol} | {path}")
+        try:
+            num = int(raw_value)
+        except Exception as exc:
+            raise TypeError(f"CAL decision audit config symbol value must be integer: {key}.{symbol} | {path}") from exc
+        if positive and num <= 0:
+            raise ValueError(f"CAL decision audit config symbol value must be positive: {key}.{symbol} | {path}")
+        out[symbol] = int(num)
+    return out
+
+
 def _load_levels(raw_levels: Any, path: str, *, label: str = "ladder.levels") -> list[dict[str, Any]]:
     if not isinstance(raw_levels, list) or not raw_levels:
         raise TypeError(f"CAL {label} must be non-empty list | {path}")
@@ -348,7 +373,7 @@ def load_config(path: str) -> dict[str, Any]:
             "position_side": _require_non_empty_str(execution, path, "position_side").upper(),
             "position_mode": _require_non_empty_str(execution, path, "position_mode").upper(),
             "margin_type": _require_non_empty_str(execution, path, "margin_type").upper(),
-            "leverage": _require_int(execution, path, "leverage", positive=True),
+            "symbol_leverage": _require_symbol_int_map(execution, path, "symbol_leverage", positive=True),
             "post_only_time_in_force": _require_non_empty_str(execution, path, "post_only_time_in_force").upper(),
             "current_price_source": _require_non_empty_str(execution, path, "current_price_source").upper(),
             "order_book_limit": _require_int(execution, path, "order_book_limit", positive=True),
@@ -383,6 +408,9 @@ def load_config(path: str) -> dict[str, Any]:
     tp_override_symbols = set(out["exit_policy"]["symbol_take_profit_pct"])
     if tp_override_symbols != tradable_set:
         raise ValueError(f"CAL symbol_take_profit_pct keys must match tradable_symbols | {path}")
+    leverage_symbols = set(out["execution"]["symbol_leverage"])
+    if leverage_symbols != tradable_set:
+        raise ValueError(f"CAL symbol_leverage keys must match tradable_symbols | {path}")
     for symbol in sorted(tradable_set):
         total_level_notional = sum(float(row["notional_usdt"]) for row in _levels_for_symbol(out, symbol))
         symbol_cap = float(out["risk"]["max_symbol_strategy_notional_usdt"][symbol])

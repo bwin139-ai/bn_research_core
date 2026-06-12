@@ -411,7 +411,8 @@ def _prepare_symbol(cfg: Mapping[str, Any], symbol: str) -> None:
     margin_res = ensure_cross_margin(account, symbol)
     if not margin_res.get("ok"):
         raise RuntimeError(f"CAL ensure crossed margin failed: {symbol} | {margin_res.get('reason')}")
-    lev_res = ensure_leverage(account, symbol, int(decision_cfg["execution"]["leverage"]))
+    symbol_key = str(symbol).upper().strip()
+    lev_res = ensure_leverage(account, symbol, int(decision_cfg["execution"]["symbol_leverage"][symbol_key]))
     if not lev_res.get("ok"):
         raise RuntimeError(f"CAL ensure leverage failed: {symbol} | {lev_res.get('reason')}")
 

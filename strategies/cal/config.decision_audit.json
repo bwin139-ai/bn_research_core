@@ -47,7 +47,10 @@
     "position_side": "LONG",
     "position_mode": "HEDGE",
     "margin_type": "CROSSED",
-    "leverage": 25,
+    "symbol_leverage": {
+      "MUUSDT": 25,
+      "SKHYNIXUSDT": 25
+    },
     "post_only_time_in_force": "GTX",
     "current_price_source": "BEST_BID",
     "order_book_limit": 5
