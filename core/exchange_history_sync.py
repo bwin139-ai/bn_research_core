@@ -726,6 +726,39 @@ def _incomplete_position_row(trade: dict[str, Any], reason: str) -> dict[str, An
     }
 
 
+def _incomplete_close_excess_position_row(
+    trade: dict[str, Any],
+    *,
+    matched_qty: Decimal,
+    excess_qty: Decimal,
+    excess_realized_pnl: Decimal,
+    reason: str,
+) -> dict[str, Any]:
+    symbol = str(trade.get("symbol") or "").upper().strip()
+    position_side = str(trade.get("position_side") or "").upper().strip()
+    trade_id = _int_value(trade, "trade_id", context=symbol)
+    close_time_ms = _int_value(trade, "time_ms", context=symbol)
+    price = _decimal_value(trade, "price", context=symbol)
+    if position_side == "LONG":
+        position_id = f"{symbol}|INCOMPLETE_EXCESS|{close_time_ms}|{trade_id}"
+    else:
+        position_id = f"{symbol}|{position_side}|INCOMPLETE_EXCESS|{close_time_ms}|{trade_id}"
+    row = _incomplete_position_row(trade, reason)
+    row.update(
+        {
+            "position_id": position_id,
+            "closed_qty": float(excess_qty),
+            "realized_pnl": float(excess_realized_pnl),
+            "close_notional": float(excess_qty * price),
+            "source_close_qty": float(_decimal_value(trade, "qty", context=symbol)),
+            "matched_open_qty": float(matched_qty),
+            "excess_close_qty": float(excess_qty),
+            "income_net_pnl_skipped_reason": "split_close_qty_exceeds_open_qty",
+        }
+    )
+    return row
+
+
 def _position_net_pnl_from_income(position: dict[str, Any], incomes: list[dict[str, Any]]) -> Decimal | None:
     symbol = str(position.get("symbol") or "").upper().strip()
     trade_ids = {str(x) for x in position.get("trade_ids") or [] if str(x)}
@@ -817,10 +850,38 @@ def _derive_positions(trades: list[dict[str, Any]]) -> dict[str, Any]:
                 positions.append(_incomplete_position_row(trade, "missing_open_trade"))
                 continue
             if qty > current["open_qty"]:
-                raise ValueError(
-                    f"{side} qty exceeds open {position_side} qty: symbol={symbol} trade_id={trade_id} "
-                    f"close_qty={qty} open_qty={current['open_qty']}"
+                matched_qty = Decimal(current["open_qty"])
+                excess_qty = qty - matched_qty
+                matched_realized_pnl = realized_pnl * (matched_qty / qty)
+                excess_realized_pnl = realized_pnl - matched_realized_pnl
+                current["open_qty"] = Decimal("0")
+                current["closed_qty"] += matched_qty
+                current["close_notional"] += matched_qty * price
+                current["realized_pnl"] += matched_realized_pnl
+                current["trade_ids"].append(trade_id)
+                current["order_ids"].append(order_id)
+                closed_row = _position_row(current, status="CLOSED", close_trade=trade)
+                closed_row.update(
+                    {
+                        "close_qty_exceeds_open_qty": True,
+                        "source_close_qty": float(qty),
+                        "matched_open_qty": float(matched_qty),
+                        "excess_close_qty": float(excess_qty),
+                        "income_net_pnl_skipped_reason": "split_close_qty_exceeds_open_qty",
+                    }
                 )
+                positions.append(closed_row)
+                positions.append(
+                    _incomplete_close_excess_position_row(
+                        trade,
+                        matched_qty=matched_qty,
+                        excess_qty=excess_qty,
+                        excess_realized_pnl=excess_realized_pnl,
+                        reason="close_qty_exceeds_open_qty",
+                    )
+                )
+                active.pop(active_key)
+                continue
             current["open_qty"] -= qty
             current["closed_qty"] += qty
             current["close_notional"] += qty * price
@@ -845,6 +906,8 @@ def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
         return {"ok": False, "reason": str(exc), "rows_seen": len(trades), "rows_written": 0, "open_positions_skipped": 0}
     rows = list(derived["positions"])
     for row in rows:
+        if row.get("income_net_pnl_skipped_reason"):
+            continue
         net_pnl = _position_net_pnl_from_income(row, incomes)
         if net_pnl is not None:
             row["trade_realized_pnl"] = row["realized_pnl"]

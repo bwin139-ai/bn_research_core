@@ -108,6 +108,7 @@ strategies/cal/live_trader.py
 21. 2026-06-10 新增 `chen912` 与 `junjie2026` 两个 CAL live 配置，均只交易 `SKHYNIXUSDT`，ladder drop 为 `0.03/0.05/0.12`，TP 为 `0.02`，杠杆 `25`。`chen912` 三档 notional 为 `3000/3000/4000U`，策略本金上限 `10000U`；`junjie2026` 三档 notional 为 `250/250/333U`，策略本金上限 `833U`。
 22. 2026-06-11 修复 CAL open lot reconcile 顺序：先查询每个策略 lot 的 TP 订单并关闭已 `FILLED` 的 lot，再用剩余 open lots 与交易所 LONG position 做 `position_qty_below_cal_open_lot_qty` invariant 检查。该修复覆盖 `chen912` / `junjie2026` 的 `SKHYNIXUSDT` P2 已 TP 成交但 P1 仍持有时被误暂停的问题；仅当该误暂停原因已恢复一致时自动解除对应 symbol 暂停。
 23. 2026-06-12 CAL 配置 schema 将杠杆从全局 `execution.leverage` 改为按品种显式 `execution.symbol_leverage`。`chen912` 与 `junjie2026` 移除 `SKHYNIXUSDT` 后续新扫描，新增 `MUUSDT` 与 `SPCXUSDT`：两品种 ladder drop 均为 `0.05/0.05/0.12`，TP 均为 `0.025`，杠杆分别为 `MUUSDT=25`、`SPCXUSDT=20`；`chen912` 三档 notional 为 `6000/6000/6000U`，`junjie2026` 为 `600/600/600U`。旧 `SKHYNIXUSDT` 持仓与 TP 挂单不由新配置主动撤销，用户可手动处理。
+24. 2026-06-13 管理员门户 `/view_history` 现场发现 `junjie2026` 的 `orders/trades/income` 已同步到 6 月 12/13 日，但 `positions` 只停在 6 月 9 日；根因是 `exchange_history_sync` 派生仓位时遇到历史边界成交 `NVDAUSDT trade_id=7389742`：本地仅追踪到 `1.76` LONG open qty，却收到 `SELL LONG 6.14`。本轮修复为：可匹配部分正常写 `CLOSED`，超额平仓部分写 `INCOMPLETE / close_qty_exceeds_open_qty`，并继续派生后续仓位；该修复只影响管理员门户历史账本，不改变任何策略下单逻辑。
 
 当前下一步：
 
