@@ -13,7 +13,7 @@
     "klines_interval": "1h",
     "lookback_hours": 48,
     "include_current_bar": true,
-    "h_anchor_refresh_secs": 3600,
+    "h_anchor_refresh_secs": 60,
     "kline_limit": 1500
   },
   "ladder": {
