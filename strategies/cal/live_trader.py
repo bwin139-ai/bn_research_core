@@ -363,6 +363,22 @@ def _round_down_to_tick(value: float, tick: Any) -> float:
     return float((Decimal(str(value)) / Decimal(str(tick_value))).to_integral_value(rounding=ROUND_DOWN) * Decimal(str(tick_value)))
 
 
+def _resolve_tp_maker_price(
+    *,
+    account: str,
+    symbol: str,
+    base_tp_price: float,
+    tick_size: Any,
+) -> dict[str, Any]:
+    book = get_order_book_top(account, symbol)
+    if not book.get("ok"):
+        raise RuntimeError(f"CAL order book query failed before TP: {symbol} | {book.get('reason')}")
+    data = dict(book.get("data") or {})
+    best_ask = float(data["best_ask"])
+    price = _round_down_to_tick(max(float(base_tp_price), best_ask), tick_size)
+    return {"price": float(price), "base_tp_price": float(base_tp_price), "best_ask": best_ask, "book": data}
+
+
 def _normalize_size(account: str, symbol: str, *, notional_usdt: float, price: float) -> dict[str, Any]:
     filters_res = get_symbol_filters(account, symbol)
     if not filters_res.get("ok"):
@@ -439,6 +455,12 @@ def _pause_symbol(
 
 def _clear_resolved_position_qty_pause(account: str, state: dict[str, Any], symbol_state: dict[str, Any]) -> None:
     if str(symbol_state.get("paused_reason") or "") != "position_qty_below_cal_open_lot_qty":
+        return
+    _clear_symbol_pause(account, state, symbol_state, reason="position_qty_below_cal_open_lot_qty")
+
+
+def _clear_symbol_pause(account: str, state: dict[str, Any], symbol_state: dict[str, Any], *, reason: str) -> None:
+    if str(symbol_state.get("paused_reason") or "") != str(reason):
         return
     symbol_state["status"] = "RUNNING"
     symbol_state.pop("paused_reason", None)
@@ -541,25 +563,46 @@ def _submit_tp_for_fill(
     take_profit_pct = _as_float(intent.get("take_profit_pct"))
     if take_profit_pct is None or take_profit_pct <= 0:
         raise RuntimeError(f"CAL pending intent missing valid take_profit_pct: {symbol}")
-    tp_price = _round_down_to_tick(entry_price * (1.0 + float(take_profit_pct)), filters.get("tick_size"))
-    tp_res = place_limit_order(
-        account,
-        symbol,
-        POSITION_SIDE_LONG,
-        "SELL",
-        float(qty),
-        float(tp_price),
-        order_role="TP",
-        time_in_force=str(decision_cfg["execution"]["post_only_time_in_force"]),
-        client_order_id=str(pending["tp_client_order_id"]),
-        retry_max=int(cfg["execution"]["order_retry_max"]),
-        retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
-        notify_label="cal",
-        notify_on_error=True,
-        notify_on_success=True,
-        notify_order_statuses={"NEW", "PARTIALLY_FILLED", "FILLED"},
-    )
-    if not tp_res.get("ok"):
+    base_tp_price = _round_down_to_tick(entry_price * (1.0 + float(take_profit_pct)), filters.get("tick_size"))
+    tp_res: dict[str, Any] | None = None
+    tp_price = float(base_tp_price)
+    attempt = 0
+    while True:
+        attempt += 1
+        price_info = _resolve_tp_maker_price(
+            account=account,
+            symbol=symbol,
+            base_tp_price=float(base_tp_price),
+            tick_size=filters.get("tick_size"),
+        )
+        tp_price = float(price_info["price"])
+        tp_res = place_limit_order(
+            account,
+            symbol,
+            POSITION_SIDE_LONG,
+            "SELL",
+            float(qty),
+            float(tp_price),
+            order_role="TP",
+            time_in_force=str(decision_cfg["execution"]["post_only_time_in_force"]),
+            client_order_id=str(pending["tp_client_order_id"]),
+            retry_max=int(cfg["execution"]["order_retry_max"]),
+            retry_delay_secs=float(cfg["execution"]["api_retry_delay_secs"]),
+            notify_label="cal",
+            notify_on_error=False,
+            notify_on_success=True,
+            notify_order_statuses={"NEW", "PARTIALLY_FILLED", "FILLED"},
+        )
+        if tp_res.get("ok"):
+            break
+        if _is_post_only_reject(tp_res.get("reason")):
+            _write_event(
+                cfg,
+                "tp_post_only_retry",
+                {"symbol": symbol, "attempt": attempt, "price_info": price_info, "reason": tp_res.get("reason")},
+            )
+            time.sleep(float(cfg["execution"]["entry_retry_sleep_secs"]))
+            continue
         _pause_symbol(cfg=cfg, state=state, symbol=symbol, reason="tp_submit_failed", detail={"tp_res": tp_res})
         return
     tp_order = dict(tp_res.get("data") or {})
@@ -585,6 +628,7 @@ def _submit_tp_for_fill(
     lots.append(lot)
     symbol_state["open_lots"] = lots
     symbol_state.pop("pending_entry_order", None)
+    _clear_symbol_pause(account, state, symbol_state, reason="tp_submit_failed")
     _save_state(account, state)
     _write_event(cfg, "tp_submitted", {"symbol": symbol, "lot": lot})
     logging.info(
