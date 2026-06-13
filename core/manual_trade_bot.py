@@ -72,6 +72,7 @@ HS_SHORTCUT_PARAM_INPUT = 703
 PO_WATCH_TIMEOUT_SECS = 60
 PO_WATCH_POLL_SECS = 2
 PO_ENTRY_SUBMIT_MAX_ATTEMPTS = 3
+AUTO_CLOSE_PRICE_MIN_DIFF_RATIO = 0.0001
 CLOSE_REPLACE_ORDER_TYPES = {
     "LIMIT",
     "TAKE_PROFIT",
@@ -796,6 +797,7 @@ def _hedge_short_usage() -> str:
         "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
+        "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
         "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
         "/hedge_short sl [SYMBOL] ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
         "/hedge_short pending [SYMBOL] ACCOUNT[ | ACCOUNT...]\n"
@@ -1310,6 +1312,7 @@ def _trade_usage() -> str:
         "/trade open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
+        "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
         "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] L PRICE [PCT%]\n"
         "/trade sl [SYMBOL] ACCOUNT[ | ACCOUNT...] PRICE [PCT%]\n"
         "/trade pending [SYMBOL] ACCOUNT[ | ACCOUNT...]\n"
@@ -1409,6 +1412,16 @@ def _parse_open_protection_tail(tail: list[str], usage: str) -> tuple[float, flo
     return prices["SL"], prices["TP"]
 
 
+def _positive_float_or_none(value: str) -> float | None:
+    try:
+        number = float(str(value).strip())
+    except ValueError:
+        return None
+    if number <= 0:
+        raise ValueError("price must be positive")
+    return number
+
+
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 3 or str(args[0]).lower() != "open":
         raise ValueError(_trade_usage())
@@ -1470,6 +1483,10 @@ def _parse_trade_close_args(args: list[str]) -> dict[str, Any]:
         if limit_price <= 0:
             raise ValueError("limit close price must be positive")
         account_tokens = tokens[:-2]
+    elif (auto_price := _positive_float_or_none(tokens[-1])) is not None:
+        mode = "AUTO_PRICE"
+        limit_price = auto_price
+        account_tokens = tokens[:-1]
     else:
         if len(tokens) >= 2 and str(tokens[-2]).upper().strip() in {"M", "PO"}:
             raise ValueError(_trade_usage())
@@ -1585,6 +1602,10 @@ def _parse_hedge_short_close_args(args: list[str]) -> dict[str, Any]:
         if limit_price <= 0:
             raise ValueError("limit close price must be positive")
         account_tokens = tokens[:-2]
+    elif (auto_price := _positive_float_or_none(tokens[-1])) is not None:
+        mode = "AUTO_PRICE"
+        limit_price = auto_price
+        account_tokens = tokens[:-1]
     else:
         if len(tokens) >= 2 and str(tokens[-2]).upper().strip() in {"M", "PO"}:
             raise ValueError(_hedge_short_usage())
@@ -4019,6 +4040,23 @@ def _cancel_existing_exit_orders(
         )
     return cancelled
 
+
+def _classify_auto_close_price(position_side: str, input_price: float, current_price: float) -> str:
+    if current_price <= 0:
+        raise ValueError(f"current price must be positive: {current_price}")
+    diff_ratio = abs(input_price - current_price) / current_price
+    if diff_ratio <= AUTO_CLOSE_PRICE_MIN_DIFF_RATIO:
+        raise ValueError(
+            f"close price too close to current price: price={_fmt_float(input_price)} "
+            f"current={_fmt_float(current_price)}; use M/PO or a clearer price"
+        )
+    if position_side == LONG:
+        return "LIMIT" if input_price > current_price else "SL"
+    if position_side == SHORT:
+        return "LIMIT" if input_price < current_price else "SL"
+    raise ValueError(f"unsupported position side: {position_side}")
+
+
 async def _run_market_close_command(
     update: Update,
     *,
@@ -4263,6 +4301,127 @@ async def _run_sl_command(
                 ok=False,
                 stop_price=stop_price,
                 sl_ratio=sl_ratio,
+                reason=str(exc),
+            )
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
+async def _run_auto_price_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    close_price: float,
+    close_ratio: float,
+) -> None:
+    lines = [f"Auto close {symbol} price={_fmt_float(close_price)}"]
+    for account in accounts:
+        try:
+            price_res = get_last_price(account, symbol)
+            if not price_res["ok"]:
+                raise RuntimeError(f"price query failed: {price_res['reason']}")
+            current_price = float(price_res["data"]["price"])
+            classification = _classify_auto_close_price(LONG, close_price, current_price)
+            if classification == "LIMIT":
+                qty = _long_position_qty(account, symbol, close_ratio)
+                cancelled_existing = _cancel_existing_exit_orders(
+                    account,
+                    symbol,
+                    position_side=LONG,
+                    side="SELL",
+                    order_types=CLOSE_REPLACE_ORDER_TYPES,
+                    event_name="manual_trade_auto_limit_close_cancel_existing",
+                    event_writer=_append_manual_event,
+                )
+                root = make_order_root()
+                res = place_limit_order(
+                    account,
+                    symbol,
+                    LONG,
+                    "SELL",
+                    qty,
+                    close_price,
+                    order_role="MANUAL_CLOSE",
+                    time_in_force="GTC",
+                    client_order_id=_client_order_id("CLS", root),
+                    notify_label=NOTIFY_LABEL,
+                )
+                _append_manual_event(
+                    "manual_trade_auto_limit_close",
+                    account=account,
+                    symbol=symbol,
+                    ok=res["ok"],
+                    current_price=current_price,
+                    price=close_price,
+                    close_ratio=close_ratio,
+                    result=res,
+                )
+                if not res["ok"]:
+                    lines.append(f"{account}: classified=LIMIT ref={_fmt_float(current_price)} failed reason={res['reason']}")
+                    continue
+                data = res["data"]
+                prefix = f"{account}: classified=LIMIT ref={_fmt_float(current_price)} "
+                if cancelled_existing:
+                    prefix += f"cancelled_existing={cancelled_existing} "
+                lines.append(
+                    f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                    f"price={_fmt_float(data.get('price') or close_price)} cid={data.get('client_order_id')}"
+                )
+                continue
+
+            position_qty = _long_position_qty(account, symbol, 1.0)
+            quantity = None if close_ratio == 1.0 else position_qty * close_ratio
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=LONG,
+                side="SELL",
+                order_types=STOP_REPLACE_ORDER_TYPES,
+                event_name="manual_trade_auto_sl_cancel_existing",
+                event_writer=_append_manual_event,
+            )
+            root = make_order_root()
+            res = place_sl_order(
+                account,
+                symbol,
+                LONG,
+                close_price,
+                quantity=quantity,
+                client_order_id=_client_order_id("SL", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_manual_event(
+                "manual_trade_auto_sl_close",
+                account=account,
+                symbol=symbol,
+                ok=res["ok"],
+                current_price=current_price,
+                stop_price=close_price,
+                close_ratio=close_ratio,
+                quantity=quantity,
+                result=res,
+            )
+            if not res["ok"]:
+                lines.append(f"{account}: classified=SL ref={_fmt_float(current_price)} failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            prefix = f"{account}: classified=SL ref={_fmt_float(current_price)} "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
+            lines.append(
+                f"{prefix}submitted qty={qty_text} "
+                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_manual_event(
+                "manual_trade_auto_close",
+                account=account,
+                symbol=symbol,
+                ok=False,
+                price=close_price,
+                close_ratio=close_ratio,
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
@@ -4776,6 +4935,127 @@ async def _run_hedge_short_sl_command(
     await _reply_text(update, "\n".join(lines))
 
 
+async def _run_hedge_short_auto_price_close_command(
+    update: Update,
+    *,
+    accounts: list[str],
+    symbol: str,
+    close_price: float,
+    close_ratio: float,
+) -> None:
+    lines = [f"Hedge short auto close {symbol} price={_fmt_float(close_price)}"]
+    for account in accounts:
+        try:
+            price_res = get_last_price(account, symbol)
+            if not price_res["ok"]:
+                raise RuntimeError(f"price query failed: {price_res['reason']}")
+            current_price = float(price_res["data"]["price"])
+            classification = _classify_auto_close_price(SHORT, close_price, current_price)
+            if classification == "LIMIT":
+                qty = _short_position_qty(account, symbol, close_ratio)
+                cancelled_existing = _cancel_existing_exit_orders(
+                    account,
+                    symbol,
+                    position_side=SHORT,
+                    side="BUY",
+                    order_types=CLOSE_REPLACE_ORDER_TYPES,
+                    event_name="hedge_short_auto_limit_close_cancel_existing",
+                    event_writer=_append_hedge_short_event,
+                )
+                root = make_order_root()
+                res = place_limit_order(
+                    account,
+                    symbol,
+                    SHORT,
+                    "BUY",
+                    qty,
+                    close_price,
+                    order_role="HEDGE_SHORT_LIMIT_CLOSE",
+                    time_in_force="GTC",
+                    client_order_id=_hedge_short_client_order_id("CLS", root),
+                    notify_label=NOTIFY_LABEL,
+                )
+                _append_hedge_short_event(
+                    "hedge_short_auto_limit_close",
+                    account=account,
+                    symbol=symbol,
+                    ok=res["ok"],
+                    current_price=current_price,
+                    price=close_price,
+                    close_ratio=close_ratio,
+                    result=res,
+                )
+                if not res["ok"]:
+                    lines.append(f"{account}: classified=LIMIT ref={_fmt_float(current_price)} failed reason={res['reason']}")
+                    continue
+                data = res["data"]
+                prefix = f"{account}: classified=LIMIT ref={_fmt_float(current_price)} "
+                if cancelled_existing:
+                    prefix += f"cancelled_existing={cancelled_existing} "
+                lines.append(
+                    f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
+                    f"price={_fmt_float(data.get('price') or close_price)} cid={data.get('client_order_id')}"
+                )
+                continue
+
+            position_qty = _short_position_qty(account, symbol, 1.0)
+            quantity = None if close_ratio == 1.0 else position_qty * close_ratio
+            cancelled_existing = _cancel_existing_exit_orders(
+                account,
+                symbol,
+                position_side=SHORT,
+                side="BUY",
+                order_types=STOP_REPLACE_ORDER_TYPES,
+                event_name="hedge_short_auto_sl_cancel_existing",
+                event_writer=_append_hedge_short_event,
+            )
+            root = make_order_root()
+            res = place_sl_order(
+                account,
+                symbol,
+                SHORT,
+                close_price,
+                quantity=quantity,
+                client_order_id=_hedge_short_client_order_id("SL", root),
+                notify_label=NOTIFY_LABEL,
+            )
+            _append_hedge_short_event(
+                "hedge_short_auto_sl_close",
+                account=account,
+                symbol=symbol,
+                ok=res["ok"],
+                current_price=current_price,
+                stop_price=close_price,
+                close_ratio=close_ratio,
+                quantity=quantity,
+                result=res,
+            )
+            if not res["ok"]:
+                lines.append(f"{account}: classified=SL ref={_fmt_float(current_price)} failed reason={res['reason']}")
+                continue
+            data = res["data"]
+            qty_text = "ALL" if quantity is None else _fmt_float(data.get("qty") or quantity)
+            prefix = f"{account}: classified=SL ref={_fmt_float(current_price)} "
+            if cancelled_existing:
+                prefix += f"cancelled_existing={cancelled_existing} "
+            lines.append(
+                f"{prefix}submitted qty={qty_text} "
+                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={data.get('client_order_id')}"
+            )
+        except Exception as exc:
+            _append_hedge_short_event(
+                "hedge_short_auto_close",
+                account=account,
+                symbol=symbol,
+                ok=False,
+                price=close_price,
+                close_ratio=close_ratio,
+                reason=str(exc),
+            )
+            lines.append(f"{account}: failed reason={exc}")
+    await _reply_text(update, "\n".join(lines))
+
+
 async def _run_hedge_short_pending_command(
     update: Update,
     *,
@@ -4915,6 +5195,15 @@ async def _execute_trade_args(update: Update, context: ContextTypes.DEFAULT_TYPE
                 close_ratio=spec["close_ratio"],
             )
             return
+        if mode == "AUTO_PRICE":
+            await _run_auto_price_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_price=spec["limit_price"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
     if action == "sl":
         spec = _parse_trade_sl_args(args)
         await _run_sl_command(
@@ -5011,6 +5300,15 @@ async def _execute_hedge_short_args(update: Update, context: ContextTypes.DEFAUL
                 accounts=spec["accounts"],
                 symbol=spec["symbol"],
                 limit_price=spec["limit_price"],
+                close_ratio=spec["close_ratio"],
+            )
+            return
+        if mode == "AUTO_PRICE":
+            await _run_hedge_short_auto_price_close_command(
+                update,
+                accounts=spec["accounts"],
+                symbol=spec["symbol"],
+                close_price=spec["limit_price"],
                 close_ratio=spec["close_ratio"],
             )
             return
