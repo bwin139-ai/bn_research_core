@@ -791,8 +791,8 @@ def _hedge_short_usage() -> str:
     return (
         "Usage:\n"
         "/hedge_short\n"
-        "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO] [SL PRICE TP PRICE]\n"
-        "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE TP PRICE]\n"
+        "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO] [SL PRICE] [TP PRICE]\n"
+        "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE] [TP PRICE]\n"
         "/hedge_short open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/hedge_short close [SYMBOL] ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
@@ -1306,7 +1306,7 @@ def _trade_usage() -> str:
         "Usage:\n"
         "/set_s or /set s\n"
         "/trade open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] [PO]\n"
-        "/trade open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE TP PRICE]\n"
+        "/trade open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] M|PO [SL PRICE] [TP PRICE]\n"
         "/trade open [SYMBOL] ACCOUNT NOTIONAL[ | ACCOUNT NOTIONAL...] L PRICE\n"
         "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] [PO] [PCT%]\n"
         "/trade close [SYMBOL] ACCOUNT[ | ACCOUNT...] M|PO [PCT%]\n"
@@ -1383,6 +1383,32 @@ def _parse_percent_suffix(tokens: list[str], *, field_name: str) -> tuple[list[s
     return remaining, ratio
 
 
+def _split_open_protection_tail(tokens: list[str]) -> tuple[list[str], list[str]]:
+    for idx, token in enumerate(tokens):
+        if str(token).upper().strip() in {"SL", "TP"}:
+            return tokens[:idx], tokens[idx:]
+    return tokens, []
+
+
+def _parse_open_protection_tail(tail: list[str], usage: str) -> tuple[float, float]:
+    if not tail:
+        return 0.0, 0.0
+    if len(tail) % 2 != 0:
+        raise ValueError(usage)
+    prices = {"SL": 0.0, "TP": 0.0}
+    seen: set[str] = set()
+    for idx in range(0, len(tail), 2):
+        label = str(tail[idx]).upper().strip()
+        if label not in prices or label in seen:
+            raise ValueError(usage)
+        seen.add(label)
+        price = float(tail[idx + 1])
+        if price < 0:
+            raise ValueError(f"{label} price must be >= 0")
+        prices[label] = price
+    return prices["SL"], prices["TP"]
+
+
 def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     if len(args) < 3 or str(args[0]).lower() != "open":
         raise ValueError(_trade_usage())
@@ -1391,15 +1417,8 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     if mode_idx == 0:
         raise ValueError(_trade_usage())
     if mode_idx < 0:
-        raw_tokens = tokens
-        if len(raw_tokens) >= 4 and raw_tokens[-4].upper() == "SL" and raw_tokens[-2].upper() == "TP":
-            entries = _parse_trade_open_account_notionals(raw_tokens[:-4])
-            tail = raw_tokens[-4:]
-        else:
-            if any(token.upper() in {"SL", "TP"} for token in raw_tokens):
-                raise ValueError(_trade_usage())
-            entries = _parse_trade_open_account_notionals(raw_tokens)
-            tail = []
+        account_tokens, tail = _split_open_protection_tail(tokens)
+        entries = _parse_trade_open_account_notionals(account_tokens)
         mode = "PO"
     else:
         entries = _parse_trade_open_account_notionals(tokens[:mode_idx])
@@ -1411,15 +1430,7 @@ def _parse_trade_open_args(args: list[str]) -> dict[str, Any]:
     tp_price = 0.0
     limit_price: float | None = None
     if mode in {"M", "PO"}:
-        if tail and (len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP"):
-            raise ValueError(_trade_usage())
-        if tail:
-            sl_price = float(tail[1])
-            tp_price = float(tail[3])
-        if sl_price < 0:
-            raise ValueError("SL price must be >= 0")
-        if tp_price < 0:
-            raise ValueError("TP price must be >= 0")
+        sl_price, tp_price = _parse_open_protection_tail(tail, _trade_usage())
     else:
         if len(tail) != 1:
             raise ValueError(_trade_usage())
@@ -1523,15 +1534,8 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
     if mode_idx == 0:
         raise ValueError(_hedge_short_usage())
     if mode_idx < 0:
-        raw_tokens = command_tokens
-        if len(raw_tokens) >= 4 and raw_tokens[-4].upper() == "SL" and raw_tokens[-2].upper() == "TP":
-            entries = _parse_trade_open_account_notionals(raw_tokens[:-4])
-            tail = raw_tokens[-4:]
-        else:
-            if any(token.upper() in {"SL", "TP"} for token in raw_tokens):
-                raise ValueError(_hedge_short_usage())
-            entries = _parse_trade_open_account_notionals(raw_tokens)
-            tail = []
+        account_tokens, tail = _split_open_protection_tail(command_tokens)
+        entries = _parse_trade_open_account_notionals(account_tokens)
         mode = "PO"
     else:
         entries = _parse_trade_open_account_notionals(command_tokens[:mode_idx])
@@ -1541,15 +1545,7 @@ def _parse_hedge_short_open_args(args: list[str]) -> dict[str, Any]:
     tp_price = 0.0
     limit_price: float | None = None
     if mode in {"M", "PO"}:
-        if tail and (len(tail) != 4 or tail[0].upper() != "SL" or tail[2].upper() != "TP"):
-            raise ValueError(_hedge_short_usage())
-        if tail:
-            sl_price = float(tail[1])
-            tp_price = float(tail[3])
-        if sl_price < 0:
-            raise ValueError("SL price must be >= 0")
-        if tp_price < 0:
-            raise ValueError("TP price must be >= 0")
+        sl_price, tp_price = _parse_open_protection_tail(tail, _hedge_short_usage())
     else:
         if len(tail) != 1:
             raise ValueError(_hedge_short_usage())
