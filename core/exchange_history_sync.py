@@ -13,7 +13,9 @@ from core.live.binance_exec import (
     get_account_trades,
     get_account_status,
     get_all_orders,
+    get_open_orders,
     get_income_history,
+    get_positions,
 )
 from core.live.binance_rest_gateway import REQUEST_PRIORITY_LOW
 from core.runtime_state import load_json_file, save_json_file_atomic, state_path
@@ -238,6 +240,31 @@ def _write_history_rows(account: str, source: str, rows: list[dict[str, Any]], s
     return written
 
 
+def _replace_history_rows(account: str, source: str, rows: list[dict[str, Any]], sync_ms: int) -> int:
+    records_by_day: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        record = _history_record(account, source, row, sync_ms)
+        records_by_day.setdefault(record["event_day_bj"], []).append(record)
+    source_dir = state_path("exchange_history", account, source, ".keep").parent
+    source_dir.mkdir(parents=True, exist_ok=True)
+    existing_days = {path.stem for path in source_dir.glob("*.jsonl")}
+    written = 0
+    for day in sorted(existing_days | set(records_by_day)):
+        path = _source_path(account, source, day)
+        records = records_by_day.get(day, [])
+        if not records:
+            if path.exists():
+                path.unlink()
+            continue
+        tmp = path.with_name(f".{path.name}.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        tmp.replace(path)
+        written += len(records)
+    return written
+
+
 def _load_sync_state(account: str) -> dict[str, Any]:
     data = load_json_file(_sync_state_path(account), default={})
     if not isinstance(data, dict):
@@ -280,6 +307,8 @@ def _source_start_ms(
     symbol: str | None,
     default_start_ms: int,
     overlap_ms: int,
+    *,
+    floor_ms: int | None = None,
 ) -> int:
     source_map = state.get("sources", {}).get(source, {})
     if not isinstance(source_map, dict):
@@ -295,7 +324,8 @@ def _source_start_ms(
         last_end = 0
     if last_end <= 0:
         return default_start_ms
-    return max(default_start_ms, last_end - overlap_ms)
+    start_floor = int(floor_ms) if floor_ms is not None else 0
+    return max(start_floor, last_end - overlap_ms)
 
 
 def _update_source_state(
@@ -356,6 +386,31 @@ def _symbols_from_existing_index(account: str) -> set[str]:
 def _income_symbols(rows: list[dict[str, Any]]) -> set[str]:
     symbols = {str(row.get("symbol") or "").upper().strip() for row in rows}
     return {symbol for symbol in symbols if symbol.endswith("USDT")}
+
+
+def _current_position_symbols(account: str, request_sleep_secs: float) -> dict[str, Any]:
+    res = get_positions(account)
+    _sleep_between_requests(request_sleep_secs)
+    if not res.get("ok"):
+        return {"ok": False, "reason": str(res.get("reason") or "positions query failed"), "symbols": []}
+    symbols = {
+        str(row.get("symbol") or "").upper().strip()
+        for row in res.get("data") or []
+        if float(row.get("signed_qty", row.get("qty", 0.0)) or 0.0) != 0.0
+    }
+    return {"ok": True, "reason": "", "symbols": sorted(symbol for symbol in symbols if symbol.endswith("USDT"))}
+
+
+def _current_open_order_symbols(account: str, request_sleep_secs: float) -> dict[str, Any]:
+    res = get_open_orders(account)
+    _sleep_between_requests(request_sleep_secs)
+    if not res.get("ok"):
+        return {"ok": False, "reason": str(res.get("reason") or "open orders query failed"), "symbols": []}
+    symbols = {
+        str(row.get("symbol") or "").upper().strip()
+        for row in res.get("data") or []
+    }
+    return {"ok": True, "reason": "", "symbols": sorted(symbol for symbol in symbols if symbol.endswith("USDT"))}
 
 
 def _merge_symbol_index(account: str, symbols: set[str]) -> list[str]:
@@ -448,6 +503,48 @@ def _sync_trades(account: str, symbol: str, start_ms: int, end_ms: int, sync_ms:
         rows_written += _write_history_rows(account, SOURCE_TRADES, rows, sync_ms)
         cursor_end_ms = window_end
     return {"ok": True, "reason": "", "rows_seen": rows_seen, "rows_written": rows_written, "cursor_end_ms": int(end_ms), "windows": len(windows)}
+
+
+def _sync_symbol_orders_and_trades(
+    account: str,
+    symbol: str,
+    *,
+    order_start_ms: int,
+    trade_start_ms: int,
+    end_ms: int,
+    sync_ms: int,
+    request_sleep_secs: float,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    order_res = _sync_orders(account, symbol, order_start_ms, end_ms, sync_ms, request_sleep_secs)
+    _update_source_state(
+        state,
+        SOURCE_ORDERS,
+        symbol,
+        start_ms=order_start_ms,
+        end_ms=int(order_res.get("cursor_end_ms", order_start_ms)),
+        rows_seen=order_res["rows_seen"],
+        rows_written=order_res["rows_written"],
+        ok=order_res["ok"],
+        reason=order_res["reason"],
+    )
+    trade_res = _sync_trades(account, symbol, trade_start_ms, end_ms, sync_ms, request_sleep_secs)
+    _update_source_state(
+        state,
+        SOURCE_TRADES,
+        symbol,
+        start_ms=trade_start_ms,
+        end_ms=int(trade_res.get("cursor_end_ms", trade_start_ms)),
+        rows_seen=trade_res["rows_seen"],
+        rows_written=trade_res["rows_written"],
+        ok=trade_res["ok"],
+        reason=trade_res["reason"],
+    )
+    return {
+        "ok": bool(order_res["ok"] and trade_res["ok"]),
+        SOURCE_ORDERS: order_res,
+        SOURCE_TRADES: trade_res,
+    }
 
 
 def _fetch_income_window(account: str, start_ms: int, end_ms: int, request_sleep_secs: float) -> dict[str, Any]:
@@ -903,7 +1000,16 @@ def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
     try:
         derived = _derive_positions(trades)
     except Exception as exc:
-        return {"ok": False, "reason": str(exc), "rows_seen": len(trades), "rows_written": 0, "open_positions_skipped": 0}
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "rows_seen": len(trades),
+            "rows_written": 0,
+            "incomplete_positions": 0,
+            "incomplete_symbols": [],
+            "incomplete_reasons": {},
+            "open_positions_skipped": 0,
+        }
     rows = list(derived["positions"])
     for row in rows:
         if row.get("income_net_pnl_skipped_reason"):
@@ -912,14 +1018,24 @@ def _sync_positions(account: str, sync_ms: int) -> dict[str, Any]:
         if net_pnl is not None:
             row["trade_realized_pnl"] = row["realized_pnl"]
             row["net_pnl"] = float(net_pnl)
-    rows_written = _write_history_rows(account, SOURCE_POSITIONS, rows, sync_ms)
-    incomplete_count = sum(1 for row in rows if row.get("incomplete"))
+    rows_written = _replace_history_rows(account, SOURCE_POSITIONS, rows, sync_ms)
+    incomplete_rows = [row for row in rows if row.get("incomplete")]
+    incomplete_reasons: dict[str, list[str]] = {}
+    for row in incomplete_rows:
+        symbol = str(row.get("symbol") or "").upper().strip()
+        reason = str(row.get("incomplete_reason") or "unknown").strip()
+        if symbol:
+            incomplete_reasons.setdefault(symbol, [])
+            if reason not in incomplete_reasons[symbol]:
+                incomplete_reasons[symbol].append(reason)
     return {
         "ok": True,
         "reason": "",
         "rows_seen": len(rows),
         "rows_written": rows_written,
-        "incomplete_positions": incomplete_count,
+        "incomplete_positions": len(incomplete_rows),
+        "incomplete_symbols": sorted(incomplete_reasons),
+        "incomplete_reasons": incomplete_reasons,
         "open_positions_skipped": int(derived["open_positions_skipped"]),
     }
 
@@ -975,10 +1091,14 @@ def sync_account_history(
         "request_sleep_secs": float(request_sleep_secs),
         "end_ms": final_end_ms,
         "active_sync_symbols": [],
+        "current_position_symbols": [],
+        "current_open_order_symbols": [],
         "explicit_symbols": sorted(explicit_symbol_set),
         "historical_symbols": [],
         "symbols": [],
         "discovery_errors": [],
+        "incomplete_backfill_symbols": [],
+        "incomplete_backfill": {},
         "sources": {
             SOURCE_ORDERS: {},
             SOURCE_TRADES: {},
@@ -997,7 +1117,7 @@ def sync_account_history(
         results["errors"].append(f"{SOURCE_BALANCE_SNAPSHOTS}: {balance_res['reason']}")
         return results
 
-    income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms)
+    income_start = _source_start_ms(state_for_start, SOURCE_INCOME, None, default_start_ms, overlap_ms, floor_ms=floor_ms)
     income_res = _sync_income(account_key, income_start, final_end_ms, sync_ms, request_sleep_secs)
     _update_source_state(
         state,
@@ -1046,44 +1166,59 @@ def sync_account_history(
         save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
         return results
 
+    position_symbol_res = _current_position_symbols(account_key, request_sleep_secs)
+    if not position_symbol_res["ok"]:
+        results["ok"] = False
+        results["discovery_errors"].append(f"current_positions: {position_symbol_res['reason']}")
+        results["errors"].append(f"current_positions: {position_symbol_res['reason']}")
+        results["historical_symbols"] = _merge_symbol_index(account_key, set())
+        results["symbols"] = []
+        save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
+        return results
+
+    open_order_symbol_res = _current_open_order_symbols(account_key, request_sleep_secs)
+    if not open_order_symbol_res["ok"]:
+        results["ok"] = False
+        results["discovery_errors"].append(f"current_open_orders: {open_order_symbol_res['reason']}")
+        results["errors"].append(f"current_open_orders: {open_order_symbol_res['reason']}")
+        results["historical_symbols"] = _merge_symbol_index(account_key, set())
+        results["symbols"] = []
+        save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
+        return results
+
     active_symbol_set = _clean_usdt_symbols(set(income_res.get("active_symbols") or []))
-    sync_symbols = sorted(active_symbol_set | explicit_symbol_set)
+    position_symbol_set = _clean_usdt_symbols(set(position_symbol_res["symbols"]))
+    open_order_symbol_set = _clean_usdt_symbols(set(open_order_symbol_res["symbols"]))
+    sync_symbols = sorted(active_symbol_set | explicit_symbol_set | position_symbol_set | open_order_symbol_set)
     results["active_sync_symbols"] = sync_symbols
+    results["current_position_symbols"] = sorted(position_symbol_set)
+    results["current_open_order_symbols"] = sorted(open_order_symbol_set)
     results["symbols"] = sync_symbols
-    results["historical_symbols"] = _merge_symbol_index(account_key, active_symbol_set | explicit_symbol_set)
+    results["historical_symbols"] = _merge_symbol_index(
+        account_key,
+        active_symbol_set | explicit_symbol_set | position_symbol_set | open_order_symbol_set,
+    )
 
     for symbol in sync_symbols:
-        order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms)
-        order_res = _sync_orders(account_key, symbol, order_start, final_end_ms, sync_ms, request_sleep_secs)
-        _update_source_state(
-            state,
-            SOURCE_ORDERS,
+        order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms, floor_ms=floor_ms)
+        trade_start = _source_start_ms(state_for_start, SOURCE_TRADES, symbol, default_start_ms, overlap_ms, floor_ms=floor_ms)
+        sync_res = _sync_symbol_orders_and_trades(
+            account_key,
             symbol,
-            start_ms=order_start,
-            end_ms=int(order_res.get("cursor_end_ms", order_start)),
-            rows_seen=order_res["rows_seen"],
-            rows_written=order_res["rows_written"],
-            ok=order_res["ok"],
-            reason=order_res["reason"],
+            order_start_ms=order_start,
+            trade_start_ms=trade_start,
+            end_ms=final_end_ms,
+            sync_ms=sync_ms,
+            request_sleep_secs=request_sleep_secs,
+            state=state,
         )
+        order_res = sync_res[SOURCE_ORDERS]
         results["sources"][SOURCE_ORDERS][symbol] = order_res
         if not order_res["ok"]:
             results["ok"] = False
             results["errors"].append(f"{SOURCE_ORDERS} {symbol}: {order_res['reason']}")
 
-        trade_start = _source_start_ms(state_for_start, SOURCE_TRADES, symbol, default_start_ms, overlap_ms)
-        trade_res = _sync_trades(account_key, symbol, trade_start, final_end_ms, sync_ms, request_sleep_secs)
-        _update_source_state(
-            state,
-            SOURCE_TRADES,
-            symbol,
-            start_ms=trade_start,
-            end_ms=int(trade_res.get("cursor_end_ms", trade_start)),
-            rows_seen=trade_res["rows_seen"],
-            rows_written=trade_res["rows_written"],
-            ok=trade_res["ok"],
-            reason=trade_res["reason"],
-        )
+        trade_res = sync_res[SOURCE_TRADES]
         results["sources"][SOURCE_TRADES][symbol] = trade_res
         if not trade_res["ok"]:
             results["ok"] = False
@@ -1095,6 +1230,41 @@ def sync_account_history(
         if not position_res["ok"]:
             results["ok"] = False
             results["errors"].append(f"{SOURCE_POSITIONS}: {position_res['reason']}")
+        else:
+            backfill_symbols = sorted(set(position_res.get("incomplete_symbols") or []) & set(sync_symbols))
+            if backfill_symbols:
+                results["incomplete_backfill_symbols"] = backfill_symbols
+                backfill_start_ms = int(floor_ms if floor_ms is not None else requested_start_ms)
+                for symbol in backfill_symbols:
+                    sync_res = _sync_symbol_orders_and_trades(
+                        account_key,
+                        symbol,
+                        order_start_ms=backfill_start_ms,
+                        trade_start_ms=backfill_start_ms,
+                        end_ms=final_end_ms,
+                        sync_ms=sync_ms,
+                        request_sleep_secs=request_sleep_secs,
+                        state=state,
+                    )
+                    results["incomplete_backfill"][symbol] = {
+                        SOURCE_ORDERS: sync_res[SOURCE_ORDERS],
+                        SOURCE_TRADES: sync_res[SOURCE_TRADES],
+                    }
+                    results["sources"][SOURCE_ORDERS][symbol] = sync_res[SOURCE_ORDERS]
+                    results["sources"][SOURCE_TRADES][symbol] = sync_res[SOURCE_TRADES]
+                    if not sync_res["ok"]:
+                        results["ok"] = False
+                        if not sync_res[SOURCE_ORDERS]["ok"]:
+                            results["errors"].append(f"incomplete_backfill {SOURCE_ORDERS} {symbol}: {sync_res[SOURCE_ORDERS]['reason']}")
+                        if not sync_res[SOURCE_TRADES]["ok"]:
+                            results["errors"].append(f"incomplete_backfill {SOURCE_TRADES} {symbol}: {sync_res[SOURCE_TRADES]['reason']}")
+                if results["ok"]:
+                    results["incomplete_backfill_position_before"] = position_res
+                    final_position_res = _sync_positions(account_key, sync_ms)
+                    results["sources"][SOURCE_POSITIONS][ACCOUNT_KEY] = final_position_res
+                    if not final_position_res["ok"]:
+                        results["ok"] = False
+                        results["errors"].append(f"{SOURCE_POSITIONS}: {final_position_res['reason']}")
 
     save_json_file_atomic(_sync_state_path(account_key), state, indent=2)
     return results
