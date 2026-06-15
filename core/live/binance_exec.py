@@ -109,6 +109,15 @@ def _strategy_header_tag(strategy_code: str) -> str:
     return f"{icon} {strategy_code}"
 
 
+def _trade_event_status_icon(status: str | None) -> str:
+    status_text = str(status or "").lower().strip()
+    if status_text == "ok":
+        return "✅"
+    if status_text.startswith("fail") or status_text in {"error", "rejected", "reject"}:
+        return "❌"
+    return "🔵"
+
+
 def _format_trade_event_message(
     action: str,
     status: str,
@@ -128,8 +137,9 @@ def _format_trade_event_message(
 ) -> str:
     strategy_code = _strategy_code_from_client_order_id(client_order_id)
     status_text = str(status or "").lower().strip()
+    status_icon = _trade_event_status_icon(status_text)
     lines = [
-        f"[{_fmt_event_hms(event_time_ms)} {_strategy_header_tag(strategy_code)}] {account}",
+        f"{status_icon} [{_fmt_event_hms(event_time_ms)} {_strategy_header_tag(strategy_code)}] {account}",
         f"{str(action or '').upper()} {status_text}【BN_EXEC】",
         f"symbol={symbol}",
     ]

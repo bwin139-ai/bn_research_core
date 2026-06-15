@@ -1103,6 +1103,24 @@ def _chunk_lines(lines: list[str], limit: int = 3600) -> list[str]:
     return chunks
 
 
+def _trade_result_icon(line: str) -> str:
+    text = str(line or "")
+    lowered = text.lower()
+    if any(token in lowered for token in ("failed", "failure", " error", "error ", "invalid", "rejected")):
+        return "❌"
+    if "失败" in text or "查询失败" in text or "reason=" in lowered:
+        return "❌"
+    if any(token in lowered for token in ("submitted", "filled", "protected partial fill")):
+        return "✅"
+    if re.search(r"\bcancelled=[1-9]\d*\b", lowered) or re.search(r"\bcanceled=[1-9]\d*\b", lowered):
+        return "✅"
+    return "🔵"
+
+
+def _format_trade_result_lines(lines: list[str]) -> str:
+    return "\n".join(f"{_trade_result_icon(line)} {line}" for line in lines)
+
+
 async def _send_lines(update: Update, lines: list[str]) -> None:
     target = update.message or (update.callback_query.message if update.callback_query else None)
     if not target:
@@ -1834,7 +1852,7 @@ async def _watch_po_entry(
                     tp_price=tp_price,
                     root=root,
                 )
-                await bot.send_message(chat_id=chat_id, text=f"PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
+                await bot.send_message(chat_id=chat_id, text=f"✅ PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
                 await finish("filled", status=status, executed_qty=executed_qty)
                 return
             if status in {"CANCELED", "EXPIRED", "REJECTED"}:
@@ -1849,10 +1867,10 @@ async def _watch_po_entry(
                         tp_price=tp_price,
                         root=root,
                     )
-                    await bot.send_message(chat_id=chat_id, text=f"PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}")
+                    await bot.send_message(chat_id=chat_id, text=f"✅ PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}")
                     await finish("terminal_with_fill", status=status, executed_qty=executed_qty)
                 else:
-                    await bot.send_message(chat_id=chat_id, text=f"PO entry terminal no fill {account} {symbol} status={status}")
+                    await bot.send_message(chat_id=chat_id, text=f"🔵 PO entry terminal no fill {account} {symbol} status={status}")
                     await finish("terminal_no_fill", status=status, executed_qty=executed_qty)
                 return
 
@@ -1886,10 +1904,10 @@ async def _watch_po_entry(
                 tp_price=tp_price,
                 root=root,
             )
-            await bot.send_message(chat_id=chat_id, text=f"PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
+            await bot.send_message(chat_id=chat_id, text=f"✅ PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
             await finish("timeout_partial_fill", status=status, executed_qty=executed_qty)
         else:
-            await bot.send_message(chat_id=chat_id, text=f"PO timeout canceled no fill {account} {symbol}")
+            await bot.send_message(chat_id=chat_id, text=f"🔵 PO timeout canceled no fill {account} {symbol}")
             await finish("timeout_no_fill", status=status, executed_qty=executed_qty)
     except Exception as exc:
         logging.error("[manual_po_watcher] failed: %s", exc, exc_info=True)
@@ -1900,7 +1918,7 @@ async def _watch_po_entry(
             entry_client_order_id=entry_client_order_id,
             reason=str(exc),
         )
-        await bot.send_message(chat_id=chat_id, text=f"PO watcher error {account} {symbol}: {exc}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ PO watcher error {account} {symbol}: {exc}")
     finally:
         _ACTIVE_PO_WATCHERS.discard(key)
 
@@ -1958,7 +1976,7 @@ async def _watch_hedge_short_po_entry(
                     tp_price=tp_price,
                     root=root,
                 )
-                await bot.send_message(chat_id=chat_id, text=f"Hedge short PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
+                await bot.send_message(chat_id=chat_id, text=f"✅ Hedge short PO entry filled {account} {symbol} qty={_fmt_float(executed_qty)}")
                 await finish("filled", status=status, executed_qty=executed_qty)
                 return
             if status in {"CANCELED", "EXPIRED", "REJECTED"}:
@@ -1975,11 +1993,11 @@ async def _watch_hedge_short_po_entry(
                     )
                     await bot.send_message(
                         chat_id=chat_id,
-                        text=f"Hedge short PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}",
+                        text=f"✅ Hedge short PO entry terminal with fill {account} {symbol} status={status} qty={_fmt_float(executed_qty)}",
                     )
                     await finish("terminal_with_fill", status=status, executed_qty=executed_qty)
                 else:
-                    await bot.send_message(chat_id=chat_id, text=f"Hedge short PO entry terminal no fill {account} {symbol} status={status}")
+                    await bot.send_message(chat_id=chat_id, text=f"🔵 Hedge short PO entry terminal no fill {account} {symbol} status={status}")
                     await finish("terminal_no_fill", status=status, executed_qty=executed_qty)
                 return
 
@@ -2013,10 +2031,10 @@ async def _watch_hedge_short_po_entry(
                 tp_price=tp_price,
                 root=root,
             )
-            await bot.send_message(chat_id=chat_id, text=f"Hedge short PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
+            await bot.send_message(chat_id=chat_id, text=f"✅ Hedge short PO timeout, protected partial fill {account} {symbol} qty={_fmt_float(executed_qty)}")
             await finish("timeout_partial_fill", status=status, executed_qty=executed_qty)
         else:
-            await bot.send_message(chat_id=chat_id, text=f"Hedge short PO timeout canceled no fill {account} {symbol}")
+            await bot.send_message(chat_id=chat_id, text=f"🔵 Hedge short PO timeout canceled no fill {account} {symbol}")
             await finish("timeout_no_fill", status=status, executed_qty=executed_qty)
     except Exception as exc:
         logging.error("[hedge_short_po_watcher] failed: %s", exc, exc_info=True)
@@ -2027,7 +2045,7 @@ async def _watch_hedge_short_po_entry(
             entry_client_order_id=entry_client_order_id,
             reason=str(exc),
         )
-        await bot.send_message(chat_id=chat_id, text=f"Hedge short PO watcher error {account} {symbol}: {exc}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ Hedge short PO watcher error {account} {symbol}: {exc}")
     finally:
         _ACTIVE_PO_WATCHERS.discard(key)
 
@@ -3964,7 +3982,7 @@ async def _run_limit_trade_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
@@ -4090,7 +4108,7 @@ async def _run_market_close_command(
         except Exception as exc:
             _append_manual_event("manual_trade_market_close", account=account, symbol=symbol, ok=False, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_post_only_close_command(
@@ -4168,7 +4186,7 @@ async def _run_post_only_close_command(
         except Exception as exc:
             _append_manual_event("manual_trade_po_close_submit", account=account, symbol=symbol, ok=False, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_limit_close_command(
@@ -4236,7 +4254,7 @@ async def _run_limit_close_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_sl_command(
@@ -4304,7 +4322,7 @@ async def _run_sl_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_auto_price_close_command(
@@ -4425,7 +4443,7 @@ async def _run_auto_price_close_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_cancel_command(
@@ -4448,7 +4466,7 @@ async def _run_cancel_command(
             lines.append(f"{account}: partial failed cancelled={len(rows) - len(failed)} failed={len(failed)} reason={reasons}")
             continue
         lines.append(f"{account}: cancelled={len(rows)}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_pending_command(
@@ -4708,7 +4726,7 @@ async def _run_hedge_short_limit_open_command(
         except Exception as exc:
             _append_hedge_short_event("hedge_short_limit_open", account=account, symbol=symbol, ok=False, notional=notional, price=limit_price, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_market_close_command(
@@ -4744,7 +4762,7 @@ async def _run_hedge_short_market_close_command(
         except Exception as exc:
             _append_hedge_short_event("hedge_short_market_close", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_post_only_close_command(
@@ -4823,7 +4841,7 @@ async def _run_hedge_short_post_only_close_command(
         except Exception as exc:
             _append_hedge_short_event("hedge_short_po_close_submit", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_limit_close_command(
@@ -4875,7 +4893,7 @@ async def _run_hedge_short_limit_close_command(
         except Exception as exc:
             _append_hedge_short_event("hedge_short_limit_close", account=account, symbol=symbol, ok=False, price=limit_price, close_ratio=close_ratio, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_sl_command(
@@ -4932,7 +4950,7 @@ async def _run_hedge_short_sl_command(
         except Exception as exc:
             _append_hedge_short_event("hedge_short_sl", account=account, symbol=symbol, ok=False, stop_price=stop_price, sl_ratio=sl_ratio, reason=str(exc))
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_auto_price_close_command(
@@ -5053,7 +5071,7 @@ async def _run_hedge_short_auto_price_close_command(
                 reason=str(exc),
             )
             lines.append(f"{account}: failed reason={exc}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _run_hedge_short_pending_command(
@@ -5121,7 +5139,7 @@ async def _run_hedge_short_cancel_command(
             lines.append(f"{account}: partial cancelled={cancelled} failed={len(failed)} reason={'; '.join(failed[:3])}")
         else:
             lines.append(f"{account}: cancelled={cancelled}")
-    await _reply_text(update, "\n".join(lines))
+    await _reply_text(update, _format_trade_result_lines(lines))
 
 
 async def _execute_trade_args(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
