@@ -67,7 +67,7 @@ docs/Core-Anchor-Ladder项目语义基线.md
 3. `P0` 是外部手动底仓，可来自 Binance App / Web 或管理员门户手动 LONG 入口；CAL 不管理、不止盈、不平仓、不写入策略 state。
 4. `P1/P2/P3` 是 CAL 自动策略 lot，必须通过策略专属 client order id 与本地 lot state 区分。
 5. 每个账户每个 symbol 同一时间最多一个 active ladder；无 active `P1` 时用最近 48 根 1h contract bars 的最高价 `H` 触发 `P1`，允许包含当前未闭合 1h bar。
-6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；只有当前 ladder 全部策略 lot 关闭后，才允许重新计算最新 48h `H` 开启下一轮 `P1`。
+6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；同一时刻每个 level 最多一个 active lot，但 `P2/P3` TP 关闭后，只要 `P1` 仍 active 且价格再次满足 trigger，允许重复回补同一 level；只有 `P1` 已关闭且当前 ladder 全部策略 lot 关闭后，才允许重新计算最新 48h `H` 开启下一轮 `P1`。
 7. 每个策略 lot 独立 TP，TP 价格为 `entry_price * (1 + take_profit_pct)`；同一 ladder 内必须满足 `P3.tp_price < P2.tp_price < P1.tp_price`。
 8. 所有 entry / TP 必须 maker-only，当前 Binance USD-M 对应 `LIMIT + GTX`。
 9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。48h `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。

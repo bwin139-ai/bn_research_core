@@ -69,8 +69,10 @@ P2: current_price <= P1.entry_price * (1 - p2_drop_pct)
 P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
 ```
 
-4. 每个 level 在同一 ladder 内最多开一次。
-5. 只有该 ladder 的全部策略 lot 都已关闭后，才允许重新读取最新 48h `H` 并开启下一轮 `P1`。
+4. 同一时刻每个 level 最多允许一个 active lot。
+5. `P1` 是当前 ladder 的主锚点；`P1` active 期间不允许重复开 `P1`。
+6. `P2/P3` 是围绕 `P1.entry_price` 的可重复回补 lot；当某个 `P2/P3` lot 已 TP 关闭后，只要 `P1` 仍 active，且当前价格再次满足该 level 的 trigger，允许再次开同一 level。
+7. 只有 `P1` 已关闭且该 ladder 的全部策略 lot 都已关闭后，才允许重新读取最新 48h `H` 并开启下一轮 `P1`。
 
 ## 4. 配置语义
 
