@@ -256,7 +256,7 @@ PAUSED_BY_INVARIANT_VIOLATION
 2. 第一版默认可以按 `collection.interval_secs=10` 高频轮询。
 3. 高频轮询的前提是显式核心资产白名单很小，通常只监控 1-2 个 symbol。
 4. REST 请求必须继续走 Binance REST Gateway，并保留 quota / ban guard。
-5. 48h `H` 锚点每小时刷新一次即可，不应在每个 10 秒循环中重复拉取 1h bars。
+5. 48h `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；不应在每个 10 秒循环中重复拉取 1h bars。
 6. 每 10 秒循环只需要刷新盘口、账户 position / open orders、本地 state 与触发判断。
 7. 若后续扩大 universe，必须先重新评估 API 消耗，不得静默扩大扫描面。
 

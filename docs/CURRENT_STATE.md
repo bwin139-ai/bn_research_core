@@ -70,7 +70,7 @@ docs/Core-Anchor-Ladder项目语义基线.md
 6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；只有当前 ladder 全部策略 lot 关闭后，才允许重新计算最新 48h `H` 开启下一轮 `P1`。
 7. 每个策略 lot 独立 TP，TP 价格为 `entry_price * (1 + take_profit_pct)`；同一 ladder 内必须满足 `P3.tp_price < P2.tp_price < P1.tp_price`。
 8. 所有 entry / TP 必须 maker-only，当前 Binance USD-M 对应 `LIMIT + GTX`。
-9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。48h `H` 锚点每小时刷新一次，每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。
+9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。48h `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。
 10. 第一阶段不做历史 backtest 参数准入，参数由用户基于核心资产基本面和个人经验显式配置；但必须先做 dry-run / audit-only。
 11. 若 TP 单调关系异常、`P1` TP 已成交但 `P2/P3` 仍未关闭、TP 丢失/被撤/终态异常、lot state 无法归属等 invariant violation 出现，策略进入 `PAUSED_BY_INVARIANT_VIOLATION`：进程必须持续运行并继续 reconcile / audit / bot CRITICAL，但禁止任何新 BUY 和新 ladder。
 
@@ -90,7 +90,7 @@ strategies/cal/live_trader.py
 3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
 4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
 5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
-6. `H` 每小时刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
+6. `H` 默认每 60 秒刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`，刷新间隔由 `data.h_anchor_refresh_secs` 显式配置；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
 7. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
 8. 若 entry size 因交易所 step size、min qty 或 min notional 归一化后无效，live trader 自动暂停对应 symbol，记录日志并推送 bot；进程继续运行。
 9. 新增 `live_trader.py`，配置入口为 `config.live_trader.stark21.json`，显式 `allow_live_order=true`。
