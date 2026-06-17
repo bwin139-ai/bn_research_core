@@ -67,7 +67,7 @@
     "XPDUSDT",
     "XPTUSDT"
   ],
-  "entry_notional_usdt": 10000.0,
+  "entry_notional_usdt": 7500.0,
   "leverage": 5,
   "cooldown_mins": 240,
   "order_retry_max": 2,
