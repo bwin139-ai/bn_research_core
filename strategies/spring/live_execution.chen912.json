@@ -15,6 +15,7 @@
   "position_mode": "HEDGE",
   "margin_type": "CROSSED",
   "leverage": 5,
+  "allow_leverage_max_downgrade": true,
   "precheck_scope": "symbol",
   "strategy_concurrency_scope": "symbol",
   "require_local_state_precheck": true,

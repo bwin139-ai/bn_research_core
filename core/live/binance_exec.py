@@ -782,7 +782,53 @@ def ensure_cross_margin(account: str, symbol: str) -> dict[str, Any]:
     return res
 
 
-def ensure_leverage(account: str, symbol: str, leverage: int) -> dict[str, Any]:
+def _max_initial_leverage(account: str, symbol: str) -> dict[str, Any]:
+    su = (symbol or "").upper().strip()
+    res = _call_with_retry(
+        lambda: call_futures_signed(
+            account,
+            source='binance_exec.futures_leverage_bracket',
+            method='GET',
+            path='/fapi/v1/leverageBracket',
+            params={'symbol': su},
+            priority=REQUEST_PRIORITY_CRITICAL,
+        ),
+        retry_max=0,
+        retry_delay_secs=1.0,
+    )
+    if not res.get("ok"):
+        return res
+    rows = res.get("data")
+    if not isinstance(rows, list) or not rows:
+        return _err(f"unexpected leverageBracket payload: {rows!r}")
+    symbol_row = None
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("symbol") or "").upper() == su:
+            symbol_row = row
+            break
+    if symbol_row is None and len(rows) == 1 and isinstance(rows[0], dict):
+        symbol_row = rows[0]
+    if not isinstance(symbol_row, dict):
+        return _err(f"leverageBracket symbol row missing: symbol={su}")
+    brackets = symbol_row.get("brackets")
+    if not isinstance(brackets, list) or not brackets:
+        return _err(f"leverageBracket brackets missing: symbol={su}")
+    max_leverage = 0
+    for bracket in brackets:
+        if not isinstance(bracket, dict):
+            continue
+        try:
+            value = int(bracket.get("initialLeverage") or 0)
+        except Exception:
+            value = 0
+        if value > max_leverage:
+            max_leverage = value
+    if max_leverage <= 0:
+        return _err(f"leverageBracket max leverage invalid: symbol={su}")
+    return _ok({"symbol": su, "max_initial_leverage": max_leverage, "raw": symbol_row})
+
+
+def ensure_leverage(account: str, symbol: str, leverage: int, *, allow_max_downgrade: bool = False) -> dict[str, Any]:
     su = (symbol or "").upper().strip()
     lev = int(leverage)
     res = _call_gateway_client_with_retry(
@@ -792,6 +838,38 @@ def ensure_leverage(account: str, symbol: str, leverage: int) -> dict[str, Any]:
         priority=REQUEST_PRIORITY_CRITICAL,
         payload={'symbol': su, 'leverage': lev},
     )
+    if not res["ok"] and bool(allow_max_downgrade):
+        bracket_res = _max_initial_leverage(account, su)
+        if bracket_res.get("ok"):
+            max_lev = int((bracket_res.get("data") or {}).get("max_initial_leverage") or 0)
+            if 0 < max_lev < lev:
+                downgrade_res = _call_gateway_client_with_retry(
+                    account,
+                    'binance_exec.futures_change_leverage',
+                    'futures_change_leverage',
+                    priority=REQUEST_PRIORITY_CRITICAL,
+                    payload={'symbol': su, 'leverage': max_lev},
+                )
+                if downgrade_res.get("ok"):
+                    data = dict(downgrade_res.get("data") or {})
+                    return _ok({
+                        "symbol": su,
+                        "leverage": int(data.get("leverage", max_lev)),
+                        "requested_leverage": lev,
+                        "effective_leverage": int(data.get("leverage", max_lev)),
+                        "leverage_downgraded": True,
+                        "downgrade_reason": "exchange_max_initial_leverage",
+                        "initial_error": res,
+                        "leverage_bracket": bracket_res.get("data"),
+                        "raw": data,
+                    })
+                downgraded = dict(downgrade_res)
+                downgraded["initial_error"] = res
+                downgraded["leverage_bracket"] = bracket_res
+                return downgraded
+        enriched = dict(res)
+        enriched["leverage_bracket"] = bracket_res
+        return enriched
     if not res["ok"]:
         return res
     return _ok({"symbol": su, "leverage": int(res["data"].get("leverage", lev)), "raw": res["data"]})

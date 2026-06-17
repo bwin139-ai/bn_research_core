@@ -113,6 +113,13 @@ def _fmt_notify_float(value: Any) -> str:
     return f"{safe:.2f}"
 
 
+def _preview_reason(reason: Any, limit: int = 180) -> str:
+    text = str(reason or "").replace("\r\n", " | ").replace("\r", " | ").replace("\n", " | ").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
 def _extract_event_time_ms(*payloads: Any) -> int | None:
     for payload in payloads:
         if not isinstance(payload, Mapping):
@@ -274,6 +281,7 @@ def validate_live_execution_config(
     _require_bool(cfg, "require_local_state_precheck")
     _require_bool(cfg, "require_exchange_precheck")
     _require_bool(cfg, "require_symbol_filters")
+    _require_bool(cfg, "allow_leverage_max_downgrade")
     _require_int(cfg, "leverage", min_value=1)
     _require_int(cfg, "order_retry_max", min_value=0)
     _require_int(cfg, "cooldown_mins", min_value=0)
@@ -368,6 +376,75 @@ def _resolve_position_notional(intent: Mapping[str, Any], *, entry_reference_pri
         "sizing_ratio": float(sizing_ratio),
         "position_notional_usdt": float(position_notional_usdt),
         "planned_sl_loss_usdt": float(position_notional_usdt * risk_pct),
+    }
+
+
+def _execution_setup_failed_result(
+    *,
+    cfg: Mapping[str, Any],
+    audit_enabled: bool,
+    account: str,
+    symbol: str,
+    source: str,
+    bar_ts: int,
+    bar_bj: str,
+    order_root: str,
+    stage: str,
+    error_code: str,
+    outcome: str,
+    exchange_snapshot: Mapping[str, Any],
+    strategy_name: str,
+) -> dict[str, Any]:
+    reason = str(exchange_snapshot.get("reason") or "unknown")
+    mark_error(
+        account,
+        symbol,
+        error_code=error_code,
+        error_message=reason,
+        error_bj=_now_bj_str(),
+        strategy_name=strategy_name,
+    )
+    _write_exec_event(audit_enabled, account, f"spring_{stage}_failed", {
+        "symbol": symbol,
+        "source": source,
+        "bar_ts": bar_ts,
+        "bar_bj": bar_bj,
+        "order_root": order_root,
+        "stage": stage,
+        "reason": reason,
+        "exchange_snapshot": dict(exchange_snapshot),
+    })
+    mark_last_processed_bar(
+        account,
+        symbol,
+        bar_ts=bar_ts,
+        bar_bj=bar_bj,
+        strategy_name=strategy_name,
+    )
+    logging.warning(
+        "Live execution setup failed | account=%s | strategy=%s | symbol=%s | stage=%s | reason=%s",
+        account,
+        strategy_name,
+        symbol,
+        stage,
+        reason,
+    )
+    if _notify_enabled(cfg, "notify_on_order_error"):
+        _send_spring_notify(
+            f"[{_fmt_hms_from_ms(bar_ts)} {strategy_name}] {account}\n"
+            f"LIVE execution failed before entry\n"
+            f"symbol={symbol}\n"
+            f"stage={stage}\n"
+            f"reason={_preview_reason(reason)}",
+            strategy_name=strategy_name,
+        )
+    return {
+        "ok": False,
+        "outcome": outcome,
+        "reason": reason,
+        "symbol": symbol,
+        "stage": stage,
+        "exchange_snapshot": dict(exchange_snapshot),
     }
 
 
@@ -3000,16 +3077,92 @@ def execute_live_execution_plan(
 
     hedge_res = ensure_hedge_mode(account)
     if not hedge_res.get("ok"):
-        mark_error(account, symbol, error_code="hedge_mode_ensure_failed", error_message=hedge_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
-        raise RuntimeError(f"hedge mode ensure failed: {hedge_res.get('reason')}")
+        return _execution_setup_failed_result(
+            cfg=cfg,
+            audit_enabled=audit_enabled,
+            account=account,
+            symbol=symbol,
+            source=source,
+            bar_ts=current_time_ms,
+            bar_bj=current_time_bj,
+            order_root=order_root,
+            stage="hedge_mode_ensure",
+            error_code="hedge_mode_ensure_failed",
+            outcome="failed_hedge_mode_ensure",
+            exchange_snapshot=hedge_res,
+            strategy_name=state_strategy_name,
+        )
     margin_res = ensure_cross_margin(account, symbol)
     if not margin_res.get("ok"):
-        mark_error(account, symbol, error_code="cross_margin_ensure_failed", error_message=margin_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
-        raise RuntimeError(f"cross margin ensure failed: {margin_res.get('reason')}")
-    leverage_res = ensure_leverage(account, symbol, _require_int(cfg, "leverage", min_value=1))
+        return _execution_setup_failed_result(
+            cfg=cfg,
+            audit_enabled=audit_enabled,
+            account=account,
+            symbol=symbol,
+            source=source,
+            bar_ts=current_time_ms,
+            bar_bj=current_time_bj,
+            order_root=order_root,
+            stage="cross_margin_ensure",
+            error_code="cross_margin_ensure_failed",
+            outcome="failed_cross_margin_ensure",
+            exchange_snapshot=margin_res,
+            strategy_name=state_strategy_name,
+        )
+    requested_leverage = _require_int(cfg, "leverage", min_value=1)
+    leverage_res = ensure_leverage(
+        account,
+        symbol,
+        requested_leverage,
+        allow_max_downgrade=_require_bool(cfg, "allow_leverage_max_downgrade"),
+    )
     if not leverage_res.get("ok"):
-        mark_error(account, symbol, error_code="leverage_ensure_failed", error_message=leverage_res.get("reason"), error_bj=_now_bj_str(), strategy_name=state_strategy_name)
-        raise RuntimeError(f"leverage ensure failed: {leverage_res.get('reason')}")
+        return _execution_setup_failed_result(
+            cfg=cfg,
+            audit_enabled=audit_enabled,
+            account=account,
+            symbol=symbol,
+            source=source,
+            bar_ts=current_time_ms,
+            bar_bj=current_time_bj,
+            order_root=order_root,
+            stage="leverage_ensure",
+            error_code="leverage_ensure_failed",
+            outcome="failed_leverage_ensure",
+            exchange_snapshot=leverage_res,
+            strategy_name=state_strategy_name,
+        )
+    leverage_data = dict(leverage_res.get("data") or {})
+    if bool(leverage_data.get("leverage_downgraded")):
+        effective_leverage = int(leverage_data.get("effective_leverage") or leverage_data.get("leverage") or 0)
+        _write_exec_event(audit_enabled, account, "spring_leverage_downgraded", {
+            "symbol": symbol,
+            "source": source,
+            "bar_ts": current_time_ms,
+            "bar_bj": current_time_bj,
+            "order_root": order_root,
+            "requested_leverage": requested_leverage,
+            "effective_leverage": effective_leverage,
+            "reason": str(leverage_data.get("downgrade_reason") or "exchange_max_initial_leverage"),
+            "exchange_snapshot": leverage_res,
+        })
+        logging.warning(
+            "Live execution leverage downgraded | account=%s | strategy=%s | symbol=%s | requested=%s | effective=%s",
+            account,
+            state_strategy_name,
+            symbol,
+            requested_leverage,
+            effective_leverage,
+        )
+        if _notify_enabled(cfg, "notify_on_order_error"):
+            _send_spring_notify(
+                f"[{_fmt_hms_from_ms(current_time_ms)} {state_strategy_name}] {account}\n"
+                f"LIVE leverage downgraded\n"
+                f"symbol={symbol}\n"
+                f"requested={requested_leverage}x | actual={effective_leverage}x\n"
+                f"reason=exchange_max_initial_leverage",
+                strategy_name=state_strategy_name,
+            )
 
     retry_max = _require_int(cfg, "order_retry_max", min_value=0)
     retry_delay_secs = _require_float(cfg, "api_retry_delay_secs", min_value=0.0)
