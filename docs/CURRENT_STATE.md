@@ -1223,6 +1223,8 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-06-18 修复 exchange_history `orders` 状态快照落盘语义：历史委托依赖 `orders.status in FILLED/PARTIALLY_FILLED`，但 Binance 同一 `order_id` 可能先被同步为 `NEW`，稍后成交才变为 `FILLED`；旧 append-only 去重会保留早期 `NEW` 快照，导致 `/view_history` 漏显示实际已成交的平仓委托。本轮将 `orders` 写入改为按 `dedupe_key` upsert，后续同 `order_id` 状态覆盖旧快照；`trades` / `income` / `transfers` 仍保持流水级追加去重。
 
+2026-06-18 `/view_history` 历史委托新增订单来源图标，只改变 Telegram 展示，不改变 exchange_history 账本与策略执行语义。识别规则基于 `client_order_id`：`SNP` 显示 `🦅`、`SPR` 显示 `🌱`、`SWR` 显示 `📈`、`CAL` 显示 `⚓`、本 bot 手动/API 管理员入口（`MAN` 以及 hedge-short `HSH` 等本 broker 非策略码）显示 `🧰`、非本 broker 或无系统 client id 的 Binance App/Web 官方渠道手动单显示 `🟨`。
+
 2026-05-21 chen912 配置 `exchange_history_start_time=2026-05-01T00:00:00+08:00` 后尝试单账户 bootstrap，发现该账户某些 1 天 income 窗口会命中 Binance `limit=1000`，同步器按完整性规则 fail-fast。已将 `core/exchange_history_sync.py` 的 income 同步改为自适应拆分：1 天窗口命中 `limit=1000` 时递归拆为更小窗口，直到低于 limit；若达到最小 1 小时窗口仍命中 limit，继续 fail-fast，避免把截断流水当作完整历史。
 
 2026-05-23 SWR sim/live 一致性审计 checkpoint：mybwin139 最新 live 样本窗口为 `2026-05-11 13:30:00+08:00` 至 `2026-05-22 13:00:00+08:00`，对应 sim run `SWR_SmokeTest_V1_0523T1152`。已确认 live projection anchor 无错位，70 个 sim signal 均能在 live 按 `symbol + signal_time` 命中，匹配信号的 H/gamma/B/C 结构锚点一致；live-only 21 个信号中，20 个对应 sim `cooldown_active`，来自执行状态分歧，1 个 `MLNUSDT 2026-05-15 04:14+08:00` 待查，当前事实指向 sim 本地 1m 落盘数据缺失。live trades 共 64 笔，其中 3 笔 `UNKNOWN_EXIT` 待进一步核查：`ESPORTSUSDT 2026-05-13 01:58+08:00`、`GUAUSDT 2026-05-16 14:44+08:00`、`EDENUSDT 2026-05-20 22:25+08:00`。

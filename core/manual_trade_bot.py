@@ -40,7 +40,7 @@ from core.live.binance_exec import (
     place_tp_order,
     place_time_stop_order,
 )
-from core.live.custom_id import build_client_order_id, make_order_root
+from core.live.custom_id import build_client_order_id, make_order_root, parse_client_order_id
 from core.runtime_state import load_json_file, save_json_file_atomic, state_path
 
 BJ = timezone(timedelta(hours=8))
@@ -3555,6 +3555,22 @@ def _manual_order_type(order: dict[str, Any]) -> str | None:
     return None
 
 
+def _history_order_source_icon(order: dict[str, Any]) -> str:
+    parsed = parse_client_order_id(str(order.get("client_order_id") or ""))
+    if bool(parsed.get("recognized")):
+        strat = str(parsed.get("strat") or "").upper().strip()
+        if strat == "SNP":
+            return "🦅"
+        if strat == "SPR":
+            return "🌱"
+        if strat == "SWR":
+            return "📈"
+        if strat == "CAL":
+            return "⚓"
+        return "🧰"
+    return "🟨"
+
+
 @_admin_required
 async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -3664,6 +3680,7 @@ async def _send_history(
         "说明: 以下为本地 exchange_history 账本数据，常驻同步存在分钟级延迟。",
         "",
         "🔸 历史委托:",
+        "图例: 🦅Snapback 🌱Spring 📈SWR ⚓CAL 🧰Bot 🟨Binance",
     ]
     if filled_orders:
         for order in filled_orders[-60:]:
@@ -3673,8 +3690,9 @@ async def _send_history(
             price = float(order.get("avg_price", 0.0) or order.get("price", 0.0) or 0.0)
             pnl = trade_pnl_by_order.get(oid, 0.0)
             pnl_text = f"  已实现{_fmt_intish(pnl)}" if abs(pnl) > 1e-9 else ""
+            source_icon = _history_order_source_icon(order)
             lines.append(
-                f"{_bj_minute(order.get('time_ms') or order.get('update_time_ms'))}{order_type} {order.get('symbol')}\n"
+                f"{source_icon} {_bj_minute(order.get('time_ms') or order.get('update_time_ms'))}{order_type} {order.get('symbol')}\n"
                 f"                 量{_fmt_float(qty)}  价{_fmt_float(price)}{pnl_text}"
             )
     else:
