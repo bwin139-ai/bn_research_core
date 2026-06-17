@@ -173,6 +173,51 @@ def _append_jsonl_unique(path: Path, records: list[dict[str, Any]]) -> int:
     return len(fresh)
 
 
+def _upsert_jsonl_by_dedupe_key(source_dir: Path, records_by_day: dict[str, list[dict[str, Any]]]) -> int:
+    incoming: dict[str, dict[str, Any]] = {}
+    for records in records_by_day.values():
+        for record in records:
+            key = str(record.get("dedupe_key") or "")
+            if not key:
+                raise ValueError("upsert record missing dedupe_key")
+            incoming[key] = record
+    if not incoming:
+        return 0
+
+    source_dir.mkdir(parents=True, exist_ok=True)
+    rows_by_day: dict[str, list[dict[str, Any]]] = {}
+    touched_days: set[str] = set()
+    changed = 0
+    for path in sorted(source_dir.glob("*.jsonl")):
+        day = path.stem
+        kept: list[dict[str, Any]] = []
+        for record in _load_jsonl(path):
+            key = str(record.get("dedupe_key") or "")
+            if key and key in incoming:
+                touched_days.add(day)
+                changed += 1
+                continue
+            kept.append(record)
+        rows_by_day[day] = kept
+
+    for record in incoming.values():
+        day = str(record.get("event_day_bj") or "")
+        if not day:
+            raise ValueError("upsert record missing event_day_bj")
+        rows_by_day.setdefault(day, []).append(record)
+        touched_days.add(day)
+
+    for day in sorted(touched_days):
+        path = source_dir / f"{day}.jsonl"
+        records = rows_by_day.get(day, [])
+        tmp = path.with_name(f".{path.name}.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        tmp.replace(path)
+    return changed + len(incoming)
+
+
 def _event_time_ms(source: str, row: dict[str, Any]) -> int:
     keys_by_source = {
         SOURCE_ORDERS: ("update_time_ms", "time_ms"),
@@ -234,6 +279,9 @@ def _write_history_rows(account: str, source: str, rows: list[dict[str, Any]], s
     for row in rows:
         record = _history_record(account, source, row, sync_ms)
         records_by_day.setdefault(record["event_day_bj"], []).append(record)
+    if source == SOURCE_ORDERS:
+        source_dir = state_path("exchange_history", account, source, ".keep").parent
+        return _upsert_jsonl_by_dedupe_key(source_dir, records_by_day)
     written = 0
     for day, records in records_by_day.items():
         written += _append_jsonl_unique(_source_path(account, source, day), records)
