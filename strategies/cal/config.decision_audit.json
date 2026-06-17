@@ -19,14 +19,14 @@
   "ladder": {
     "levels": [
       {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
-      {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12},
-      {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15}
+      {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12, "repeat_drop_step_pct": 0.01},
+      {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15, "repeat_drop_step_pct": 0.01}
     ],
     "symbol_levels": {
       "SKHYNIXUSDT": [
         {"level": "P1", "drop_pct": 0.02, "notional_usdt": 15},
-        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20},
-        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25}
+        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20, "repeat_drop_step_pct": 0.01},
+        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25, "repeat_drop_step_pct": 0.01}
       ]
     }
   },

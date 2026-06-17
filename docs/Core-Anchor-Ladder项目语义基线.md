@@ -65,14 +65,34 @@ current_price <= H * (1 - p1_drop_pct)
 3. `P2` / `P3` 入场触发条件：
 
 ```text
-P2: current_price <= P1.entry_price * (1 - p2_drop_pct)
-P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
+P2: current_price <= P1.entry_price * (1 - p2_effective_drop_pct)
+P3: current_price <= P1.entry_price * (1 - p3_effective_drop_pct)
 ```
 
 4. 同一时刻每个 level 最多允许一个 active lot。
 5. `P1` 是当前 ladder 的主锚点；`P1` active 期间不允许重复开 `P1`。
 6. `P2/P3` 是围绕 `P1.entry_price` 的可重复回补 lot；当某个 `P2/P3` lot 已 TP 关闭后，只要 `P1` 仍 active，且当前价格再次满足该 level 的 trigger，允许再次开同一 level。
 7. 只有 `P1` 已关闭且该 ladder 的全部策略 lot 都已关闭后，才允许重新读取最新 48h `H` 并开启下一轮 `P1`。
+
+### 3.3 P2+ 重复触发下移语义
+
+1. 在同一轮 `P1` active ladder 内，`P2/P3` 每次 `entry -> TAKE_PROFIT` 完成后，必须递增该 level 的 `repeat_count`。
+2. `repeat_count` 只在对应 level 的 TP 成交后递增；未成交、未入场、外部平仓、异常关闭不递增。
+3. `P1` 关闭且当前 ladder 全部策略 lot 关闭后，所有 `repeat_count` 清零。
+4. 每个 level 的 `repeat_drop_step_pct` 以小数比例配置；`0.01` 表示每次重复止盈后后续触发回撤增加 1 个百分点。
+5. 某 level 的有效回撤为：自身基础 `drop_pct` 加上从 `P2` 到该 level 的所有累计下移：
+
+```text
+P2_effective_drop_pct = P2.drop_pct
+                      + P2.repeat_count * P2.repeat_drop_step_pct
+
+P3_effective_drop_pct = P3.drop_pct
+                      + P2.repeat_count * P2.repeat_drop_step_pct
+                      + P3.repeat_count * P3.repeat_drop_step_pct
+```
+
+6. 因此 `P2_repeat_count` 会影响 `P2/P3`，`P3_repeat_count` 会影响 `P3`；未来若显式扩展 `P4/P5`，同理向更深 level 累加。
+7. 该语义用于表达同一低吸区域被反复触碰并止盈后，后续补仓网格应逐步下移，避免在被反复打穿的位置机械重复接货。
 
 ## 4. 配置语义
 
@@ -84,14 +104,14 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
     "lookback_hours": 48,
     "levels": [
       {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
-      {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12},
-      {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15}
+      {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12, "repeat_drop_step_pct": 0.01},
+      {"level": "P3", "drop_pct": 0.025, "notional_usdt": 15, "repeat_drop_step_pct": 0.01}
     ],
     "symbol_levels": {
       "SKHYNIXUSDT": [
         {"level": "P1", "drop_pct": 0.02, "notional_usdt": 15},
-        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20},
-        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25}
+        {"level": "P2", "drop_pct": 0.01, "notional_usdt": 20, "repeat_drop_step_pct": 0.01},
+        {"level": "P3", "drop_pct": 0.025, "notional_usdt": 25, "repeat_drop_step_pct": 0.01}
       ]
     }
   },
@@ -118,6 +138,7 @@ P3: current_price <= P1.entry_price * (1 - p3_drop_pct)
 4. `P1.drop_pct` 作用于 48h `H` 锚点；`P2/P3.drop_pct` 作用于 `P1.entry_price` 锚点，因此 `P2.drop_pct` 不要求大于 `P1.drop_pct`。
 5. 若同时存在 `P2/P3`，必须满足 `P3.drop_pct > P2.drop_pct`。
 6. 每个 level 的 `notional_usdt` 必须显式配置，不允许默认值。
+6.1 `P2/P3` 的 `repeat_drop_step_pct` 必须显式配置且为正数；`P1` 不支持该字段。
 7. 每个 symbol 必须有显式最大策略本金上限：
 
 ```text

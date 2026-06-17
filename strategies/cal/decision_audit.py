@@ -30,6 +30,8 @@ KLINE_OPEN_TIME_INDEX = 0
 KLINE_HIGH_INDEX = 2
 KLINE_CLOSE_INDEX = 4
 INTERVAL_1M_MS = 60_000
+LEVEL_ORDER = {"P1": 1, "P2": 2, "P3": 3}
+REPEAT_SHIFT_LEVELS = {"P2", "P3"}
 
 
 def _interval_ms(interval: str) -> int:
@@ -296,11 +298,15 @@ def _load_levels(raw_levels: Any, path: str, *, label: str = "ladder.levels") ->
         seen.add(level)
         drop_pct = _require_float(item, path, "drop_pct", positive=True)
         notional = _require_float(item, path, "notional_usdt", positive=True)
-        levels.append({"level": level, "drop_pct": float(drop_pct), "notional_usdt": float(notional)})
+        row = {"level": level, "drop_pct": float(drop_pct), "notional_usdt": float(notional)}
+        if level in REPEAT_SHIFT_LEVELS:
+            row["repeat_drop_step_pct"] = float(_require_float(item, path, "repeat_drop_step_pct", positive=True))
+        elif "repeat_drop_step_pct" in item:
+            raise ValueError(f"CAL repeat_drop_step_pct is only supported for P2/P3 | {label}.{level} | {path}")
+        levels.append(row)
     if "P1" not in seen:
         raise ValueError(f"CAL {label} must include P1 | {path}")
-    order = {"P1": 1, "P2": 2, "P3": 3}
-    levels.sort(key=lambda row: order[str(row["level"])])
+    levels.sort(key=lambda row: LEVEL_ORDER[str(row["level"])])
     p2 = next((row for row in levels if row["level"] == "P2"), None)
     p3 = next((row for row in levels if row["level"] == "P3"), None)
     if p2 is not None and p3 is not None and float(p3["drop_pct"]) <= float(p2["drop_pct"]):
@@ -490,12 +496,101 @@ def _state_open_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
+def _state_closed_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = symbol_state.get("closed_lots")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError("CAL symbol state closed_lots must be list")
+    return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
 def _levels_for_symbol(cfg: Mapping[str, Any], symbol: str) -> list[dict[str, Any]]:
     symbol_key = str(symbol).upper().strip()
     symbol_levels = cfg.get("ladder", {}).get("symbol_levels", {})
     if isinstance(symbol_levels, Mapping) and symbol_key in symbol_levels:
         return [dict(row) for row in symbol_levels[symbol_key]]
     return [dict(row) for row in cfg["ladder"]["levels"]]
+
+
+def _repeat_counts(symbol_state: Mapping[str, Any]) -> dict[str, int]:
+    raw = symbol_state.get("repeat_counts", {})
+    if raw in (None, ""):
+        return _derive_repeat_counts_from_lots(symbol_state)
+    if not isinstance(raw, Mapping):
+        raise TypeError("CAL symbol state repeat_counts must be object")
+    counts: dict[str, int] = {}
+    for raw_level, raw_count in raw.items():
+        level = str(raw_level or "").upper().strip()
+        if level not in REPEAT_SHIFT_LEVELS:
+            raise ValueError(f"CAL symbol state repeat_counts unsupported level: {level!r}")
+        if isinstance(raw_count, bool):
+            raise TypeError(f"CAL symbol state repeat_counts value must be int: {level}")
+        try:
+            count = int(raw_count)
+        except Exception as exc:
+            raise TypeError(f"CAL symbol state repeat_counts value must be int: {level}") from exc
+        if count < 0:
+            raise ValueError(f"CAL symbol state repeat_counts value must be >= 0: {level}")
+        counts[level] = int(count)
+    if not counts:
+        return _derive_repeat_counts_from_lots(symbol_state)
+    return counts
+
+
+def _derive_repeat_counts_from_lots(symbol_state: Mapping[str, Any]) -> dict[str, int]:
+    open_lots = _state_open_lots(symbol_state)
+    p1_lot = next((lot for lot in open_lots if str(lot.get("level") or "").upper().strip() == "P1"), None)
+    if not isinstance(p1_lot, Mapping):
+        return {}
+    p1_opened = str(p1_lot.get("opened_bj") or "").strip()
+    if not p1_opened:
+        return {}
+    counts: dict[str, int] = {}
+    for lot in _state_closed_lots(symbol_state):
+        level = str(lot.get("level") or "").upper().strip()
+        if level not in REPEAT_SHIFT_LEVELS:
+            continue
+        if str(lot.get("exit_reason") or "").upper().strip() != "TAKE_PROFIT":
+            continue
+        opened = str(lot.get("opened_bj") or "").strip()
+        if opened and opened >= p1_opened:
+            counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def _effective_drop_info(levels: list[dict[str, Any]], target_level: str, repeat_counts: Mapping[str, int]) -> dict[str, Any]:
+    target = str(target_level or "").upper().strip()
+    if target not in LEVEL_ORDER:
+        raise ValueError(f"CAL unsupported target level for repeat shift: {target!r}")
+    target_row = next((row for row in levels if str(row.get("level") or "").upper() == target), None)
+    if target_row is None:
+        raise ValueError(f"CAL target level not configured for repeat shift: {target}")
+    base_drop_pct = float(target_row["drop_pct"])
+    shift_components: list[dict[str, Any]] = []
+    shift_pct = 0.0
+    for row in levels:
+        level = str(row.get("level") or "").upper().strip()
+        if level not in REPEAT_SHIFT_LEVELS:
+            continue
+        if LEVEL_ORDER[level] > LEVEL_ORDER[target]:
+            continue
+        count = int(repeat_counts.get(level, 0) or 0)
+        step = float(row["repeat_drop_step_pct"])
+        component = float(count) * step
+        shift_pct += component
+        shift_components.append({
+            "level": level,
+            "repeat_count": count,
+            "repeat_drop_step_pct": step,
+            "shift_pct": component,
+        })
+    return {
+        "base_drop_pct": base_drop_pct,
+        "repeat_shift_pct": float(shift_pct),
+        "effective_drop_pct": float(base_drop_pct + shift_pct),
+        "repeat_shift_components": shift_components,
+    }
 
 
 def _take_profit_pct_for_symbol(cfg: Mapping[str, Any], symbol: str) -> float:
@@ -864,6 +959,7 @@ def _build_symbol_decision(
     account = str(cfg["account"])
     symbol_state = _state_symbol(state, symbol)
     open_lots = _state_open_lots(symbol_state)
+    repeat_counts = _repeat_counts(symbol_state)
     invariant_reasons, invariant_detail = _validate_open_lots(cfg=cfg, symbol=symbol, lots=open_lots)
     paused_status = str(symbol_state.get("status") or "").upper().strip()
     paused_by_state = paused_status == "PAUSED_BY_INVARIANT_VIOLATION"
@@ -910,6 +1006,7 @@ def _build_symbol_decision(
                 "non_cal_open_order_count": len(non_cal_open_orders),
             },
             "open_lots": open_lots,
+            "repeat_counts": repeat_counts,
         }
 
     h_anchor = _calc_h_anchor(account, symbol, cfg, now_ms=now_ms, force_refresh=force_anchor_refresh)
@@ -946,8 +1043,10 @@ def _build_symbol_decision(
     trigger_price = None
     next_notional = None
     tp_price_estimate = None
+    drop_info = None
     if next_level is not None and anchor_price > 0:
-        trigger_price = anchor_price * (1.0 - float(next_level["drop_pct"]))
+        drop_info = _effective_drop_info(_levels_for_symbol(cfg, symbol), str(next_level["level"]), repeat_counts)
+        trigger_price = anchor_price * (1.0 - float(drop_info["effective_drop_pct"]))
         next_notional = float(next_level["notional_usdt"])
         tp_price_estimate = current_price * (1.0 + _take_profit_pct_for_symbol(cfg, symbol))
 
@@ -978,6 +1077,11 @@ def _build_symbol_decision(
             "anchor_type": anchor_type,
             "anchor_price": float(anchor_price),
             "trigger_price": float(trigger_price),
+            "base_drop_pct": float(drop_info["base_drop_pct"]) if isinstance(drop_info, Mapping) else float(next_level["drop_pct"]),
+            "repeat_shift_pct": float(drop_info["repeat_shift_pct"]) if isinstance(drop_info, Mapping) else 0.0,
+            "effective_drop_pct": float(drop_info["effective_drop_pct"]) if isinstance(drop_info, Mapping) else float(next_level["drop_pct"]),
+            "repeat_counts": dict(repeat_counts),
+            "repeat_shift_components": list(drop_info["repeat_shift_components"]) if isinstance(drop_info, Mapping) else [],
             "current_price_source": "BEST_BID",
             "current_price": float(current_price),
             "proposed_order_notional_usdt": float(next_notional),
@@ -994,6 +1098,11 @@ def _build_symbol_decision(
         "anchor_type": anchor_type,
         "anchor_price": anchor_price if anchor_price > 0 else None,
         "trigger_price": trigger_price,
+        "base_drop_pct": float(drop_info["base_drop_pct"]) if isinstance(drop_info, Mapping) else None,
+        "repeat_shift_pct": float(drop_info["repeat_shift_pct"]) if isinstance(drop_info, Mapping) else None,
+        "effective_drop_pct": float(drop_info["effective_drop_pct"]) if isinstance(drop_info, Mapping) else None,
+        "repeat_counts": repeat_counts,
+        "repeat_shift_components": list(drop_info["repeat_shift_components"]) if isinstance(drop_info, Mapping) else [],
         "current_price_source": "BEST_BID",
         "current_price": current_price,
         "estimated_tp_price": tp_price_estimate,

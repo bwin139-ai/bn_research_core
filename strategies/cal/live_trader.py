@@ -34,6 +34,7 @@ from core.live.custom_id import build_client_order_id, make_order_root
 from core.message_bridge import send_to_bot
 from core.runtime_state import get_state_dir
 from strategies.cal.decision_audit import (
+    REPEAT_SHIFT_LEVELS,
     STRATEGY_CODE,
     STRATEGY_NAME,
     build_decision_audit,
@@ -293,6 +294,7 @@ def _symbol_state(state: dict[str, Any], symbol: str) -> dict[str, Any]:
     value.setdefault("status", "RUNNING")
     value.setdefault("open_lots", [])
     value.setdefault("closed_lots", [])
+    value.setdefault("repeat_counts", {})
     return value
 
 
@@ -303,6 +305,71 @@ def _open_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise TypeError("CAL open_lots must be list")
     return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _closed_lots(symbol_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = symbol_state.get("closed_lots")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError("CAL closed_lots must be list")
+    return [dict(item) for item in raw if isinstance(item, Mapping)]
+
+
+def _repeat_counts(symbol_state: Mapping[str, Any]) -> dict[str, int]:
+    raw = symbol_state.get("repeat_counts", {})
+    if raw in (None, ""):
+        return _derive_repeat_counts_from_lots(symbol_state)
+    if not isinstance(raw, Mapping):
+        raise TypeError("CAL repeat_counts must be object")
+    counts: dict[str, int] = {}
+    for raw_level, raw_count in raw.items():
+        level = str(raw_level or "").upper().strip()
+        if level not in REPEAT_SHIFT_LEVELS:
+            raise ValueError(f"CAL repeat_counts unsupported level: {level!r}")
+        if isinstance(raw_count, bool):
+            raise TypeError(f"CAL repeat_counts value must be int: {level}")
+        try:
+            count = int(raw_count)
+        except Exception as exc:
+            raise TypeError(f"CAL repeat_counts value must be int: {level}") from exc
+        if count < 0:
+            raise ValueError(f"CAL repeat_counts value must be >= 0: {level}")
+        counts[level] = int(count)
+    if not counts:
+        return _derive_repeat_counts_from_lots(symbol_state)
+    return counts
+
+
+def _derive_repeat_counts_from_lots(symbol_state: Mapping[str, Any]) -> dict[str, int]:
+    open_lots = _open_lots(symbol_state)
+    p1_lot = next((lot for lot in open_lots if str(lot.get("level") or "").upper().strip() == "P1"), None)
+    if not isinstance(p1_lot, Mapping):
+        return {}
+    p1_opened = str(p1_lot.get("opened_bj") or "").strip()
+    if not p1_opened:
+        return {}
+    counts: dict[str, int] = {}
+    for lot in _closed_lots(symbol_state):
+        level = str(lot.get("level") or "").upper().strip()
+        if level not in REPEAT_SHIFT_LEVELS:
+            continue
+        if str(lot.get("exit_reason") or "").upper().strip() != "TAKE_PROFIT":
+            continue
+        opened = str(lot.get("opened_bj") or "").strip()
+        if opened and opened >= p1_opened:
+            counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def _increment_repeat_count(symbol_state: dict[str, Any], level: str) -> int | None:
+    normalized = str(level or "").upper().strip()
+    if normalized not in REPEAT_SHIFT_LEVELS:
+        return None
+    counts = _repeat_counts(symbol_state)
+    counts[normalized] = int(counts.get(normalized, 0)) + 1
+    symbol_state["repeat_counts"] = counts
+    return counts[normalized]
 
 
 def _pending(symbol_state: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -515,7 +582,7 @@ def _emit_signal(cfg: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
     account = str(cfg["account"])
     symbol = str(intent.get("symbol") or "").upper().strip()
     logging.info(
-        "%s CAL SIGNAL | account=%s | symbol=%s | level=%s | current=%s | trigger=%s | anchor=%s:%s | notional=%s | tp_pct=%s",
+        "%s CAL SIGNAL | account=%s | symbol=%s | level=%s | current=%s | trigger=%s | anchor=%s:%s | base_drop=%s | repeat_shift=%s | effective_drop=%s | notional=%s | tp_pct=%s",
         STRATEGY_LOGO,
         account,
         symbol,
@@ -524,6 +591,9 @@ def _emit_signal(cfg: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
         intent.get("trigger_price"),
         intent.get("anchor_type"),
         intent.get("anchor_price"),
+        intent.get("base_drop_pct"),
+        intent.get("repeat_shift_pct"),
+        intent.get("effective_drop_pct"),
         intent.get("proposed_order_notional_usdt"),
         intent.get("take_profit_pct"),
     )
@@ -534,6 +604,7 @@ def _emit_signal(cfg: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
             f"level={intent.get('level')}",
             f"current={intent.get('current_price')} <= trigger={intent.get('trigger_price')}",
             f"anchor={intent.get('anchor_type')} {intent.get('anchor_price')}",
+            f"drop={intent.get('effective_drop_pct')} (base={intent.get('base_drop_pct')} shift={intent.get('repeat_shift_pct')})",
             f"notional={intent.get('proposed_order_notional_usdt')}U",
             f"tp={intent.get('take_profit_pct')}",
         ],
@@ -621,6 +692,11 @@ def _submit_tp_for_fill(
         "tp_exchange_order_id": tp_order.get("exchange_order_id") or tp_order.get("order_id"),
         "tp_order_snapshot": tp_order,
         "take_profit_pct": float(take_profit_pct),
+        "base_drop_pct": intent.get("base_drop_pct"),
+        "repeat_shift_pct": intent.get("repeat_shift_pct"),
+        "effective_drop_pct": intent.get("effective_drop_pct"),
+        "repeat_counts_at_entry": dict(intent.get("repeat_counts") or {}),
+        "repeat_shift_components": list(intent.get("repeat_shift_components") or []),
         "opened_utc_ms": _now_utc_ms(),
         "opened_bj": _fmt_bj_from_ms(_now_utc_ms()),
     }
@@ -745,24 +821,34 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
     for row in rows:
         lot = row["lot"]
         if row["status"] == "FILLED":
-            _append_closed_lot(symbol_state, lot, reason="TAKE_PROFIT", order=row["order"])
+            closed_lot = dict(lot)
+            repeat_count_after_tp = _increment_repeat_count(symbol_state, str(lot.get("level") or ""))
+            if repeat_count_after_tp is not None:
+                closed_lot["repeat_count_after_tp"] = int(repeat_count_after_tp)
+            _append_closed_lot(symbol_state, closed_lot, reason="TAKE_PROFIT", order=row["order"])
             logging.info(
-                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=TAKE_PROFIT | lot_id=%s",
+                "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=TAKE_PROFIT | lot_id=%s | repeat_count_after_tp=%s",
                 STRATEGY_LOGO,
                 account,
                 symbol,
                 lot.get("level"),
                 lot.get("lot_id"),
+                repeat_count_after_tp,
             )
+            notify_lines = [f"symbol={symbol}", f"level={lot.get('level')}", "reason=TAKE_PROFIT", f"lot_id={lot.get('lot_id')}"]
+            if repeat_count_after_tp is not None:
+                notify_lines.append(f"repeat_count_after_tp={repeat_count_after_tp}")
             _notify_cal(
                 account,
                 "EXIT",
-                [f"symbol={symbol}", f"level={lot.get('level')}", "reason=TAKE_PROFIT", f"lot_id={lot.get('lot_id')}"],
+                notify_lines,
             )
             closed_count += 1
         else:
             remaining.append(lot)
     symbol_state["open_lots"] = remaining
+    if not remaining:
+        symbol_state["repeat_counts"] = {}
     position = _query_long_position(account, symbol)
     position_qty = _position_qty(position)
     if remaining and position_qty <= 0:
@@ -785,6 +871,7 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
                 [f"symbol={symbol}", f"level={lot.get('level')}", "reason=POSITION_CLOSED", f"lot_id={lot.get('lot_id')}"],
             )
         symbol_state["open_lots"] = []
+        symbol_state["repeat_counts"] = {}
         _save_state(account, state)
         _write_event(cfg, "open_lots_position_closed", {"symbol": symbol, "closed_count": len(remaining)})
         return
@@ -802,7 +889,13 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
     _write_event(
         cfg,
         "open_lots_reconcile",
-        {"symbol": symbol, "open_count": len(remaining), "closed_count": closed_count, "position_qty": position_qty},
+        {
+            "symbol": symbol,
+            "open_count": len(remaining),
+            "closed_count": closed_count,
+            "position_qty": position_qty,
+            "repeat_counts": _repeat_counts(symbol_state),
+        },
     )
 
 

@@ -19,8 +19,8 @@
   "ladder": {
     "levels": [
       {"level": "P1", "drop_pct": 0.05, "notional_usdt": 600},
-      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600},
-      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600}
+      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600, "repeat_drop_step_pct": 0.01},
+      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600, "repeat_drop_step_pct": 0.01}
     ],
     "symbol_levels": {}
   },
