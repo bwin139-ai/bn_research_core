@@ -145,6 +145,7 @@ strategies/cal/live_trader.py
 27. 2026-06-17 CAL 新增 P2+ 重复止盈下移语义：同一 `P1` active ladder 内，`P2/P3` 每次 `TAKE_PROFIT` 后递增该 level 的 `repeat_counts`；后续触发价使用 `effective_drop_pct = base drop_pct + P2..当前level 的 repeat_count * repeat_drop_step_pct`，因此 `P2` 重复止盈会下移 `P2/P3`，`P3` 重复止盈会下移 `P3`。当前三份 CAL decision config 均显式配置 `repeat_drop_step_pct=0.01`，即每次重复止盈后触发回撤增加 1 个百分点；`P1` 关闭且 ladder 清空后 `repeat_counts` 清零。
 28. 2026-06-17 Snapback / Spring / Sweep-Reclaim 三套 live 策略开仓金额下调：`chen912` 从 `10000U` 调整为 `7500U`，`junjie2026` 从 `833U` 调整为 `650U`。Snapback 修改 `entry_notional_usdt`；Spring 与 Sweep-Reclaim 修改 `base_order_notional_usdt`，并同步调整 live execution 持仓 notional guard：`chen912=6750~8250U`、`junjie2026=550~750U`。`stark21` smoke 参数保持不变。
 29. 2026-06-18 `chen912` API key 恢复后，只恢复 `CAL` live 进程，不恢复 `snapback_chen912` / `spring_chen912` / `sweep_reclaim_chen912`。`chen912` CAL 仍交易 `MUUSDT` 与 `SPCXUSDT`，drop 为 `0.05/0.05/0.12`，TP 为 `0.025`，杠杆分别为 `MUUSDT=25`、`SPCXUSDT=20`；三档 notional 从 `6000/6000/6000U` 调低为 `600/600/600U`，单 symbol 策略本金上限为 `1800U`，总策略本金上限为 `3600U`。`process_monitor_config.json` 同步改为期待 `chen912` 只运行 CAL，三套山寨币策略 chen912 进程期待数量为 0。
+30. 2026-06-18 修复 `exchange_history_sync` 的 orders 终态刷新盲区：本地 orders 账本中仍为 `NEW/PARTIALLY_FILLED` 的订单会让该 symbol 的 orders 查询起点回拨到这些订单的创建时间，直到 Binance `allOrders` 返回 `FILLED/CANCELED/EXPIRED/REJECTED` 等终态并通过 order_id upsert 覆盖旧记录。该修复覆盖 CAL TP 挂单创建较早、成交较晚时 `/view_history` 历史委托漏显示 `平多`，但仓位历史因 trades 已完整而正常的场景；不改变任何策略下单逻辑。
 
 当前下一步：
 

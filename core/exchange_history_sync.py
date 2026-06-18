@@ -36,6 +36,7 @@ QUERY_LIMIT = 1000
 DEFAULT_REQUEST_SLEEP_SECS = 0.3
 POSITION_NET_PNL_INCOME_TYPES = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
 POSITION_SIDES = {"LONG", "SHORT"}
+OPEN_ORDER_STATUSES = {"NEW", "PARTIALLY_FILLED"}
 
 
 def _now_ms() -> int:
@@ -286,6 +287,42 @@ def _write_history_rows(account: str, source: str, rows: list[dict[str, Any]], s
     for day, records in records_by_day.items():
         written += _append_jsonl_unique(_source_path(account, source, day), records)
     return written
+
+
+def _raw_history_row(record: dict[str, Any]) -> dict[str, Any]:
+    raw = record.get("raw")
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def _local_open_order_refresh_start_ms(account: str, symbol: str, *, floor_ms: int | None = None) -> int | None:
+    symbol_key = str(symbol or "").upper().strip()
+    if not symbol_key:
+        raise ValueError("symbol must not be empty")
+    source_dir = state_path("exchange_history", account, SOURCE_ORDERS, ".keep").parent
+    if not source_dir.exists():
+        return None
+    start_ms: int | None = None
+    for path in sorted(source_dir.glob("*.jsonl")):
+        for record in _load_jsonl(path):
+            raw = _raw_history_row(record)
+            if str(raw.get("symbol") or record.get("symbol") or "").upper().strip() != symbol_key:
+                continue
+            if str(raw.get("status") or "").upper().strip() not in OPEN_ORDER_STATUSES:
+                continue
+            order_time_ms = _event_time_ms(SOURCE_ORDERS, raw)
+            try:
+                created_ms = int(raw.get("time_ms") or raw.get("time") or order_time_ms or 0)
+            except Exception:
+                created_ms = int(order_time_ms or 0)
+            candidate_ms = created_ms if created_ms > 0 else order_time_ms
+            if candidate_ms <= 0:
+                continue
+            if floor_ms is not None:
+                candidate_ms = max(int(floor_ms), int(candidate_ms))
+            start_ms = candidate_ms if start_ms is None else min(start_ms, candidate_ms)
+    return start_ms
 
 
 def _replace_history_rows(account: str, source: str, rows: list[dict[str, Any]], sync_ms: int) -> int:
@@ -1142,6 +1179,7 @@ def sync_account_history(
         "current_position_symbols": [],
         "current_open_order_symbols": [],
         "explicit_symbols": sorted(explicit_symbol_set),
+        "open_order_refresh_symbols": [],
         "historical_symbols": [],
         "symbols": [],
         "discovery_errors": [],
@@ -1250,6 +1288,10 @@ def sync_account_history(
     for symbol in sync_symbols:
         order_start = _source_start_ms(state_for_start, SOURCE_ORDERS, symbol, default_start_ms, overlap_ms, floor_ms=floor_ms)
         trade_start = _source_start_ms(state_for_start, SOURCE_TRADES, symbol, default_start_ms, overlap_ms, floor_ms=floor_ms)
+        open_order_refresh_start = _local_open_order_refresh_start_ms(account_key, symbol, floor_ms=floor_ms)
+        if open_order_refresh_start is not None and int(open_order_refresh_start) < int(order_start):
+            order_start = int(open_order_refresh_start)
+            results["open_order_refresh_symbols"].append(symbol)
         sync_res = _sync_symbol_orders_and_trades(
             account_key,
             symbol,
@@ -1261,6 +1303,9 @@ def sync_account_history(
             state=state,
         )
         order_res = sync_res[SOURCE_ORDERS]
+        if open_order_refresh_start is not None:
+            order_res["open_order_refresh_start_ms"] = int(open_order_refresh_start)
+            order_res["open_order_refresh_start_bj"] = _bj_time(int(open_order_refresh_start))
         results["sources"][SOURCE_ORDERS][symbol] = order_res
         if not order_res["ok"]:
             results["ok"] = False
