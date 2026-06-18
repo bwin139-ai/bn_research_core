@@ -292,7 +292,7 @@ def _notify_candidates(enabled: bool, account: str, candidates: list[dict[str, A
         return
     from core.message_bridge import send_to_bot
 
-    lines = [f"[IGN] candidates | account={account} | scan_id={scan_id}"]
+    lines = [f"🔥 [IGN] candidates | account={account} | scan_id={scan_id}"]
     for item in candidates[:top_n]:
         lines.append(
             f"{item['symbol']} score={item['structure_score']} "
