@@ -98,6 +98,7 @@ def load_config(path: str) -> dict[str, Any]:
     hub = _require_mapping(data, "hub")
     runtime = _require_mapping(data, "runtime")
     structure = _require_mapping(data, "structure")
+    early_signal = _require_mapping(data, "early_signal")
     cfg = {
         "enabled": _require_bool(data, "enabled"),
         "account": _require_str(data, "account"),
@@ -125,6 +126,18 @@ def load_config(path: str) -> dict[str, Any]:
             "min_volume_boost_30m": _require_float(structure, "min_volume_boost_30m"),
             "min_low_lift_count": _require_int(structure, "min_low_lift_count", min_value=0),
             "min_structure_score": _require_float(structure, "min_structure_score"),
+        },
+        "early_signal": {
+            "enabled": _require_bool(early_signal, "enabled"),
+            "min_total_return_180m": _require_float(early_signal, "min_total_return_180m"),
+            "min_recent_return_30m": _require_float(early_signal, "min_recent_return_30m"),
+            "min_positive_segment_count": _require_int(early_signal, "min_positive_segment_count", min_value=1),
+            "min_volume_boost_30m": _require_float(early_signal, "min_volume_boost_30m"),
+            "max_drawdown_180m": _require_float(early_signal, "max_drawdown_180m"),
+            "max_near_high_drawdown": _require_float(early_signal, "max_near_high_drawdown"),
+            "max_large_red_count_60m": _require_int(early_signal, "max_large_red_count_60m", min_value=0),
+            "min_low_lift_count": _require_int(early_signal, "min_low_lift_count", min_value=0),
+            "min_structure_score": _require_float(early_signal, "min_structure_score"),
         },
     }
     if int(cfg["structure"]["history_window_mins"]) != 180:
@@ -278,6 +291,46 @@ def analyze_symbol_frame(symbol: str, df: Any, structure_cfg: Mapping[str, Any])
     }
 
 
+def _evaluate_early_signal(row: Mapping[str, Any], early_cfg: Mapping[str, Any]) -> list[str]:
+    if not bool(early_cfg["enabled"]):
+        return ["early_signal_disabled"]
+    required = [
+        "r_180m",
+        "r_30m",
+        "positive_segment_count",
+        "volume_boost_30m",
+        "max_drawdown_180m",
+        "near_high_drawdown",
+        "large_red_count_60m",
+        "low_lift_count",
+        "structure_score",
+    ]
+    missing = [key for key in required if key not in row]
+    if missing:
+        return [f"early_missing_metrics:{','.join(missing)}"]
+
+    reject_reasons: list[str] = []
+    if float(row["r_180m"]) < float(early_cfg["min_total_return_180m"]):
+        reject_reasons.append("early_total_return_below_min")
+    if float(row["r_30m"]) < float(early_cfg["min_recent_return_30m"]):
+        reject_reasons.append("early_recent_return_below_min")
+    if int(row["positive_segment_count"]) < int(early_cfg["min_positive_segment_count"]):
+        reject_reasons.append("early_positive_segment_count_below_min")
+    if float(row["volume_boost_30m"]) < float(early_cfg["min_volume_boost_30m"]):
+        reject_reasons.append("early_volume_boost_below_min")
+    if float(row["max_drawdown_180m"]) > float(early_cfg["max_drawdown_180m"]):
+        reject_reasons.append("early_drawdown_too_large")
+    if float(row["near_high_drawdown"]) > float(early_cfg["max_near_high_drawdown"]):
+        reject_reasons.append("early_not_near_180m_high")
+    if int(row["large_red_count_60m"]) > int(early_cfg["max_large_red_count_60m"]):
+        reject_reasons.append("early_large_red_count_too_high")
+    if int(row["low_lift_count"]) < int(early_cfg["min_low_lift_count"]):
+        reject_reasons.append("early_low_lift_count_below_min")
+    if float(row["structure_score"]) < float(early_cfg["min_structure_score"]):
+        reject_reasons.append("early_structure_score_below_min")
+    return reject_reasons
+
+
 def _reject_summary(results: list[dict[str, Any]]) -> dict[str, int]:
     out: dict[str, int] = {}
     for row in results:
@@ -287,19 +340,31 @@ def _reject_summary(results: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(out.items(), key=lambda item: (-item[1], item[0])))
 
 
+def _summary_lines(label: str, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> list[str]:
+    lines = [f"{label} candidates | account={account} | scan_id={scan_id}"]
+    for item in candidates[:top_n]:
+        lines.append(
+            f"{item['symbol']} score={item['structure_score']} "
+            f"r180={item['r_180m']:.2%} r30={item['r_30m']:.2%} "
+            f"volx={item['volume_boost_30m']:.2f} dd={item['max_drawdown_180m']:.2%}"
+        )
+    return lines
+
+
 def _notify_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
     if not enabled or not candidates:
         return
     from core.message_bridge import send_to_bot
 
-    lines = [f"🔥 [IGN] candidates | account={account} | scan_id={scan_id}"]
-    for item in candidates[:top_n]:
-        lines.append(
-            f"{item['symbol']} score={item['structure_score']} "
-            f"r180={item['r_180m']:.2%} volx={item['volume_boost_30m']:.2f} "
-            f"dd={item['max_drawdown_180m']:.2%}"
-        )
-    send_to_bot("\n".join(lines), label="ign")
+    send_to_bot("\n".join(_summary_lines("🔥 [IGN]", account, candidates, scan_id, top_n)), label="ign")
+
+
+def _notify_early_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
+    if not enabled or not candidates:
+        return
+    from core.message_bridge import send_to_bot
+
+    send_to_bot("\n".join(_summary_lines("🌱 [IGN_EARLY]", account, candidates, scan_id, top_n)), label="ign_early")
 
 
 def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -321,12 +386,18 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for symbol, frame in sorted(full_df.items()):
         try:
-            results.append(analyze_symbol_frame(str(symbol).upper().strip(), frame, structure_cfg))
+            row = analyze_symbol_frame(str(symbol).upper().strip(), frame, structure_cfg)
+            early_reject_reasons = _evaluate_early_signal(row, cfg["early_signal"])
+            row["early_passed"] = not early_reject_reasons
+            row["early_reject_reasons"] = early_reject_reasons
+            results.append(row)
         except Exception as e:
             results.append({
                 "symbol": str(symbol).upper().strip(),
                 "passed": False,
+                "early_passed": False,
                 "reject_reasons": [f"analysis_error:{e}"],
+                "early_reject_reasons": [f"analysis_error:{e}"],
             })
 
     passed = sorted(
@@ -334,7 +405,13 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         key=lambda row: (float(row.get("structure_score") or 0.0), float(row.get("r_180m") or 0.0)),
         reverse=True,
     )
+    early_passed = sorted(
+        [row for row in results if bool(row.get("early_passed")) and not bool(row.get("passed"))],
+        key=lambda row: (float(row.get("structure_score") or 0.0), float(row.get("r_180m") or 0.0)),
+        reverse=True,
+    )
     rejected = [row for row in results if not bool(row.get("passed"))]
+    early_rejected = [row for row in results if not bool(row.get("early_passed"))]
     top_n = int(cfg["runtime"]["top_n"])
     audit_top_n = int(cfg["runtime"]["audit_top_n"])
     summary = {
@@ -347,8 +424,14 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "latest_closed_bar_bj": str(payload.get("latest_closed_bar_bj") or ""),
         "symbol_count": int(len(results)),
         "passed_count": int(len(passed)),
+        "early_passed_count": int(len(early_passed)),
         "top_candidates": passed[:top_n],
+        "top_early_candidates": early_passed[:top_n],
         "rejected_summary": _reject_summary(rejected),
+        "early_rejected_summary": _reject_summary([
+            {"reject_reasons": row.get("early_reject_reasons") or []}
+            for row in early_rejected
+        ]),
         "audit_top_rejected": sorted(
             rejected,
             key=lambda row: float(row.get("structure_score") or 0.0),
@@ -357,6 +440,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     }
     append_stage_record(account, "ignition_observer", summary)
     _notify_candidates(bool(cfg["notify_enabled"]), account, passed, scan_id, top_n)
+    _notify_early_candidates(bool(cfg["notify_enabled"]), account, early_passed, scan_id, top_n)
     return summary
 
 
@@ -387,10 +471,11 @@ def main() -> None:
     while True:
         summary = scan_once(cfg)
         logging.info(
-            "IGN scan finished | account=%s | symbols=%s | passed=%s | c_bar=%s",
+            "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | c_bar=%s",
             summary["account"],
             summary["symbol_count"],
             summary["passed_count"],
+            summary["early_passed_count"],
             summary["latest_closed_bar_bj"],
         )
         if not bool(cfg["runtime"]["loop"]):

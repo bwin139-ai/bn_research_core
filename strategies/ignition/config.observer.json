@@ -25,5 +25,17 @@
     "min_volume_boost_30m": 1.5,
     "min_low_lift_count": 2,
     "min_structure_score": 75
+  },
+  "early_signal": {
+    "enabled": true,
+    "min_total_return_180m": 0.12,
+    "min_recent_return_30m": 0.02,
+    "min_positive_segment_count": 2,
+    "min_volume_boost_30m": 1.2,
+    "max_drawdown_180m": 0.22,
+    "max_near_high_drawdown": 0.16,
+    "max_large_red_count_60m": 4,
+    "min_low_lift_count": 1,
+    "min_structure_score": 60
   }
 }

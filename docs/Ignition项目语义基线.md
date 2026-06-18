@@ -40,8 +40,11 @@
 - `latest_closed_bar_ts`
 - `latest_closed_bar_bj`
 - `passed_count`
+- `early_passed_count`
 - `top_candidates`
+- `top_early_candidates`
 - `rejected_summary`
+- `early_rejected_summary`
 3.2 单个 symbol 输出必须包含：
 - `r_30m`
 - `r_30_60m`
@@ -57,7 +60,12 @@
 - `low_lift_count`
 - `structure_score`
 - `reject_reasons`
-3.3 bot 推送只允许发送通过阈值的候选摘要，避免刷屏。  
+- `early_passed`
+- `early_reject_reasons`
+3.3 observer 输出分为两层：
+- `IGN_EARLY`：早期观察层，允许结构还没有完全确认，但必须已经出现 180m 上行、最近 30m 抬升、量能放大、低点抬高和可接受回撤；用途是提醒人工盯盘，不代表可直接追入。
+- `IGN`：确认层，要求更高的 180m 总涨幅、结构分、贴近高点、量能和稳定性；用途是记录已经确认的点火结构。
+3.4 bot 推送只允许发送通过阈值的候选摘要，避免刷屏。若同一 symbol 同一轮已经通过 `IGN` 确认层，则不再重复发送 `IGN_EARLY`。
 
 ## 4. 交易边界
 
