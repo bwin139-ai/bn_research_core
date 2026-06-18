@@ -14,6 +14,7 @@ from core.live.binance_rest_gateway import (
     call_client_method,
     call_futures_signed,
 )
+from core.live.custom_id import parse_client_order_id
 from core.message_bridge import send_to_bot
 
 MARGIN_TYPE = "CROSSED"
@@ -42,6 +43,27 @@ def _preview_reason(reason: Any, limit: int = 180) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…"
+
+
+def _client_order_id_summary(client_order_id: Any) -> str:
+    raw = str(client_order_id or "").strip()
+    if not raw:
+        return "UNKNOWN"
+    parsed = parse_client_order_id(raw)
+    strat = str(parsed.get("strat") or "").upper().strip()
+    leg = str(parsed.get("leg") or "").upper().strip()
+    if bool(parsed.get("recognized")) and strat and leg:
+        return f"{strat}_{leg}"
+    if raw.startswith("x-"):
+        parts = raw[2:].split("_", 3)
+        if len(parts) >= 3:
+            strat = str(parts[1] or "").upper().strip()
+            leg = str(parts[2] or "").upper().strip()
+            if strat and leg:
+                return f"{strat}_{leg}"
+    if len(raw) <= 24:
+        return raw
+    return raw[:21] + "..."
 
 
 def _fmt_event_hms(event_time_ms: Any) -> str:
@@ -153,9 +175,7 @@ def _format_trade_event_message(
     if stop_price is not None:
         lines.append(f"stop={stop_price}")
     if client_order_id:
-        lines.append(f"cid={client_order_id}")
-    if exchange_order_id is not None:
-        lines.append(f"oid={exchange_order_id}")
+        lines.append(f"cid={_client_order_id_summary(client_order_id)}")
     tail_parts: list[str] = []
     if order_status:
         tail_parts.append(f"status={order_status}")

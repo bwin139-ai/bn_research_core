@@ -1121,6 +1121,43 @@ def _format_trade_result_lines(lines: list[str]) -> str:
     return "\n".join(f"{_trade_result_icon(line)} {line}" for line in lines)
 
 
+def _client_order_id_summary(client_order_id: Any) -> str:
+    raw = str(client_order_id or "").strip()
+    if not raw:
+        return "UNKNOWN"
+    parsed = parse_client_order_id(raw)
+    strat = str(parsed.get("strat") or "").upper().strip()
+    leg = str(parsed.get("leg") or "").upper().strip()
+    if bool(parsed.get("recognized")) and strat and leg:
+        return f"{strat}_{leg}"
+    if raw.startswith("x-"):
+        parts = raw[2:].split("_", 3)
+        if len(parts) >= 3:
+            strat = str(parts[1] or "").upper().strip()
+            leg = str(parts[2] or "").upper().strip()
+            if strat and leg:
+                return f"{strat}_{leg}"
+    if len(raw) <= 24:
+        return raw
+    return raw[:21] + "..."
+
+
+def _order_source_icon(order: dict[str, Any]) -> str:
+    parsed = parse_client_order_id(str(order.get("client_order_id") or ""))
+    if bool(parsed.get("recognized")):
+        strat = str(parsed.get("strat") or "").upper().strip()
+        if strat == "SNP":
+            return "🦅"
+        if strat == "SPR":
+            return "🌱"
+        if strat == "SWR":
+            return "📈"
+        if strat == "CAL":
+            return "⚓"
+        return "🧰"
+    return "🟨"
+
+
 async def _send_lines(update: Update, lines: list[str]) -> None:
     target = update.message or (update.callback_query.message if update.callback_query else None)
     if not target:
@@ -2286,8 +2323,8 @@ async def _send_pending_orders(update: Update, context: ContextTypes.DEFAULT_TYP
             price = _order_display_price(order)
             qty = _order_qty(order)
             lines.append(
-                f"{symbol} {position_side} {side} {order.get('type')} "
-                f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid}"
+                f"{_order_source_icon(order)} {symbol} {position_side} {side} {order.get('type')} "
+                f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})"
             )
             if oid is not None:
                 row_buttons.append(
@@ -2595,7 +2632,7 @@ async def open_input_notional(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         f"LONG open submitted {symbol}\nqty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
         f"price={data.get('price_match') or _fmt_float(data.get('price') or data.get('avg_price') or price)}\n"
-        f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
+        f"cid={_client_order_id_summary(data.get('client_order_id'))}"
     )
     _clear_command_context(context)
     return ConversationHandler.END
@@ -2724,6 +2761,7 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("invalid qty")
         return CLOSE_INPUT_QTY
     try:
+        position_qty = float(pos["qty"])
         _cancel_existing_exit_orders(
             account,
             symbol,
@@ -2732,6 +2770,8 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             order_types=CLOSE_REPLACE_ORDER_TYPES,
             event_name="manual_trade_interactive_limit_close_cancel_existing",
             event_writer=_append_manual_event,
+            position_qty=position_qty,
+            new_order_qty=qty,
         )
     except Exception as exc:
         await update.message.reply_text(f"cancel existing close orders failed: {exc}")
@@ -2758,7 +2798,7 @@ async def close_input_qty(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         f"limit close submitted {symbol}\nqty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
         f"price={data.get('price_match') or _fmt_float(data.get('price'))}\n"
-        f"oid={data.get('exchange_order_id') or data.get('order_id')}\ncid={data.get('client_order_id')}"
+        f"cid={_client_order_id_summary(data.get('client_order_id'))}"
     )
     _clear_command_context(context)
     return ConversationHandler.END
@@ -2800,7 +2840,7 @@ async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     symbol = str(context.user_data["stop_symbol"])
     stop_price = float(update.message.text.strip())
     try:
-        _long_position_qty(account, symbol, 1.0)
+        position_qty = _long_position_qty(account, symbol, 1.0)
         _cancel_existing_exit_orders(
             account,
             symbol,
@@ -2809,6 +2849,8 @@ async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             order_types=STOP_REPLACE_ORDER_TYPES,
             event_name="manual_trade_interactive_sl_cancel_existing",
             event_writer=_append_manual_event,
+            position_qty=position_qty,
+            new_order_qty=position_qty,
         )
     except Exception as exc:
         await update.message.reply_text(f"cancel existing stop orders failed: {exc}")
@@ -2829,7 +2871,7 @@ async def stop_input_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data = res["data"]
     await update.message.reply_text(
         f"stop market submitted {symbol}\ntrigger={_fmt_float(data.get('stop_price'))}\n"
-        f"oid={data.get('exchange_order_id')}\ncid={data.get('client_order_id')}"
+        f"cid={_client_order_id_summary(data.get('client_order_id'))}"
     )
     _clear_command_context(context)
     return ConversationHandler.END
@@ -3556,19 +3598,7 @@ def _manual_order_type(order: dict[str, Any]) -> str | None:
 
 
 def _history_order_source_icon(order: dict[str, Any]) -> str:
-    parsed = parse_client_order_id(str(order.get("client_order_id") or ""))
-    if bool(parsed.get("recognized")):
-        strat = str(parsed.get("strat") or "").upper().strip()
-        if strat == "SNP":
-            return "🦅"
-        if strat == "SPR":
-            return "🌱"
-        if strat == "SWR":
-            return "📈"
-        if strat == "CAL":
-            return "⚓"
-        return "🧰"
-    return "🟨"
+    return _order_source_icon(order)
 
 
 @_admin_required
@@ -3807,7 +3837,7 @@ async def _run_market_trade_command(
         f"symbol={symbol}\n"
         f"qty={_fmt_float(executed_qty)}\n"
         f"avg={_fmt_float(entry.get('avg_price') or entry_price)}\n"
-        f"cid={entry.get('client_order_id')}"
+        f"cid={_client_order_id_summary(entry.get('client_order_id'))}"
     )
     if executed_qty <= 0:
         await _reply_text(update, "M entry has no executed quantity; SL/TP skipped")
@@ -3913,7 +3943,7 @@ async def _run_post_only_trade_command(
             f"price={_fmt_float(best_bid)}\n"
             f"wait=none\n"
             f"protection=none\n"
-            f"cid={entry_client_order_id}"
+            f"cid={_client_order_id_summary(entry_client_order_id)}"
         )
         return
     _ACTIVE_PO_WATCHERS.add(key)
@@ -3938,7 +3968,7 @@ async def _run_post_only_trade_command(
         f"symbol={symbol}\n"
         f"price={_fmt_float(best_bid)}\n"
         f"wait={PO_WATCH_TIMEOUT_SECS}s\n"
-        f"cid={entry_client_order_id}"
+        f"cid={_client_order_id_summary(entry_client_order_id)}"
     )
 
 
@@ -3987,7 +4017,7 @@ async def _run_limit_trade_command(
             lines.append(
                 f"{account}: submitted notional={_fmt_float(notional)} "
                 f"qty={_fmt_float(data.get('qty') or data.get('orig_qty') or quantity)} "
-                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event(
@@ -4018,6 +4048,52 @@ def _long_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> f
     return qty if close_ratio == 1.0 else qty * close_ratio
 
 
+def _open_exit_order_qty(order: dict[str, Any], position_qty: float) -> float:
+    raw = order.get("raw") if isinstance(order.get("raw"), dict) else {}
+    close_position = bool(order.get("close_position") or raw.get("closePosition"))
+    if close_position:
+        return max(0.0, float(position_qty))
+    orig_qty = float(order.get("orig_qty") or raw.get("origQty") or 0.0)
+    executed_qty = float(order.get("executed_qty") or raw.get("executedQty") or 0.0)
+    return max(0.0, orig_qty - executed_qty)
+
+
+def _exit_cancel_priority(order: dict[str, Any]) -> tuple[int, int, int]:
+    parsed = parse_client_order_id(str(order.get("client_order_id") or ""))
+    strat = str(parsed.get("strat") or "").upper().strip()
+    if strat in {"MAN", "HSH"}:
+        source_rank = 0
+    elif not bool(parsed.get("recognized")):
+        source_rank = 1
+    else:
+        source_rank = 2
+    update_ms = int(order.get("update_time_ms") or order.get("time_ms") or 0)
+    order_id = int(order.get("order_id") or 0)
+    return (source_rank, update_ms, order_id)
+
+
+def _select_conflicting_exit_orders(
+    orders: list[dict[str, Any]],
+    *,
+    position_qty: float,
+    new_order_qty: float,
+) -> tuple[list[dict[str, Any]], int]:
+    tolerance = max(1e-8, abs(float(position_qty)) * 1e-6)
+    existing_qty = sum(_open_exit_order_qty(order, position_qty) for order in orders)
+    excess_qty = existing_qty + float(new_order_qty) - float(position_qty)
+    if excess_qty <= tolerance:
+        return [], len(orders)
+
+    selected: list[dict[str, Any]] = []
+    released_qty = 0.0
+    for order in sorted(orders, key=_exit_cancel_priority):
+        selected.append(order)
+        released_qty += _open_exit_order_qty(order, position_qty)
+        if released_qty + tolerance >= excess_qty:
+            break
+    return selected, len(orders) - len(selected)
+
+
 def _short_position_qty(account: str, symbol: str, close_ratio: float = 1.0) -> float:
     if close_ratio <= 0 or close_ratio > 1:
         raise ValueError(f"close_ratio must be > 0 and <= 1: {close_ratio}")
@@ -4042,6 +4118,8 @@ def _cancel_existing_exit_orders(
     order_types: set[str],
     event_name: str,
     event_writer: Callable[..., None],
+    position_qty: float | None = None,
+    new_order_qty: float | None = None,
 ) -> int:
     res = get_open_orders(account, symbol)
     if not res["ok"]:
@@ -4054,6 +4132,13 @@ def _cancel_existing_exit_orders(
         and str(row.get("side") or "").upper() == side
         and str(row.get("type") or "").upper() in order_type_values
     ]
+    skipped_non_conflicting = 0
+    if position_qty is not None and new_order_qty is not None:
+        orders, skipped_non_conflicting = _select_conflicting_exit_orders(
+            orders,
+            position_qty=float(position_qty),
+            new_order_qty=float(new_order_qty),
+        )
     cancelled = 0
     failed: list[str] = []
     for order in orders:
@@ -4073,6 +4158,16 @@ def _cancel_existing_exit_orders(
         raise RuntimeError(
             f"cancel existing close orders failed: cancelled={cancelled} failed={len(failed)} "
             f"reason={'; '.join(failed[:3])}"
+        )
+    if skipped_non_conflicting:
+        event_writer(
+            f"{event_name}_skip_non_conflicting",
+            account=account,
+            symbol=symbol,
+            ok=True,
+            skipped=skipped_non_conflicting,
+            position_qty=position_qty,
+            new_order_qty=new_order_qty,
         )
     return cancelled
 
@@ -4121,7 +4216,7 @@ async def _run_market_close_command(
             data = res["data"]
             lines.append(
                 f"{account}: submitted qty={_fmt_float(data.get('qty') or qty)} "
-                f"avg={_fmt_float(data.get('avg_price'))} cid={data.get('client_order_id')}"
+                f"avg={_fmt_float(data.get('avg_price'))} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event("manual_trade_market_close", account=account, symbol=symbol, ok=False, reason=str(exc))
@@ -4139,6 +4234,8 @@ async def _run_post_only_close_command(
     lines = [f"PO close {symbol}"]
     for account in accounts:
         try:
+            position_qty = _long_position_qty(account, symbol, 1.0)
+            qty = position_qty if close_ratio == 1.0 else position_qty * close_ratio
             cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
@@ -4147,8 +4244,9 @@ async def _run_post_only_close_command(
                 order_types=CLOSE_REPLACE_ORDER_TYPES,
                 event_name="manual_trade_po_close_cancel_existing",
                 event_writer=_append_manual_event,
+                position_qty=position_qty,
+                new_order_qty=qty,
             )
-            qty = _long_position_qty(account, symbol, close_ratio)
             root = make_order_root()
             entry_res: dict[str, Any] | None = None
             best_ask = 0.0
@@ -4199,7 +4297,7 @@ async def _run_post_only_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                f"price={_fmt_float(data.get('price') or best_ask)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or best_ask)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event("manual_trade_po_close_submit", account=account, symbol=symbol, ok=False, reason=str(exc))
@@ -4218,7 +4316,8 @@ async def _run_limit_close_command(
     lines = [f"L close {symbol} price={_fmt_float(limit_price)}"]
     for account in accounts:
         try:
-            qty = _long_position_qty(account, symbol, close_ratio)
+            position_qty = _long_position_qty(account, symbol, 1.0)
+            qty = position_qty if close_ratio == 1.0 else position_qty * close_ratio
             cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
@@ -4227,6 +4326,8 @@ async def _run_limit_close_command(
                 order_types=CLOSE_REPLACE_ORDER_TYPES,
                 event_name="manual_trade_limit_close_cancel_existing",
                 event_writer=_append_manual_event,
+                position_qty=position_qty,
+                new_order_qty=qty,
             )
             root = make_order_root()
             res = place_limit_order(
@@ -4259,7 +4360,7 @@ async def _run_limit_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event(
@@ -4288,6 +4389,7 @@ async def _run_sl_command(
         try:
             position_qty = _long_position_qty(account, symbol, 1.0)
             quantity = None if sl_ratio == 1.0 else position_qty * sl_ratio
+            new_order_qty = position_qty if quantity is None else quantity
             cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
@@ -4296,6 +4398,8 @@ async def _run_sl_command(
                 order_types=STOP_REPLACE_ORDER_TYPES,
                 event_name="manual_trade_sl_cancel_existing",
                 event_writer=_append_manual_event,
+                position_qty=position_qty,
+                new_order_qty=new_order_qty,
             )
             root = make_order_root()
             res = place_sl_order(
@@ -4327,7 +4431,7 @@ async def _run_sl_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={qty_text} "
-                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
+                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event(
@@ -4360,7 +4464,8 @@ async def _run_auto_price_close_command(
             current_price = float(price_res["data"]["price"])
             classification = _classify_auto_close_price(LONG, close_price, current_price)
             if classification == "LIMIT":
-                qty = _long_position_qty(account, symbol, close_ratio)
+                position_qty = _long_position_qty(account, symbol, 1.0)
+                qty = position_qty if close_ratio == 1.0 else position_qty * close_ratio
                 cancelled_existing = _cancel_existing_exit_orders(
                     account,
                     symbol,
@@ -4369,6 +4474,8 @@ async def _run_auto_price_close_command(
                     order_types=CLOSE_REPLACE_ORDER_TYPES,
                     event_name="manual_trade_auto_limit_close_cancel_existing",
                     event_writer=_append_manual_event,
+                    position_qty=position_qty,
+                    new_order_qty=qty,
                 )
                 root = make_order_root()
                 res = place_limit_order(
@@ -4402,12 +4509,13 @@ async def _run_auto_price_close_command(
                     prefix += f"cancelled_existing={cancelled_existing} "
                 lines.append(
                     f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                    f"price={_fmt_float(data.get('price') or close_price)} cid={data.get('client_order_id')}"
+                    f"price={_fmt_float(data.get('price') or close_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
                 )
                 continue
 
             position_qty = _long_position_qty(account, symbol, 1.0)
             quantity = None if close_ratio == 1.0 else position_qty * close_ratio
+            new_order_qty = position_qty if quantity is None else quantity
             cancelled_existing = _cancel_existing_exit_orders(
                 account,
                 symbol,
@@ -4416,6 +4524,8 @@ async def _run_auto_price_close_command(
                 order_types=STOP_REPLACE_ORDER_TYPES,
                 event_name="manual_trade_auto_sl_cancel_existing",
                 event_writer=_append_manual_event,
+                position_qty=position_qty,
+                new_order_qty=new_order_qty,
             )
             root = make_order_root()
             res = place_sl_order(
@@ -4448,7 +4558,7 @@ async def _run_auto_price_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={qty_text} "
-                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={data.get('client_order_id')}"
+                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_manual_event(
@@ -4509,9 +4619,9 @@ async def _run_pending_command(
             order_type = str(order.get("type") or order.get("orig_type") or "")
             price = _order_display_price(order)
             qty = _order_qty(order)
-            oid = order.get("order_id")
             lines.append(
-                f"  {side} {order_type} {_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid}"
+                f"  {_order_source_icon(order)} {side} {order_type} "
+                f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)})"
             )
     await _send_lines(update, lines)
 
@@ -4564,7 +4674,7 @@ async def _run_hedge_short_market_open_command(
         f"symbol={symbol}\n"
         f"qty={_fmt_float(data.get('executed_qty') or data.get('qty') or quantity)}\n"
         f"avg={_fmt_float(data.get('avg_price') or entry_price)}\n"
-        f"cid={data.get('client_order_id')}"
+        f"cid={_client_order_id_summary(data.get('client_order_id'))}"
     )
     executed_qty = float(data.get("executed_qty", 0.0) or data.get("qty", 0.0) or quantity or 0.0)
     if sl_price <= 0 and tp_price <= 0:
@@ -4673,7 +4783,7 @@ async def _run_hedge_short_post_only_open_command(
             f"qty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
             f"wait=none\n"
             f"protection=none\n"
-            f"cid={entry_client_order_id}"
+            f"cid={_client_order_id_summary(entry_client_order_id)}"
         )
         return
     _ACTIVE_PO_WATCHERS.add(key)
@@ -4699,7 +4809,7 @@ async def _run_hedge_short_post_only_open_command(
         f"price={_fmt_float(data.get('price') or best_ask)}\n"
         f"qty={_fmt_float(data.get('qty') or data.get('orig_qty'))}\n"
         f"wait={PO_WATCH_TIMEOUT_SECS}s\n"
-        f"cid={entry_client_order_id}"
+        f"cid={_client_order_id_summary(entry_client_order_id)}"
     )
 
 
@@ -4739,7 +4849,7 @@ async def _run_hedge_short_limit_open_command(
             lines.append(
                 f"{account}: submitted notional={_fmt_float(notional)} "
                 f"qty={_fmt_float(data.get('qty') or data.get('orig_qty') or quantity)} "
-                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event("hedge_short_limit_open", account=account, symbol=symbol, ok=False, notional=notional, price=limit_price, reason=str(exc))
@@ -4775,7 +4885,7 @@ async def _run_hedge_short_market_close_command(
             data = res["data"]
             lines.append(
                 f"{account}: submitted qty={_fmt_float(data.get('qty') or qty)} "
-                f"avg={_fmt_float(data.get('avg_price'))} cid={data.get('client_order_id')}"
+                f"avg={_fmt_float(data.get('avg_price'))} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event("hedge_short_market_close", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
@@ -4854,7 +4964,7 @@ async def _run_hedge_short_post_only_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                f"price={_fmt_float(data.get('price') or best_bid)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or best_bid)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event("hedge_short_po_close_submit", account=account, symbol=symbol, ok=False, close_ratio=close_ratio, reason=str(exc))
@@ -4906,7 +5016,7 @@ async def _run_hedge_short_limit_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                f"price={_fmt_float(data.get('price') or limit_price)} cid={data.get('client_order_id')}"
+                f"price={_fmt_float(data.get('price') or limit_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event("hedge_short_limit_close", account=account, symbol=symbol, ok=False, price=limit_price, close_ratio=close_ratio, reason=str(exc))
@@ -4963,7 +5073,7 @@ async def _run_hedge_short_sl_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={qty_text} "
-                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={data.get('client_order_id')}"
+                f"stop={_fmt_float(data.get('stop_price') or stop_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event("hedge_short_sl", account=account, symbol=symbol, ok=False, stop_price=stop_price, sl_ratio=sl_ratio, reason=str(exc))
@@ -5030,7 +5140,7 @@ async def _run_hedge_short_auto_price_close_command(
                     prefix += f"cancelled_existing={cancelled_existing} "
                 lines.append(
                     f"{prefix}submitted qty={_fmt_float(data.get('qty') or data.get('orig_qty') or qty)} "
-                    f"price={_fmt_float(data.get('price') or close_price)} cid={data.get('client_order_id')}"
+                    f"price={_fmt_float(data.get('price') or close_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
                 )
                 continue
 
@@ -5076,7 +5186,7 @@ async def _run_hedge_short_auto_price_close_command(
                 prefix += f"cancelled_existing={cancelled_existing} "
             lines.append(
                 f"{prefix}submitted qty={qty_text} "
-                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={data.get('client_order_id')}"
+                f"stop={_fmt_float(data.get('stop_price') or close_price)} cid={_client_order_id_summary(data.get('client_order_id'))}"
             )
         except Exception as exc:
             _append_hedge_short_event(
@@ -5114,10 +5224,10 @@ async def _run_hedge_short_pending_command(
             order_type = str(order.get("type") or order.get("orig_type") or "")
             price = _order_display_price(order)
             qty = _order_qty(order)
-            oid = order.get("order_id")
             cid = order.get("client_order_id")
             lines.append(
-                f"  {side} {order_type} {_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) oid={oid} cid={cid}"
+                f"  {_order_source_icon(order)} {side} {order_type} "
+                f"{_order_icon(order)}{_fmt_float(price)}({_fmt_float(qty)}) cid={_client_order_id_summary(cid)}"
             )
     await _send_lines(update, lines)
 

@@ -148,6 +148,8 @@ strategies/cal/live_trader.py
 28. 2026-06-17 Snapback / Spring / Sweep-Reclaim 三套 live 策略开仓金额下调：`chen912` 从 `10000U` 调整为 `7500U`，`junjie2026` 从 `833U` 调整为 `650U`。Snapback 修改 `entry_notional_usdt`；Spring 与 Sweep-Reclaim 修改 `base_order_notional_usdt`，并同步调整 live execution 持仓 notional guard：`chen912=6750~8250U`、`junjie2026=550~750U`。`stark21` smoke 参数保持不变。
 29. 2026-06-18 `chen912` API key 恢复后，只恢复 `CAL` live 进程，不恢复 `snapback_chen912` / `spring_chen912` / `sweep_reclaim_chen912`。`chen912` CAL 仍交易 `MUUSDT` 与 `SPCXUSDT`，drop 为 `0.05/0.05/0.12`，TP 为 `0.025`，杠杆分别为 `MUUSDT=25`、`SPCXUSDT=20`；三档 notional 从 `6000/6000/6000U` 调低为 `600/600/600U`，单 symbol 策略本金上限为 `1800U`，总策略本金上限为 `3600U`。`process_monitor_config.json` 同步改为期待 `chen912` 只运行 CAL，三套山寨币策略 chen912 进程期待数量为 0。
 30. 2026-06-18 修复 `exchange_history_sync` 的 orders 终态刷新盲区：本地 orders 账本中仍为 `NEW/PARTIALLY_FILLED` 的订单会让该 symbol 的 orders 查询起点回拨到这些订单的创建时间，直到 Binance `allOrders` 返回 `FILLED/CANCELED/EXPIRED/REJECTED` 等终态并通过 order_id upsert 覆盖旧记录。该修复覆盖 CAL TP 挂单创建较早、成交较晚时 `/view_history` 历史委托漏显示 `平多`，但仓位历史因 trades 已完整而正常的场景；不改变任何策略下单逻辑。
+31. 2026-06-18 管理员门户 `/trade close` / 交互式 close / SL 的旧 exit 撤单逻辑从“同账户同品种同方向同类型全部撤销”改为“容量冲突才撤销”：当已有 LONG SELL exit 剩余数量 + 新 exit 数量不超过当前 LONG position qty 时，旧单保留并与新单共存；只有超过仓位容量时才按手动单、外部单、策略单的优先级撤掉足够释放容量的旧单。该修复避免手动管理 bot 手动仓位时误撤 CAL 独立 TP。
+32. 2026-06-18 管理员门户可读性优化：`/trade pending` 与账户详情挂单列表不再展示 `oid`，每条挂单前增加来源图标（`🦅` Snapback、`🌱` Spring、`📈` SWR、`⚓` CAL、`🧰` bot 手动、`🟨` Binance 官方/外部）；`/trade` 与 `BN_EXEC` 的 Telegram 可见交易输出不再展示 `oid`，`cid` 压缩为 `MAN_ENT` / `CAL_TP` 这类语义片段，完整 `cid/oid` 仍保留在执行日志中用于审计。
 
 当前下一步：
 
