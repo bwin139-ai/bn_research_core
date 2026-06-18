@@ -81,8 +81,9 @@ strategies/ignition/observer.py
 1. IGN observer 只读取 `market_data_hub` shared `finalized_candidate_inputs`，不自行下单，不写策略持仓 state。
 2. 每个 symbol 使用 `full_df` 最近 180 根已闭合 1m bar，计算 `0-30m / 30-60m / 60-120m / 120-180m` 四段收益、180m 总涨幅、最大回撤、贴近高点程度、大振幅 bar 数、大阴线数、30m 成交额放大倍数、分段低点抬高次数与 `structure_score`。
 3. 第一版确认层 `IGN` 通过门槛显式写入 `strategies/ignition/config.observer.json`，默认要求 180m 总涨幅不低于 `25%`、至少 3 个分段上涨、最大回撤不高于 `18%`、距离 180m 高点回撤不高于 `8%`、30m 成交额放大倍数不低于 `1.5`、结构分不低于 `75`。
-4. 2026-06-18 新增早期观察层 `IGN_EARLY`，默认要求 180m 总涨幅不低于 `12%`、最近 30m 涨幅不低于 `2%`、至少 2 个分段上涨、30m 成交额放大倍数不低于 `1.2`、最大回撤不高于 `22%`、距离 180m 高点回撤不高于 `16%`、最近 60m 大阴线不超过 4 根、至少 1 次分段低点抬高、结构分不低于 `60`。`IGN_EARLY` 只用于人工早期观察；若同一轮同一 symbol 已通过确认层 `IGN`，不重复发送早期层消息。
-5. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`rejected_summary`、`early_rejected_summary` 和高分 rejected 样本；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
+4. 2026-06-18 新增早期观察层 `IGN_EARLY`，默认要求 180m 总涨幅不低于 `12%` 且不高于 `18%`、最近 30m 涨幅不低于 `2%`、至少 2 个分段上涨、30m 成交额放大倍数不低于 `1.2`、最大回撤不高于 `22%`、距离 180m 高点回撤不高于 `16%`、最近 60m 大阴线不超过 4 根、至少 1 次分段低点抬高、结构分不低于 `60`。`IGN_EARLY` 只用于人工早期观察；若同一轮同一 symbol 已通过确认层 `IGN`，不重复发送早期层消息。
+5. 2026-06-18 `IGN_EARLY` 增加同账户、同层级、同 symbol 的推送冷却，默认 `runtime.alert_cooldown_secs=1800`，避免同一候选每分钟重复推送；冷却状态落盘到 `state/live/ignition_observer_alerts.<account>.json`，仅在通知开启时写入。
+6. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`rejected_summary`、`early_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 

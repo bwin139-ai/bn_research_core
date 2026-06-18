@@ -111,6 +111,7 @@ def load_config(path: str) -> dict[str, Any]:
             "interval_secs": _require_int(runtime, "interval_secs", min_value=1),
             "top_n": _require_int(runtime, "top_n", min_value=1),
             "audit_top_n": _require_int(runtime, "audit_top_n", min_value=1),
+            "alert_cooldown_secs": _require_int(runtime, "alert_cooldown_secs", min_value=0),
         },
         "structure": {
             "history_window_mins": _require_int(structure, "history_window_mins", min_value=180),
@@ -130,6 +131,7 @@ def load_config(path: str) -> dict[str, Any]:
         "early_signal": {
             "enabled": _require_bool(early_signal, "enabled"),
             "min_total_return_180m": _require_float(early_signal, "min_total_return_180m"),
+            "max_total_return_180m": _require_float(early_signal, "max_total_return_180m"),
             "min_recent_return_30m": _require_float(early_signal, "min_recent_return_30m"),
             "min_positive_segment_count": _require_int(early_signal, "min_positive_segment_count", min_value=1),
             "min_volume_boost_30m": _require_float(early_signal, "min_volume_boost_30m"),
@@ -312,6 +314,8 @@ def _evaluate_early_signal(row: Mapping[str, Any], early_cfg: Mapping[str, Any])
     reject_reasons: list[str] = []
     if float(row["r_180m"]) < float(early_cfg["min_total_return_180m"]):
         reject_reasons.append("early_total_return_below_min")
+    if float(row["r_180m"]) > float(early_cfg["max_total_return_180m"]):
+        reject_reasons.append("early_total_return_above_max")
     if float(row["r_30m"]) < float(early_cfg["min_recent_return_30m"]):
         reject_reasons.append("early_recent_return_below_min")
     if int(row["positive_segment_count"]) < int(early_cfg["min_positive_segment_count"]):
@@ -338,6 +342,62 @@ def _reject_summary(results: list[dict[str, Any]]) -> dict[str, int]:
             key = str(reason).split(":", 1)[0]
             out[key] = out.get(key, 0) + 1
     return dict(sorted(out.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _alert_state_path(account: str) -> Path:
+    return Path(PROJECT_ROOT) / "state" / "live" / f"ignition_observer_alerts.{account}.json"
+
+
+def _load_alert_state(account: str) -> dict[str, Any]:
+    path = _alert_state_path(account)
+    if not path.exists():
+        return {"alerts": {}}
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise TypeError(f"IGN alert state must be object: {path}")
+    alerts = data.get("alerts")
+    if not isinstance(alerts, dict):
+        raise TypeError(f"IGN alert state alerts must be object: {path}")
+    return data
+
+
+def _save_alert_state(account: str, state: Mapping[str, Any]) -> None:
+    path = _alert_state_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _apply_alert_cooldown(
+    account: str,
+    layer: str,
+    candidates: list[dict[str, Any]],
+    *,
+    cooldown_secs: int,
+    now_ms: int,
+) -> tuple[list[dict[str, Any]], int]:
+    if cooldown_secs <= 0 or not candidates:
+        return candidates, 0
+    state = _load_alert_state(account)
+    alerts = state["alerts"]
+    cooldown_ms = int(cooldown_secs) * 1000
+    filtered: list[dict[str, Any]] = []
+    suppressed = 0
+    for item in candidates:
+        symbol = str(item["symbol"]).upper().strip()
+        key = f"{layer}:{symbol}"
+        last_ms = int(alerts.get(key, 0) or 0)
+        if last_ms > 0 and now_ms - last_ms < cooldown_ms:
+            suppressed += 1
+            continue
+        filtered.append(item)
+        alerts[key] = int(now_ms)
+    state["updated_bj"] = _now_bj()
+    _save_alert_state(account, state)
+    return filtered, suppressed
 
 
 def _summary_lines(label: str, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> list[str]:
@@ -414,6 +474,29 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     early_rejected = [row for row in results if not bool(row.get("early_passed"))]
     top_n = int(cfg["runtime"]["top_n"])
     audit_top_n = int(cfg["runtime"]["audit_top_n"])
+    now_ms = int(time.time() * 1000)
+    alert_cooldown_secs = int(cfg["runtime"]["alert_cooldown_secs"])
+    notify_enabled = bool(cfg["notify_enabled"])
+    if notify_enabled:
+        notify_passed, notify_suppressed = _apply_alert_cooldown(
+            account,
+            "IGN",
+            passed,
+            cooldown_secs=alert_cooldown_secs,
+            now_ms=now_ms,
+        )
+        notify_early_passed, notify_early_suppressed = _apply_alert_cooldown(
+            account,
+            "IGN_EARLY",
+            early_passed,
+            cooldown_secs=alert_cooldown_secs,
+            now_ms=now_ms,
+        )
+    else:
+        notify_passed = passed
+        notify_early_passed = early_passed
+        notify_suppressed = 0
+        notify_early_suppressed = 0
     summary = {
         "scan_id": scan_id,
         "strategy_name": "IGN",
@@ -425,6 +508,11 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "symbol_count": int(len(results)),
         "passed_count": int(len(passed)),
         "early_passed_count": int(len(early_passed)),
+        "notify_passed_count": int(len(notify_passed)),
+        "notify_early_passed_count": int(len(notify_early_passed)),
+        "alert_cooldown_secs": int(alert_cooldown_secs),
+        "alert_suppressed_count": int(notify_suppressed),
+        "early_alert_suppressed_count": int(notify_early_suppressed),
         "top_candidates": passed[:top_n],
         "top_early_candidates": early_passed[:top_n],
         "rejected_summary": _reject_summary(rejected),
@@ -439,8 +527,8 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         )[:audit_top_n],
     }
     append_stage_record(account, "ignition_observer", summary)
-    _notify_candidates(bool(cfg["notify_enabled"]), account, passed, scan_id, top_n)
-    _notify_early_candidates(bool(cfg["notify_enabled"]), account, early_passed, scan_id, top_n)
+    _notify_candidates(notify_enabled, account, notify_passed, scan_id, top_n)
+    _notify_early_candidates(notify_enabled, account, notify_early_passed, scan_id, top_n)
     return summary
 
 
@@ -471,11 +559,15 @@ def main() -> None:
     while True:
         summary = scan_once(cfg)
         logging.info(
-            "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | c_bar=%s",
+            "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | notify=%s/%s | suppressed=%s/%s | c_bar=%s",
             summary["account"],
             summary["symbol_count"],
             summary["passed_count"],
             summary["early_passed_count"],
+            summary["notify_passed_count"],
+            summary["notify_early_passed_count"],
+            summary["alert_suppressed_count"],
+            summary["early_alert_suppressed_count"],
             summary["latest_closed_bar_bj"],
         )
         if not bool(cfg["runtime"]["loop"]):

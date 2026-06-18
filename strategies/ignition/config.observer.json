@@ -9,7 +9,8 @@
     "loop": false,
     "interval_secs": 60,
     "top_n": 10,
-    "audit_top_n": 30
+    "audit_top_n": 30,
+    "alert_cooldown_secs": 1800
   },
   "structure": {
     "history_window_mins": 180,
@@ -29,6 +30,7 @@
   "early_signal": {
     "enabled": true,
     "min_total_return_180m": 0.12,
+    "max_total_return_180m": 0.18,
     "min_recent_return_30m": 0.02,
     "min_positive_segment_count": 2,
     "min_volume_boost_30m": 1.2,
