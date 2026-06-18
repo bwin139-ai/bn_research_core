@@ -353,7 +353,7 @@ def load_config(path: str) -> dict[str, Any]:
         "collection": {"interval_secs": _require_int(collection, path, "interval_secs", positive=True)},
         "data": {
             "klines_interval": _require_non_empty_str(data, path, "klines_interval"),
-            "lookback_hours": _require_int(data, path, "lookback_hours", positive=True),
+            "h_anchor_lookback_hours": _require_int(data, path, "h_anchor_lookback_hours", positive=True),
             "include_current_bar": _require_bool(data, path, "include_current_bar"),
             "h_anchor_refresh_secs": _require_int(data, path, "h_anchor_refresh_secs", positive=True),
             "kline_limit": _require_int(data, path, "kline_limit", positive=True),
@@ -389,8 +389,8 @@ def load_config(path: str) -> dict[str, Any]:
 
     if out["data"]["klines_interval"] != "1h":
         raise ValueError(f"CAL first version only supports 1h klines_interval | {path}")
-    if int(out["data"]["lookback_hours"]) % 1 != 0:
-        raise ValueError(f"CAL data.lookback_hours must align to 1h bars | {path}")
+    if int(out["data"]["h_anchor_lookback_hours"]) % 1 != 0:
+        raise ValueError(f"CAL data.h_anchor_lookback_hours must align to 1h bars | {path}")
     if int(out["data"]["kline_limit"]) > 1500:
         raise ValueError(f"CAL data.kline_limit must be <= 1500 | {path}")
     if out["execution"]["position_side"] != POSITION_SIDE_LONG:
@@ -828,7 +828,7 @@ def _cached_h_anchor(
         return None
     if str(row.get("klines_interval") or "") != str(cfg["data"]["klines_interval"]):
         return None
-    if int(row.get("lookback_hours") or 0) != int(cfg["data"]["lookback_hours"]):
+    if int(row.get("h_anchor_lookback_hours") or 0) != int(cfg["data"]["h_anchor_lookback_hours"]):
         return None
     if bool(row.get("include_current_bar")) != bool(cfg["data"]["include_current_bar"]):
         return None
@@ -863,7 +863,7 @@ def _calc_h_anchor(
 ) -> dict[str, Any]:
     interval = str(cfg["data"]["klines_interval"])
     step_ms = _interval_ms(interval)
-    lookback_bars = int(cfg["data"]["lookback_hours"])
+    lookback_bars = int(cfg["data"]["h_anchor_lookback_hours"])
     current_bar_open = (int(now_ms) // step_ms) * step_ms
     include_current_bar = bool(cfg["data"]["include_current_bar"])
     latest_anchor_open = int(current_bar_open if include_current_bar else current_bar_open - step_ms)
@@ -887,7 +887,7 @@ def _calc_h_anchor(
         limit=int(cfg["data"]["kline_limit"]),
     )
     if len(rows) < lookback_bars:
-        raise RuntimeError(f"CAL insufficient 48h 1h bars: {symbol} | {len(rows)} < {lookback_bars}")
+        raise RuntimeError(f"CAL insufficient {lookback_bars}h 1h bars: {symbol} | {len(rows)} < {lookback_bars}")
     rows = rows[-lookback_bars:]
     latest_anchor_open = int(rows[-1][KLINE_OPEN_TIME_INDEX])
     start_ms = int(latest_anchor_open) - (lookback_bars - 1) * step_ms
@@ -909,7 +909,7 @@ def _calc_h_anchor(
             h_time = int(open_time)
         expected += step_ms
     anchor = {
-        "lookback_hours": int(cfg["data"]["lookback_hours"]),
+        "h_anchor_lookback_hours": lookback_bars,
         "klines_interval": interval,
         "include_current_bar": include_current_bar,
         "cache_hit": False,
@@ -1023,7 +1023,7 @@ def _build_symbol_decision(
     else:
         block_reason = ""
 
-    anchor_type = "H_48H"
+    anchor_type = f"H_{int(cfg['data']['h_anchor_lookback_hours'])}H"
     anchor_price = float(h_anchor["h_price"])
     if open_lots:
         if not isinstance(p1_lot, Mapping):

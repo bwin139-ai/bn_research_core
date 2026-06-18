@@ -99,11 +99,11 @@ docs/Core-Anchor-Ladder项目语义基线.md
 2. CAL 与 Snapback / Spring / SWR 山寨币短周期结构策略分离，不复用其结构语义、止损或持仓时间语义。
 3. `P0` 是外部手动底仓，可来自 Binance App / Web 或管理员门户手动 LONG 入口；CAL 不管理、不止盈、不平仓、不写入策略 state。
 4. `P1/P2/P3` 是 CAL 自动策略 lot，必须通过策略专属 client order id 与本地 lot state 区分。
-5. 每个账户每个 symbol 同一时间最多一个 active ladder；无 active `P1` 时用最近 48 根 1h contract bars 的最高价 `H` 触发 `P1`，允许包含当前未闭合 1h bar。
-6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；同一时刻每个 level 最多一个 active lot，但 `P2/P3` TP 关闭后，只要 `P1` 仍 active 且价格再次满足 trigger，允许重复回补同一 level；只有 `P1` 已关闭且当前 ladder 全部策略 lot 关闭后，才允许重新计算最新 48h `H` 开启下一轮 `P1`。
+5. 每个账户每个 symbol 同一时间最多一个 active ladder；无 active `P1` 时用 `data.h_anchor_lookback_hours` 配置的最近 N 根 1h contract bars 最高价 `H` 触发 `P1`，允许包含当前未闭合 1h bar；当前实盘配置为 `24`，即 24H 高点。
+6. `P1` 建立后，`P2/P3` 锚定 `P1.entry_price`，不再使用最新 `H`；同一时刻每个 level 最多一个 active lot，但 `P2/P3` TP 关闭后，只要 `P1` 仍 active 且价格再次满足 trigger，允许重复回补同一 level；只有 `P1` 已关闭且当前 ladder 全部策略 lot 关闭后，才允许按当前配置重新计算最新 `H` 开启下一轮 `P1`。
 7. 每个策略 lot 独立 TP，TP 价格为 `entry_price * (1 + take_profit_pct)`；同一 ladder 内必须满足 `P3.tp_price < P2.tp_price < P1.tp_price`。
 8. 所有 entry / TP 必须 maker-only，当前 Binance USD-M 对应 `LIMIT + GTX`。
-9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。48h `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。
+9. CAL 不绑定每分钟开头运行，第一版按 `collection.interval_secs=10` 高频轮询；前提是核心资产白名单很小，通常只监控 1-2 个 symbol。`H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；H 的 1h bar 回看根数由 `data.h_anchor_lookback_hours` 显式配置；每 10 秒循环只刷新盘口、账户事实、本地 state 与触发判断。
 10. 第一阶段不做历史 backtest 参数准入，参数由用户基于核心资产基本面和个人经验显式配置；但必须先做 dry-run / audit-only。
 11. 若 TP 单调关系异常、`P1` TP 已成交但 `P2/P3` 仍未关闭、TP 丢失/被撤/终态异常、lot state 无法归属等 invariant violation 出现，策略进入 `PAUSED_BY_INVARIANT_VIOLATION`：进程必须持续运行并继续 reconcile / audit / bot CRITICAL，但禁止任何新 BUY 和新 ladder。
 
@@ -122,7 +122,7 @@ strategies/cal/live_trader.py
 2. `MUUSDT` ladder 参数为 `P1 drop_pct=0.02 / 10U`、`P2 drop_pct=0.01 / 12U`、`P3 drop_pct=0.025 / 15U`，TP 为 `0.03`；`SKHYNIXUSDT` 显式覆盖为 `P1 drop_pct=0.02 / 15U`、`P2 drop_pct=0.01 / 20U`、`P3 drop_pct=0.025 / 25U`，TP 为 `0.01`；两品种 `max_symbol_strategy_notional_usdt` 分别为 `MUUSDT=37U`、`SKHYNIXUSDT=60U`，`max_total_strategy_notional_usdt=97U`。
 3. 执行杠杆显式配置为 `25`，position mode 为 `HEDGE`，margin type 为 `CROSSED`。
 4. 配置默认 `collection.interval_secs=10`，不绑定每分钟开头。
-5. `H` 使用最近 48 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar。
+5. `H` 使用 `data.h_anchor_lookback_hours` 配置的最近 N 根 1h contract bars 的最高价，并允许包含当前未闭合 1h bar；当前实盘配置为 24H。
 6. `H` 默认每 60 秒刷新一次，缓存路径为 `state/live_audit/cal/decision/h_anchor_cache.json`，刷新间隔由 `data.h_anchor_refresh_secs` 显式配置；10 秒循环内只刷新盘口、账户 position / open orders、本地 CAL state 与触发判断。
 7. 账户事实读取 LONG position 与 symbol open orders；外部 LONG position 记为估算 `P0`，不写入 CAL state。
 8. 若 entry size 因交易所 step size、min qty 或 min notional 归一化后无效，live trader 自动暂停对应 symbol，记录日志并推送 bot；进程继续运行。
@@ -150,6 +150,7 @@ strategies/cal/live_trader.py
 30. 2026-06-18 修复 `exchange_history_sync` 的 orders 终态刷新盲区：本地 orders 账本中仍为 `NEW/PARTIALLY_FILLED` 的订单会让该 symbol 的 orders 查询起点回拨到这些订单的创建时间，直到 Binance `allOrders` 返回 `FILLED/CANCELED/EXPIRED/REJECTED` 等终态并通过 order_id upsert 覆盖旧记录。该修复覆盖 CAL TP 挂单创建较早、成交较晚时 `/view_history` 历史委托漏显示 `平多`，但仓位历史因 trades 已完整而正常的场景；不改变任何策略下单逻辑。
 31. 2026-06-18 管理员门户 `/trade close` / 交互式 close / SL 的旧 exit 撤单逻辑从“同账户同品种同方向同类型全部撤销”改为“容量冲突才撤销”：当已有 LONG SELL exit 剩余数量 + 新 exit 数量不超过当前 LONG position qty 时，旧单保留并与新单共存；只有超过仓位容量时才按手动单、外部单、策略单的优先级撤掉足够释放容量的旧单。该修复避免手动管理 bot 手动仓位时误撤 CAL 独立 TP。
 32. 2026-06-18 管理员门户可读性优化：`/trade pending` 与账户详情挂单列表不再展示 `oid`，每条挂单前增加来源图标（`🦅` Snapback、`🌱` Spring、`📈` SWR、`⚓` CAL、`🧰` bot 手动、`🟨` Binance 官方/外部）；`/trade` 与 `BN_EXEC` 的 Telegram 可见交易输出不再展示 `oid`，`cid` 压缩为 `MAN_ENT` / `CAL_TP` 这类语义片段，完整 `cid/oid` 仍保留在执行日志中用于审计。
+33. 2026-06-18 CAL 的 P1 `H` 锚点回看窗口从固定代码语义改为显式 `data.h_anchor_lookback_hours` 配置，当前三份 CAL decision config 均设为 `24`；`chen912` / `junjie2026` 的默认 ladder `P1.drop_pct` 从 `0.05` 调整为 `0.04`，`P2/P3` 仍为 `0.05/0.12` 且继续锚定 `P1.entry_price`。
 
 当前下一步：
 

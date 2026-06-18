@@ -48,7 +48,7 @@
 
 ### 3.1 H 锚点
 
-1. 当 symbol 没有 active `P1` 时，`CAL` 使用最近 48 根 1h contract bars 的最高价作为 `H`。
+1. 当 symbol 没有 active `P1` 时，`CAL` 使用最近 `data.h_anchor_lookback_hours` 根 1h contract bars 的最高价作为 `H`；当前实盘配置为 `24`，即 24H 高点。
 2. `CAL` 的 `H` 允许包含当前未闭合 1h bar。该字段只作为核心资产 ladder 的执行锚点，不属于 Snapback / Spring / SWR 的 1m 结构信号语义。
 3. `P1` 入场触发条件：
 
@@ -61,7 +61,7 @@ current_price <= H * (1 - p1_drop_pct)
 ### 3.2 P1 entry 锚点
 
 1. 一旦 `P1` 建立并处于 active ladder，该 ladder 的后续加仓锚点固定为 `P1.entry_price`。
-2. `P2` / `P3` 不再使用最新 48h `H` 作为锚点。
+2. `P2` / `P3` 不再使用最新 `H` 作为锚点。
 3. `P2` / `P3` 入场触发条件：
 
 ```text
@@ -72,7 +72,7 @@ P3: current_price <= P1.entry_price * (1 - p3_effective_drop_pct)
 4. 同一时刻每个 level 最多允许一个 active lot。
 5. `P1` 是当前 ladder 的主锚点；`P1` active 期间不允许重复开 `P1`。
 6. `P2/P3` 是围绕 `P1.entry_price` 的可重复回补 lot；当某个 `P2/P3` lot 已 TP 关闭后，只要 `P1` 仍 active，且当前价格再次满足该 level 的 trigger，允许再次开同一 level。
-7. 只有 `P1` 已关闭且该 ladder 的全部策略 lot 都已关闭后，才允许重新读取最新 48h `H` 并开启下一轮 `P1`。
+7. 只有 `P1` 已关闭且该 ladder 的全部策略 lot 都已关闭后，才允许按 `data.h_anchor_lookback_hours` 重新读取最新 `H` 并开启下一轮 `P1`。
 
 ### 3.3 P2+ 重复触发下移语义
 
@@ -100,8 +100,11 @@ P3_effective_drop_pct = P3.drop_pct
 
 ```json
 {
+  "data": {
+    "h_anchor_lookback_hours": 24,
+    "h_anchor_refresh_secs": 60
+  },
   "ladder": {
-    "lookback_hours": 48,
     "levels": [
       {"level": "P1", "drop_pct": 0.02, "notional_usdt": 10},
       {"level": "P2", "drop_pct": 0.01, "notional_usdt": 12, "repeat_drop_step_pct": 0.01},
@@ -135,7 +138,7 @@ P3_effective_drop_pct = P3.drop_pct
 1. `levels` 必须非空，level 名称不得重复。
 2. 第一版固定支持 `P1/P2/P3`，不得隐式扩展到未配置 level。
 3. `P1` 必须存在。
-4. `P1.drop_pct` 作用于 48h `H` 锚点；`P2/P3.drop_pct` 作用于 `P1.entry_price` 锚点，因此 `P2.drop_pct` 不要求大于 `P1.drop_pct`。
+4. `P1.drop_pct` 作用于 `data.h_anchor_lookback_hours` 定义的 `H` 锚点；`P2/P3.drop_pct` 作用于 `P1.entry_price` 锚点，因此 `P2.drop_pct` 不要求大于 `P1.drop_pct`。
 5. 若同时存在 `P2/P3`，必须满足 `P3.drop_pct > P2.drop_pct`。
 6. 每个 level 的 `notional_usdt` 必须显式配置，不允许默认值。
 6.1 `P2/P3` 的 `repeat_drop_step_pct` 必须显式配置且为正数；`P1` 不支持该字段。
@@ -262,7 +265,7 @@ PAUSED_BY_INVARIANT_VIOLATION
 2. 参数由用户基于核心资产基本面、估值重定价和个人经验显式配置。
 3. 不做 backtest 不等于无验证；第一阶段必须先实现 dry-run / audit-only。
 4. dry-run / audit-only 必须落盘：
-   - 48h `H`
+   - 按 `data.h_anchor_lookback_hours` 计算的 `H`
    - `P1.entry_price` anchor
    - 每个 level 的 trigger price
    - 当前 price
@@ -279,7 +282,7 @@ PAUSED_BY_INVARIANT_VIOLATION
 2. 第一版默认可以按 `collection.interval_secs=10` 高频轮询。
 3. 高频轮询的前提是显式核心资产白名单很小，通常只监控 1-2 个 symbol。
 4. REST 请求必须继续走 Binance REST Gateway，并保留 quota / ban guard。
-5. 48h `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；不应在每个 10 秒循环中重复拉取 1h bars。
+5. `H` 锚点默认每 60 秒刷新一次，由 `data.h_anchor_refresh_secs` 显式配置；H 的 1h bar 回看根数由 `data.h_anchor_lookback_hours` 显式配置；不应在每个 10 秒循环中重复拉取 1h bars。
 6. 每 10 秒循环只需要刷新盘口、账户 position / open orders、本地 state 与触发判断。
 7. 若后续扩大 universe，必须先重新评估 API 消耗，不得静默扩大扫描面。
 

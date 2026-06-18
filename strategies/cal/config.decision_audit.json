@@ -11,7 +11,7 @@
   },
   "data": {
     "klines_interval": "1h",
-    "lookback_hours": 48,
+    "h_anchor_lookback_hours": 24,
     "include_current_bar": true,
     "h_anchor_refresh_secs": 60,
     "kline_limit": 1500

@@ -11,14 +11,14 @@
   },
   "data": {
     "klines_interval": "1h",
-    "lookback_hours": 48,
+    "h_anchor_lookback_hours": 24,
     "include_current_bar": true,
     "h_anchor_refresh_secs": 60,
     "kline_limit": 1500
   },
   "ladder": {
     "levels": [
-      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 600},
+      {"level": "P1", "drop_pct": 0.04, "notional_usdt": 600},
       {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600, "repeat_drop_step_pct": 0.01},
       {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600, "repeat_drop_step_pct": 0.01}
     ],
