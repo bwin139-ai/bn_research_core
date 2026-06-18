@@ -50,6 +50,13 @@ nohup /root/service_env/bin/python strategies/cal/live_trader.py \
   >> "output/live_projection/cal_live.${ACCOUNT}.log" 2>&1 &
 tail -n 20 -f output/live_projection/cal_live.chen912.log
 
+# ============== IGN 进程  ===============
+nohup /root/service_env/bin/python strategies/ignition/observer.py \
+  --config strategies/ignition/config.observer.json \
+  --loop \
+  --notify \
+  >> output/live_projection/ignition_observer.log 2>&1 &
+
 # ============== binance 历史数据同步 进程  ===============
 nohup /root/service_env/bin/python -m core.exchange_history_sync \
   --account mybwin139 \
