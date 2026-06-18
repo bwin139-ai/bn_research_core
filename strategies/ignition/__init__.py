@@ -1,0 +1,1 @@
+"""Ignition / IGN observer package."""

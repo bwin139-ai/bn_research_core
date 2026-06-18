@@ -45,6 +45,7 @@ bn_research_core
 6. 1m / idx 数据质量、hub-vs-klines 对表与基础设施审计。
 7. Codex 多线程交接文档体系。
 8. `core-anchor-ladder` / CAL / 锚梯策略的核心资产阶梯策略语义设计。
+9. `ignition` / IGN 点火动量 observer 的语义与候选扫描建设。
 
 ### 1.3 当前阶段目标
 
@@ -52,7 +53,37 @@ bn_research_core
 让 live 数据链路、hub 共享数据、策略信号、交易执行、审计落盘与文档交接都进入可复核、可续接、可长期维护状态。
 ```
 
-### 1.4 Core Anchor Ladder 当前设计现场
+### 1.4 策略家族当前分类
+
+当前策略按 `strategy_family` 分为三类：
+
+1. `alt_reclaim` / 山寨币结构回收类：包含 `snapback`、`spring`、`sweep-reclaim` / `SWR`。该类面向高流动性、高波动山寨币的短线结构回收机会，不使用投资/基本面逻辑，必须有明确止损、时间止损和持仓生命周期约束。
+2. `core_ladder` / 核心资产阶梯类：当前包含 `CAL`。该类面向核心资产永续合约，使用显式白名单、分批 ladder、独立 lot TP 和策略本金上限，不复用山寨币结构回收类的候选池、止损或持仓时间语义。
+3. `momentum_ignition` / 点火动量类：当前第一阶段策略为 `Ignition` / `IGN` observer。该类面向放量启动后站稳并二次抬升的强势结构，不抢第一根启动；第一阶段复用 hub 产出的已闭合 1m HBs，只做候选扫描、审计和告警，不做交易。
+
+`alt_reclaim` 当前共用 `market_data_hub_runner.py` 作为 live 公共数据投喂服务。`market_data_hub_config.json` 的 `min_24h_quote_volume=30000000` 是 hub 侧第一层工程预过滤：hub 读取 Binance futures 24h ticker 的 `quoteVolume`，先筛出 24h 成交额不低于 3000 万 U 的候选 symbol，再为这些 symbol 构建 HBs payload 并发布 `candidate_inputs` / `finalized_candidate_inputs`。该过滤只决定是否构建策略输入 payload；策略最终信号仍由各自 `logic.py` 基于 C-anchor HBs payload 内的 per-symbol 24h 指标、排名和结构字段生成。
+
+IGN 第一阶段新增语义基线：
+
+```text
+docs/Ignition项目语义基线.md
+```
+
+当前实现入口：
+
+```text
+strategies/ignition/config.observer.json
+strategies/ignition/observer.py
+```
+
+实现边界：
+
+1. IGN observer 只读取 `market_data_hub` shared `finalized_candidate_inputs`，不自行下单，不写策略持仓 state。
+2. 每个 symbol 使用 `full_df` 最近 180 根已闭合 1m bar，计算 `0-30m / 30-60m / 60-120m / 120-180m` 四段收益、180m 总涨幅、最大回撤、贴近高点程度、大振幅 bar 数、大阴线数、30m 成交额放大倍数、分段低点抬高次数与 `structure_score`。
+3. 第一版通过门槛显式写入 `strategies/ignition/config.observer.json`，默认要求 180m 总涨幅不低于 `25%`、至少 3 个分段上涨、最大回撤不高于 `18%`、距离 180m 高点回撤不高于 `8%`、30m 成交额放大倍数不低于 `1.5`、结构分不低于 `75`。
+4. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`rejected_summary` 和高分 rejected 样本；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
+
+### 1.5 Core Anchor Ladder 当前设计现场
 
 当前新增核心资产阶梯策略语义基线：
 
@@ -118,10 +149,10 @@ strategies/cal/live_trader.py
 当前下一步：
 
 ```text
-CAL live trader 已在服务器常驻运行；继续观察 `stark21`、`chen912`、`junjie2026` 的核心资产 ladder 触发、TP 成交、重启恢复，以及交易所最小下单粒度对新增核心资产参数的影响。`chen912` 当前仅恢复 CAL，snapback / spring / SWR 暂不运行。
+CAL live trader 已在服务器常驻运行；继续观察 `stark21`、`chen912`、`junjie2026` 的核心资产 ladder 触发、TP 成交、重启恢复，以及交易所最小下单粒度对新增核心资产参数的影响。`chen912` 当前仅恢复 CAL，snapback / spring / SWR 暂不运行。IGN 当前进入 observer 第一阶段，下一步应先接入生产常驻扫描并积累 1-2 天候选审计，再讨论交易化入口、硬止损和持仓时间。
 ```
 
-### 1.5 2026-05-23 三策略 sim/live 一致性审计闭环
+### 1.6 2026-05-23 三策略 sim/live 一致性审计闭环
 
 本轮围绕 `sweep-reclaim` / `spring-sabc` / `snapback-sabc` 的 mybwin139 重叠窗口完成复跑收尾。服务器执行环境为 `/root/bn_research_core`，审计窗口保持与前轮一致：
 

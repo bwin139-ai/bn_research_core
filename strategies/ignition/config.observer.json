@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "account": "mybwin139",
+  "notify_enabled": false,
+  "hub": {
+    "max_age_secs": 120
+  },
+  "runtime": {
+    "loop": false,
+    "interval_secs": 60,
+    "top_n": 10,
+    "audit_top_n": 30
+  },
+  "structure": {
+    "history_window_mins": 180,
+    "min_total_return_180m": 0.25,
+    "min_positive_segment_count": 3,
+    "min_segment_return": -0.03,
+    "max_drawdown_180m": 0.18,
+    "max_near_high_drawdown": 0.08,
+    "large_range_bar_pct": 0.08,
+    "max_large_range_count": 4,
+    "large_red_body_pct": 0.04,
+    "max_large_red_count_60m": 3,
+    "min_volume_boost_30m": 1.5,
+    "min_low_lift_count": 2,
+    "min_structure_score": 75
+  }
+}

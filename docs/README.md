@@ -42,6 +42,10 @@
   - Core Anchor Ladder / 锚梯策略 / CAL 的唯一活跃语义基线。
   - 涉及 P0 手动底仓、P1/P2/P3 阶梯 lot、maker-only 核心资产 live 或 dry-run audit 时必须阅读。
 
+- `Ignition项目语义基线.md`
+  - Ignition / IGN 点火动量 observer 的唯一活跃语义基线。
+  - 涉及 180m 放量上行、结构稳定、短周期动量候选扫描或后续 IGN 交易化设计时必须阅读。
+
 ## 代码理解材料
 
 - `snapback-sabc_代码流程.md`

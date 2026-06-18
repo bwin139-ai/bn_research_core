@@ -85,6 +85,15 @@
 1.9.7 `hedge_short` overlay 必须同时经过白名单与 current symbol 双闸：白名单决定理论允许做空的 symbol，current symbol 决定当前实际开放的手动做空入口；current symbol 为 `null` / 未设置时，所有做空执行入口必须 fail-fast。
 1.9.8 `hedge_short` overlay 第一阶段只允许手动触发，不允许自动策略触发；后续若考虑自动化，必须先另行更新基线与审计边界。
 
+### 1.10 策略家族语义
+1.10.1 `strategy_family` 是高于 `strategy_name` 的风格分类，只用于风险分组、监控、绩效归因、数据链路说明与后续配置组织；不得替代具体 `strategy_name` 的语义基线。
+1.10.2 当前策略家族固定为三类：
+- `alt_reclaim`：山寨币结构回收类，包含 `snapback`、`spring`、`sweep-reclaim` / `SWR`。该类面向高流动性、高波动山寨币的短周期结构回收机会，不引入投资/基本面逻辑，必须有明确止损、时间止损和持仓生命周期约束。
+- `core_ladder`：核心资产阶梯类，当前包含 `CAL`。该类面向核心资产永续合约，使用显式白名单、分批 ladder、独立 lot TP 和策略本金上限，不复用山寨币结构回收类的候选池、止损或持仓时间语义。
+- `momentum_ignition`：点火动量类，当前第一阶段策略为 `Ignition` / `IGN` observer。该类面向放量启动后站稳并二次抬升的强势结构，不抢第一根启动；第一阶段只做观察、审计和告警，不下单。若后续交易化，必须先定义硬止损、持仓时间、入场方式和账户级风险隔离。
+1.10.3 `alt_reclaim` 当前共用 `market_data_hub_runner.py` 作为 live 公共数据投喂服务。`market_data_hub_config.json` 中的 `min_24h_quote_volume` 是 hub 侧工程预过滤阈值：它使用 Binance futures 24h ticker 的 `quoteVolume` 决定是否为 symbol 构建 HBs payload；策略最终信号仍必须读取 C-anchor HBs payload 内的 per-symbol 24h 指标、排名和结构字段。
+1.10.4 `momentum_ignition` 第一阶段复用 `market_data_hub_runner.py` 产出的 `finalized_candidate_inputs`，但不复用 `alt_reclaim` 的 A/B/C/S 结构语义；IGN observer 只读取 `full_df` 的已闭合 1m HBs 并输出独立的点火结构审计。若后续引入 WebSocket、专用 data hub 或其它实时事实源，必须在对应策略语义基线中显式定义数据时态、字段口径、fail-fast 条件与 sim/live 对齐边界。
+
 ## 2. 行动纪律（铁律）
 
 ### 2.1 事实优先
