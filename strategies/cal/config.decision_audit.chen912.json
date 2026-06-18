@@ -18,9 +18,9 @@
   },
   "ladder": {
     "levels": [
-      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 6000},
-      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 6000, "repeat_drop_step_pct": 0.01},
-      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 6000, "repeat_drop_step_pct": 0.01}
+      {"level": "P1", "drop_pct": 0.05, "notional_usdt": 600},
+      {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600, "repeat_drop_step_pct": 0.01},
+      {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600, "repeat_drop_step_pct": 0.01}
     ],
     "symbol_levels": {}
   },
@@ -32,10 +32,10 @@
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
-      "MUUSDT": 18000,
-      "SPCXUSDT": 18000
+      "MUUSDT": 1800,
+      "SPCXUSDT": 1800
     },
-    "max_total_strategy_notional_usdt": 36000
+    "max_total_strategy_notional_usdt": 3600
   },
   "execution": {
     "position_side": "LONG",

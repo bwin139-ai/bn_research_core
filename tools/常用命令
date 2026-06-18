@@ -43,6 +43,13 @@ nohup /root/service_env/bin/python strategies/cal/live_trader.py \
   >> "output/live_projection/cal_live.${ACCOUNT}.log" 2>&1 &
 tail -n 20 -f output/live_projection/cal_live.stark21.log
 
+ACCOUNT=chen912
+nohup /root/service_env/bin/python strategies/cal/live_trader.py \
+  --config strategies/cal/config.live_trader.chen912.json \
+  --loop \
+  >> "output/live_projection/cal_live.${ACCOUNT}.log" 2>&1 &
+tail -n 20 -f output/live_projection/cal_live.chen912.log
+
 # ============== binance 历史数据同步 进程  ===============
 nohup /root/service_env/bin/python -m core.exchange_history_sync \
   --account mybwin139 \

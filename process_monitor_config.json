@@ -68,19 +68,13 @@
     {
       "name": "snapback_chen912",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/snapback/run_live.py",
         "--config strategies/snapback/config.profit.json",
         "--live-config strategies/snapback/live_config.chen912.json"
-      ],
-      "heartbeat": {
-        "path_glob": "state/live/snapback_chen912.state.json",
-        "timestamp_field": "last_loop_bj",
-        "timestamp_type": "bj_datetime",
-        "max_age_secs": 180
-      }
+      ]
     },
     {
       "name": "snapback_junjie2026",
@@ -102,20 +96,14 @@
     {
       "name": "spring_chen912",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/spring/run_live.py",
         "--config strategies/spring/config_12000u.json",
         "--account chen912",
         "--live-execution-config strategies/spring/live_execution.chen912.json"
-      ],
-      "heartbeat": {
-        "path_glob": "output/live_projection/spring_live_heartbeat.SPRINGLIVE_CHEN912_*.json",
-        "timestamp_field": "updated_utc_ms",
-        "timestamp_type": "utc_ms",
-        "max_age_secs": 180
-      }
+      ]
     },
     {
       "name": "spring_stark21",
@@ -156,20 +144,25 @@
     {
       "name": "sweep_reclaim_chen912",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/sweep_reclaim/run_live.py",
         "--config strategies/sweep_reclaim/config_12000u.json",
         "--account chen912",
         "--live-execution-config strategies/sweep_reclaim/live_execution.chen912.json"
-      ],
-      "heartbeat": {
-        "path_glob": "output/live_projection/sweep_reclaim_live_heartbeat.SWRLIVE_CHEN912_*.json",
-        "timestamp_field": "updated_utc_ms",
-        "timestamp_type": "utc_ms",
-        "max_age_secs": 180
-      }
+      ]
+    },
+    {
+      "name": "cal_chen912",
+      "type": "process",
+      "min_count": 1,
+      "max_count": 1,
+      "match_all": [
+        "strategies/cal/live_trader.py",
+        "--config strategies/cal/config.live_trader.chen912.json",
+        "--loop"
+      ]
     },
     {
       "name": "sweep_reclaim_stark21",
