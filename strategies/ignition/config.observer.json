@@ -39,5 +39,14 @@
     "max_large_red_count_60m": 4,
     "min_low_lift_count": 1,
     "min_structure_score": 60
+  },
+  "ign_base": {
+    "enabled": true,
+    "ab_lookback_bars": 60,
+    "bc_confirm_bars": 15,
+    "single_bar_min_return_pct": 0.05,
+    "three_bar_min_return_pct": 0.08,
+    "breakout_buffer_pct": 0.0,
+    "bc_max_gain_pullback_pct": 0.10
   }
 }

@@ -99,6 +99,7 @@ def load_config(path: str) -> dict[str, Any]:
     runtime = _require_mapping(data, "runtime")
     structure = _require_mapping(data, "structure")
     early_signal = _require_mapping(data, "early_signal")
+    ign_base = _require_mapping(data, "ign_base")
     cfg = {
         "enabled": _require_bool(data, "enabled"),
         "account": _require_str(data, "account"),
@@ -141,9 +142,25 @@ def load_config(path: str) -> dict[str, Any]:
             "min_low_lift_count": _require_int(early_signal, "min_low_lift_count", min_value=0),
             "min_structure_score": _require_float(early_signal, "min_structure_score"),
         },
+        "ign_base": {
+            "enabled": _require_bool(ign_base, "enabled"),
+            "ab_lookback_bars": _require_int(ign_base, "ab_lookback_bars", min_value=1),
+            "bc_confirm_bars": _require_int(ign_base, "bc_confirm_bars", min_value=1),
+            "single_bar_min_return_pct": _require_float(ign_base, "single_bar_min_return_pct"),
+            "three_bar_min_return_pct": _require_float(ign_base, "three_bar_min_return_pct"),
+            "breakout_buffer_pct": _require_float(ign_base, "breakout_buffer_pct"),
+            "bc_max_gain_pullback_pct": _require_float(ign_base, "bc_max_gain_pullback_pct"),
+        },
     }
     if int(cfg["structure"]["history_window_mins"]) != 180:
         raise ValueError("IGN first observer version requires structure.history_window_mins == 180")
+    if int(cfg["ign_base"]["ab_lookback_bars"]) + int(cfg["ign_base"]["bc_confirm_bars"]) + 3 > int(cfg["structure"]["history_window_mins"]):
+        raise ValueError("IGN_BASE ab_lookback_bars + bc_confirm_bars + 3 must fit inside structure.history_window_mins")
+    for key in ["single_bar_min_return_pct", "three_bar_min_return_pct", "bc_max_gain_pullback_pct"]:
+        if float(cfg["ign_base"][key]) <= 0:
+            raise ValueError(f"IGN_BASE {key} must be positive")
+    if float(cfg["ign_base"]["breakout_buffer_pct"]) < 0:
+        raise ValueError("IGN_BASE breakout_buffer_pct must be >= 0")
     return cfg
 
 
@@ -335,6 +352,209 @@ def _evaluate_early_signal(row: Mapping[str, Any], early_cfg: Mapping[str, Any])
     return reject_reasons
 
 
+def _calc_ignition_candidate(
+    *,
+    mode: str,
+    symbol: str,
+    window: Any,
+    start_pos: int,
+    end_pos: int,
+    base_cfg: Mapping[str, Any],
+) -> dict[str, Any]:
+    ab_bars = int(base_cfg["ab_lookback_bars"])
+    bc_bars = int(base_cfg["bc_confirm_bars"])
+    if start_pos < ab_bars:
+        raise ValueError("IGN_BASE start_pos before AB window")
+    if end_pos + bc_bars >= len(window):
+        raise ValueError("IGN_BASE end_pos after BC window")
+
+    ab = window.iloc[start_pos - ab_bars:start_pos]
+    ignition = window.iloc[start_pos:end_pos + 1]
+    bc = window.iloc[end_pos + 1:end_pos + 1 + bc_bars]
+    if len(ab) != ab_bars or len(bc) != bc_bars:
+        raise ValueError("IGN_BASE window length mismatch")
+
+    ab_high = float(ab["high"].astype(float).max())
+    ab_low = float(ab["low"].astype(float).min())
+    ab_open = float(ab["open"].astype(float).iloc[0])
+    ab_close = float(ab["close"].astype(float).iloc[-1])
+    ignition_start = float(ignition["open"].astype(float).iloc[0])
+    ignition_close = float(ignition["close"].astype(float).iloc[-1])
+    if min(ab_high, ab_low, ab_open, ignition_start, ignition_close) <= 0:
+        raise ValueError("IGN_BASE non-positive price")
+
+    ignition_return = _safe_return(ignition_close, ignition_start)
+    breakout_price = ab_high * (1.0 + float(base_cfg["breakout_buffer_pct"]))
+    ignition_gain = ignition_close - ignition_start
+    pullback_limit_price = ignition_close - ignition_gain * float(base_cfg["bc_max_gain_pullback_pct"])
+    bc_closes = bc["close"].astype(float)
+    bc_close_floor = float(bc_closes.min())
+    bc_close_last = float(bc_closes.iloc[-1])
+    bc_high = float(bc["high"].astype(float).max())
+    bc_return_from_ignition_close = _safe_return(bc_close_last, ignition_close)
+    reject_reasons: list[str] = []
+    if ignition_close <= breakout_price:
+        reject_reasons.append("base_breakout_not_confirmed")
+    if bc_close_floor < pullback_limit_price:
+        reject_reasons.append("base_bc_close_floor_below_pullback_limit")
+
+    if mode == "single":
+        min_return = float(base_cfg["single_bar_min_return_pct"])
+    elif mode == "three":
+        min_return = float(base_cfg["three_bar_min_return_pct"])
+        green_flags = (ignition["close"].astype(float) > ignition["open"].astype(float)).tolist()
+        if not all(bool(flag) for flag in green_flags):
+            reject_reasons.append("base_three_bar_not_all_green")
+    else:
+        raise ValueError(f"unknown IGN_BASE mode: {mode}")
+    if ignition_return < min_return:
+        reject_reasons.append("base_ignition_return_below_min")
+
+    first_ts = int(window.index[start_pos])
+    end_ts = int(window.index[end_pos])
+    bc_end_ts = int(bc.index[-1])
+    ab_return = _safe_return(ab_close, ab_open)
+    ab_range = _safe_return(ab_high, ab_low)
+    gain_retained = 0.0
+    if ignition_gain > 0:
+        gain_retained = (bc_close_floor - ignition_start) / ignition_gain
+    return {
+        "symbol": symbol,
+        "mode": mode,
+        "passed": not reject_reasons,
+        "reject_reasons": reject_reasons,
+        "ab_lookback_bars": ab_bars,
+        "bc_confirm_bars": bc_bars,
+        "ignition_start_bar_ts": first_ts,
+        "ignition_start_bar_bj": _fmt_bj_from_ms(first_ts),
+        "ignition_end_bar_ts": end_ts,
+        "ignition_end_bar_bj": _fmt_bj_from_ms(end_ts),
+        "bc_end_bar_ts": bc_end_ts,
+        "bc_end_bar_bj": _fmt_bj_from_ms(bc_end_ts),
+        "ab_box_high": round(ab_high, 10),
+        "ab_box_low": round(ab_low, 10),
+        "ab_return": round(ab_return, 6),
+        "ab_range": round(ab_range, 6),
+        "ignition_start_price": round(ignition_start, 10),
+        "ignition_close": round(ignition_close, 10),
+        "ignition_return": round(ignition_return, 6),
+        "breakout_price": round(breakout_price, 10),
+        "bc_close_floor": round(bc_close_floor, 10),
+        "bc_close_last": round(bc_close_last, 10),
+        "bc_high": round(bc_high, 10),
+        "bc_pullback_limit_price": round(pullback_limit_price, 10),
+        "bc_gain_retained_pct": round(float(gain_retained), 6),
+        "bc_return_from_ignition_close": round(bc_return_from_ignition_close, 6),
+        "volume_boost_ignition_vs_ab": _base_volume_boost(ignition, ab),
+    }
+
+
+def _base_volume_boost(ignition: Any, ab: Any) -> float:
+    ignition_vol = float(ignition["quote_asset_volume"].astype(float).sum())
+    avg_ab_per_bar = float(ab["quote_asset_volume"].astype(float).mean())
+    expected = avg_ab_per_bar * max(int(len(ignition)), 1)
+    if expected <= 0:
+        return 0.0
+    return round(float(ignition_vol / expected), 6)
+
+
+def analyze_ign_base_symbol(symbol: str, df: Any, base_cfg: Mapping[str, Any], *, history_window_mins: int) -> dict[str, Any]:
+    import pandas as pd
+
+    if not bool(base_cfg["enabled"]):
+        return {
+            "symbol": symbol,
+            "passed": False,
+            "reject_reasons": ["base_disabled"],
+        }
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"IGN_BASE full_df[{symbol}] must be DataFrame")
+    _require_columns(df, symbol)
+    if len(df) < int(history_window_mins):
+        return {
+            "symbol": symbol,
+            "passed": False,
+            "reject_reasons": [f"base_history_insufficient:{len(df)}<{history_window_mins}"],
+        }
+    window = df.sort_index().tail(int(history_window_mins)).copy()
+    opens = window["open"].astype(float)
+    highs = window["high"].astype(float)
+    lows = window["low"].astype(float)
+    closes = window["close"].astype(float)
+    if (opens <= 0).any() or (highs <= 0).any() or (lows <= 0).any() or (closes <= 0).any():
+        return {
+            "symbol": symbol,
+            "passed": False,
+            "reject_reasons": ["base_non_positive_price"],
+        }
+
+    ab_bars = int(base_cfg["ab_lookback_bars"])
+    bc_bars = int(base_cfg["bc_confirm_bars"])
+    latest_single_start = len(window) - bc_bars - 1
+    latest_three_start = len(window) - bc_bars - 3
+    candidates: list[dict[str, Any]] = []
+    latest_rejects: list[str] = []
+    for start_pos in range(ab_bars, latest_single_start + 1):
+        candidate = _calc_ignition_candidate(
+            mode="single",
+            symbol=symbol,
+            window=window,
+            start_pos=start_pos,
+            end_pos=start_pos,
+            base_cfg=base_cfg,
+        )
+        candidates.append(candidate)
+        if start_pos == latest_single_start:
+            latest_rejects.extend(candidate["reject_reasons"])
+    for start_pos in range(ab_bars, latest_three_start + 1):
+        candidate = _calc_ignition_candidate(
+            mode="three",
+            symbol=symbol,
+            window=window,
+            start_pos=start_pos,
+            end_pos=start_pos + 2,
+            base_cfg=base_cfg,
+        )
+        candidates.append(candidate)
+        if start_pos == latest_three_start:
+            latest_rejects.extend(candidate["reject_reasons"])
+
+    passed = [item for item in candidates if bool(item["passed"])]
+    if passed:
+        single_start_ts = {
+            int(item["ignition_start_bar_ts"])
+            for item in passed
+            if item.get("mode") == "single"
+        }
+        passed = [
+            item for item in passed
+            if item.get("mode") == "single" or int(item["ignition_start_bar_ts"]) not in single_start_ts
+        ]
+        passed.sort(
+            key=lambda item: (
+                int(item["bc_end_bar_ts"]),
+                float(item["ignition_return"]),
+                float(item["bc_gain_retained_pct"]),
+            ),
+            reverse=True,
+        )
+        best = dict(passed[0])
+        best["matched_count"] = int(len(passed))
+        return best
+    summary_reasons: list[str] = []
+    for reason in latest_rejects:
+        if reason and reason not in summary_reasons:
+            summary_reasons.append(reason)
+    if not summary_reasons:
+        summary_reasons = ["base_no_matching_ignition"]
+    return {
+        "symbol": symbol,
+        "passed": False,
+        "reject_reasons": summary_reasons,
+        "matched_count": 0,
+    }
+
+
 def _reject_summary(results: list[dict[str, Any]]) -> dict[str, int]:
     out: dict[str, int] = {}
     for row in results:
@@ -427,6 +647,26 @@ def _notify_early_candidates(enabled: bool, account: str, candidates: list[dict[
     send_to_bot("\n".join(_summary_lines("🌱 [IGN_EARLY]", account, candidates, scan_id, top_n)), label="ign_early")
 
 
+def _base_summary_lines(account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> list[str]:
+    lines = [f"🚀 [IGN_BASE] candidates | account={account} | scan_id={scan_id}"]
+    for item in candidates[:top_n]:
+        lines.append(
+            f"{item['symbol']} mode={item['mode']} "
+            f"rB={item['ignition_return']:.2%} "
+            f"retain={item['bc_gain_retained_pct']:.1%} "
+            f"ABhi={item['ab_box_high']} Cfloor={item['bc_close_floor']}"
+        )
+    return lines
+
+
+def _notify_base_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
+    if not enabled or not candidates:
+        return
+    from core.message_bridge import send_to_bot
+
+    send_to_bot("\n".join(_base_summary_lines(account, candidates, scan_id, top_n)), label="ign_base")
+
+
 def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     if not bool(cfg["enabled"]):
         raise RuntimeError("IGN observer disabled by config")
@@ -447,17 +687,28 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     for symbol, frame in sorted(full_df.items()):
         try:
             row = analyze_symbol_frame(str(symbol).upper().strip(), frame, structure_cfg)
+            base_row = analyze_ign_base_symbol(
+                str(symbol).upper().strip(),
+                frame,
+                cfg["ign_base"],
+                history_window_mins=int(structure_cfg["history_window_mins"]),
+            )
             early_reject_reasons = _evaluate_early_signal(row, cfg["early_signal"])
             row["early_passed"] = not early_reject_reasons
             row["early_reject_reasons"] = early_reject_reasons
+            row["base_passed"] = bool(base_row.get("passed"))
+            row["base_reject_reasons"] = base_row.get("reject_reasons") or []
+            row["base_profile"] = base_row
             results.append(row)
         except Exception as e:
             results.append({
                 "symbol": str(symbol).upper().strip(),
                 "passed": False,
                 "early_passed": False,
+                "base_passed": False,
                 "reject_reasons": [f"analysis_error:{e}"],
                 "early_reject_reasons": [f"analysis_error:{e}"],
+                "base_reject_reasons": [f"analysis_error:{e}"],
             })
 
     passed = sorted(
@@ -470,8 +721,18 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         key=lambda row: (float(row.get("structure_score") or 0.0), float(row.get("r_180m") or 0.0)),
         reverse=True,
     )
+    base_passed = sorted(
+        [row["base_profile"] for row in results if bool(row.get("base_passed"))],
+        key=lambda row: (
+            int(row.get("bc_end_bar_ts") or 0),
+            float(row.get("ignition_return") or 0.0),
+            float(row.get("bc_gain_retained_pct") or 0.0),
+        ),
+        reverse=True,
+    )
     rejected = [row for row in results if not bool(row.get("passed"))]
     early_rejected = [row for row in results if not bool(row.get("early_passed"))]
+    base_rejected = [row for row in results if not bool(row.get("base_passed"))]
     top_n = int(cfg["runtime"]["top_n"])
     audit_top_n = int(cfg["runtime"]["audit_top_n"])
     now_ms = int(time.time() * 1000)
@@ -492,11 +753,20 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
             cooldown_secs=alert_cooldown_secs,
             now_ms=now_ms,
         )
+        notify_base_passed, notify_base_suppressed = _apply_alert_cooldown(
+            account,
+            "IGN_BASE",
+            base_passed,
+            cooldown_secs=alert_cooldown_secs,
+            now_ms=now_ms,
+        )
     else:
         notify_passed = passed
         notify_early_passed = early_passed
+        notify_base_passed = base_passed
         notify_suppressed = 0
         notify_early_suppressed = 0
+        notify_base_suppressed = 0
     summary = {
         "scan_id": scan_id,
         "strategy_name": "IGN",
@@ -508,17 +778,25 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "symbol_count": int(len(results)),
         "passed_count": int(len(passed)),
         "early_passed_count": int(len(early_passed)),
+        "base_passed_count": int(len(base_passed)),
         "notify_passed_count": int(len(notify_passed)),
         "notify_early_passed_count": int(len(notify_early_passed)),
+        "notify_base_passed_count": int(len(notify_base_passed)),
         "alert_cooldown_secs": int(alert_cooldown_secs),
         "alert_suppressed_count": int(notify_suppressed),
         "early_alert_suppressed_count": int(notify_early_suppressed),
+        "base_alert_suppressed_count": int(notify_base_suppressed),
         "top_candidates": passed[:top_n],
         "top_early_candidates": early_passed[:top_n],
+        "top_base_candidates": base_passed[:top_n],
         "rejected_summary": _reject_summary(rejected),
         "early_rejected_summary": _reject_summary([
             {"reject_reasons": row.get("early_reject_reasons") or []}
             for row in early_rejected
+        ]),
+        "base_rejected_summary": _reject_summary([
+            {"reject_reasons": row.get("base_reject_reasons") or []}
+            for row in base_rejected
         ]),
         "audit_top_rejected": sorted(
             rejected,
@@ -529,6 +807,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     append_stage_record(account, "ignition_observer", summary)
     _notify_candidates(notify_enabled, account, notify_passed, scan_id, top_n)
     _notify_early_candidates(notify_enabled, account, notify_early_passed, scan_id, top_n)
+    _notify_base_candidates(notify_enabled, account, notify_base_passed, scan_id, top_n)
     return summary
 
 
@@ -559,15 +838,18 @@ def main() -> None:
     while True:
         summary = scan_once(cfg)
         logging.info(
-            "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | notify=%s/%s | suppressed=%s/%s | c_bar=%s",
+            "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | base=%s | notify=%s/%s/%s | suppressed=%s/%s/%s | c_bar=%s",
             summary["account"],
             summary["symbol_count"],
             summary["passed_count"],
             summary["early_passed_count"],
+            summary["base_passed_count"],
             summary["notify_passed_count"],
             summary["notify_early_passed_count"],
+            summary["notify_base_passed_count"],
             summary["alert_suppressed_count"],
             summary["early_alert_suppressed_count"],
+            summary["base_alert_suppressed_count"],
             summary["latest_closed_bar_bj"],
         )
         if not bool(cfg["runtime"]["loop"]):

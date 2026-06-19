@@ -51,19 +51,13 @@
     {
       "name": "snapback_stark21_highfreq",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/snapback/run_live.py",
         "--config strategies/snapback/config.highfreq.json",
         "--live-config strategies/snapback/live_config.highfreq.json"
-      ],
-      "heartbeat": {
-        "path_glob": "state/live/snapback_stark21.state.json",
-        "timestamp_field": "last_loop_bj",
-        "timestamp_type": "bj_datetime",
-        "max_age_secs": 180
-      }
+      ]
     },
     {
       "name": "snapback_chen912",
@@ -108,20 +102,14 @@
     {
       "name": "spring_stark21",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/spring/run_live.py",
         "--config strategies/spring/config.live_smoke_10u.json",
         "--account stark21",
         "--live-execution-config strategies/spring/live_execution.smoke_10u.json"
-      ],
-      "heartbeat": {
-        "path_glob": "output/live_projection/spring_live_heartbeat.SPRINGLIVE_STARK21_*.json",
-        "timestamp_field": "updated_utc_ms",
-        "timestamp_type": "utc_ms",
-        "max_age_secs": 180
-      }
+      ]
     },
     {
       "name": "spring_junjie2026",
@@ -167,20 +155,14 @@
     {
       "name": "sweep_reclaim_stark21",
       "type": "process",
-      "min_count": 1,
-      "max_count": 1,
+      "min_count": 0,
+      "max_count": 0,
       "match_all": [
         "strategies/sweep_reclaim/run_live.py",
         "--config strategies/sweep_reclaim/config_smoke_10u.json",
         "--account stark21",
         "--live-execution-config strategies/sweep_reclaim/live_execution.smoke_10u.json"
-      ],
-      "heartbeat": {
-        "path_glob": "output/live_projection/sweep_reclaim_live_heartbeat.SWRLIVE_STARK21_*.json",
-        "timestamp_field": "updated_utc_ms",
-        "timestamp_type": "utc_ms",
-        "max_age_secs": 180
-      }
+      ]
     },
     {
       "name": "sweep_reclaim_junjie2026",

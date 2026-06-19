@@ -83,7 +83,8 @@ strategies/ignition/observer.py
 3. 第一版确认层 `IGN` 通过门槛显式写入 `strategies/ignition/config.observer.json`，默认要求 180m 总涨幅不低于 `25%`、至少 3 个分段上涨、最大回撤不高于 `18%`、距离 180m 高点回撤不高于 `8%`、30m 成交额放大倍数不低于 `1.5`、结构分不低于 `75`。
 4. 2026-06-18 新增早期观察层 `IGN_EARLY`，默认要求 180m 总涨幅不低于 `12%` 且不高于 `18%`、最近 30m 涨幅不低于 `2%`、至少 2 个分段上涨、30m 成交额放大倍数不低于 `1.2`、最大回撤不高于 `22%`、距离 180m 高点回撤不高于 `16%`、最近 60m 大阴线不超过 4 根、至少 1 次分段低点抬高、结构分不低于 `60`。`IGN_EARLY` 只用于人工早期观察；若同一轮同一 symbol 已通过确认层 `IGN`，不重复发送早期层消息。
 5. 2026-06-18 `IGN_EARLY` 增加同账户、同层级、同 symbol 的推送冷却，默认 `runtime.alert_cooldown_secs=1800`，避免同一候选每分钟重复推送；冷却状态落盘到 `state/live/ignition_observer_alerts.<account>.json`，仅在通知开启时写入。
-6. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`rejected_summary`、`early_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
+6. 2026-06-19 新增 `IGN_BASE` 点火筑台子型：使用 1m `A-B-C` 结构，默认 `AB=60` 根、`BC=15` 根；`AB` 只提供箱体高点与背景画像，不用涨跌幅/振幅一票否决；`B` 必须满足单根 1m 收盘涨幅不低于 `5%` 或 3 连阳总涨幅不低于 `8%`，且点火收盘突破 `AB_box_high`；`BC` 使用确认期收盘价下沿，要求守住点火涨幅的默认 `90%` 以上。`IGN_BASE` 只推送观察消息，不交易，bot 标题使用独立图标 `🚀 [IGN_BASE]`。
+7. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`top_base_candidates`、`rejected_summary`、`early_rejected_summary`、`base_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 
@@ -151,11 +152,12 @@ strategies/cal/live_trader.py
 31. 2026-06-18 管理员门户 `/trade close` / 交互式 close / SL 的旧 exit 撤单逻辑从“同账户同品种同方向同类型全部撤销”改为“容量冲突才撤销”：当已有 LONG SELL exit 剩余数量 + 新 exit 数量不超过当前 LONG position qty 时，旧单保留并与新单共存；只有超过仓位容量时才按手动单、外部单、策略单的优先级撤掉足够释放容量的旧单。该修复避免手动管理 bot 手动仓位时误撤 CAL 独立 TP。
 32. 2026-06-18 管理员门户可读性优化：`/trade pending` 与账户详情挂单列表不再展示 `oid`，每条挂单前增加来源图标（`🦅` Snapback、`🌱` Spring、`📈` SWR、`⚓` CAL、`🧰` bot 手动、`🟨` Binance 官方/外部）；`/trade` 与 `BN_EXEC` 的 Telegram 可见交易输出不再展示 `oid`，`cid` 压缩为 `MAN_ENT` / `CAL_TP` 这类语义片段，完整 `cid/oid` 仍保留在执行日志中用于审计。
 33. 2026-06-18 CAL 的 P1 `H` 锚点回看窗口从固定代码语义改为显式 `data.h_anchor_lookback_hours` 配置，当前三份 CAL decision config 均设为 `24`；`chen912` / `junjie2026` 的默认 ladder `P1.drop_pct` 从 `0.05` 调整为 `0.04`，`P2/P3` 仍为 `0.05/0.12` 且继续锚定 `P1.entry_price`。
+34. 2026-06-19 `stark21` 的策略常驻进程已按生产运维要求停止：`spring_stark21`、`sweep_reclaim_stark21`、`cal_stark21` 当前不运行；服务器未发现 `snapback_stark21` 常驻进程。`process_monitor_config.json` 同步改为不再期待 `snapback_stark21_highfreq`、`spring_stark21`、`sweep_reclaim_stark21` 进程，三者 `min_count/max_count` 均为 `0` 且移除 heartbeat stale 检查。
 
 当前下一步：
 
 ```text
-CAL live trader 已在服务器常驻运行；继续观察 `stark21`、`chen912`、`junjie2026` 的核心资产 ladder 触发、TP 成交、重启恢复，以及交易所最小下单粒度对新增核心资产参数的影响。`chen912` 当前仅恢复 CAL，snapback / spring / SWR 暂不运行。IGN 当前进入 observer 第一阶段，下一步应先接入生产常驻扫描并积累 1-2 天候选审计，再讨论交易化入口、硬止损和持仓时间。
+CAL live trader 已在服务器常驻运行；继续观察 `chen912`、`junjie2026` 的核心资产 ladder 触发、TP 成交、重启恢复，以及交易所最小下单粒度对新增核心资产参数的影响。`stark21` 当前策略进程已停用；`chen912` 当前仅恢复 CAL，snapback / spring / SWR 暂不运行。IGN 当前进入 observer 第一阶段，下一步应先接入生产常驻扫描并积累 1-2 天候选审计，再讨论交易化入口、硬止损和持仓时间。
 ```
 
 ### 1.6 2026-05-23 三策略 sim/live 一致性审计闭环

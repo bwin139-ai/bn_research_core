@@ -32,6 +32,21 @@
 - 最近 30m quote volume 必须相对前 150m 均值有显式倍数提升。
 - 成交量确认只作为点火强度事实，不替代价格结构稳定性。
 
+2.5 `IGN_BASE` 点火筑台子型：
+- `IGN_BASE` 使用 1m HBs 的 `A-B-C` 三段结构，只做 observer / audit / bot alert，不下单。
+- `A-B` 只定义点火前参考箱体，不用作“平静”一票否决；`AB` 的涨跌幅、振幅、斜率与点火量能只作为背景画像写入 audit，供后续复盘。
+- `B` 是点火段，必须满足二选一：单根 1m 阳线收盘涨幅不低于显式阈值，或从 B 开始连续 3 根 1m 阳线且三阳总收盘涨幅不低于显式阈值。
+- `B` 的点火收盘价必须突破 `AB_box_high`；这是 `AB` 对信号的唯一硬门槛。
+- `B-C` 是点火后确认期，默认 15 根 1m bar。确认期不使用下影线做一票否决，只取确认期每根 K 线的收盘价下沿 `BC_close_floor = min(close_1..close_N)`。
+- `BC_close_floor` 必须高于“点火收盘价减去点火涨幅的显式可回吐比例”：
+
+```text
+ignition_gain = ignition_close - ignition_start_price
+BC_close_floor >= ignition_close - ignition_gain * bc_max_gain_pullback_pct
+```
+
+- 该语义表达的是：点火后的价格必须守住点火成果的大部分，而不是只要站在 `AB_box_high` 上方就算有效。
+
 ## 3. 第一阶段输出
 
 3.1 observer 每次扫描输出：
@@ -41,13 +56,17 @@
 - `latest_closed_bar_bj`
 - `passed_count`
 - `early_passed_count`
+- `base_passed_count`
 - `top_candidates`
 - `top_early_candidates`
+- `top_base_candidates`
 - `rejected_summary`
 - `early_rejected_summary`
+- `base_rejected_summary`
 - `alert_cooldown_secs`
 - `alert_suppressed_count`
 - `early_alert_suppressed_count`
+- `base_alert_suppressed_count`
 3.2 单个 symbol 输出必须包含：
 - `r_30m`
 - `r_30_60m`
@@ -65,9 +84,13 @@
 - `reject_reasons`
 - `early_passed`
 - `early_reject_reasons`
+- `base_passed`
+- `base_reject_reasons`
+- `base_profile`
 3.3 observer 输出分为两层：
 - `IGN_EARLY`：早期观察层，允许结构还没有完全确认，但必须已经出现 180m 上行、最近 30m 抬升、量能放大、低点抬高和可接受回撤；同时必须低于早期层最大 180m 涨幅阈值，避免已经明显过热的结构仍被称为 early。用途是提醒人工盯盘，不代表可直接追入。
 - `IGN`：确认层，要求更高的 180m 总涨幅、结构分、贴近高点、量能和稳定性；用途是记录已经确认的点火结构。
+- `IGN_BASE`：点火筑台层，要求 B 点火突破 `AB_box_high`，且后续 BC 确认期的收盘价下沿守住点火涨幅的大部分；用途是捕捉“点火后不回落、市场接受新价格层”的更窄子型。
 3.4 bot 推送只允许发送通过阈值的候选摘要，避免刷屏。若同一 symbol 同一轮已经通过 `IGN` 确认层，则不再重复发送 `IGN_EARLY`。同一账户、同一层级、同一 symbol 的重复推送必须受显式冷却时间约束。
 
 ## 4. 交易边界
