@@ -85,6 +85,7 @@ strategies/ignition/observer.py
 5. 2026-06-18 `IGN_EARLY` 增加同账户、同层级、同 symbol 的推送冷却，默认 `runtime.alert_cooldown_secs=1800`，避免同一候选每分钟重复推送；冷却状态落盘到 `state/live/ignition_observer_alerts.<account>.json`，仅在通知开启时写入。
 6. 2026-06-19 新增 `IGN_BASE` 点火筑台子型：使用 1m `A-B-C` 结构，默认 `AB=60` 根、`BC=15` 根；`AB` 只提供箱体高点与背景画像，不用涨跌幅/振幅一票否决；`B` 必须满足单根 1m 收盘涨幅不低于 `5%` 或 3 连阳总涨幅不低于 `8%`，且点火收盘突破 `AB_box_high`；`BC` 使用确认期收盘价下沿，要求守住点火涨幅的默认 `90%` 以上。`IGN_BASE` 只推送观察消息，不交易，bot 标题使用独立图标 `🚀 [IGN_BASE]`。
 7. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`top_base_candidates`、`rejected_summary`、`early_rejected_summary`、`base_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
+8. 2026-06-20 IGN observer stdout 已降噪：普通无新推送扫描 summary 降为 `DEBUG`，`runtime.summary_log_interval_secs=600` 控制低频 `INFO` heartbeat；产生新的 `IGN` / `IGN_EARLY` / `IGN_BASE` 推送或单次非 loop 扫描时仍即时写 `INFO`。扫描与 stage audit 落盘频率不变。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 

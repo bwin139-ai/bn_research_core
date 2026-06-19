@@ -10,7 +10,8 @@
     "interval_secs": 60,
     "top_n": 10,
     "audit_top_n": 30,
-    "alert_cooldown_secs": 1800
+    "alert_cooldown_secs": 1800,
+    "summary_log_interval_secs": 600
   },
   "structure": {
     "history_window_mins": 180,

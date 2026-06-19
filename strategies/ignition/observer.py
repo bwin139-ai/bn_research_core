@@ -113,6 +113,7 @@ def load_config(path: str) -> dict[str, Any]:
             "top_n": _require_int(runtime, "top_n", min_value=1),
             "audit_top_n": _require_int(runtime, "audit_top_n", min_value=1),
             "alert_cooldown_secs": _require_int(runtime, "alert_cooldown_secs", min_value=0),
+            "summary_log_interval_secs": _require_int(runtime, "summary_log_interval_secs", min_value=0),
         },
         "structure": {
             "history_window_mins": _require_int(structure, "history_window_mins", min_value=180),
@@ -835,9 +836,27 @@ def main() -> None:
         cfg["runtime"]["loop"] = True
     if args.notify:
         cfg["notify_enabled"] = True
+    last_info_log_ts = 0.0
     while True:
         summary = scan_once(cfg)
-        logging.info(
+        now_ts = time.monotonic()
+        loop_enabled = bool(cfg["runtime"]["loop"])
+        summary_log_interval_secs = int(cfg["runtime"]["summary_log_interval_secs"])
+        notify_count = (
+            int(summary["notify_passed_count"])
+            + int(summary["notify_early_passed_count"])
+            + int(summary["notify_base_passed_count"])
+        )
+        should_info_log = (
+            (not loop_enabled)
+            or notify_count > 0
+            or (
+                summary_log_interval_secs > 0
+                and (last_info_log_ts <= 0.0 or now_ts - last_info_log_ts >= summary_log_interval_secs)
+            )
+        )
+        log_fn = logging.info if should_info_log else logging.debug
+        log_fn(
             "IGN scan finished | account=%s | symbols=%s | passed=%s | early=%s | base=%s | notify=%s/%s/%s | suppressed=%s/%s/%s | c_bar=%s",
             summary["account"],
             summary["symbol_count"],
@@ -852,7 +871,9 @@ def main() -> None:
             summary["base_alert_suppressed_count"],
             summary["latest_closed_bar_bj"],
         )
-        if not bool(cfg["runtime"]["loop"]):
+        if should_info_log:
+            last_info_log_ts = now_ts
+        if not loop_enabled:
             break
         time.sleep(int(cfg["runtime"]["interval_secs"]))
 
