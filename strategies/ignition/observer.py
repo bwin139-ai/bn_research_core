@@ -642,8 +642,8 @@ def _apply_alert_cooldown(
     return filtered, suppressed
 
 
-def _summary_lines(label: str, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> list[str]:
-    lines = [f"{label} candidates | account={account} | scan_id={scan_id}"]
+def _summary_lines(label: str, candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> list[str]:
+    lines = [f"{label} candidates | sig={_hhmm(signal_bj)}"]
     for item in candidates[:top_n]:
         lines.append(
             f"{item['symbol']} score={item['structure_score']} "
@@ -653,20 +653,20 @@ def _summary_lines(label: str, account: str, candidates: list[dict[str, Any]], s
     return lines
 
 
-def _notify_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
+def _notify_candidates(enabled: bool, candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> None:
     if not enabled or not candidates:
         return
     from core.message_bridge import send_to_bot
 
-    send_to_bot("\n".join(_summary_lines("🔥 [IGN]", account, candidates, scan_id, top_n)), label="ign")
+    send_to_bot("\n".join(_summary_lines("🔥 [IGN]", candidates, top_n, signal_bj)), label="ign")
 
 
-def _notify_early_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
+def _notify_early_candidates(enabled: bool, candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> None:
     if not enabled or not candidates:
         return
     from core.message_bridge import send_to_bot
 
-    send_to_bot("\n".join(_summary_lines("🌱 [IGN_EARLY]", account, candidates, scan_id, top_n)), label="ign_early")
+    send_to_bot("\n".join(_summary_lines("🌱 [IGN_EARLY]", candidates, top_n, signal_bj)), label="ign_early")
 
 
 def _base_summary_lines(candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> list[str]:
@@ -836,9 +836,10 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         )[:audit_top_n],
     }
     append_stage_record(account, "ignition_observer", summary)
-    _notify_candidates(notify_enabled, account, notify_passed, scan_id, top_n)
-    _notify_early_candidates(notify_enabled, account, notify_early_passed, scan_id, top_n)
-    _notify_base_candidates(notify_enabled, notify_base_passed, top_n, str(summary["scan_bj"]))
+    signal_bj = str(summary["scan_bj"])
+    _notify_candidates(notify_enabled, notify_passed, top_n, signal_bj)
+    _notify_early_candidates(notify_enabled, notify_early_passed, top_n, signal_bj)
+    _notify_base_candidates(notify_enabled, notify_base_passed, top_n, signal_bj)
     return summary
 
 

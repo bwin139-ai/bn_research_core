@@ -87,6 +87,7 @@ strategies/ignition/observer.py
 7. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`top_base_candidates`、`rejected_summary`、`early_rejected_summary`、`base_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
 8. 2026-06-20 IGN observer stdout 已降噪：普通无新推送扫描 summary 降为 `DEBUG`，`runtime.summary_log_interval_secs=600` 控制低频 `INFO` heartbeat；产生新的 `IGN` / `IGN_EARLY` / `IGN_BASE` 推送或单次非 loop 扫描时仍即时写 `INFO`。扫描与 stage audit 落盘频率不变。
 9. 2026-06-20 `IGN_BASE` bot 消息改为复盘坐标格式：标题不再展示 `account/scan_id`，改为展示 `sig=HH:MM`；候选行展示 `A/B/C` bar 时间、`ABhi` 价格及其所在 bar 时间、`Cfloor`，避免用 Telegram 发送时间倒推结构。
+10. 2026-06-20 `IGN` 与 `IGN_EARLY` bot 消息同步去掉标题中的 `account/scan_id`，改为展示 `sig=HH:MM`；完整 `account/scan_id` 仍保留在 `ignition_observer` audit 记录中。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 
