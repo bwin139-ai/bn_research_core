@@ -28,6 +28,15 @@ def _fmt_bj_from_ms(ts_ms: int | None) -> str | None:
     return datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).astimezone(BJ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _hhmm(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "NA"
+    if " " in text:
+        text = text.rsplit(" ", 1)[-1]
+    return text[:5] if len(text) >= 5 else text
+
+
 def _load_json(path: str) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -376,6 +385,7 @@ def _calc_ignition_candidate(
         raise ValueError("IGN_BASE window length mismatch")
 
     ab_high = float(ab["high"].astype(float).max())
+    ab_high_ts = int(ab["high"].astype(float).idxmax())
     ab_low = float(ab["low"].astype(float).min())
     ab_open = float(ab["open"].astype(float).iloc[0])
     ab_close = float(ab["close"].astype(float).iloc[-1])
@@ -413,6 +423,9 @@ def _calc_ignition_candidate(
 
     first_ts = int(window.index[start_pos])
     end_ts = int(window.index[end_pos])
+    ab_start_ts = int(ab.index[0])
+    ab_end_ts = int(ab.index[-1])
+    bc_start_ts = int(bc.index[0])
     bc_end_ts = int(bc.index[-1])
     ab_return = _safe_return(ab_close, ab_open)
     ab_range = _safe_return(ab_high, ab_low)
@@ -426,10 +439,18 @@ def _calc_ignition_candidate(
         "reject_reasons": reject_reasons,
         "ab_lookback_bars": ab_bars,
         "bc_confirm_bars": bc_bars,
+        "ab_start_bar_ts": ab_start_ts,
+        "ab_start_bar_bj": _fmt_bj_from_ms(ab_start_ts),
+        "ab_end_bar_ts": ab_end_ts,
+        "ab_end_bar_bj": _fmt_bj_from_ms(ab_end_ts),
+        "ab_box_high_bar_ts": ab_high_ts,
+        "ab_box_high_bar_bj": _fmt_bj_from_ms(ab_high_ts),
         "ignition_start_bar_ts": first_ts,
         "ignition_start_bar_bj": _fmt_bj_from_ms(first_ts),
         "ignition_end_bar_ts": end_ts,
         "ignition_end_bar_bj": _fmt_bj_from_ms(end_ts),
+        "bc_start_bar_ts": bc_start_ts,
+        "bc_start_bar_bj": _fmt_bj_from_ms(bc_start_ts),
         "bc_end_bar_ts": bc_end_ts,
         "bc_end_bar_bj": _fmt_bj_from_ms(bc_end_ts),
         "ab_box_high": round(ab_high, 10),
@@ -648,24 +669,33 @@ def _notify_early_candidates(enabled: bool, account: str, candidates: list[dict[
     send_to_bot("\n".join(_summary_lines("🌱 [IGN_EARLY]", account, candidates, scan_id, top_n)), label="ign_early")
 
 
-def _base_summary_lines(account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> list[str]:
-    lines = [f"🚀 [IGN_BASE] candidates | account={account} | scan_id={scan_id}"]
+def _base_summary_lines(candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> list[str]:
+    lines = [f"🚀 [IGN_BASE] candidates | sig={_hhmm(signal_bj)}"]
     for item in candidates[:top_n]:
+        b_time = _hhmm(item.get("ignition_start_bar_bj"))
+        if item.get("mode") == "three":
+            b_time = f"{b_time}-{_hhmm(item.get('ignition_end_bar_bj'))}"
         lines.append(
-            f"{item['symbol']} mode={item['mode']} "
+            f"{item['symbol']} {item['mode']} "
             f"rB={item['ignition_return']:.2%} "
-            f"retain={item['bc_gain_retained_pct']:.1%} "
-            f"ABhi={item['ab_box_high']} Cfloor={item['bc_close_floor']}"
+            f"retain={item['bc_gain_retained_pct']:.1%}"
+        )
+        lines.append(
+            f"A={_hhmm(item.get('ab_start_bar_bj'))} "
+            f"B={b_time} "
+            f"C={_hhmm(item.get('bc_end_bar_bj'))} "
+            f"ABhi={item['ab_box_high']}@{_hhmm(item.get('ab_box_high_bar_bj'))} "
+            f"Cfloor={item['bc_close_floor']}"
         )
     return lines
 
 
-def _notify_base_candidates(enabled: bool, account: str, candidates: list[dict[str, Any]], scan_id: str, top_n: int) -> None:
+def _notify_base_candidates(enabled: bool, candidates: list[dict[str, Any]], top_n: int, signal_bj: str) -> None:
     if not enabled or not candidates:
         return
     from core.message_bridge import send_to_bot
 
-    send_to_bot("\n".join(_base_summary_lines(account, candidates, scan_id, top_n)), label="ign_base")
+    send_to_bot("\n".join(_base_summary_lines(candidates, top_n, signal_bj)), label="ign_base")
 
 
 def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -808,7 +838,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     append_stage_record(account, "ignition_observer", summary)
     _notify_candidates(notify_enabled, account, notify_passed, scan_id, top_n)
     _notify_early_candidates(notify_enabled, account, notify_early_passed, scan_id, top_n)
-    _notify_base_candidates(notify_enabled, account, notify_base_passed, scan_id, top_n)
+    _notify_base_candidates(notify_enabled, notify_base_passed, top_n, str(summary["scan_bj"]))
     return summary
 
 
