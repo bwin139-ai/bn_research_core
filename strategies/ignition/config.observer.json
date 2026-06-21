@@ -44,7 +44,7 @@
   "ign_base": {
     "enabled": true,
     "ab_lookback_bars": 60,
-    "bc_confirm_bars": 15,
+    "bc_confirm_bars": 3,
     "single_bar_min_return_pct": 0.05,
     "three_bar_min_return_pct": 0.08,
     "breakout_buffer_pct": 0.0,

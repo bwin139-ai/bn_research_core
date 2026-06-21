@@ -83,11 +83,12 @@ strategies/ignition/observer.py
 3. 第一版确认层 `IGN` 通过门槛显式写入 `strategies/ignition/config.observer.json`，默认要求 180m 总涨幅不低于 `25%`、至少 3 个分段上涨、最大回撤不高于 `18%`、距离 180m 高点回撤不高于 `8%`、30m 成交额放大倍数不低于 `1.5`、结构分不低于 `75`。
 4. 2026-06-18 新增早期观察层 `IGN_EARLY`，默认要求 180m 总涨幅不低于 `12%` 且不高于 `18%`、最近 30m 涨幅不低于 `2%`、至少 2 个分段上涨、30m 成交额放大倍数不低于 `1.2`、最大回撤不高于 `22%`、距离 180m 高点回撤不高于 `16%`、最近 60m 大阴线不超过 4 根、至少 1 次分段低点抬高、结构分不低于 `60`。`IGN_EARLY` 只用于人工早期观察；若同一轮同一 symbol 已通过确认层 `IGN`，不重复发送早期层消息。
 5. 2026-06-18 `IGN_EARLY` 增加同账户、同层级、同 symbol 的推送冷却，默认 `runtime.alert_cooldown_secs=1800`，避免同一候选每分钟重复推送；冷却状态落盘到 `state/live/ignition_observer_alerts.<account>.json`，仅在通知开启时写入。
-6. 2026-06-19 新增 `IGN_BASE` 点火筑台子型：使用 1m `A-B-C` 结构，默认 `AB=60` 根、`BC=15` 根；`AB` 只提供箱体高点与背景画像，不用涨跌幅/振幅一票否决；`B` 必须满足单根 1m 收盘涨幅不低于 `5%` 或 3 连阳总涨幅不低于 `8%`，且点火收盘突破 `AB_box_high`；`BC` 使用确认期收盘价下沿，要求守住点火涨幅的默认 `90%` 以上。`IGN_BASE` 只推送观察消息，不交易，bot 标题使用独立图标 `🚀 [IGN_BASE]`。
+6. 2026-06-19 新增 `IGN_BASE` 点火筑台子型：使用 1m `A-B-C` 结构，默认 `AB=60` 根、当前敏捷观察配置 `BC=3` 根；`AB` 只提供箱体高点与背景画像，不用涨跌幅/振幅一票否决；`B` 必须满足单根 1m 收盘涨幅不低于 `5%` 或 3 连阳总涨幅不低于 `8%`，且点火收盘突破 `AB_box_high`；`BC` 使用确认期收盘价下沿，要求守住点火涨幅的默认 `90%` 以上。`IGN_BASE` 只推送观察消息，不交易，bot 标题使用独立图标 `🚀 [IGN_BASE]`。
 7. observer 每次扫描落盘 stage audit `ignition_observer`，输出 `top_candidates`、`top_early_candidates`、`top_base_candidates`、`rejected_summary`、`early_rejected_summary`、`base_rejected_summary`、推送计数与冷却抑制计数；bot 推送默认关闭，只在显式 `--notify` 或配置开启时推送通过候选。
 8. 2026-06-20 IGN observer stdout 已降噪：普通无新推送扫描 summary 降为 `DEBUG`，`runtime.summary_log_interval_secs=600` 控制低频 `INFO` heartbeat；产生新的 `IGN` / `IGN_EARLY` / `IGN_BASE` 推送或单次非 loop 扫描时仍即时写 `INFO`。扫描与 stage audit 落盘频率不变。
 9. 2026-06-20 `IGN_BASE` bot 消息改为复盘坐标格式：标题不再展示 `account/scan_id`，改为展示 `sig=HH:MM`；候选行展示 `A/B/C` bar 时间、`ABhi` 价格及其所在 bar 时间、`Cfloor`，避免用 Telegram 发送时间倒推结构。
 10. 2026-06-20 `IGN` 与 `IGN_EARLY` bot 消息同步去掉标题中的 `account/scan_id`，改为展示 `sig=HH:MM`；完整 `account/scan_id` 仍保留在 `ignition_observer` audit 记录中。
+11. 2026-06-21 `IGN_BASE` 推送去重从 `layer:symbol` 冷却改为结构身份永久去重：`IGN_BASE:{symbol}:{mode}:{ignition_start_bar_ts}:{ignition_end_bar_ts}:{bc_end_bar_ts}`。同一组 `A/B/C` 结构只推送一次，避免旧结构在 30 分钟冷却结束后重复推送；`IGN` / `IGN_EARLY` 仍保留按 `layer:symbol` 的冷却语义。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 

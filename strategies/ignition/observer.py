@@ -613,6 +613,19 @@ def _save_alert_state(account: str, state: Mapping[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _alert_key(layer: str, item: Mapping[str, Any]) -> str:
+    symbol = str(item["symbol"]).upper().strip()
+    if layer == "IGN_BASE":
+        mode = str(item.get("mode") or "").strip()
+        start_ts = int(item.get("ignition_start_bar_ts") or 0)
+        end_ts = int(item.get("ignition_end_bar_ts") or 0)
+        bc_end_ts = int(item.get("bc_end_bar_ts") or 0)
+        if not mode or start_ts <= 0 or end_ts <= 0 or bc_end_ts <= 0:
+            raise ValueError(f"IGN_BASE alert identity incomplete: {symbol}")
+        return f"{layer}:{symbol}:{mode}:{start_ts}:{end_ts}:{bc_end_ts}"
+    return f"{layer}:{symbol}"
+
+
 def _apply_alert_cooldown(
     account: str,
     layer: str,
@@ -620,8 +633,11 @@ def _apply_alert_cooldown(
     *,
     cooldown_secs: int,
     now_ms: int,
+    suppress_forever: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    if cooldown_secs <= 0 or not candidates:
+    if not candidates:
+        return candidates, 0
+    if cooldown_secs <= 0 and not suppress_forever:
         return candidates, 0
     state = _load_alert_state(account)
     alerts = state["alerts"]
@@ -629,10 +645,9 @@ def _apply_alert_cooldown(
     filtered: list[dict[str, Any]] = []
     suppressed = 0
     for item in candidates:
-        symbol = str(item["symbol"]).upper().strip()
-        key = f"{layer}:{symbol}"
+        key = _alert_key(layer, item)
         last_ms = int(alerts.get(key, 0) or 0)
-        if last_ms > 0 and now_ms - last_ms < cooldown_ms:
+        if last_ms > 0 and (suppress_forever or now_ms - last_ms < cooldown_ms):
             suppressed += 1
             continue
         filtered.append(item)
@@ -790,6 +805,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
             base_passed,
             cooldown_secs=alert_cooldown_secs,
             now_ms=now_ms,
+            suppress_forever=True,
         )
     else:
         notify_passed = passed

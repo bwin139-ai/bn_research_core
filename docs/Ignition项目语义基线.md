@@ -37,7 +37,7 @@
 - `A-B` 只定义点火前参考箱体，不用作“平静”一票否决；`AB` 的涨跌幅、振幅、斜率与点火量能只作为背景画像写入 audit，供后续复盘。
 - `B` 是点火段，必须满足二选一：单根 1m 阳线收盘涨幅不低于显式阈值，或从 B 开始连续 3 根 1m 阳线且三阳总收盘涨幅不低于显式阈值。
 - `B` 的点火收盘价必须突破 `AB_box_high`；这是 `AB` 对信号的唯一硬门槛。
-- `B-C` 是点火后确认期，默认 15 根 1m bar。确认期不使用下影线做一票否决，只取确认期每根 K 线的收盘价下沿 `BC_close_floor = min(close_1..close_N)`。
+- `B-C` 是点火后确认期，默认 3 根 1m bar。确认期不使用下影线做一票否决，只取确认期每根 K 线的收盘价下沿 `BC_close_floor = min(close_1..close_N)`。
 - `BC_close_floor` 必须高于“点火收盘价减去点火涨幅的显式可回吐比例”：
 
 ```text
@@ -94,6 +94,7 @@ BC_close_floor >= ignition_close - ignition_gain * bc_max_gain_pullback_pct
 - `IGN_BASE`：点火筑台层，要求 B 点火突破 `AB_box_high`，且后续 BC 确认期的收盘价下沿守住点火涨幅的大部分；用途是捕捉“点火后不回落、市场接受新价格层”的更窄子型。
 3.4 bot 推送只允许发送通过阈值的候选摘要，避免刷屏。若同一 symbol 同一轮已经通过 `IGN` 确认层，则不再重复发送 `IGN_EARLY`。同一账户、同一层级、同一 symbol 的重复推送必须受显式冷却时间约束。Telegram 推送不展示 `account` 与 `scan_id`，必须展示信号生成时间 `sig=HH:MM`；完整 `account/scan_id` 继续保留在 audit JSON 中。
 `IGN_BASE` 推送面向人工复盘，不展示 `account` 与 `scan_id`，必须展示信号生成时间 `sig`、`A/B/C` bar 时间，以及 `ABhi` 对应 bar 时间，时间显示到 `HH:MM`。
+`IGN_BASE` 的推送去重身份必须包含 `symbol + mode + ignition_start_bar_ts + ignition_end_bar_ts + bc_end_bar_ts`；同一组 `A/B/C` 结构只允许推送一次，不能在 symbol 冷却结束后重复推送旧结构。
 3.5 observer 的普通扫描 summary 不应每分钟刷 `INFO` 日志。`runtime.summary_log_interval_secs` 控制无新推送时的低频 heartbeat；当产生新的 `IGN` / `IGN_EARLY` / `IGN_BASE` 推送或单次非 loop 扫描时，仍必须即时写 `INFO`。
 
 ## 4. 交易边界
