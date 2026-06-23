@@ -3011,10 +3011,13 @@ def _history_days(start: datetime, end: datetime) -> list[str]:
 
 
 def _parse_bj_date(text: str) -> datetime:
+    raw = str(text or "").strip()
+    if re.fullmatch(r"\d{8}", raw):
+        raw = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
     try:
-        value = datetime.strptime(str(text or "").strip(), "%Y-%m-%d")
+        value = datetime.strptime(raw, "%Y-%m-%d")
     except Exception as exc:
-        raise ValueError(f"日期格式必须是 YYYY-MM-DD: {text}") from exc
+        raise ValueError(f"日期格式必须是 YYYY-MM-DD 或 YYYYMMDD: {text}") from exc
     return value.replace(tzinfo=BJ)
 
 
@@ -3032,7 +3035,12 @@ def _today_bj_text() -> str:
 
 
 def _is_bj_date_text(text: str) -> bool:
-    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(text or "").strip()))
+    raw = str(text or "").strip()
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) or re.fullmatch(r"\d{8}", raw))
+
+
+def _normalize_bj_date_text(text: str) -> str:
+    return _parse_bj_date(text).date().isoformat()
 
 
 def _history_usage_text() -> str:
@@ -3045,7 +3053,10 @@ def _history_usage_text() -> str:
         "/view_history 2026-06-01 2026-06-02\n"
         "/view_history ESPORTSUSDT 2026-06-01\n"
         "/view_history chen912 ESPORTSUSDT 2026-06-01\n"
-        "/view_history ESPORTSUSDT 2026-06-01 2026-06-02"
+        "/view_history ESPORTSUSDT 2026-06-01 2026-06-02\n"
+        "/view_history chen912 ESPORTSUSDT 2026-06-01 2026-06-02\n"
+        "/view_history MUUSDT 20260501 20260623\n"
+        "/view_history chen912 MUUSDT 20260501 20260623"
     )
 
 
@@ -3082,6 +3093,8 @@ def _parse_history_filter_args(args: list[str]) -> dict[str, Any] | None:
         start_day = tokens[1]
         end_day = tokens[2] if len(tokens) == 3 else _today_bj_text()
 
+    start_day = _normalize_bj_date_text(start_day)
+    end_day = _normalize_bj_date_text(end_day)
     start = _parse_bj_date(start_day)
     end = _parse_bj_date(end_day)
     if end < start:
@@ -3652,9 +3665,15 @@ async def _send_history(
     query_start_ms = start_ms if start_ms is not None else now_ms - 24 * 60 * 60 * 1000
     query_end_ms = end_ms if end_ms is not None else now_ms
     symbol_filter = str(symbol or "").upper().strip()
+    symbol_range_view = bool(symbol_filter and start_day and end_day)
     order_rows, orders_missing = _load_exchange_history_rows_or_missing(account, "orders", query_start_ms, query_end_ms)
     trade_rows, trades_missing = _load_exchange_history_rows_or_missing(account, "trades", query_start_ms, query_end_ms)
-    transfer_rows, transfers_missing = _load_exchange_history_rows_or_missing(account, "transfers", query_start_ms, query_end_ms)
+    transfer_rows: list[dict[str, Any]] = []
+    transfers_missing = False
+    if not symbol_range_view:
+        transfer_rows, transfers_missing = _load_exchange_history_rows_or_missing(
+            account, "transfers", query_start_ms, query_end_ms
+        )
     position_rows, positions_missing = _load_exchange_history_rows_or_missing(
         account, "positions", query_start_ms, query_end_ms
     )
@@ -3688,9 +3707,20 @@ async def _send_history(
         if open_time_ms > 0:
             income_start_ms = min(income_start_ms, max(0, open_time_ms - 60_000))
     income_rows, _ = _load_exchange_history_rows_or_missing(account, "income", income_start_ms, query_end_ms)
-    transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
-    deposit_total = sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) > 0)
-    withdraw_total = abs(sum(float(row.get("income", 0.0) or 0.0) for row in transfer_rows if float(row.get("income", 0.0) or 0.0) < 0))
+    if not symbol_range_view:
+        transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
+        deposit_total = sum(
+            float(row.get("income", 0.0) or 0.0)
+            for row in transfer_rows
+            if float(row.get("income", 0.0) or 0.0) > 0
+        )
+        withdraw_total = abs(
+            sum(
+                float(row.get("income", 0.0) or 0.0)
+                for row in transfer_rows
+                if float(row.get("income", 0.0) or 0.0) < 0
+            )
+        )
 
     latest_sync_ms = max(
         _latest_exchange_history_sync_ms(account),
@@ -3746,32 +3776,33 @@ async def _send_history(
     else:
         lines.append("本地账本无仓位历史" if not positions_missing else "本地账本缺少 positions 落盘")
 
-    lines.extend(["", "🔹 转账流水:"])
-    if transfer_rows:
-        for row in transfer_rows[:60]:
-            lines.append(
-                f"{_bj_minute(row.get('time_ms') or row.get('time'))} | 转账 | "
-                f"{row.get('asset') or ''} | {_fmt_float(row.get('income'))}"
-            )
-    else:
-        lines.append("本地账本无转账记录" if not transfers_missing else "本地账本缺少 transfers 落盘")
+    if not symbol_range_view:
+        lines.extend(["", "🔹 转账流水:"])
+        if transfer_rows:
+            for row in transfer_rows[:60]:
+                lines.append(
+                    f"{_bj_minute(row.get('time_ms') or row.get('time'))} | 转账 | "
+                    f"{row.get('asset') or ''} | {_fmt_float(row.get('income'))}"
+                )
+        else:
+            lines.append("本地账本无转账记录" if not transfers_missing else "本地账本缺少 transfers 落盘")
 
-    fee_24h = _sum_income(account, days=1, income_type="FUNDING_FEE")
-    fee_3d = _sum_income(account, days=3, income_type="FUNDING_FEE")
-    fee_7d = _sum_income(account, days=7, income_type="FUNDING_FEE")
-    fee_30d = _sum_income(account, days=30, income_type="FUNDING_FEE")
-    lines.extend(
-        [
-            "",
-            "🔖 汇总统计:",
-            f"资金费(24h): {fee_24h if fee_24h is not None else '查询失败'}",
-            f"资金费(3d): {fee_3d if fee_3d is not None else '查询失败'}",
-            f"资金费(7d): {fee_7d if fee_7d is not None else '查询失败'}",
-            f"资金费(30d): {fee_30d if fee_30d is not None else '查询失败'}",
-            f"",
-            f"净入金(入金-出金): {round(deposit_total - withdraw_total, 4)}",
-        ]
-    )
+        fee_24h = _sum_income(account, days=1, income_type="FUNDING_FEE")
+        fee_3d = _sum_income(account, days=3, income_type="FUNDING_FEE")
+        fee_7d = _sum_income(account, days=7, income_type="FUNDING_FEE")
+        fee_30d = _sum_income(account, days=30, income_type="FUNDING_FEE")
+        lines.extend(
+            [
+                "",
+                "🔖 汇总统计:",
+                f"资金费(24h): {fee_24h if fee_24h is not None else '查询失败'}",
+                f"资金费(3d): {fee_3d if fee_3d is not None else '查询失败'}",
+                f"资金费(7d): {fee_7d if fee_7d is not None else '查询失败'}",
+                f"资金费(30d): {fee_30d if fee_30d is not None else '查询失败'}",
+                f"",
+                f"净入金(入金-出金): {round(deposit_total - withdraw_total, 4)}",
+            ]
+        )
     missing_sources = [
         source
         for source, missing in (
