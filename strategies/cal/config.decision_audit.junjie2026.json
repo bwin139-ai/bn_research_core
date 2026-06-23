@@ -22,7 +22,13 @@
       {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600, "repeat_drop_step_pct": 0.01},
       {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600, "repeat_drop_step_pct": 0.01}
     ],
-    "symbol_levels": {}
+    "symbol_levels": {
+      "MUUSDT": [
+        {"level": "P1", "drop_pct": 0.04, "notional_usdt": 50},
+        {"level": "P2", "drop_pct": 0.05, "notional_usdt": 50, "repeat_drop_step_pct": 0.01},
+        {"level": "P3", "drop_pct": 0.12, "notional_usdt": 50, "repeat_drop_step_pct": 0.01}
+      ]
+    }
   },
   "exit_policy": {
     "symbol_take_profit_pct": {
@@ -32,10 +38,10 @@
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
-      "MUUSDT": 1800,
+      "MUUSDT": 150,
       "SPCXUSDT": 1800
     },
-    "max_total_strategy_notional_usdt": 3600
+    "max_total_strategy_notional_usdt": 1950
   },
   "execution": {
     "position_side": "LONG",

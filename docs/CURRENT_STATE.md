@@ -158,6 +158,7 @@ strategies/cal/live_trader.py
 32. 2026-06-18 管理员门户可读性优化：`/trade pending` 与账户详情挂单列表不再展示 `oid`，每条挂单前增加来源图标（`🦅` Snapback、`🌱` Spring、`📈` SWR、`⚓` CAL、`🧰` bot 手动、`🟨` Binance 官方/外部）；`/trade` 与 `BN_EXEC` 的 Telegram 可见交易输出不再展示 `oid`，`cid` 压缩为 `MAN_ENT` / `CAL_TP` 这类语义片段，完整 `cid/oid` 仍保留在执行日志中用于审计。
 33. 2026-06-18 CAL 的 P1 `H` 锚点回看窗口从固定代码语义改为显式 `data.h_anchor_lookback_hours` 配置，当前三份 CAL decision config 均设为 `24`；`chen912` / `junjie2026` 的默认 ladder `P1.drop_pct` 从 `0.05` 调整为 `0.04`，`P2/P3` 仍为 `0.05/0.12` 且继续锚定 `P1.entry_price`。
 34. 2026-06-19 `stark21` 的策略常驻进程已按生产运维要求停止：`spring_stark21`、`sweep_reclaim_stark21`、`cal_stark21` 当前不运行；服务器未发现 `snapback_stark21` 常驻进程。`process_monitor_config.json` 同步改为不再期待 `snapback_stark21_highfreq`、`spring_stark21`、`sweep_reclaim_stark21` 进程，三者 `min_count/max_count` 均为 `0` 且移除 heartbeat stale 检查。
+35. 2026-06-23 CAL 放宽同品种非 CAL open order precheck：非 CAL `BUY/LONG` open order 视为外部 `P0` 入场，不阻断 CAL；非 CAL `SELL/LONG` open order 只在剩余卖出数量不超过估算外部 `P0` 数量时允许共存，若会吃到 CAL open lots、方向无法分类或为 `closePosition`，仍阻断新 CAL BUY。`chen912` 与 `junjie2026` 的 MUUSDT 暂时保留在 CAL 配置中用于 reconcile，但通过 `ladder.symbol_levels.MUUSDT` 将 P1/P2/P3 新开仓金额降为 `50/50/50U`，并将 MUUSDT 单 symbol 策略本金上限降为 `150U`；SPCXUSDT 保持 `600/600/600U`。
 
 当前下一步：
 

@@ -251,10 +251,13 @@ PAUSED_BY_INVARIANT_VIOLATION
 
 1. 同一 symbol 已有外部 LONG position。
 2. 同一 symbol 存在非 `CAL` 历史成交。
+3. 同一 symbol 存在非 `CAL` open order，但该订单必须能被解释为外部 `P0` 管理行为，且不会占用或覆盖 `CAL` 自己的 lot / TP 数量。
+4. 非 `CAL` `BUY/LONG` open order 视为外部 `P0` 入场，不阻断 `CAL`。
+5. 非 `CAL` `SELL/LONG` open order 只在剩余卖出数量不超过估算外部 `P0` 数量时允许共存；若该订单剩余数量会吃到 `CAL` open lots，必须阻断新的 `CAL` BUY。
 
 禁止或需阻断新开仓的账户事实：
 
-1. 同一 symbol 存在无法识别归属的 open order，且该订单可能影响 `CAL` TP / entry 数量判断。
+1. 同一 symbol 存在无法识别归属、方向不明、`closePosition`，或剩余数量可能影响 `CAL` TP / entry 数量判断的 open order。
 2. 同一 symbol 存在其它自动策略 active lot，除非后续文档显式允许共存。
 3. 同一 symbol 存在 `CAL` state 外的 `CAL` client order id open order。
 4. 账户 position mode、margin type、leverage 不满足显式配置。

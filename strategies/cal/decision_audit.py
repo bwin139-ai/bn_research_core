@@ -710,6 +710,81 @@ def _order_client_id(order: Mapping[str, Any]) -> str:
     return str(order.get("client_order_id") or order.get("clientOrderId") or order.get("origClientOrderId") or "").strip()
 
 
+def _order_side(order: Mapping[str, Any]) -> str:
+    return str(order.get("side") or "").upper().strip()
+
+
+def _order_position_side(order: Mapping[str, Any]) -> str:
+    return str(order.get("position_side") or order.get("positionSide") or "").upper().strip()
+
+
+def _order_remaining_qty(order: Mapping[str, Any]) -> float | None:
+    orig_qty = _as_float(order.get("orig_qty", order.get("origQty")))
+    executed_qty = _as_float(order.get("executed_qty", order.get("executedQty")))
+    if orig_qty is None or orig_qty < 0:
+        return None
+    if executed_qty is None or executed_qty < 0:
+        executed_qty = 0.0
+    return max(0.0, float(orig_qty) - float(executed_qty))
+
+
+def _non_cal_order_impact(
+    *,
+    orders: list[Mapping[str, Any]],
+    external_p0_qty: float,
+) -> dict[str, Any]:
+    details: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    p0_exit_remaining_qty = 0.0
+    unknown_count = 0
+    p0_entry_count = 0
+    p0_exit_count = 0
+
+    for order in orders:
+        cid = _order_client_id(order)
+        side = _order_side(order)
+        position_side = _order_position_side(order)
+        close_position = bool(order.get("close_position", order.get("closePosition", False)))
+        remaining_qty = _order_remaining_qty(order)
+        detail = {
+            "client_order_id": cid,
+            "side": side,
+            "position_side": position_side,
+            "remaining_qty": remaining_qty,
+            "close_position": close_position,
+            "classification": "unknown",
+        }
+        if position_side != POSITION_SIDE_LONG or side not in {"BUY", "SELL"} or remaining_qty is None:
+            unknown_count += 1
+            blocking_reasons.append("non_cal_order_unclassified")
+        elif side == "BUY":
+            p0_entry_count += 1
+            detail["classification"] = "external_p0_entry"
+        elif close_position:
+            p0_exit_count += 1
+            blocking_reasons.append("non_cal_close_position_order_present")
+            detail["classification"] = "external_p0_exit_close_position"
+        else:
+            p0_exit_count += 1
+            p0_exit_remaining_qty += float(remaining_qty)
+            detail["classification"] = "external_p0_exit"
+        details.append(detail)
+
+    tolerance = max(1e-9, abs(float(external_p0_qty)) * 1e-8)
+    if p0_exit_remaining_qty > float(external_p0_qty) + tolerance:
+        blocking_reasons.append("non_cal_exit_qty_exceeds_external_p0_qty")
+
+    return {
+        "blocking_reasons": sorted(set(blocking_reasons)),
+        "p0_entry_order_count": p0_entry_count,
+        "p0_exit_order_count": p0_exit_count,
+        "unknown_order_count": unknown_count,
+        "p0_exit_remaining_qty": float(p0_exit_remaining_qty),
+        "external_p0_qty": float(external_p0_qty),
+        "details": details,
+    }
+
+
 def _fetch_best_bid(account: str, symbol: str, limit: int) -> dict[str, Any]:
     raw = call_client_method(
         account,
@@ -973,6 +1048,7 @@ def _build_symbol_decision(
     cal_qty = _cal_open_qty(open_lots)
     position_qty = _position_qty(position)
     external_p0_qty = max(0.0, position_qty - cal_qty)
+    non_cal_order_impact = _non_cal_order_impact(orders=non_cal_open_orders, external_p0_qty=external_p0_qty)
     if position_qty + 1e-12 < cal_qty:
         invariant_reasons.append("position_qty_below_cal_open_lot_qty")
     if cal_open_orders:
@@ -1004,6 +1080,7 @@ def _build_symbol_decision(
                 "open_order_client_ids": open_order_client_ids,
                 "unknown_cal_order_count": len(unknown_cal_orders),
                 "non_cal_open_order_count": len(non_cal_open_orders),
+                "non_cal_order_impact": non_cal_order_impact,
             },
             "open_lots": open_lots,
             "repeat_counts": repeat_counts,
@@ -1016,8 +1093,9 @@ def _build_symbol_decision(
     next_level = _next_level(cfg, symbol, existing_levels)
     p1_lot = next((lot for lot in open_lots if str(lot.get("level") or "").upper() == "P1"), None)
 
-    if non_cal_open_orders:
-        block_reason = "non_cal_open_orders_present"
+    non_cal_block_reasons = list(non_cal_order_impact["blocking_reasons"])
+    if non_cal_block_reasons:
+        block_reason = non_cal_block_reasons[0]
     elif next_level is None:
         block_reason = "all_configured_levels_open"
     else:
@@ -1120,6 +1198,7 @@ def _build_symbol_decision(
             "open_order_client_ids": open_order_client_ids,
             "cal_open_order_count": len(cal_open_orders),
             "non_cal_open_order_count": len(non_cal_open_orders),
+            "non_cal_order_impact": non_cal_order_impact,
         },
         "open_lots": open_lots,
         "intent": intent,
