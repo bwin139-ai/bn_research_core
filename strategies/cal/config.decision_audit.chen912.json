@@ -38,10 +38,10 @@
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
-      "MUUSDT": 150,
+      "MUUSDT": 700,
       "SPCXUSDT": 1800
     },
-    "max_total_strategy_notional_usdt": 1950
+    "max_total_strategy_notional_usdt": 2500
   },
   "execution": {
     "position_side": "LONG",
