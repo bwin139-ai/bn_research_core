@@ -89,6 +89,7 @@ strategies/ignition/observer.py
 9. 2026-06-20 `IGN_BASE` bot 消息改为复盘坐标格式：标题不再展示 `account/scan_id`，改为展示 `sig=HH:MM`；候选行展示 `A/B/C` bar 时间、`ABhi` 价格及其所在 bar 时间、`Cfloor`，避免用 Telegram 发送时间倒推结构。
 10. 2026-06-20 `IGN` 与 `IGN_EARLY` bot 消息同步去掉标题中的 `account/scan_id`，改为展示 `sig=HH:MM`；完整 `account/scan_id` 仍保留在 `ignition_observer` audit 记录中。
 11. 2026-06-21 `IGN_BASE` 推送去重从 `layer:symbol` 冷却改为结构身份永久去重：`IGN_BASE:{symbol}:{mode}:{ignition_start_bar_ts}:{ignition_end_bar_ts}:{bc_end_bar_ts}`。同一组 `A/B/C` 结构只推送一次，避免旧结构在 30 分钟冷却结束后重复推送；`IGN` / `IGN_EARLY` 仍保留按 `layer:symbol` 的冷却语义。
+12. 2026-06-23 `IGN_BASE` Telegram 推送增加新鲜度门槛：只有 `bc_end_bar_ts == latest_closed_bar_ts` 的结构才进入推送与 alert 去重；180m 窗口中仍成立但 `C` 已经不是最新闭合 bar 的历史结构仅保留在 audit/top_base_candidates，不再补推，避免类似 `C=08:10` 到 `sig=10:07` 的滞后提醒。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 

@@ -726,6 +726,8 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     full_df = payload.get("full_df")
     if not isinstance(full_df, dict):
         raise KeyError("IGN hub payload missing full_df")
+    latest_closed_bar_ts = int(payload.get("latest_closed_bar_ts") or 0)
+    latest_closed_bar_bj = str(payload.get("latest_closed_bar_bj") or "")
 
     structure_cfg = cfg["structure"]
     scan_id = uuid.uuid4().hex[:12]
@@ -776,6 +778,10 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         ),
         reverse=True,
     )
+    fresh_base_passed = [
+        row for row in base_passed
+        if int(row.get("bc_end_bar_ts") or 0) == latest_closed_bar_ts
+    ]
     rejected = [row for row in results if not bool(row.get("passed"))]
     early_rejected = [row for row in results if not bool(row.get("early_passed"))]
     base_rejected = [row for row in results if not bool(row.get("base_passed"))]
@@ -802,7 +808,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         notify_base_passed, notify_base_suppressed = _apply_alert_cooldown(
             account,
             "IGN_BASE",
-            base_passed,
+            fresh_base_passed,
             cooldown_secs=alert_cooldown_secs,
             now_ms=now_ms,
             suppress_forever=True,
@@ -810,7 +816,7 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
     else:
         notify_passed = passed
         notify_early_passed = early_passed
-        notify_base_passed = base_passed
+        notify_base_passed = fresh_base_passed
         notify_suppressed = 0
         notify_early_suppressed = 0
         notify_base_suppressed = 0
@@ -820,12 +826,13 @@ def scan_once(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "strategy_family": "momentum_ignition",
         "account": account,
         "scan_bj": _now_bj(),
-        "latest_closed_bar_ts": int(payload.get("latest_closed_bar_ts") or 0),
-        "latest_closed_bar_bj": str(payload.get("latest_closed_bar_bj") or ""),
+        "latest_closed_bar_ts": latest_closed_bar_ts,
+        "latest_closed_bar_bj": latest_closed_bar_bj,
         "symbol_count": int(len(results)),
         "passed_count": int(len(passed)),
         "early_passed_count": int(len(early_passed)),
         "base_passed_count": int(len(base_passed)),
+        "fresh_base_passed_count": int(len(fresh_base_passed)),
         "notify_passed_count": int(len(notify_passed)),
         "notify_early_passed_count": int(len(notify_early_passed)),
         "notify_base_passed_count": int(len(notify_base_passed)),

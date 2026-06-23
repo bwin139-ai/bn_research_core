@@ -95,6 +95,7 @@ BC_close_floor >= ignition_close - ignition_gain * bc_max_gain_pullback_pct
 3.4 bot 推送只允许发送通过阈值的候选摘要，避免刷屏。若同一 symbol 同一轮已经通过 `IGN` 确认层，则不再重复发送 `IGN_EARLY`。同一账户、同一层级、同一 symbol 的重复推送必须受显式冷却时间约束。Telegram 推送不展示 `account` 与 `scan_id`，必须展示信号生成时间 `sig=HH:MM`；完整 `account/scan_id` 继续保留在 audit JSON 中。
 `IGN_BASE` 推送面向人工复盘，不展示 `account` 与 `scan_id`，必须展示信号生成时间 `sig`、`A/B/C` bar 时间，以及 `ABhi` 对应 bar 时间，时间显示到 `HH:MM`。
 `IGN_BASE` 的推送去重身份必须包含 `symbol + mode + ignition_start_bar_ts + ignition_end_bar_ts + bc_end_bar_ts`；同一组 `A/B/C` 结构只允许推送一次，不能在 symbol 冷却结束后重复推送旧结构。
+`IGN_BASE` 只有当 `bc_end_bar_ts == latest_closed_bar_ts` 时才允许进入 Telegram 推送；历史窗口中仍成立但 `BC` 已经不是最新闭合 bar 的旧结构只允许写入 audit，不允许补推。
 3.5 observer 的普通扫描 summary 不应每分钟刷 `INFO` 日志。`runtime.summary_log_interval_secs` 控制无新推送时的低频 heartbeat；当产生新的 `IGN` / `IGN_EARLY` / `IGN_BASE` 推送或单次非 loop 扫描时，仍必须即时写 `INFO`。
 
 ## 4. 交易边界
