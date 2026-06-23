@@ -3707,6 +3707,14 @@ async def _send_history(
         if open_time_ms > 0:
             income_start_ms = min(income_start_ms, max(0, open_time_ms - 60_000))
     income_rows, _ = _load_exchange_history_rows_or_missing(account, "income", income_start_ms, query_end_ms)
+    position_net_pnls = [_position_net_pnl(position, income_rows) for position in history_positions]
+    position_pnl_total = 0.0
+    position_pnl_unknown = False
+    for value in position_net_pnls:
+        try:
+            position_pnl_total += float(value)
+        except Exception:
+            position_pnl_unknown = True
     if not symbol_range_view:
         transfer_rows.sort(key=lambda x: _history_display_ms(x, "time_ms", "time"), reverse=True)
         deposit_total = sum(
@@ -3758,15 +3766,16 @@ async def _send_history(
     else:
         lines.append("本地账本无成交委托" if not orders_missing else "本地账本缺少 orders 落盘")
 
-    lines.extend(["", "📌 仓位历史:"])
+    position_total_text = "UNKNOWN" if position_pnl_unknown else _fmt_history_usdt(position_pnl_total)
+    lines.extend(["", f"📌 仓位历史: (盈亏合计 {position_total_text} USDT)"])
     if history_positions:
-        for position in history_positions[:60]:
+        for idx, position in enumerate(history_positions[:60]):
             symbol = str(position.get("symbol") or "").upper()
             position_side = str(position.get("position_side") or "").upper()
             status = str(position.get("status") or "").upper()
             status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
             lines.append(
-                f"{symbol} {position_side} | {status_text} | 盈亏 {_fmt_history_usdt(_position_net_pnl(position, income_rows))}\n"
+                f"{symbol} {position_side} | {status_text} | 盈亏 {_fmt_history_usdt(position_net_pnls[idx])}\n"
                 f"  开仓价: {_fmt_history_float(position.get('entry_price'))}  平仓价: {_fmt_history_float(position.get('average_close_price'))}\n"
                 f"  开仓时间: {_bj_short_second(position.get('open_time_ms'))}\n"
                 f"  平仓时间: {_bj_short_second(position.get('close_time_ms'))}\n"
