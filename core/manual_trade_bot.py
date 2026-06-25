@@ -3838,8 +3838,8 @@ async def _send_history(
                 f"{pnl_text} | {symbol} {position_side}{status_text}\n"
                 f"  O: {_fmt_history_price(position.get('entry_price'))}  C: {_fmt_history_price(position.get('average_close_price'))}\n"
                 f"  T: {_bj_short_second(position.get('open_time_ms'))} -> {_bj_short_second(position.get('close_time_ms'))}\n"
-                f"  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
-                f"  最高O: {_fmt_history_float(position.get('max_open_qty'))}  已平仓量: {_fmt_history_float(position.get('closed_qty'))}"
+                f"  {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))} "
+                f"{_fmt_history_float(position.get('max_open_qty'))}/{_fmt_history_float(position.get('closed_qty'))}"
             )
     else:
         lines.append("本地账本无仓位历史" if not positions_missing else "本地账本缺少 positions 落盘")
