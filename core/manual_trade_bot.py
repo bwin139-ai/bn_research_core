@@ -3036,11 +3036,41 @@ def _today_bj_text() -> str:
 
 def _is_bj_date_text(text: str) -> bool:
     raw = str(text or "").strip()
-    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) or re.fullmatch(r"\d{8}", raw))
+    return bool(
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw)
+        or re.fullmatch(r"\d{8}", raw)
+        or re.fullmatch(r"\d{12}", raw)
+    )
 
 
-def _normalize_bj_date_text(text: str) -> str:
-    return _parse_bj_date(text).date().isoformat()
+def _parse_history_time_token(text: str) -> tuple[datetime, str]:
+    raw = str(text or "").strip()
+    if re.fullmatch(r"\d{8}", raw):
+        value = datetime.strptime(raw, "%Y%m%d")
+        return value.replace(tzinfo=BJ), "day"
+    if re.fullmatch(r"\d{12}", raw):
+        value = datetime.strptime(raw, "%Y%m%d%H%M")
+        return value.replace(tzinfo=BJ), "minute"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        value = datetime.strptime(raw, "%Y-%m-%d")
+        return value.replace(tzinfo=BJ), "day"
+    raise ValueError(f"日期格式必须是 YYYY-MM-DD、YYYYMMDD 或 YYYYMMDDHHMM: {text}")
+
+
+def _normalize_history_time_text(value: datetime, precision: str) -> str:
+    if precision == "day":
+        return value.date().isoformat()
+    if precision == "minute":
+        return value.strftime("%Y-%m-%d %H:%M")
+    raise ValueError(f"未知日期精度: {precision}")
+
+
+def _history_end_exclusive(value: datetime, precision: str) -> datetime:
+    if precision == "day":
+        return value + timedelta(days=1)
+    if precision == "minute":
+        return value + timedelta(minutes=1)
+    raise ValueError(f"未知日期精度: {precision}")
 
 
 def _history_usage_text() -> str:
@@ -3056,7 +3086,8 @@ def _history_usage_text() -> str:
         "/view_history ESPORTSUSDT 2026-06-01 2026-06-02\n"
         "/view_history chen912 ESPORTSUSDT 2026-06-01 2026-06-02\n"
         "/view_history MUUSDT 20260501 20260623\n"
-        "/view_history chen912 MUUSDT 20260501 20260623"
+        "/view_history chen912 MUUSDT 20260501 20260623\n"
+        "/view_history chen912 MUUSDT 202606181435 202606181500"
     )
 
 
@@ -3093,19 +3124,17 @@ def _parse_history_filter_args(args: list[str]) -> dict[str, Any] | None:
         start_day = tokens[1]
         end_day = tokens[2] if len(tokens) == 3 else _today_bj_text()
 
-    start_day = _normalize_bj_date_text(start_day)
-    end_day = _normalize_bj_date_text(end_day)
-    start = _parse_bj_date(start_day)
-    end = _parse_bj_date(end_day)
+    start, start_precision = _parse_history_time_token(start_day)
+    end, end_precision = _parse_history_time_token(end_day)
     if end < start:
-        raise ValueError("截止日期不能早于起始日期")
+        raise ValueError("截止时间不能早于起始时间")
 
-    end_exclusive = end + timedelta(days=1)
+    end_exclusive = _history_end_exclusive(end, end_precision)
     return {
         "account": account,
         "symbol": symbol,
-        "start_day": start_day,
-        "end_day": end_day,
+        "start_day": _normalize_history_time_text(start, start_precision),
+        "end_day": _normalize_history_time_text(end, end_precision),
         "start_ms": int(start.astimezone(timezone.utc).timestamp() * 1000),
         "end_ms": int(end_exclusive.astimezone(timezone.utc).timestamp() * 1000) - 1,
     }

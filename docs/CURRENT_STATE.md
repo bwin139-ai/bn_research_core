@@ -1272,7 +1272,7 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-06-18 `/view_history` 历史委托新增订单来源图标，只改变 Telegram 展示，不改变 exchange_history 账本与策略执行语义。识别规则基于 `client_order_id`：`SNP` 显示 `🦅`、`SPR` 显示 `🌱`、`SWR` 显示 `📈`、`CAL` 显示 `⚓`、本 bot 手动/API 管理员入口（`MAN` 以及 hedge-short `HSH` 等本 broker 非策略码）显示 `🧰`、非本 broker 或无系统 client id 的 Binance App/Web 官方渠道手动单显示 `🟨`。
 
-2026-06-23 `/view_history` 的“仓位历史”标题增加当前查询范围内仓位净盈亏合计，格式为 `📌 仓位历史: (盈亏合计 **** USDT)`；合计口径使用每条仓位展示同源的 `net_pnl` / 即时补算净盈亏。
+2026-06-23 `/view_history` 的“仓位历史”标题增加当前查询范围内仓位净盈亏合计，格式为 `📌 仓位历史: (盈亏合计 **** USDT)`；合计口径使用每条仓位展示同源的 `net_pnl` / 即时补算净盈亏。2026-06-25 `/view_history` 日期参数继续兼容 `YYYY-MM-DD` 与 `YYYYMMDD`，并新增 `YYYYMMDDHHMM` 分钟级时间 token；自然日 token 仍按北京时间整天查询，分钟级 token 按该分钟起止边界查询，例如 `202606181435` 表示北京时间 `2026-06-18 14:35`。
 
 2026-05-21 chen912 配置 `exchange_history_start_time=2026-05-01T00:00:00+08:00` 后尝试单账户 bootstrap，发现该账户某些 1 天 income 窗口会命中 Binance `limit=1000`，同步器按完整性规则 fail-fast。已将 `core/exchange_history_sync.py` 的 income 同步改为自适应拆分：1 天窗口命中 `limit=1000` 时递归拆为更小窗口，直到低于 limit；若达到最小 1 小时窗口仍命中 limit，继续 fail-fast，避免把截断流水当作完整历史。
 
