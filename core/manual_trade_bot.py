@@ -3794,6 +3794,8 @@ async def _send_history(
         _latest_loaded_rows_sync_ms(order_rows, trade_rows, transfer_rows, position_rows),
     )
     sync_text = _bj_second(latest_sync_ms) if latest_sync_ms > 0 else "未发现本地同步数据"
+    filled_order_total = len(filled_orders)
+    filled_order_display_count = min(60, filled_order_total)
     if start_day and end_day:
         title = f"📜 {account} 历史记录 {start_day} ~ {end_day}"
         scope_text = f"品种: {symbol_filter or 'ALL'}"
@@ -3806,7 +3808,7 @@ async def _send_history(
         f"数据同步时间: {sync_text}",
         "说明: 以下为本地 exchange_history 账本数据，常驻同步存在分钟级延迟。",
         "",
-        "🔸 历史委托:",
+        f"🔸 历史委托: 最近{filled_order_display_count}条 / 共 {filled_order_total} 条",
         "图例: 🦅Snapback 🌱Spring 📈SWR ⚓CAL 🧰Bot 🟨Binance",
     ]
     if filled_orders:

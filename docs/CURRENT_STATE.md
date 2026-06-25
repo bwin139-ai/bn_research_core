@@ -1276,6 +1276,8 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-06-25 `/view_history` 仓位历史行优化 Telegram 展示：正常 `CLOSED` 仓位不再显示“完全平仓”，首行行首改为 `🟢盈利` / `🔴亏损` / `⚪盈亏` 加净盈亏金额，再显示 `symbol + side`；开仓价/平仓价压缩为 `O` / `C`，且按价格档位最多显示 3/5/8 位小数；开仓时间/平仓时间压缩为同一行 `T: open -> close`；持仓时间、最高 open qty、已平仓量压缩为一行 `duration max_open/closed_qty`。该变更只影响 bot 展示，不改变 `exchange_history` positions 派生账本。
 
+2026-06-25 `/view_history` 历史委托标题增加截断提示，显示 `最近X条 / 共 N 条`；历史委托仍只展示查询范围内最近最多 60 条成交委托，查询与账本过滤语义不变。
+
 2026-05-21 chen912 配置 `exchange_history_start_time=2026-05-01T00:00:00+08:00` 后尝试单账户 bootstrap，发现该账户某些 1 天 income 窗口会命中 Binance `limit=1000`，同步器按完整性规则 fail-fast。已将 `core/exchange_history_sync.py` 的 income 同步改为自适应拆分：1 天窗口命中 `limit=1000` 时递归拆为更小窗口，直到低于 limit；若达到最小 1 小时窗口仍命中 limit，继续 fail-fast，避免把截断流水当作完整历史。
 
 2026-05-23 SWR sim/live 一致性审计 checkpoint：mybwin139 最新 live 样本窗口为 `2026-05-11 13:30:00+08:00` 至 `2026-05-22 13:00:00+08:00`，对应 sim run `SWR_SmokeTest_V1_0523T1152`。已确认 live projection anchor 无错位，70 个 sim signal 均能在 live 按 `symbol + signal_time` 命中，匹配信号的 H/gamma/B/C 结构锚点一致；live-only 21 个信号中，20 个对应 sim `cooldown_active`，来自执行状态分歧，1 个 `MLNUSDT 2026-05-15 04:14+08:00` 待查，当前事实指向 sim 本地 1m 落盘数据缺失。live trades 共 64 笔，其中 3 笔 `UNKNOWN_EXIT` 待进一步核查：`ESPORTSUSDT 2026-05-13 01:58+08:00`、`GUAUSDT 2026-05-16 14:44+08:00`、`EDENUSDT 2026-05-20 22:25+08:00`。
