@@ -1274,7 +1274,7 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-06-23 `/view_history` 的“仓位历史”标题增加当前查询范围内仓位净盈亏合计，格式为 `📌 仓位历史: (盈亏合计 **** USDT)`；合计口径使用每条仓位展示同源的 `net_pnl` / 即时补算净盈亏。2026-06-25 `/view_history` 日期参数继续兼容 `YYYY-MM-DD` 与 `YYYYMMDD`，并新增 `YYYYMMDDHHMM` 分钟级时间 token；自然日 token 仍按北京时间整天查询，分钟级 token 按该分钟起止边界查询，例如 `202606181435` 表示北京时间 `2026-06-18 14:35`。
 
-2026-06-25 `/view_history` 仓位历史行优化 Telegram 展示：正常 `CLOSED` 仓位不再显示“完全平仓”，首行行首改为 `🟢盈利` / `🔴亏损` / `⚪盈亏` 加净盈亏金额，再显示 `symbol + side`；开仓价/平仓价压缩为 `O` / `C`，且按价格档位最多显示 3/5/8 位小数；开仓时间/平仓时间压缩为同一行 `T: open -> close`；持仓时间、最高 open qty、已平仓量压缩为一行 `duration max_open/closed_qty`。该变更只影响 bot 展示，不改变 `exchange_history` positions 派生账本。
+2026-06-25 `/view_history` 仓位历史行优化 Telegram 展示：正常 `CLOSED` 仓位不再显示“完全平仓”，首行行首改为 `🟢盈利` / `🔴亏损` / `⚪盈亏` 加净盈亏金额，再显示 `symbol + side`；开仓价/平仓价压缩为 `O` / `C`，且按价格档位最多显示 3/5/8 位小数；开仓时间/平仓时间压缩为同一行 `T: open -> close`；持仓时间、最高 open qty、已平仓量压缩为一行 `duration max_open/closed_qty`，并在末尾追加按 `max_open_qty * entry_price` 计算的最大同时持仓金额整数展示，例如 `(2521 U)`。该变更只影响 bot 展示，不改变 `exchange_history` positions 派生账本。
 
 2026-06-25 `/view_history` 历史委托标题增加截断提示，显示 `最近X条 / 共 N 条`；历史委托仍只展示查询范围内最近最多 60 条成交委托，查询与账本过滤语义不变。
 

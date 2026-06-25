@@ -3278,6 +3278,14 @@ def _fmt_history_price(value: Any) -> str:
     return _fmt_float(value, digits=digits)
 
 
+def _fmt_history_open_notional(qty: Any, price: Any) -> str:
+    try:
+        notional = abs(float(qty) * float(price))
+    except Exception:
+        return "UNKNOWN"
+    return f"{notional:.0f}"
+
+
 def _fmt_history_usdt(value: Any) -> str:
     if value is None or value == "":
         return "UNKNOWN"
@@ -3841,7 +3849,8 @@ async def _send_history(
                 f"  O: {_fmt_history_price(position.get('entry_price'))}  C: {_fmt_history_price(position.get('average_close_price'))}\n"
                 f"  T: {_bj_short_second(position.get('open_time_ms'))} -> {_bj_short_second(position.get('close_time_ms'))}\n"
                 f"  {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))} "
-                f"{_fmt_history_float(position.get('max_open_qty'))}/{_fmt_history_float(position.get('closed_qty'))}"
+                f"{_fmt_history_float(position.get('max_open_qty'))}/{_fmt_history_float(position.get('closed_qty'))} "
+                f"({_fmt_history_open_notional(position.get('max_open_qty'), position.get('entry_price'))} U)"
             )
     else:
         lines.append("本地账本无仓位历史" if not positions_missing else "本地账本缺少 positions 落盘")
