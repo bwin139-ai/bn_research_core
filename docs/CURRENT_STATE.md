@@ -159,6 +159,7 @@ strategies/cal/live_trader.py
 33. 2026-06-18 CAL 的 P1 `H` 锚点回看窗口从固定代码语义改为显式 `data.h_anchor_lookback_hours` 配置，当前三份 CAL decision config 均设为 `24`；`chen912` / `junjie2026` 的默认 ladder `P1.drop_pct` 从 `0.05` 调整为 `0.04`，`P2/P3` 仍为 `0.05/0.12` 且继续锚定 `P1.entry_price`。
 34. 2026-06-19 `stark21` 的策略常驻进程已按生产运维要求停止：`spring_stark21`、`sweep_reclaim_stark21`、`cal_stark21` 当前不运行；服务器未发现 `snapback_stark21` 常驻进程。`process_monitor_config.json` 同步改为不再期待 `snapback_stark21_highfreq`、`spring_stark21`、`sweep_reclaim_stark21` 进程，三者 `min_count/max_count` 均为 `0` 且移除 heartbeat stale 检查。
 35. 2026-06-23 CAL 放宽同品种非 CAL open order precheck：非 CAL `BUY/LONG` open order 视为外部 `P0` 入场，不阻断 CAL；非 CAL `SELL/LONG` open order 只在剩余卖出数量不超过估算外部 `P0` 数量时允许共存，若会吃到 CAL open lots、方向无法分类或为 `closePosition`，仍阻断新 CAL BUY。`chen912` 与 `junjie2026` 的 MUUSDT 暂时保留在 CAL 配置中用于 reconcile，但通过 `ladder.symbol_levels.MUUSDT` 将 P1/P2/P3 新开仓金额降为 `50/50/50U`；MUUSDT 单 symbol 策略本金上限设为 `700U`，用于覆盖历史 600U P1 与后续 50U P2/P3；SPCXUSDT 保持 `600/600/600U`。
+36. 2026-06-25 `chen912` 与 `junjie2026` 的 CAL `MUUSDT` ladder override 从临时 `50/50/50U` 恢复为 `600/600/600U`，`MUUSDT` 单 symbol 策略本金上限恢复为 `1800U`，总策略本金上限恢复为 `3600U`；`SPCXUSDT` 参数不变。
 
 当前下一步：
 
