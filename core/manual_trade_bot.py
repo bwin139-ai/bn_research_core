@@ -3802,8 +3802,9 @@ async def _send_history(
         _latest_loaded_rows_sync_ms(order_rows, trade_rows, transfer_rows, position_rows),
     )
     sync_text = _bj_second(latest_sync_ms) if latest_sync_ms > 0 else "未发现本地同步数据"
+    history_order_display_limit = 30
     filled_order_total = len(filled_orders)
-    filled_order_display_count = min(60, filled_order_total)
+    filled_order_display_count = min(history_order_display_limit, filled_order_total)
     if start_day and end_day:
         title = f"📜 {account} 历史记录 {start_day} ~ {end_day}"
         scope_text = f"品种: {symbol_filter or 'ALL'}"
@@ -3820,7 +3821,7 @@ async def _send_history(
         "图例: 🦅Snapback 🌱Spring 📈SWR ⚓CAL 🧰Bot 🟨Binance",
     ]
     if filled_orders:
-        for order in filled_orders[-60:]:
+        for order in filled_orders[-history_order_display_limit:]:
             order_type = _manual_order_type(order)
             oid = str(order.get("order_id") or "")
             qty = float(order.get("executed_qty", 0.0) or order.get("orig_qty", 0.0) or 0.0)
