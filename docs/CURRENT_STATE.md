@@ -1274,7 +1274,7 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-06-23 `/view_history` 的“仓位历史”标题增加当前查询范围内仓位净盈亏合计，格式为 `📌 仓位历史: (盈亏合计 **** USDT)`；合计口径使用每条仓位展示同源的 `net_pnl` / 即时补算净盈亏。2026-06-25 `/view_history` 日期参数继续兼容 `YYYY-MM-DD` 与 `YYYYMMDD`，并新增 `YYYYMMDDHHMM` 分钟级时间 token；自然日 token 仍按北京时间整天查询，分钟级 token 按该分钟起止边界查询，例如 `202606181435` 表示北京时间 `2026-06-18 14:35`。
 
-2026-06-25 `/view_history` 仓位历史行优化 Telegram 展示：正常 `CLOSED` 仓位不再显示“完全平仓”，首行改为 `🟢盈利` / `🔴亏损` / `⚪盈亏` 加净盈亏金额；开仓价/平仓价压缩为 `O` / `C`，且按价格档位最多显示 3/5/8 位小数；开仓时间/平仓时间压缩为同一行 `T: open -> close`。该变更只影响 bot 展示，不改变 `exchange_history` positions 派生账本。
+2026-06-25 `/view_history` 仓位历史行优化 Telegram 展示：正常 `CLOSED` 仓位不再显示“完全平仓”，首行行首改为 `🟢盈利` / `🔴亏损` / `⚪盈亏` 加净盈亏金额，再显示 `symbol + side`；开仓价/平仓价压缩为 `O` / `C`，且按价格档位最多显示 3/5/8 位小数；开仓时间/平仓时间压缩为同一行 `T: open -> close`。该变更只影响 bot 展示，不改变 `exchange_history` positions 派生账本。
 
 2026-05-21 chen912 配置 `exchange_history_start_time=2026-05-01T00:00:00+08:00` 后尝试单账户 bootstrap，发现该账户某些 1 天 income 窗口会命中 Binance `limit=1000`，同步器按完整性规则 fail-fast。已将 `core/exchange_history_sync.py` 的 income 同步改为自适应拆分：1 天窗口命中 `limit=1000` 时递归拆为更小窗口，直到低于 limit；若达到最小 1 小时窗口仍命中 limit，继续 fail-fast，避免把截断流水当作完整历史。
 

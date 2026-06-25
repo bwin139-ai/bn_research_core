@@ -3835,7 +3835,7 @@ async def _send_history(
             status_text = "" if status == "CLOSED" else f" | 异常: {position.get('incomplete_reason') or status}"
             pnl_text = _fmt_history_pnl_label(position_net_pnls[idx])
             lines.append(
-                f"{symbol} {position_side} | {pnl_text}{status_text}\n"
+                f"{pnl_text} | {symbol} {position_side}{status_text}\n"
                 f"  O: {_fmt_history_price(position.get('entry_price'))}  C: {_fmt_history_price(position.get('average_close_price'))}\n"
                 f"  T: {_bj_short_second(position.get('open_time_ms'))} -> {_bj_short_second(position.get('close_time_ms'))}\n"
                 f"  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
