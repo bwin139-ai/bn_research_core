@@ -3262,10 +3262,40 @@ def _fmt_history_float(value: Any, digits: int = 6) -> str:
     return _fmt_float(value, digits=digits)
 
 
+def _fmt_history_price(value: Any) -> str:
+    if value is None or value == "":
+        return "UNKNOWN"
+    try:
+        price = abs(float(value))
+    except Exception:
+        return str(value)
+    if price >= 10:
+        digits = 3
+    elif price >= 0.1:
+        digits = 5
+    else:
+        digits = 8
+    return _fmt_float(value, digits=digits)
+
+
 def _fmt_history_usdt(value: Any) -> str:
     if value is None or value == "":
         return "UNKNOWN"
     return _fmt_usdt(value)
+
+
+def _fmt_history_pnl_label(value: Any) -> str:
+    try:
+        pnl = float(value)
+    except Exception:
+        return f"⚪盈亏 {_fmt_history_usdt(value)}"
+    if pnl > 0:
+        label = "🟢盈利"
+    elif pnl < 0:
+        label = "🔴亏损"
+    else:
+        label = "⚪盈亏"
+    return f"{label} {_fmt_history_usdt(pnl)}"
 
 
 def _position_net_pnl(position: dict[str, Any], income_rows: list[dict[str, Any]]) -> Any:
@@ -3802,12 +3832,12 @@ async def _send_history(
             symbol = str(position.get("symbol") or "").upper()
             position_side = str(position.get("position_side") or "").upper()
             status = str(position.get("status") or "").upper()
-            status_text = "完全平仓" if status == "CLOSED" else f"异常: {position.get('incomplete_reason') or status}"
+            status_text = "" if status == "CLOSED" else f" | 异常: {position.get('incomplete_reason') or status}"
+            pnl_text = _fmt_history_pnl_label(position_net_pnls[idx])
             lines.append(
-                f"{symbol} {position_side} | {status_text} | 盈亏 {_fmt_history_usdt(position_net_pnls[idx])}\n"
-                f"  开仓价: {_fmt_history_float(position.get('entry_price'))}  平仓价: {_fmt_history_float(position.get('average_close_price'))}\n"
-                f"  开仓时间: {_bj_short_second(position.get('open_time_ms'))}\n"
-                f"  平仓时间: {_bj_short_second(position.get('close_time_ms'))}\n"
+                f"{symbol} {position_side} | {pnl_text}{status_text}\n"
+                f"  O: {_fmt_history_price(position.get('entry_price'))}  C: {_fmt_history_price(position.get('average_close_price'))}\n"
+                f"  T: {_bj_short_second(position.get('open_time_ms'))} -> {_bj_short_second(position.get('close_time_ms'))}\n"
                 f"  持仓时间: {_fmt_history_duration(position.get('open_time_ms'), position.get('close_time_ms'))}\n"
                 f"  最高O: {_fmt_history_float(position.get('max_open_qty'))}  已平仓量: {_fmt_history_float(position.get('closed_qty'))}"
             )
