@@ -161,6 +161,7 @@ strategies/cal/live_trader.py
 35. 2026-06-23 CAL 放宽同品种非 CAL open order precheck：非 CAL `BUY/LONG` open order 视为外部 `P0` 入场，不阻断 CAL；非 CAL `SELL/LONG` open order 只在剩余卖出数量不超过估算外部 `P0` 数量时允许共存，若会吃到 CAL open lots、方向无法分类或为 `closePosition`，仍阻断新 CAL BUY。`chen912` 与 `junjie2026` 的 MUUSDT 暂时保留在 CAL 配置中用于 reconcile，但通过 `ladder.symbol_levels.MUUSDT` 将 P1/P2/P3 新开仓金额降为 `50/50/50U`；MUUSDT 单 symbol 策略本金上限设为 `700U`，用于覆盖历史 600U P1 与后续 50U P2/P3；SPCXUSDT 保持 `600/600/600U`。
 36. 2026-06-25 `chen912` 与 `junjie2026` 的 CAL `MUUSDT` ladder override 从临时 `50/50/50U` 恢复为 `600/600/600U`，`MUUSDT` 单 symbol 策略本金上限恢复为 `1800U`，总策略本金上限恢复为 `3600U`；`SPCXUSDT` 参数不变。
 37. 2026-06-27 Telegram Bot API 从阿里云直连出现 502 / timeout 后，新增 DigitalOcean SGP1 `do-proxy` 作为 Telegram 专用代理；运行配置使用 `TG_PROXY_URL=http://206.189.90.153:8888`。该代理只用于 `run_manual_trade_bot.py` 的 Telegram HTTPX 请求与 `core/notify/tg_queue_sender.py` 的 Telegram sendMessage 请求；不得使用通用 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，避免 Binance API 请求从 DigitalOcean IP 发出并触发 Binance API key IP 白名单拒绝。
+38. 2026-06-27 Telegram 控制面韧性计划写入 `docs/TELEGRAM_PROXY_RUNBOOK.md`：第一层为 Telegram API 健康探测，第二层为多代理冗余，第三层为 Telegram 失效时的服务器侧应急管理入口。第一层已进入代码与配置：`process_monitor_config.json` 新增 `telegram_bot_api` check，`core/process_monitor.py` 通过 `TG_BOT_TOKEN` 与 `TG_PROXY_URL` 调用 Telegram `getMe`，要求 HTTP 200 且 JSON `ok=true`；该检查只读 Telegram 控制面，不访问 Binance、不启停进程、不修改交易或策略 state。
 
 当前下一步：
 
@@ -1166,7 +1167,7 @@ output/state/spring_decision_audit.SPRING_V1_30D_P6_0427T1606*.jsonl
 ### 5.3.1 Production process monitor
 
 ```text
-2026-06-06 新增 `core/process_monitor.py` 与 `process_monitor_config.json`，用于生产常驻进程巡检。监控器只读 `ps` 进程表与策略 heartbeat/state 文件，不接触交易所、不启停进程、不修改策略 state。每轮写 `output/logs/process_monitor.log`，异常或恢复时通过 `core.message_bridge.send_to_bot(..., label="admin")` 进入 bot 队列，重复异常按 `default_alert_repeat_secs` 抑制刷屏。
+2026-06-06 新增 `core/process_monitor.py` 与 `process_monitor_config.json`，用于生产常驻进程巡检。监控器只读 `ps` 进程表、策略 heartbeat/state 文件，以及 Telegram Bot API `getMe` 健康探测；不接触交易所、不启停进程、不修改策略 state。每轮写 `output/logs/process_monitor.log`，异常或恢复时通过 `core.message_bridge.send_to_bot(..., label="admin")` 进入 bot 队列，重复异常按 `default_alert_repeat_secs` 抑制刷屏。
 
 当前显式纳入巡检的生产进程：`run_manual_trade_bot.py`、`core/notify/tg_queue_sender.py`、`core.exchange_history_sync`、`core/live/market_data_hub_runner.py`、Snapback 三账户 live、Spring 三账户 live、Sweep-Reclaim 三账户 live。TVR 仍处于实验阶段，暂不纳入 `process_monitor_config.json`，避免未上线进程产生生产误报。
 

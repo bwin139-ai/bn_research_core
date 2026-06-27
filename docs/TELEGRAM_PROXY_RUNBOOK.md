@@ -11,6 +11,18 @@
 
 因此代理只允许用于 Telegram 请求，禁止配置为全局代理。
 
+## 1.1 控制面韧性计划
+
+2026-06-27 现场确认过一种软故障：`run_manual_trade_bot.py` 进程仍存活，但 Telegram Bot API 通过代理返回 `502 Bad Gateway` 或 read timeout，导致用户命令无法进入 bot；原 `process_monitor` 只看进程数量，无法识别这种“进程活着、控制面不可用”的状态。
+
+根治分三层推进：
+
+1. Telegram API 健康探测：`process_monitor` 每轮通过 `TG_BOT_TOKEN` 与 `TG_PROXY_URL` 调用 `getMe`，要求 HTTP 200 且 JSON `ok=true`。该层只记录、告警和恢复提示，不启停进程、不访问 Binance、不改变交易状态。
+2. Telegram 代理冗余：准备至少一个备用代理节点后，扩展发送队列和 bot polling 的代理切换能力。单一代理节点无法保证 Telegram 区域性故障时的连续可用。
+3. Telegram 失效时的应急管理入口：保留服务器侧只读/低风险 CLI 管理能力，至少覆盖 `status`、`account_detail`、`pending_orders`、必要撤单等关键操作，避免 Telegram 控制面不可用时完全失去策略管理入口。
+
+当前已先推进第 1 层。
+
 ## 2. 主机与职责
 
 阿里云交易服务器：
@@ -72,6 +84,7 @@ Telegram 代理只在以下入口生效：
 ```text
 core/manual_trade_bot.py
 core/notify/tg_queue_sender.py
+core/process_monitor.py
 ```
 
 `run_manual_trade_bot.py` 通过 `TG_PROXY_URL` 配置 Telegram HTTPX 请求：
@@ -87,6 +100,8 @@ session.trust_env = False
 ```
 
 该设置避免 sender 继承系统全局代理变量。
+
+`core/process_monitor.py` 的 `telegram_api` check 同样只读取 `TG_PROXY_URL` 并设置 `session.trust_env = False`，用于验证 Telegram Bot API 控制面是否可用。
 
 ## 5. 常用检查
 
@@ -121,6 +136,23 @@ ssh -o RemoteCommand=none -T aliyun-bn 'ps -eo pid,lstart,etime,stat,args | awk 
 ```
 
 预期 `tg_queue_sender.py` 与 `run_manual_trade_bot.py` 各只有一个。
+
+检查 `process_monitor` 是否已经记录 Telegram API 健康状态：
+
+```bash
+ssh -o RemoteCommand=none -T aliyun-bn 'cd /root/bn_research_core && tail -n 5 output/logs/process_monitor.log | grep telegram_bot_api'
+```
+
+异常时 `reason` 常见为：
+
+```text
+telegram_request_exception
+telegram_api_bad_response
+missing_token_env
+missing_proxy_env
+```
+
+其中 `telegram_request_exception` / `telegram_api_bad_response` 对应 Telegram 链路不可用；`missing_*_env` 对应进程启动环境或配置问题。
 
 检查 Binance 仍从阿里云直连：
 

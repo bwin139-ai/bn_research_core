@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import requests
+
 from core.message_bridge import send_to_bot
 from core.runtime_state import load_json_file, save_json_file_atomic
 
@@ -52,11 +54,23 @@ def _load_config(path: Path) -> dict[str, Any]:
 def _validate_check(check: Any, idx: int) -> None:
     if not isinstance(check, dict):
         raise ValueError(f"checks[{idx}] must be a JSON object")
-    for field in ("name", "type", "min_count", "max_count", "match_all"):
+    for field in ("name", "type"):
         if field not in check:
             raise ValueError(f"checks[{idx}] missing required field: {field}")
-    if str(check["type"]) != "process":
-        raise ValueError(f"checks[{idx}] type must be process")
+    check_type = str(check["type"])
+    if check_type == "process":
+        _validate_process_check(check, idx)
+        return
+    if check_type == "telegram_api":
+        _validate_telegram_api_check(check, idx)
+        return
+    raise ValueError(f"checks[{idx}] type must be process or telegram_api")
+
+
+def _validate_process_check(check: dict[str, Any], idx: int) -> None:
+    for field in ("min_count", "max_count", "match_all"):
+        if field not in check:
+            raise ValueError(f"checks[{idx}] missing required field: {field}")
     if not isinstance(check["match_all"], list) or not check["match_all"]:
         raise ValueError(f"checks[{idx}].match_all must be a non-empty list")
     if int(check["min_count"]) < 0:
@@ -75,6 +89,48 @@ def _validate_check(check: Any, idx: int) -> None:
         raise ValueError(f"checks[{idx}].heartbeat.timestamp_type is invalid")
     if int(heartbeat["max_age_secs"]) <= 0:
         raise ValueError(f"checks[{idx}].heartbeat.max_age_secs must be > 0")
+
+
+def _validate_telegram_api_check(check: dict[str, Any], idx: int) -> None:
+    for field in ("token_env", "proxy_env", "api_base_url", "method", "timeout_secs"):
+        if field not in check:
+            raise ValueError(f"checks[{idx}] missing required field: {field}")
+    if str(check["method"]) != "getMe":
+        raise ValueError(f"checks[{idx}].method must be getMe")
+    if int(check["timeout_secs"]) <= 0:
+        raise ValueError(f"checks[{idx}].timeout_secs must be > 0")
+    env_files = check.get("env_files")
+    if env_files is not None and (
+        not isinstance(env_files, list)
+        or not env_files
+        or any(not str(item).strip() for item in env_files)
+    ):
+        raise ValueError(f"checks[{idx}].env_files must be a non-empty string list")
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key.startswith("export "):
+                key = key[len("export ") :].strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ[key] = value
+
+
+def _load_check_env_files(check: dict[str, Any]) -> None:
+    for item in check.get("env_files") or []:
+        _load_env_file(Path(str(item)))
 
 
 def _process_table() -> list[dict[str, Any]]:
@@ -149,11 +205,82 @@ def _check_heartbeat(heartbeat_cfg: dict[str, Any], now: datetime) -> dict[str, 
     }
 
 
+def _telegram_proxies(proxy_url: str) -> dict[str, str] | None:
+    if not proxy_url:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
+
+
+def _mask_secret(text: str, secret: str) -> str:
+    if secret:
+        return text.replace(secret, "***masked***")
+    return text
+
+
+def _check_telegram_api(check: dict[str, Any]) -> dict[str, Any]:
+    _load_check_env_files(check)
+    token_env = str(check["token_env"])
+    proxy_env = str(check["proxy_env"])
+    token = os.getenv(token_env, "").strip()
+    proxy_url = os.getenv(proxy_env, "").strip()
+    if not token:
+        return {"ok": False, "reason": "missing_token_env", "token_env": token_env}
+    if not proxy_url:
+        return {"ok": False, "reason": "missing_proxy_env", "proxy_env": proxy_env}
+
+    api_base_url = str(check["api_base_url"]).rstrip("/")
+    method = str(check["method"])
+    url = f"{api_base_url}/bot{token}/{method}"
+    timeout_secs = int(check["timeout_secs"])
+    session = requests.Session()
+    session.trust_env = False
+    started = time.monotonic()
+    try:
+        resp = session.get(url, timeout=timeout_secs, proxies=_telegram_proxies(proxy_url))
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "ok": False,
+            "reason": "telegram_request_exception",
+            "proxy_env": proxy_env,
+            "elapsed_ms": elapsed_ms,
+            "error": _mask_secret(str(exc), token)[:240],
+        }
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    body_preview = resp.text[:240]
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    api_ok = isinstance(payload, dict) and bool(payload.get("ok"))
+    return {
+        "ok": resp.status_code == 200 and api_ok,
+        "reason": "telegram_api_ok" if resp.status_code == 200 and api_ok else "telegram_api_bad_response",
+        "http_status": resp.status_code,
+        "api_ok": api_ok,
+        "proxy_env": proxy_env,
+        "elapsed_ms": elapsed_ms,
+        "body_preview": body_preview,
+    }
+
+
 def _run_checks(cfg: dict[str, Any]) -> dict[str, Any]:
     now = _now_utc()
     processes = _process_table()
     results: list[dict[str, Any]] = []
     for check in cfg["checks"]:
+        if str(check["type"]) == "telegram_api":
+            telegram = _check_telegram_api(check)
+            results.append(
+                {
+                    "name": str(check["name"]),
+                    "type": "telegram_api",
+                    "ok": bool(telegram["ok"]),
+                    "reason": str(telegram["reason"]),
+                    "telegram_api": telegram,
+                }
+            )
+            continue
         matched = _match_processes(processes, check["match_all"])
         count = len(matched)
         min_count = int(check["min_count"])
@@ -231,6 +358,16 @@ def _detail_signature(result: dict[str, Any]) -> str:
         "matched_pids": [item.get("pid") for item in result.get("matched") or []],
         "heartbeat": stable_heartbeat,
     }
+    telegram = result.get("telegram_api")
+    if isinstance(telegram, dict):
+        payload["telegram_api"] = {
+            "reason": telegram.get("reason"),
+            "http_status": telegram.get("http_status"),
+            "api_ok": telegram.get("api_ok"),
+            "proxy_env": telegram.get("proxy_env"),
+            "error": telegram.get("error"),
+            "body_preview": telegram.get("body_preview"),
+        }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
@@ -250,6 +387,23 @@ def _format_issue(result: dict[str, Any]) -> str:
             return (
                 f"{name}: heartbeat stale age={heartbeat.get('age_secs')}s "
                 f"threshold={heartbeat.get('max_age_secs')}s"
+            )
+    telegram = result.get("telegram_api")
+    if isinstance(telegram, dict):
+        if reason == "missing_token_env":
+            return f"{name}: missing token env {telegram.get('token_env')}"
+        if reason == "missing_proxy_env":
+            return f"{name}: missing proxy env {telegram.get('proxy_env')}"
+        if reason == "telegram_request_exception":
+            return (
+                f"{name}: request exception elapsed={telegram.get('elapsed_ms')}ms "
+                f"err={telegram.get('error')}"
+            )
+        if reason == "telegram_api_bad_response":
+            return (
+                f"{name}: bad response http={telegram.get('http_status')} "
+                f"api_ok={telegram.get('api_ok')} elapsed={telegram.get('elapsed_ms')}ms "
+                f"body={telegram.get('body_preview')}"
             )
     return f"{name}: {reason}"
 

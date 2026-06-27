@@ -24,6 +24,19 @@
       ]
     },
     {
+      "name": "telegram_bot_api",
+      "type": "telegram_api",
+      "env_files": [
+        ".env",
+        "deploy.env"
+      ],
+      "token_env": "TG_BOT_TOKEN",
+      "proxy_env": "TG_PROXY_URL",
+      "api_base_url": "https://api.telegram.org",
+      "method": "getMe",
+      "timeout_secs": 20
+    },
+    {
       "name": "exchange_history_sync",
       "type": "process",
       "min_count": 1,
