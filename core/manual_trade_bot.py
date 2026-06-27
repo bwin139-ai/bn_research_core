@@ -228,6 +228,11 @@ def _bot_token() -> str:
     raise RuntimeError("TG_BOT_TOKEN or secrets.json.telegram_bot_token is required")
 
 
+def _telegram_proxy_url() -> str | None:
+    value = os.getenv("TG_PROXY_URL", "").strip()
+    return value or None
+
+
 def _load_permissions() -> dict[str, Any]:
     path = _permissions_path()
     if not path.exists():
@@ -6063,7 +6068,11 @@ def run_bot() -> None:
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
     token = _bot_token()
-    application = Application.builder().token(token).post_init(post_init).build()
+    builder = Application.builder().token(token).post_init(post_init)
+    proxy_url = _telegram_proxy_url()
+    if proxy_url:
+        builder = builder.proxy_url(proxy_url).get_updates_proxy_url(proxy_url)
+    application = builder.build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("set_current_account", set_current_account))

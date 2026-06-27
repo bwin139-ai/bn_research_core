@@ -160,6 +160,7 @@ strategies/cal/live_trader.py
 34. 2026-06-19 `stark21` 的策略常驻进程已按生产运维要求停止：`spring_stark21`、`sweep_reclaim_stark21`、`cal_stark21` 当前不运行；服务器未发现 `snapback_stark21` 常驻进程。`process_monitor_config.json` 同步改为不再期待 `snapback_stark21_highfreq`、`spring_stark21`、`sweep_reclaim_stark21` 进程，三者 `min_count/max_count` 均为 `0` 且移除 heartbeat stale 检查。
 35. 2026-06-23 CAL 放宽同品种非 CAL open order precheck：非 CAL `BUY/LONG` open order 视为外部 `P0` 入场，不阻断 CAL；非 CAL `SELL/LONG` open order 只在剩余卖出数量不超过估算外部 `P0` 数量时允许共存，若会吃到 CAL open lots、方向无法分类或为 `closePosition`，仍阻断新 CAL BUY。`chen912` 与 `junjie2026` 的 MUUSDT 暂时保留在 CAL 配置中用于 reconcile，但通过 `ladder.symbol_levels.MUUSDT` 将 P1/P2/P3 新开仓金额降为 `50/50/50U`；MUUSDT 单 symbol 策略本金上限设为 `700U`，用于覆盖历史 600U P1 与后续 50U P2/P3；SPCXUSDT 保持 `600/600/600U`。
 36. 2026-06-25 `chen912` 与 `junjie2026` 的 CAL `MUUSDT` ladder override 从临时 `50/50/50U` 恢复为 `600/600/600U`，`MUUSDT` 单 symbol 策略本金上限恢复为 `1800U`，总策略本金上限恢复为 `3600U`；`SPCXUSDT` 参数不变。
+37. 2026-06-27 Telegram Bot API 从阿里云直连出现 502 / timeout 后，新增 DigitalOcean SGP1 `do-proxy` 作为 Telegram 专用代理；运行配置使用 `TG_PROXY_URL=http://206.189.90.153:8888`。该代理只用于 `run_manual_trade_bot.py` 的 Telegram HTTPX 请求与 `core/notify/tg_queue_sender.py` 的 Telegram sendMessage 请求；不得使用通用 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，避免 Binance API 请求从 DigitalOcean IP 发出并触发 Binance API key IP 白名单拒绝。
 
 当前下一步：
 

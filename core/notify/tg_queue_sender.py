@@ -72,12 +72,22 @@ def tg_api_url(token: str) -> str:
     return f"https://api.telegram.org/bot{token}/sendMessage"
 
 
+def tg_proxies() -> dict[str, str] | None:
+    proxy_url = str(os.getenv("TG_PROXY_URL", "")).strip()
+    if not proxy_url:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
+
+
 def send_tg(token: str, chat_id: str, text: str) -> bool:
     payload = {"chat_id": chat_id, "text": text}
     url = tg_api_url(token)
+    proxies = tg_proxies()
+    session = requests.Session()
+    session.trust_env = False
     for attempt in (1, 2):
         try:
-            resp = requests.post(url, json=payload, timeout=SEND_TIMEOUT_SEC)
+            resp = session.post(url, json=payload, timeout=SEND_TIMEOUT_SEC, proxies=proxies)
             if resp.status_code == 200:
                 LOG.info("[SENDER] -> %s ok len=%s", chat_id, len(text))
                 return True
