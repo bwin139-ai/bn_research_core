@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import requests
-
 from core.message_bridge import send_to_bot
 from core.runtime_state import load_json_file, save_json_file_atomic
+from core.telegram_proxy import telegram_getme_health, telegram_proxy_urls
 
 BJ = ZoneInfo("Asia/Shanghai")
 
@@ -205,62 +204,42 @@ def _check_heartbeat(heartbeat_cfg: dict[str, Any], now: datetime) -> dict[str, 
     }
 
 
-def _telegram_proxies(proxy_url: str) -> dict[str, str] | None:
-    if not proxy_url:
-        return None
-    return {"http": proxy_url, "https": proxy_url}
-
-
-def _mask_secret(text: str, secret: str) -> str:
-    if secret:
-        return text.replace(secret, "***masked***")
-    return text
-
-
 def _check_telegram_api(check: dict[str, Any]) -> dict[str, Any]:
     _load_check_env_files(check)
     token_env = str(check["token_env"])
-    proxy_env = str(check["proxy_env"])
     token = os.getenv(token_env, "").strip()
-    proxy_url = os.getenv(proxy_env, "").strip()
     if not token:
         return {"ok": False, "reason": "missing_token_env", "token_env": token_env}
-    if not proxy_url:
-        return {"ok": False, "reason": "missing_proxy_env", "proxy_env": proxy_env}
-
-    api_base_url = str(check["api_base_url"]).rstrip("/")
-    method = str(check["method"])
-    url = f"{api_base_url}/bot{token}/{method}"
-    timeout_secs = int(check["timeout_secs"])
-    session = requests.Session()
-    session.trust_env = False
-    started = time.monotonic()
-    try:
-        resp = session.get(url, timeout=timeout_secs, proxies=_telegram_proxies(proxy_url))
-    except Exception as exc:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
+    proxy_urls = telegram_proxy_urls(
+        primary_env=str(check.get("proxy_urls_env") or "TG_PROXY_URLS"),
+        fallback_env=str(check.get("proxy_env") or "TG_PROXY_URL"),
+    )
+    if not proxy_urls:
         return {
             "ok": False,
-            "reason": "telegram_request_exception",
-            "proxy_env": proxy_env,
-            "elapsed_ms": elapsed_ms,
-            "error": _mask_secret(str(exc), token)[:240],
+            "reason": "missing_proxy_env",
+            "proxy_env": str(check.get("proxy_env") or "TG_PROXY_URL"),
+            "proxy_urls_env": str(check.get("proxy_urls_env") or "TG_PROXY_URLS"),
         }
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    body_preview = resp.text[:240]
-    try:
-        payload = resp.json()
-    except Exception:
-        payload = None
-    api_ok = isinstance(payload, dict) and bool(payload.get("ok"))
+
+    api_base_url = str(check["api_base_url"])
+    timeout_secs = int(check["timeout_secs"])
+    results = [
+        telegram_getme_health(
+            token=token,
+            proxy_url=proxy_url,
+            api_base_url=api_base_url,
+            timeout_secs=timeout_secs,
+        )
+        for proxy_url in proxy_urls
+    ]
+    healthy = [item for item in results if bool(item["ok"])]
     return {
-        "ok": resp.status_code == 200 and api_ok,
-        "reason": "telegram_api_ok" if resp.status_code == 200 and api_ok else "telegram_api_bad_response",
-        "http_status": resp.status_code,
-        "api_ok": api_ok,
-        "proxy_env": proxy_env,
-        "elapsed_ms": elapsed_ms,
-        "body_preview": body_preview,
+        "ok": bool(healthy),
+        "reason": "telegram_api_ok" if healthy else "telegram_api_all_proxies_failed",
+        "proxy_count": len(proxy_urls),
+        "healthy_count": len(healthy),
+        "results": results,
     }
 
 
@@ -362,11 +341,20 @@ def _detail_signature(result: dict[str, Any]) -> str:
     if isinstance(telegram, dict):
         payload["telegram_api"] = {
             "reason": telegram.get("reason"),
-            "http_status": telegram.get("http_status"),
-            "api_ok": telegram.get("api_ok"),
-            "proxy_env": telegram.get("proxy_env"),
-            "error": telegram.get("error"),
-            "body_preview": telegram.get("body_preview"),
+            "proxy_count": telegram.get("proxy_count"),
+            "healthy_count": telegram.get("healthy_count"),
+            "results": [
+                {
+                    "reason": item.get("reason"),
+                    "proxy_url": item.get("proxy_url"),
+                    "http_status": item.get("http_status"),
+                    "api_ok": item.get("api_ok"),
+                    "error": item.get("error"),
+                    "body_preview": item.get("body_preview"),
+                }
+                for item in telegram.get("results") or []
+                if isinstance(item, dict)
+            ],
         }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -393,17 +381,24 @@ def _format_issue(result: dict[str, Any]) -> str:
         if reason == "missing_token_env":
             return f"{name}: missing token env {telegram.get('token_env')}"
         if reason == "missing_proxy_env":
-            return f"{name}: missing proxy env {telegram.get('proxy_env')}"
-        if reason == "telegram_request_exception":
             return (
-                f"{name}: request exception elapsed={telegram.get('elapsed_ms')}ms "
-                f"err={telegram.get('error')}"
+                f"{name}: missing proxy env "
+                f"{telegram.get('proxy_urls_env') or 'TG_PROXY_URLS'} / "
+                f"{telegram.get('proxy_env') or 'TG_PROXY_URL'}"
             )
-        if reason == "telegram_api_bad_response":
+        if reason == "telegram_api_all_proxies_failed":
+            details = []
+            for item in telegram.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                details.append(
+                    f"{item.get('proxy_url')}: {item.get('reason')} "
+                    f"http={item.get('http_status')} elapsed={item.get('elapsed_ms')}ms"
+                )
             return (
-                f"{name}: bad response http={telegram.get('http_status')} "
-                f"api_ok={telegram.get('api_ok')} elapsed={telegram.get('elapsed_ms')}ms "
-                f"body={telegram.get('body_preview')}"
+                f"{name}: all proxies failed "
+                f"healthy={telegram.get('healthy_count')}/{telegram.get('proxy_count')} "
+                + "; ".join(details)
             )
     return f"{name}: {reason}"
 

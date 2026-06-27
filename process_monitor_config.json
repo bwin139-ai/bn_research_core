@@ -31,6 +31,7 @@
         "deploy.env"
       ],
       "token_env": "TG_BOT_TOKEN",
+      "proxy_urls_env": "TG_PROXY_URLS",
       "proxy_env": "TG_PROXY_URL",
       "api_base_url": "https://api.telegram.org",
       "method": "getMe",

@@ -13,6 +13,7 @@ from filelock import FileLock
 
 # New-lib runtime state helpers only; do not depend on old utils.py
 from core.runtime_state import get_state_dir, resolve_state_path, load_json_file
+from core.telegram_proxy import telegram_proxies, telegram_proxy_urls
 
 LOG = logging.getLogger("tg_queue_sender")
 POLL_SEC = 2.0
@@ -72,28 +73,46 @@ def tg_api_url(token: str) -> str:
     return f"https://api.telegram.org/bot{token}/sendMessage"
 
 
-def tg_proxies() -> dict[str, str] | None:
-    proxy_url = str(os.getenv("TG_PROXY_URL", "")).strip()
-    if not proxy_url:
-        return None
-    return {"http": proxy_url, "https": proxy_url}
-
-
 def send_tg(token: str, chat_id: str, text: str) -> bool:
     payload = {"chat_id": chat_id, "text": text}
     url = tg_api_url(token)
-    proxies = tg_proxies()
+    proxy_urls = telegram_proxy_urls()
+    if not proxy_urls:
+        proxy_urls = [""]
     session = requests.Session()
     session.trust_env = False
     for attempt in (1, 2):
-        try:
-            resp = session.post(url, json=payload, timeout=SEND_TIMEOUT_SEC, proxies=proxies)
-            if resp.status_code == 200:
-                LOG.info("[SENDER] -> %s ok len=%s", chat_id, len(text))
-                return True
-            LOG.warning("[SENDER] -> %s failed status=%s body=%s", chat_id, resp.status_code, resp.text[:300])
-        except Exception as e:
-            LOG.warning("[SENDER] -> %s exception attempt=%s err=%s", chat_id, attempt, e)
+        for proxy_url in proxy_urls:
+            try:
+                resp = session.post(
+                    url,
+                    json=payload,
+                    timeout=SEND_TIMEOUT_SEC,
+                    proxies=telegram_proxies(proxy_url or None),
+                )
+                if resp.status_code == 200:
+                    LOG.info(
+                        "[SENDER] -> %s ok len=%s proxy=%s",
+                        chat_id,
+                        len(text),
+                        proxy_url or "direct",
+                    )
+                    return True
+                LOG.warning(
+                    "[SENDER] -> %s failed status=%s proxy=%s body=%s",
+                    chat_id,
+                    resp.status_code,
+                    proxy_url or "direct",
+                    resp.text[:300],
+                )
+            except Exception as e:
+                LOG.warning(
+                    "[SENDER] -> %s exception attempt=%s proxy=%s err=%s",
+                    chat_id,
+                    attempt,
+                    proxy_url or "direct",
+                    e,
+                )
         time.sleep(RETRY_SEC)
     return False
 

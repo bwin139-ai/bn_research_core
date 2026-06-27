@@ -17,11 +17,11 @@
 
 根治分三层推进：
 
-1. Telegram API 健康探测：`process_monitor` 每轮通过 `TG_BOT_TOKEN` 与 `TG_PROXY_URL` 调用 `getMe`，要求 HTTP 200 且 JSON `ok=true`。该层只记录、告警和恢复提示，不启停进程、不访问 Binance、不改变交易状态。
-2. Telegram 代理冗余：准备至少一个备用代理节点后，扩展发送队列和 bot polling 的代理切换能力。单一代理节点无法保证 Telegram 区域性故障时的连续可用。
+1. Telegram API 健康探测：`process_monitor` 每轮通过 `TG_BOT_TOKEN` 与 `TG_PROXY_URLS` / `TG_PROXY_URL` 调用 `getMe`，要求至少一个代理返回 HTTP 200 且 JSON `ok=true`。该层只记录、告警和恢复提示，不启停进程、不访问 Binance、不改变交易状态。
+2. Telegram 代理冗余：使用 `TG_PROXY_URLS` 配置多个代理。`tg_queue_sender` 发送每条消息时按顺序尝试代理；`run_manual_trade_bot.py` 启动时探测代理并选择第一个健康代理用于 polling。单一代理节点无法保证 Telegram 区域性故障时的连续可用。
 3. Telegram 失效时的应急管理入口：保留服务器侧只读/低风险 CLI 管理能力，至少覆盖 `status`、`account_detail`、`pending_orders`、必要撤单等关键操作，避免 Telegram 控制面不可用时完全失去策略管理入口。
 
-当前已先推进第 1 层。
+当前已推进第 1 层，并开始推进第 2 层的代码入口。
 
 ## 2. 主机与职责
 
@@ -54,11 +54,19 @@ Allow 8.218.96.252
 
 ## 3. 配置原则
 
-阿里云服务器只配置 Telegram 专用变量：
+阿里云服务器只配置 Telegram 专用变量。单代理兼容旧变量：
 
 ```text
 TG_PROXY_URL=http://206.189.90.153:8888
 ```
+
+多代理使用新变量，逗号或空白分隔，按顺序优先：
+
+```text
+TG_PROXY_URLS=http://206.189.90.153:8888,http://backup.example:8888
+```
+
+若同时配置 `TG_PROXY_URLS` 与 `TG_PROXY_URL`，系统先使用 `TG_PROXY_URLS` 中的地址，再追加 `TG_PROXY_URL`；重复 URL 会去重。
 
 不得在阿里云交易服务器生产环境中配置：
 
@@ -87,13 +95,13 @@ core/notify/tg_queue_sender.py
 core/process_monitor.py
 ```
 
-`run_manual_trade_bot.py` 通过 `TG_PROXY_URL` 配置 Telegram HTTPX 请求：
+`run_manual_trade_bot.py` 启动时读取 `TG_PROXY_URLS` / `TG_PROXY_URL`，先对每个代理调用 Telegram `getMe`，选择第一个健康代理配置 Telegram HTTPX 请求：
 
 ```text
 Application.builder().proxy_url(...).get_updates_proxy_url(...)
 ```
 
-`core/notify/tg_queue_sender.py` 通过 `TG_PROXY_URL` 配置 `requests` 的 per-request `proxies`，并设置：
+`core/notify/tg_queue_sender.py` 通过 `TG_PROXY_URLS` / `TG_PROXY_URL` 配置 `requests` 的 per-request `proxies`。每条消息发送时按代理顺序尝试；当前代理失败会继续尝试下一个代理。sender 设置：
 
 ```text
 session.trust_env = False
@@ -101,7 +109,7 @@ session.trust_env = False
 
 该设置避免 sender 继承系统全局代理变量。
 
-`core/process_monitor.py` 的 `telegram_api` check 同样只读取 `TG_PROXY_URL` 并设置 `session.trust_env = False`，用于验证 Telegram Bot API 控制面是否可用。
+`core/process_monitor.py` 的 `telegram_api` check 同样只读取 `TG_PROXY_URLS` / `TG_PROXY_URL` 并设置 `session.trust_env = False`，用于验证 Telegram Bot API 控制面是否可用；只要任一代理可用，检查即为健康。
 
 ## 5. 常用检查
 
@@ -123,9 +131,10 @@ ssh -o RemoteCommand=none -T aliyun-bn 'cd /root/bn_research_core && set -a && .
 ssh -o RemoteCommand=none -T aliyun-bn 'cd /root/bn_research_core && grep -nE "PROXY" .env deploy.env'
 ```
 
-预期只出现：
+预期只出现 `TG_PROXY_URLS` / `TG_PROXY_URL`，例如：
 
 ```text
+TG_PROXY_URLS=http://206.189.90.153:8888,http://backup.example:8888
 TG_PROXY_URL=http://206.189.90.153:8888
 ```
 
@@ -147,12 +156,12 @@ ssh -o RemoteCommand=none -T aliyun-bn 'cd /root/bn_research_core && tail -n 5 o
 
 ```text
 telegram_request_exception
-telegram_api_bad_response
+telegram_api_all_proxies_failed
 missing_token_env
 missing_proxy_env
 ```
 
-其中 `telegram_request_exception` / `telegram_api_bad_response` 对应 Telegram 链路不可用；`missing_*_env` 对应进程启动环境或配置问题。
+其中 `telegram_api_all_proxies_failed` 对应所有 Telegram 代理链路都不可用；`missing_*_env` 对应进程启动环境或配置问题。
 
 检查 Binance 仍从阿里云直连：
 

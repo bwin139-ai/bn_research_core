@@ -42,6 +42,7 @@ from core.live.binance_exec import (
 )
 from core.live.custom_id import build_client_order_id, make_order_root, parse_client_order_id
 from core.runtime_state import load_json_file, save_json_file_atomic, state_path
+from core.telegram_proxy import select_telegram_proxy_url, telegram_proxy_urls
 
 BJ = timezone(timedelta(hours=8))
 LONG = "LONG"
@@ -226,11 +227,6 @@ def _bot_token() -> str:
         if token:
             return token
     raise RuntimeError("TG_BOT_TOKEN or secrets.json.telegram_bot_token is required")
-
-
-def _telegram_proxy_url() -> str | None:
-    value = os.getenv("TG_PROXY_URL", "").strip()
-    return value or None
 
 
 def _load_permissions() -> dict[str, Any]:
@@ -6069,8 +6065,19 @@ def run_bot() -> None:
 
     token = _bot_token()
     builder = Application.builder().token(token).post_init(post_init)
-    proxy_url = _telegram_proxy_url()
+    proxy_url, proxy_health = select_telegram_proxy_url(token=token, proxy_urls=telegram_proxy_urls())
     if proxy_url:
+        health_summary = [
+            {
+                "proxy": item.get("proxy_url"),
+                "ok": item.get("ok"),
+                "reason": item.get("reason"),
+                "http": item.get("http_status"),
+                "elapsed_ms": item.get("elapsed_ms"),
+            }
+            for item in proxy_health
+        ]
+        logging.info("telegram proxy selected=%s health=%s", proxy_url, health_summary)
         builder = builder.proxy_url(proxy_url).get_updates_proxy_url(proxy_url)
     application = builder.build()
     application.add_handler(CommandHandler("start", start))
