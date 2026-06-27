@@ -52,6 +52,12 @@
   - Snapback/SABC live/sim 相关术语和流程速查。
   - 只作为理解辅助，不覆盖主文档语义。
 
+## 生产运维
+
+- `TELEGRAM_PROXY_RUNBOOK.md`
+  - Telegram Bot API 专用 DigitalOcean 代理的生产运维说明。
+  - 记录 `TG_PROXY_URL`、`do-proxy`、`aliyun-bn`、进程检查、代理验证与 Binance IP 白名单防护边界。
+
 ## 新线程开场白
 
 - `新聊天开场白.md`
