@@ -45,6 +45,18 @@ port: 80
 role: primary Telegram Bot API proxy and personal WireGuard backup
 ```
 
+AWS Lightsail Tokyo SSH 登录策略：
+
+```text
+admin user: ubuntu
+auth: SSH key only
+sudo: ubuntu is in sudo group
+PasswordAuthentication: no
+KbdInteractiveAuthentication: no
+PermitRootLogin: no
+managed file: /etc/ssh/sshd_config.d/99-disable-root-login.conf
+```
+
 AWS tinyproxy 访问控制：
 
 ```text
@@ -385,9 +397,10 @@ ssh do-proxy 'systemctl restart tinyproxy && systemctl is-active tinyproxy && ss
 
 1. AWS Lightsail Tokyo 已绑定 Lightsail Static IP `13.230.97.189`（名称 `proxy-toyko`）。只要该 Static IP 保持 attached 且未 release，实例 stop/start 后公网入口也应保持不变；若 detach/release 或重建代理机，必须同步更新 `TG_PROXY_URLS`、WireGuard client config 与本文档。
 2. AWS Tokyo WireGuard 只作为个人网络备用，不参与 Binance API 调用。任何时候都不得在阿里云生产进程环境设置全局代理变量。
-3. DigitalOcean 上原有 Caddy 仍监听 `80/443`，当前用途是历史 OpenAI API reverse proxy；Telegram 备用代理使用 `8888`，不占用 `80/443`。
-4. 2026-06-27 安装 `tinyproxy` 时发现旧 Caddy apt source GPG key 失效，已在服务器上禁用该 apt source 文件以便系统 apt 正常更新；不影响正在运行的 Caddy 服务。
-5. DigitalOcean Droplet 控制台显示系统提示 `System restart required`。生产代理当前已正常运行；是否重启该 Droplet 应另行确认窗口，不要在交易时段随意重启。
-6. 2026-06-28 测试过 DigitalOcean SGP1 个人 WireGuard 节点 `139.59.116.55`，MacBook/iPhone 访问速度过慢，用户已销毁该 Droplet；不要把该 IP 作为活跃代理或文档中的生产节点。
-7. 若 Binance 再次报 `request ip: 13.230.97.189` 或 `request ip: 206.189.90.153`，第一优先级是检查阿里云 `.env` / `deploy.env` 和运行中进程环境是否误配了全局代理变量。
-8. 若 Telegram 推送正常但命令无响应，检查 `run_manual_trade_bot.py` 是否存活；若只有推送进程活着，bot 轮询进程可能已退出。
+3. AWS Tokyo SSH 管理入口为 `ubuntu` 用户加 Lightsail SSH key；密码登录和 root 直接 SSH 登录均已关闭。不要删除 `ubuntu` 用户、不要移除其 `sudo` 权限、不要删除本机 Lightsail 私钥，除非先建立并验证新的管理员 key 入口。
+4. DigitalOcean 上原有 Caddy 仍监听 `80/443`，当前用途是历史 OpenAI API reverse proxy；Telegram 备用代理使用 `8888`，不占用 `80/443`。
+5. 2026-06-27 安装 `tinyproxy` 时发现旧 Caddy apt source GPG key 失效，已在服务器上禁用该 apt source 文件以便系统 apt 正常更新；不影响正在运行的 Caddy 服务。
+6. DigitalOcean Droplet 控制台显示系统提示 `System restart required`。生产代理当前已正常运行；是否重启该 Droplet 应另行确认窗口，不要在交易时段随意重启。
+7. 2026-06-28 测试过 DigitalOcean SGP1 个人 WireGuard 节点 `139.59.116.55`，MacBook/iPhone 访问速度过慢，用户已销毁该 Droplet；不要把该 IP 作为活跃代理或文档中的生产节点。
+8. 若 Binance 再次报 `request ip: 13.230.97.189` 或 `request ip: 206.189.90.153`，第一优先级是检查阿里云 `.env` / `deploy.env` 和运行中进程环境是否误配了全局代理变量。
+9. 若 Telegram 推送正常但命令无响应，检查 `run_manual_trade_bot.py` 是否存活；若只有推送进程活着，bot 轮询进程可能已退出。
