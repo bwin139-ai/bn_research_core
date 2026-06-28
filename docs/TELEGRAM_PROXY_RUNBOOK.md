@@ -136,6 +136,45 @@ session.trust_env = False
 
 `core/process_monitor.py` 的 `telegram_api` check 同样只读取 `TG_PROXY_URLS` / `TG_PROXY_URL` 并设置 `session.trust_env = False`，用于验证 Telegram Bot API 控制面是否可用；只要任一代理可用，检查即为健康。
 
+## 4.1 MacBook 本地代理切换
+
+MacBook 本地可能同时存在三类代理设置：
+
+1. macOS Wi-Fi 系统代理。
+2. `~/.zshrc` 中的 shell 代理环境变量。
+3. `~/.gitconfig` 中的 git 全局代理。
+
+若三者不一致，Codex / git / 浏览器可能走不同出口，表现为普通网页可用，但 Codex 长连接或 git push 卡住。仓库提供明确切换脚本：
+
+```bash
+tools/mac_proxy/proxy_status.sh
+tools/mac_proxy/use_aws_proxy.sh
+tools/mac_proxy/use_monoproxy.sh
+```
+
+AWS 模式会启动本机 SSH SOCKS 隧道：
+
+```text
+127.0.0.1:18080 -> ubuntu@13.230.97.189
+```
+
+并将 macOS Wi-Fi SOCKS、git 全局代理和新 shell 环境切到该隧道。MonoProxy 模式会恢复：
+
+```text
+HTTP/HTTPS: 127.0.0.1:8118
+SOCKS:      127.0.0.1:8119
+```
+
+脚本只引用本机 SSH key 路径，不把私钥或 WireGuard client private key 写入仓库。切换后应新开一个 terminal，或执行：
+
+```bash
+source ~/.zshrc
+```
+
+若 Codex Desktop 在切换前已经打开，应退出并重新打开 Codex Desktop，避免 GUI 进程继续使用切换前的代理状态。
+
+该本地代理切换只影响 MacBook 开发环境；不得复制到阿里云生产交易进程环境。
+
 ## 5. 常用检查
 
 检查 AWS Tokyo 代理：
