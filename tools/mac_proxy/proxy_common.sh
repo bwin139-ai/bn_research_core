@@ -3,6 +3,7 @@ set -euo pipefail
 
 MAC_PROXY_SERVICE="${MAC_PROXY_SERVICE:-Wi-Fi}"
 AWS_PROXY_HOST="${AWS_PROXY_HOST:-13.230.97.189}"
+AWS_WIREGUARD_PUBLIC_IP="${AWS_WIREGUARD_PUBLIC_IP:-13.230.97.189}"
 AWS_PROXY_USER="${AWS_PROXY_USER:-ubuntu}"
 AWS_PROXY_SSH_KEY="${AWS_PROXY_SSH_KEY:-$HOME/Downloads/LightsailDefaultKey-ap-northeast-1.pem}"
 AWS_PROXY_SOCKS_HOST="${AWS_PROXY_SOCKS_HOST:-127.0.0.1}"
@@ -42,13 +43,48 @@ mono_socks_url() {
   printf 'socks5h://%s:%s' "$MONO_SOCKS_HOST" "$MONO_SOCKS_PORT"
 }
 
+unset_git_proxy() {
+  require_git
+  git config --global --unset-all http.proxy >/dev/null 2>&1 || true
+  git config --global --unset-all https.proxy >/dev/null 2>&1 || true
+}
+
+clean_curl_env() {
+  env \
+    -u http_proxy -u https_proxy -u all_proxy \
+    -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    -u no_proxy -u NO_PROXY \
+    "$@"
+}
+
 test_aws_socks() {
-  curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" \
+  clean_curl_env curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" \
     --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
 }
 
+tcp_listener_pids() {
+  local port="$1"
+  lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true
+}
+
+mono_http_listener_pids() {
+  tcp_listener_pids "$MONO_HTTP_PORT"
+}
+
+mono_socks_listener_pids() {
+  tcp_listener_pids "$MONO_SOCKS_PORT"
+}
+
+mono_http_listener_active() {
+  [[ -n "$(mono_http_listener_pids | tr -d '\n')" ]]
+}
+
+mono_socks_listener_active() {
+  [[ -n "$(mono_socks_listener_pids | tr -d '\n')" ]]
+}
+
 aws_tunnel_listener_pids() {
-  lsof -nP -iTCP:"$AWS_PROXY_SOCKS_PORT" -sTCP:LISTEN -t 2>/dev/null || true
+  tcp_listener_pids "$AWS_PROXY_SOCKS_PORT"
 }
 
 aws_tunnel_ssh_pids() {
@@ -97,11 +133,27 @@ ensure_aws_tunnel() {
   echo "AWS SOCKS tunnel started on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}."
 }
 
+stop_aws_tunnel_if_owned() {
+  local ssh_listeners
+  ssh_listeners="$(aws_tunnel_ssh_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if [[ -z "$ssh_listeners" ]]; then
+    return
+  fi
+  echo "Stopping AWS SSH SOCKS listener on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}: ${ssh_listeners}"
+  kill $ssh_listeners
+}
+
 set_system_proxy_aws() {
   networksetup -setwebproxystate "$MAC_PROXY_SERVICE" off
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" off
   networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_SOCKS_HOST" "$AWS_PROXY_SOCKS_PORT"
   networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
+}
+
+set_system_proxy_direct() {
+  networksetup -setwebproxystate "$MAC_PROXY_SERVICE" off
+  networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" off
+  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" off
 }
 
 set_system_proxy_mono() {
@@ -123,6 +175,92 @@ set_git_proxy_mono() {
   require_git
   git config --global http.proxy "$(mono_http_url)"
   git config --global https.proxy "$(mono_http_url)"
+}
+
+wireguard_ipv4_lines() {
+  ifconfig 2>/dev/null | grep '10\.89\.0\.' || true
+}
+
+wireguard_active() {
+  [[ -n "$(wireguard_ipv4_lines | tr -d '\n')" ]]
+}
+
+require_mono_listeners() {
+  if ! mono_http_listener_active || ! mono_socks_listener_active; then
+    echo "MonoProxy is not fully listening on ${MONO_HTTP_HOST}:${MONO_HTTP_PORT} and ${MONO_SOCKS_HOST}:${MONO_SOCKS_PORT}." >&2
+    echo "Start MonoProxy and click Set As System Proxy, then rerun this script." >&2
+    exit 2
+  fi
+}
+
+require_no_mono_listeners() {
+  if mono_http_listener_active || mono_socks_listener_active; then
+    echo "MonoProxy still appears to be running on ${MONO_HTTP_PORT}/${MONO_SOCKS_PORT}." >&2
+    echo "Quit MonoProxy from the menu bar, then rerun this script." >&2
+    exit 2
+  fi
+}
+
+require_wireguard_active() {
+  if ! wireguard_active; then
+    echo "AWS WireGuard is not active; no 10.89.0.x address was found." >&2
+    echo "Open WireGuard and click Start for personal-proxy-tokyo-test-macbook, then rerun this script." >&2
+    exit 2
+  fi
+}
+
+require_wireguard_inactive() {
+  if wireguard_active; then
+    echo "WireGuard still appears active:" >&2
+    wireguard_ipv4_lines >&2
+    echo "Stop the WireGuard tunnel, then rerun this script." >&2
+    exit 2
+  fi
+}
+
+public_ipv4_direct() {
+  clean_curl_env curl -4 --connect-timeout 8 --max-time 20 -fsS https://ifconfig.me/ip
+}
+
+public_ipv4_mono() {
+  clean_curl_env curl -x "$(mono_http_url)" --connect-timeout 8 --max-time 20 -fsS https://ifconfig.me/ip
+}
+
+test_codex_endpoint_direct() {
+  local code
+  code="$(clean_curl_env curl --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_direct.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
+  rm -f /tmp/mac_proxy_codex_direct.out
+  [[ "$code" == "405" ]]
+}
+
+test_codex_endpoint_mono() {
+  local code
+  code="$(clean_curl_env curl -x "$(mono_http_url)" --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_mono.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
+  rm -f /tmp/mac_proxy_codex_mono.out
+  [[ "$code" == "405" ]]
+}
+
+test_trace_mono() {
+  clean_curl_env curl -x "$(mono_http_url)" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
+}
+
+verify_mode_a() {
+  test_trace_mono
+  test_codex_endpoint_mono
+}
+
+verify_mode_b() {
+  local ip
+  ip="$(public_ipv4_direct)"
+  if [[ "$ip" != "$AWS_WIREGUARD_PUBLIC_IP" ]]; then
+    echo "Unexpected WireGuard public IPv4: ${ip}; expected ${AWS_WIREGUARD_PUBLIC_IP}." >&2
+    return 1
+  fi
+  test_codex_endpoint_direct
+}
+
+verify_mode_c() {
+  public_ipv4_direct >/dev/null
 }
 
 update_zshrc_proxy_block() {
@@ -149,6 +287,22 @@ if mode == "aws":
         f"export ALL_PROXY={aws_socks}",
         end,
     ]
+elif mode == "aws-wireguard-direct":
+    block_lines = [
+        begin,
+        "# mode: aws-wireguard-direct",
+        "unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY",
+        "unset no_proxy NO_PROXY",
+        end,
+    ]
+elif mode == "direct":
+    block_lines = [
+        begin,
+        "# mode: direct",
+        "unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY",
+        "unset no_proxy NO_PROXY",
+        end,
+    ]
 elif mode == "mono":
     block_lines = [
         begin,
@@ -168,6 +322,16 @@ text = path.read_text() if path.exists() else ""
 lines = text.splitlines()
 out = []
 inside = False
+managed_proxy_names = {
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+}
 for line in lines:
     if line == begin:
         inside = True
@@ -176,6 +340,15 @@ for line in lines:
         inside = False
         continue
     if not inside:
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            exported = stripped[len("export "):].split("=", 1)[0].strip()
+            if exported in managed_proxy_names:
+                continue
+        if stripped.startswith("unset "):
+            unset_names = set(stripped[len("unset "):].split())
+            if unset_names and unset_names.issubset(managed_proxy_names):
+                continue
         out.append(line)
 
 while out and out[-1] == "":
@@ -189,4 +362,3 @@ PY
 print_next_shell_note() {
   echo "Open a new terminal, or run: source \"$ZSHRC_PATH\""
 }
-

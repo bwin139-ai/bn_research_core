@@ -14,4 +14,3 @@ echo "Mac proxy mode switched to AWS SSH SOCKS."
 echo "System SOCKS: ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}"
 echo "Git proxy: $(aws_socks_url)"
 print_next_shell_note
-echo "Note: use_aws_proxy.sh is kept as a compatibility alias; use use_aws_ssh_socks.sh for the explicit mode name."

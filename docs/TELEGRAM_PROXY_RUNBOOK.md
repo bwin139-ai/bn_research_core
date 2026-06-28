@@ -148,11 +148,32 @@ MacBook 本地可能同时存在三类代理设置：
 
 ```bash
 tools/mac_proxy/proxy_status.sh
-tools/mac_proxy/use_aws_proxy.sh
-tools/mac_proxy/use_monoproxy.sh
+tools/mac_proxy/probe_codex_network.sh
+tools/mac_proxy/use_mode_a_monoproxy.sh
+tools/mac_proxy/use_mode_b_aws_wireguard.sh
+tools/mac_proxy/use_mode_c_direct.sh
 ```
 
-AWS 模式会启动本机 SSH SOCKS 隧道：
+三档模式：
+
+1. A / MonoProxy 备用模式：先手动启动 MonoProxy 并点击 `Set As System Proxy`，确认 WireGuard 已关闭，再运行 `tools/mac_proxy/use_mode_a_monoproxy.sh`。脚本要求 `127.0.0.1:8118/8119` 正在监听，并设置 macOS Wi-Fi 系统代理、git proxy 与 `~/.zshrc` 托管 proxy block。
+2. B / AWS WireGuard 主力模式：先手动 Quit MonoProxy，再在 WireGuard App 里启动 `personal-proxy-tokyo-test-macbook`，然后运行 `tools/mac_proxy/use_mode_b_aws_wireguard.sh`。脚本要求看到 `10.89.0.x` 地址，关闭本机 HTTP/HTTPS/SOCKS 系统代理，清空 git proxy 和 shell proxy，并验证 direct 出口 IPv4 是 `13.230.97.189`。
+3. C / Direct 直连模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_c_direct.sh`。脚本关闭全部本机代理残留，清空 git proxy 和 shell proxy，并验证普通直连网络可达；该模式不要求 ChatGPT 可直连。
+
+也可以完全手动开关 MonoProxy / WireGuard；脚本的职责不是替代肉眼可见的软件开关，而是把系统代理、git proxy、shell proxy 和出口状态统一校准并给出 PASS/FAIL。
+
+兼容入口：
+
+```bash
+tools/mac_proxy/use_monoproxy.sh
+tools/mac_proxy/use_aws_wireguard_direct.sh
+tools/mac_proxy/use_aws_proxy.sh
+tools/mac_proxy/use_aws_ssh_socks.sh
+```
+
+其中 `use_monoproxy.sh` 映射到 A，`use_aws_wireguard_direct.sh` 映射到 B。`use_aws_proxy.sh` / `use_aws_ssh_socks.sh` 是 AWS SSH SOCKS 调试工具，不是日常 A/B/C 主路径。
+
+AWS SSH SOCKS 调试模式会启动本机 SSH SOCKS 隧道：
 
 ```text
 127.0.0.1:18080 -> ubuntu@13.230.97.189
@@ -165,6 +186,29 @@ HTTP/HTTPS: 127.0.0.1:8118
 SOCKS:      127.0.0.1:8119
 ```
 
+AWS WireGuard direct 模式用于测试 Codex Desktop 直接走 WireGuard 出口，不叠加任何本机 HTTP/HTTPS/SOCKS 代理。该模式会：
+
+1. 关闭 macOS Wi-Fi HTTP / HTTPS / SOCKS 系统代理。
+2. 删除 git 全局 `http.proxy` / `https.proxy`。
+3. 在 `~/.zshrc` 托管代理块中 unset `http_proxy` / `https_proxy` / `all_proxy` 及大写变量。
+4. 若 `127.0.0.1:18080` 是本脚本启动的 SSH SOCKS listener，则停止该 listener。
+
+WireGuard direct 模式切换后，先确认 WireGuard App 中 AWS Tokyo tunnel 已连接，再运行：
+
+```bash
+tools/mac_proxy/proxy_status.sh
+```
+
+预期状态：
+
+```text
+macOS HTTP/HTTPS/SOCKS proxies: disabled
+git global proxy: empty
+shell proxy env: empty in new terminal
+system IPv4 ifconfig.me/ip: 13.230.97.189
+system IPv6 ifconfig.me/ip: no result, or explicitly confirmed non-leaking route
+```
+
 脚本只引用本机 SSH key 路径，不把私钥或 WireGuard client private key 写入仓库。切换后应新开一个 terminal，或执行：
 
 ```bash
@@ -173,7 +217,31 @@ source ~/.zshrc
 
 若 Codex Desktop 在切换前已经打开，应退出并重新打开 Codex Desktop，避免 GUI 进程继续使用切换前的代理状态。
 
+`proxy_status.sh` 会优先输出：
+
+```text
+Mode A MonoProxy: PASS/FAIL
+Mode B AWS WireGuard: PASS/FAIL
+Mode C Direct: PASS/FAIL
+```
+
+若刚运行过切换脚本但 shell proxy 仍显示旧值，说明当前 terminal / Codex 子进程继承了旧环境；新开 terminal 或 `source ~/.zshrc` 后再查。
+
 该本地代理切换只影响 MacBook 开发环境；不得复制到阿里云生产交易进程环境。
+
+若 Codex Desktop 报：
+
+```text
+stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)
+```
+
+先不要反复切换系统代理；运行只读探针保留事实：
+
+```bash
+LOOPS=5 tools/mac_proxy/probe_codex_network.sh
+```
+
+探针会清理自身 curl 调用的 inherited proxy env，并分别测试 direct、MonoProxy HTTP、MonoProxy SOCKS、AWS SOCKS 到 `chatgpt.com/cdn-cgi/trace` 和 Codex backend endpoint 的 HTTP code、HTTP version、耗时与出口 trace。2026-06-28 已观察到：MonoProxy 新节点可访问 ChatGPT，Cloudflare trace 为 `colo=NRT`、`http=http/2`、出口 IP 为 IPv6；因此同一报错不能再简单归因于 AWS WireGuard，必须同时记录具体 MonoProxy 节点、IPv4/IPv6 出口、HTTP/2 streaming 长连接稳定性与 Codex Desktop 进程是否继承了旧代理环境。
 
 ## 5. 常用检查
 
@@ -182,6 +250,20 @@ source ~/.zshrc
 ```bash
 ssh -i /Users/lyqmac/Downloads/LightsailDefaultKey-ap-northeast-1.pem ubuntu@13.230.97.189 'date -Is && systemctl is-active tinyproxy wg-quick@wg0 && sudo ss -ltnup | grep -E ":80\\b|:51820\\b" && grep -E "^(Port|Listen|Allow)" /etc/tinyproxy/tinyproxy.conf'
 ```
+
+检查 AWS Tokyo WireGuard 转发与 MSS clamp：
+
+```bash
+ssh -i /Users/lyqmac/Downloads/LightsailDefaultKey-ap-northeast-1.pem ubuntu@13.230.97.189 'date -Is && sudo wg show && ip -br addr && ip route && sudo iptables -t nat -S && sudo iptables -t mangle -S && sudo iptables -S FORWARD'
+```
+
+2026-06-28 只读检查事实：`wg0` MTU 为 `1280`，IPv4 forwarding 已开启，UFW 允许 `wg0 <-> ens5` 转发，NAT `MASQUERADE` 已存在，但 `iptables -t mangle -S` 为空，尚未配置 TCP MSS clamp。同日已补上运行时规则和持久化 `wg0.conf`：
+
+```text
+iptables -t mangle -A FORWARD -i wg0 -o ens5 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+```
+
+该规则只影响从 WireGuard client 经 AWS 出口访问外网的新建 TCP 连接 SYN 包，不改变 Telegram tinyproxy、阿里云生产交易进程或 Binance API 出口。
 
 从阿里云测试 AWS Telegram 代理：
 
