@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -93,6 +94,7 @@ _EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|
 _HS_EDIT_SYMBOLS_INPUT_FILTER = filters.Regex(r"(?i)^\s*(DONE|LIST|ADD\s+\S+\s+\S+|DEL\s+\S+)\s*$")
 
 COMMAND_CONTEXT_KEY = "active_command_context"
+TELEGRAM_POLLING_PROXY_REEXEC_KEY = "telegram_polling_proxy_reexec_requested"
 _COMMAND_CONTEXT_TRANSIENT_KEYS = {
     "pending_trade_shortcut",
     "pending_hedge_short_shortcut",
@@ -2091,6 +2093,30 @@ async def _watch_hedge_short_po_entry(
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     logging.error("[manual_bot] unhandled error: %s\n%s", context.error, tb)
+
+
+async def telegram_polling_proxy_failover_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update is not None:
+        return
+    if not isinstance(context.error, (NetworkError, TimedOut)):
+        return
+    proxy_urls = telegram_proxy_urls()
+    if len(proxy_urls) < 2:
+        return
+    application = context.application
+    if application.bot_data.get(TELEGRAM_POLLING_PROXY_REEXEC_KEY):
+        return
+    application.bot_data[TELEGRAM_POLLING_PROXY_REEXEC_KEY] = True
+    selected_proxy = application.bot_data.get("telegram_selected_proxy_url")
+    logging.error(
+        "[manual_bot] telegram polling proxy error; re-exec to reselect proxy selected=%s proxies=%s error=%r",
+        selected_proxy,
+        proxy_urls,
+        context.error,
+    )
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 async def post_init(application: Application) -> None:
@@ -6080,6 +6106,7 @@ def run_bot() -> None:
         logging.info("telegram proxy selected=%s health=%s", proxy_url, health_summary)
         builder = builder.proxy_url(proxy_url).get_updates_proxy_url(proxy_url)
     application = builder.build()
+    application.bot_data["telegram_selected_proxy_url"] = proxy_url
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("set_current_account", set_current_account))
@@ -6225,6 +6252,7 @@ def run_bot() -> None:
         )
     )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, shortcut_param_input_dispatch))
+    application.add_error_handler(telegram_polling_proxy_failover_handler)
     application.add_error_handler(error_handler)
     application.run_polling()
 

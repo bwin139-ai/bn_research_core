@@ -18,7 +18,7 @@
 根治分三层推进：
 
 1. Telegram API 健康探测：`process_monitor` 每轮通过 `TG_BOT_TOKEN` 与 `TG_PROXY_URLS` / `TG_PROXY_URL` 调用 `getMe`，要求至少一个代理返回 HTTP 200 且 JSON `ok=true`。该层只记录、告警和恢复提示，不启停进程、不访问 Binance、不改变交易状态。
-2. Telegram 代理冗余：使用 `TG_PROXY_URLS` 配置多个代理。`tg_queue_sender` 发送每条消息时按顺序尝试代理；`run_manual_trade_bot.py` 启动时探测代理并选择第一个健康代理用于 polling。单一代理节点无法保证 Telegram 区域性故障时的连续可用。
+2. Telegram 代理冗余：使用 `TG_PROXY_URLS` 配置多个代理。`tg_queue_sender` 发送每条消息时按顺序尝试代理；`run_manual_trade_bot.py` 启动时探测代理并选择第一个健康代理用于 polling，若运行中的 polling 层出现 Telegram 网络超时/连接错误，会原地 re-exec 进程并重新探测代理列表，从而跳过失效的首选代理。
 3. Telegram 失效时的应急管理入口：保留服务器侧只读/低风险 CLI 管理能力，至少覆盖 `status`、`account_detail`、`pending_orders`、必要撤单等关键操作，避免 Telegram 控制面不可用时完全失去策略管理入口。
 
 当前已推进第 1 层与第 2 层：生产环境使用 AWS Lightsail Tokyo 作为首选 Telegram 代理，旧 DigitalOcean 代理作为备用。
@@ -123,6 +123,8 @@ core/process_monitor.py
 ```text
 Application.builder().proxy_url(...).get_updates_proxy_url(...)
 ```
+
+Telegram polling 使用的是启动时选中的单个代理，不是 per-request 轮转。为避免首选代理运行中失效后长期卡住，`core/manual_trade_bot.py` 注册 polling 层网络错误处理：当 `update is None` 且异常为 Telegram `NetworkError` / `TimedOut`，并且配置了多个代理时，进程会原地 `exec` 自身；新进程启动阶段重新执行 `getMe` 健康探测，选择当前第一个健康代理。该机制只处理 polling 层网络错误，不处理用户命令执行过程中的业务异常，避免打断正在执行的交易指令。
 
 `core/notify/tg_queue_sender.py` 通过 `TG_PROXY_URLS` / `TG_PROXY_URL` 配置 `requests` 的 per-request `proxies`。每条消息发送时按代理顺序尝试；当前代理失败会继续尝试下一个代理。sender 设置：
 
