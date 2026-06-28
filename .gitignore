@@ -10,6 +10,15 @@ venv/
 secrets_*.json
 *.tmp
 
+# Local VPN/proxy client configs contain private keys; keep them outside repo.
+personal-proxy*.conf
+wireguard*.conf
+*.mobileconfig
+personal-proxy*.textClipping
+wireguard*.textClipping
+personal-proxy*.png
+wireguard*.png
+
 data/
 output/
 logs/
