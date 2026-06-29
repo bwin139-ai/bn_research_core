@@ -205,6 +205,14 @@ AWS WireGuard direct 模式用于测试 Codex Desktop 直接走 WireGuard 出口
 3. 在 `~/.zshrc` 托管代理块中 unset `http_proxy` / `https_proxy` / `all_proxy` 及大写变量。
 4. 若 `127.0.0.1:18080` 是本脚本启动的 SSH SOCKS listener，则停止该 listener。
 
+AWS Tokyo WireGuard 客户端 endpoint 优先使用：
+
+```text
+13.230.97.189:443
+```
+
+原始 `13.230.97.189:51820` 保留为服务器监听端口和兼容入口，但 2026-06-29 已观察到 MacBook / iPhone 经 `51820/udp` 会出现握手不完成、全局 VPN 接管后无法联网；`443/udp` 备用入口经 Lightsail IPv4 firewall、服务器 UFW 与 `iptables REDIRECT --to-ports 51820` 转发后，iPhone 已验证恢复正常握手与联网。
+
 WireGuard direct 模式切换后，先确认 WireGuard App 中 AWS Tokyo tunnel 已连接，再运行：
 
 ```bash
@@ -276,6 +284,14 @@ iptables -t mangle -A FORWARD -i wg0 -o ens5 -p tcp --tcp-flags SYN,RST SYN -j T
 ```
 
 该规则只影响从 WireGuard client 经 AWS 出口访问外网的新建 TCP 连接 SYN 包，不改变 Telegram tinyproxy、阿里云生产交易进程或 Binance API 出口。
+
+2026-06-29 新增 WireGuard `443/udp` 备用入口：Lightsail IPv4 firewall 放行 `UDP 443`，服务器 UFW 放行 `443/udp`，并将公网 `ens5:443/udp` 转发到本机 WireGuard `51820/udp`：
+
+```text
+iptables -t nat -A PREROUTING -i ens5 -p udp --dport 443 -j REDIRECT --to-ports 51820
+```
+
+该规则已写入 `/etc/wireguard/wg0.conf` 的 `PostUp` / `PostDown`，与原有 `51820/udp` 并存；客户端 WireGuard endpoint 应优先改为 `13.230.97.189:443`。若客户端开关 tunnel 后无法联网，先检查服务器 `sudo wg show` 的 `latest handshake`、`iptables -t nat -vnL PREROUTING` 的 `udp dpt:443` 计数，以及 Lightsail 控制台 IPv4 firewall 是否仍保留 `Custom UDP 443 Any IPv4 address`。
 
 从阿里云测试 AWS Telegram 代理：
 

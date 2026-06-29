@@ -288,12 +288,62 @@ pkill -9 -f 'schedule_backtests.py --strategy snapback'
 清理过期stage3数据
 /root/service_env/bin/python tools/cleanup_expired_stage3_run.py
 
-策略层：
-Spring signal / Snapback signal / 第三套策略 signal
-  -> 各自 adapter
-  -> ValidatedLiveExecutionIntent
+# ========= MacBook 网络代理 ABC模式切换 =========
+按这个顺序切到 B / AWS WireGuard 主力模式：
+先手动退出 MonoProxy
+点击菜单栏 MonoProxy 图标
+点 Quit
+不要只取消 Set As System Proxy，这次直接 Quit
 
-公共 live execution 层：
-intent -> execution_plan -> entry/SL/TP -> open_trade state
-       -> reconcile / exit monitor / TP-SL-TS 成交识别
-       -> state close / audit / live_trades projection / cooldown
+启动 WireGuard
+打开 WireGuard
+选中 personal-proxy-tokyo-test-macbook
+点击 启动
+等状态变成已激活
+
+在 Terminal 运行 B 模式脚本
+
+cd /Users/lyqmac/ai_projects/bn_research_core
+tools/mac_proxy/use_mode_b_aws_wireguard.sh
+预期最后看到：
+Mode B: PASS
+再确认一次状态
+zsh -ic 'cd /Users/lyqmac/ai_projects/bn_research_core && tools/mac_proxy/proxy_status.sh'
+你要看到：
+Mode B AWS WireGuard: PASS
+Mode A MonoProxy: FAIL
+Mode C Direct: FAIL
+并且关键项应是：
+system proxy -> direct/off: PASS
+git proxy -> empty: PASS
+shell proxy -> empty: PASS
+WireGuard 10.89.0.x active: PASS
+direct public IPv4 is AWS: PASS
+MonoProxy listeners 8118/8119: FAIL
+重启 Codex Desktop完全退出 Codex Desktop：Cmd + Q
+再重新打开 Codex Desktop
+然后在这个线程里发一条短消息测试
+
+如果 B 模式下 Codex 又断流，先不用慌，切回 A：
+# 手动：启动 MonoProxy，点 Set As System Proxy；停止 WireGuard
+cd /Users/lyqmac/ai_projects/bn_research_core
+tools/mac_proxy/use_mode_a_monoproxy.sh
+然后重启 Codex Desktop 回来。
+
+概要总结：
+切到 A 模式：
+1. 关闭 WireGuard
+2. 打开 MonoProxy
+3. MonoProxy 点 Set As System Proxy
+4. 运行 
+cd /Users/lyqmac/ai_projects/bn_research_core
+tools/mac_proxy/use_mode_a_monoproxy.sh
+5. 重启 Codex Desktop
+切到 B 模式：
+1. Quit MonoProxy
+2. WireGuard endpoint 用 13.230.97.189:443
+3. 启动 WireGuard
+4. 运行 
+cd /Users/lyqmac/ai_projects/bn_research_core
+tools/mac_proxy/use_mode_b_aws_wireguard.sh
+5. 重启 Codex Desktop
