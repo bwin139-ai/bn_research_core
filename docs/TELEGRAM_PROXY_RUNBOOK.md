@@ -161,6 +161,7 @@ MacBook 本地可能同时存在三类代理设置：
 ```bash
 tools/mac_proxy/proxy_status.sh
 tools/mac_proxy/probe_codex_network.sh
+tools/mac_proxy/install_aws_lightsail_key.sh
 tools/mac_proxy/use_mode_a_monoproxy.sh
 tools/mac_proxy/use_mode_b_aws_wireguard.sh
 tools/mac_proxy/use_mode_c_direct.sh
@@ -173,8 +174,16 @@ tools/mac_proxy/use_mode_e_aws_outline.sh
 1. A / MonoProxy 备用模式：先手动启动 MonoProxy 并点击 `Set As System Proxy`，确认 WireGuard 已关闭，再运行 `tools/mac_proxy/use_mode_a_monoproxy.sh`。脚本要求 `127.0.0.1:8118/8119` 正在监听，并设置 macOS Wi-Fi 系统代理、git proxy 与 `~/.zshrc` 托管 proxy block。
 2. B / AWS WireGuard 主力模式：先手动 Quit MonoProxy，再在 WireGuard App 里启动 `personal-proxy-tokyo-test-macbook`，然后运行 `tools/mac_proxy/use_mode_b_aws_wireguard.sh`。脚本要求看到 `10.89.0.x` 地址，关闭本机 HTTP/HTTPS/SOCKS 系统代理，清空 git proxy 和 shell proxy，并验证 direct 出口 IPv4 是 `13.230.97.189`。
 3. C / Direct 直连模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_c_direct.sh`。脚本关闭全部本机代理残留，清空 git proxy 和 shell proxy，并验证普通直连网络可达；该模式不要求 ChatGPT 可直连。
-4. D / AWS SSH SOCKS 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_d_aws_ssh_socks.sh`。脚本启动 `127.0.0.1:18080 -> ubuntu@13.230.97.189` SSH SOCKS 隧道，设置 macOS Wi-Fi SOCKS、git proxy 与新 shell proxy env，并验证 ChatGPT trace 与 Codex endpoint 可达。
+4. D / AWS SSH HTTP+SOCKS 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_d_aws_ssh_socks.sh`。脚本启动 `127.0.0.1:18080` SSH SOCKS 隧道，并启动 `127.0.0.1:18082 -> AWS tinyproxy 127.0.0.1:80` HTTP/HTTPS 代理转发；macOS Wi-Fi HTTP/HTTPS 指向 `18082`，SOCKS 指向 `18080`，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18082`，并验证 ChatGPT trace 与 Codex endpoint 可达。
 5. E / AWS Outline-Shadowsocks 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline.sh`。脚本通过 SSH 从 AWS 读取 Shadowsocks 服务端配置，写入本机私有配置 `~/.config/bn_research_core/aws_outline_e_macbook.json`，启动 `ss-local` 监听 `127.0.0.1:18081`，设置 macOS Wi-Fi SOCKS、git proxy 与新 shell proxy env，并验证 ChatGPT trace 与 Codex endpoint 可达。
+
+首次使用 D/E 前，先安装 AWS Lightsail SSH key：
+
+```bash
+tools/mac_proxy/install_aws_lightsail_key.sh
+```
+
+该脚本把 `~/Downloads/LightsailDefaultKey-ap-northeast-1.pem` 复制到 `~/.ssh/aws_lightsail_tokyo.pem`，设置 `600` 权限，清理常见 macOS quarantine / privacy 扩展属性，并验证 `ssh` 可读取该 key。若 key 保留在 `Downloads`，macOS 可能在 Terminal/Codex 子进程中报 `Load key "...pem": Operation not permitted`，导致 D/E 无法启动本地 TCP 隧道。
 
 也可以完全手动开关 MonoProxy / WireGuard；脚本的职责不是替代肉眼可见的软件开关，而是把系统代理、git proxy、shell proxy 和出口状态统一校准并给出 PASS/FAIL。
 
@@ -187,15 +196,16 @@ tools/mac_proxy/use_aws_proxy.sh
 tools/mac_proxy/use_aws_ssh_socks.sh
 ```
 
-其中 `use_monoproxy.sh` 映射到 A，`use_aws_wireguard_direct.sh` 映射到 B。`use_aws_proxy.sh` / `use_aws_ssh_socks.sh` 保留为 AWS SSH SOCKS 兼容入口；正式 AWS SSH SOCKS 切换优先使用 D 模式脚本。
+其中 `use_monoproxy.sh` 映射到 A，`use_aws_wireguard_direct.sh` 映射到 B。`use_aws_proxy.sh` / `use_aws_ssh_socks.sh` 保留为 AWS SSH HTTP+SOCKS 兼容入口；正式 AWS SSH HTTP+SOCKS 切换优先使用 D 模式脚本。
 
-AWS SSH SOCKS 调试模式会启动本机 SSH SOCKS 隧道：
+AWS SSH HTTP+SOCKS 调试模式会启动本机双入口：
 
 ```text
-127.0.0.1:18080 -> ubuntu@13.230.97.189
+SOCKS:      127.0.0.1:18080 -> SSH dynamic forwarding -> AWS Tokyo
+HTTP/HTTPS: 127.0.0.1:18082 -> SSH local forwarding -> AWS tinyproxy 127.0.0.1:80
 ```
 
-并将 macOS Wi-Fi SOCKS、git 全局代理和新 shell 环境切到该隧道。MonoProxy 模式会恢复：
+并将 macOS Wi-Fi HTTP/HTTPS、SOCKS、git 全局代理和新 shell 环境切到该隧道。MonoProxy 模式会恢复：
 
 ```text
 HTTP/HTTPS: 127.0.0.1:8118
@@ -207,7 +217,7 @@ AWS WireGuard direct 模式用于测试 Codex Desktop 直接走 WireGuard 出口
 1. 关闭 macOS Wi-Fi HTTP / HTTPS / SOCKS 系统代理。
 2. 删除 git 全局 `http.proxy` / `https.proxy`。
 3. 在 `~/.zshrc` 托管代理块中 unset `http_proxy` / `https_proxy` / `all_proxy` 及大写变量。
-4. 若 `127.0.0.1:18080` 是本脚本启动的 SSH SOCKS listener，则停止该 listener。
+4. 若 `127.0.0.1:18080` / `127.0.0.1:18082` 是本脚本启动的 SSH proxy listener，则停止该 listener。
 
 AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
@@ -217,7 +227,9 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
 原始 `13.230.97.189:51820` 保留为服务器监听端口和兼容入口，但 2026-06-29 已观察到 MacBook / iPhone 经 `51820/udp` 会出现握手不完成、全局 VPN 接管后无法联网；`443/udp` 备用入口经 Lightsail IPv4 firewall、服务器 UFW 与 `iptables REDIRECT --to-ports 51820` 转发后，iPhone 已验证恢复正常握手与联网。
 
-2026-06-30 进一步观察到：`51820/udp` 与 `443/udp` 都曾出现“可用约半天后失效”的现场；AWS 服务器能收到客户端 WireGuard handshake initiation 并发出 response，但 `latest handshake` 不刷新、NAT 转发计数不增长。新建 iPhone peer 后现象不变，说明问题更接近当前网络对 WireGuard UDP 的稳定性干扰，而不是单一客户端配置损坏。当前长期方向不再继续把 WireGuard UDP 作为唯一主通路；保留 WireGuard 作为备用，同时将 AWS SSH SOCKS / 后续 TCP/TLS 私有代理作为稳定性主线验证。
+2026-06-30 进一步观察到：`51820/udp` 与 `443/udp` 都曾出现“可用约半天后失效”的现场；AWS 服务器能收到客户端 WireGuard handshake initiation 并发出 response，但 `latest handshake` 不刷新、NAT 转发计数不增长。新建 iPhone peer 后现象不变，说明问题更接近当前网络对 WireGuard UDP 的稳定性干扰，而不是单一客户端配置损坏。当前长期方向不再继续把 WireGuard UDP 作为唯一主通路；保留 WireGuard 作为备用，同时将 AWS SSH HTTP+SOCKS / 后续 TCP/TLS 私有代理作为稳定性主线验证。
+
+2026-06-30 D 模式第一次 MacBook 实测显示：仅设置系统 SOCKS `127.0.0.1:18080` 时，浏览器访问 Google / YouTube / ChatGPT 可用，`AWS SSH SOCKS Codex endpoint` 探针返回 `405`，但 Codex Desktop 仍不可用；同时 `proxy_status.sh` 的 Mode D 总判定因为当前 terminal shell env 未执行 `source ~/.zshrc` 而显示 FAIL。由此判断 Codex Desktop 更可能依赖 macOS HTTP/HTTPS proxy 或进程启动时继承的 HTTP proxy，而不是只依赖 SOCKS。D 模式已改为与 MonoProxy 类似的 HTTP/HTTPS + SOCKS 双入口：HTTP/HTTPS `18082`，SOCKS `18080`。
 
 2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
 
@@ -282,7 +294,7 @@ source ~/.zshrc
 Mode A MonoProxy: PASS/FAIL
 Mode B AWS WireGuard: PASS/FAIL
 Mode C Direct: PASS/FAIL
-Mode D AWS SSH SOCKS: PASS/FAIL
+Mode D AWS SSH HTTP+SOCKS: PASS/FAIL
 Mode E AWS Outline/Shadowsocks: PASS/FAIL
 ```
 

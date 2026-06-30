@@ -13,10 +13,10 @@ set_git_proxy_aws
 update_zshrc_proxy_block aws
 stop_aws_outline_if_owned
 
-echo "Mode D AWS SSH SOCKS settings applied."
+echo "Mode D AWS SSH HTTP+SOCKS settings applied."
+echo "System HTTP/HTTPS: ${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}"
 echo "System SOCKS: ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}"
-echo "System HTTP/HTTPS proxies: off"
-echo "Git proxy: $(aws_socks_url)"
+echo "Git proxy: $(aws_http_url)"
 
 verify_mode_d
 echo "Mode D: PASS"

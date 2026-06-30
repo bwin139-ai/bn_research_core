@@ -8,14 +8,6 @@ local development machine, not the Aliyun production server.
 The scripts do not open or quit GUI apps. First switch the visible app state
 yourself, then run the matching script to normalize macOS, git, and shell state.
 
-AWS SSH SOCKS mode:
-
-- Starts a local SSH SOCKS tunnel to the AWS Lightsail Tokyo proxy.
-- Points macOS Wi-Fi SOCKS proxy to `127.0.0.1:18080`.
-- Disables macOS HTTP and HTTPS proxies.
-- Points global git proxy to `socks5h://127.0.0.1:18080`.
-- Writes a managed proxy block at the end of `~/.zshrc`.
-
 AWS WireGuard direct mode:
 
 - Assumes the WireGuard app/tunnel is already connected.
@@ -25,14 +17,17 @@ AWS WireGuard direct mode:
 - Stops the local AWS SSH SOCKS listener on `127.0.0.1:18080` when that
   listener is owned by `ssh`.
 
-AWS SSH SOCKS mode:
+AWS SSH HTTP+SOCKS mode:
 
-- Uses TCP SSH dynamic forwarding instead of WireGuard UDP.
+- Uses TCP SSH forwarding instead of WireGuard UDP.
 - Assumes MonoProxy is quit and WireGuard is stopped.
-- Starts a local SSH SOCKS tunnel to AWS Lightsail Tokyo on `127.0.0.1:18080`.
-- Points macOS Wi-Fi SOCKS proxy, git proxy, and new shell proxy env to that
-  tunnel.
-- Leaves macOS HTTP and HTTPS proxies disabled.
+- Starts a local SSH SOCKS tunnel on `127.0.0.1:18080`.
+- Starts a local SSH HTTP/HTTPS proxy forward on `127.0.0.1:18082`, forwarding
+  to AWS tinyproxy on the server.
+- Points macOS Wi-Fi HTTP/HTTPS proxy to `127.0.0.1:18082` and SOCKS proxy to
+  `127.0.0.1:18080`.
+- Points global git proxy and new shell HTTP/HTTPS proxy env to
+  `http://127.0.0.1:18082`.
 
 AWS Outline/Shadowsocks mode:
 
@@ -58,6 +53,7 @@ MonoProxy mode:
 ```bash
 tools/mac_proxy/proxy_status.sh
 tools/mac_proxy/probe_codex_network.sh
+tools/mac_proxy/install_aws_lightsail_key.sh
 tools/mac_proxy/use_mode_a_monoproxy.sh
 tools/mac_proxy/use_mode_b_aws_wireguard.sh
 tools/mac_proxy/use_mode_c_direct.sh
@@ -73,6 +69,19 @@ Manual app state before running each mode:
 - Mode D: MonoProxy quit; WireGuard stopped; AWS SSH reachable.
 - Mode E: MonoProxy quit; WireGuard stopped; AWS Shadowsocks service reachable.
 
+Before using Mode D or E for the first time, install the AWS Lightsail key into
+`~/.ssh`:
+
+```bash
+tools/mac_proxy/install_aws_lightsail_key.sh
+```
+
+This copies the key from `~/Downloads/LightsailDefaultKey-ap-northeast-1.pem` to
+`~/.ssh/aws_lightsail_tokyo.pem`, sets `600` permissions, removes common macOS
+quarantine attributes, and verifies that `ssh` can read the key. Keeping the key
+under `Downloads` can trigger macOS privacy/quarantine failures such as
+`Load key "...pem": Operation not permitted`.
+
 Compatibility aliases:
 
 ```bash
@@ -84,7 +93,8 @@ tools/mac_proxy/use_aws_ssh_socks.sh
 
 `use_monoproxy.sh` maps to Mode A. `use_aws_wireguard_direct.sh` maps to Mode B.
 `use_aws_proxy.sh` and `use_aws_ssh_socks.sh` are kept as compatibility aliases
-for AWS SSH SOCKS; prefer `use_mode_d_aws_ssh_socks.sh` for the explicit mode.
+for AWS SSH HTTP+SOCKS; prefer `use_mode_d_aws_ssh_socks.sh` for the explicit
+mode.
 
 Open a new terminal after switching modes so the updated `~/.zshrc` proxy block
 is applied to new shells. If Codex Desktop was already open, quit and reopen it
@@ -104,9 +114,9 @@ LOOPS=5 tools/mac_proxy/probe_codex_network.sh
 ```
 
 The probe does not change proxy settings. It clears inherited shell proxy env for
-its own curl calls, then tests direct, MonoProxy HTTP, MonoProxy SOCKS, AWS
-SOCKS, and AWS Outline/Shadowsocks against `chatgpt.com/cdn-cgi/trace` plus the
-Codex backend endpoint.
+its own curl calls, then tests direct, MonoProxy HTTP, MonoProxy SOCKS, AWS SSH
+HTTP, AWS SSH SOCKS, and AWS Outline/Shadowsocks against
+`chatgpt.com/cdn-cgi/trace` plus the Codex backend endpoint.
 
 ## Defaults
 
@@ -114,8 +124,9 @@ Codex backend endpoint.
 MAC_PROXY_SERVICE=Wi-Fi
 AWS_PROXY_HOST=13.230.97.189
 AWS_PROXY_USER=ubuntu
-AWS_PROXY_SSH_KEY=$HOME/Downloads/LightsailDefaultKey-ap-northeast-1.pem
+AWS_PROXY_SSH_KEY=$HOME/.ssh/aws_lightsail_tokyo.pem
 AWS_PROXY_SOCKS_PORT=18080
+AWS_PROXY_HTTP_PORT=18082
 AWS_OUTLINE_SOCKS_PORT=18081
 AWS_OUTLINE_SS_CONFIG=$HOME/.config/bn_research_core/aws_outline_e_macbook.json
 MONO_HTTP_PORT=8118

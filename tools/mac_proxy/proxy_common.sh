@@ -5,9 +5,19 @@ MAC_PROXY_SERVICE="${MAC_PROXY_SERVICE:-Wi-Fi}"
 AWS_PROXY_HOST="${AWS_PROXY_HOST:-13.230.97.189}"
 AWS_WIREGUARD_PUBLIC_IP="${AWS_WIREGUARD_PUBLIC_IP:-13.230.97.189}"
 AWS_PROXY_USER="${AWS_PROXY_USER:-ubuntu}"
-AWS_PROXY_SSH_KEY="${AWS_PROXY_SSH_KEY:-$HOME/Downloads/LightsailDefaultKey-ap-northeast-1.pem}"
+AWS_PROXY_DEFAULT_SSH_KEY="${AWS_PROXY_DEFAULT_SSH_KEY:-$HOME/.ssh/aws_lightsail_tokyo.pem}"
+AWS_PROXY_DOWNLOADS_SSH_KEY="${AWS_PROXY_DOWNLOADS_SSH_KEY:-$HOME/Downloads/LightsailDefaultKey-ap-northeast-1.pem}"
+if [[ -z "${AWS_PROXY_SSH_KEY:-}" ]]; then
+  if [[ -f "$AWS_PROXY_DEFAULT_SSH_KEY" ]]; then
+    AWS_PROXY_SSH_KEY="$AWS_PROXY_DEFAULT_SSH_KEY"
+  else
+    AWS_PROXY_SSH_KEY="$AWS_PROXY_DOWNLOADS_SSH_KEY"
+  fi
+fi
 AWS_PROXY_SOCKS_HOST="${AWS_PROXY_SOCKS_HOST:-127.0.0.1}"
 AWS_PROXY_SOCKS_PORT="${AWS_PROXY_SOCKS_PORT:-18080}"
+AWS_PROXY_HTTP_HOST="${AWS_PROXY_HTTP_HOST:-127.0.0.1}"
+AWS_PROXY_HTTP_PORT="${AWS_PROXY_HTTP_PORT:-18082}"
 AWS_OUTLINE_SS_CONFIG="${AWS_OUTLINE_SS_CONFIG:-$HOME/.config/bn_research_core/aws_outline_e_macbook.json}"
 AWS_OUTLINE_SOCKS_HOST="${AWS_OUTLINE_SOCKS_HOST:-127.0.0.1}"
 AWS_OUTLINE_SOCKS_PORT="${AWS_OUTLINE_SOCKS_PORT:-18081}"
@@ -36,6 +46,10 @@ require_git() {
 
 aws_socks_url() {
   printf 'socks5h://%s:%s' "$AWS_PROXY_SOCKS_HOST" "$AWS_PROXY_SOCKS_PORT"
+}
+
+aws_http_url() {
+  printf 'http://%s:%s' "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
 }
 
 aws_outline_socks_url() {
@@ -69,9 +83,33 @@ test_aws_socks() {
     --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
 }
 
+test_aws_http() {
+  clean_curl_env curl -x "$(aws_http_url)" \
+    --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
+}
+
 test_aws_outline_socks() {
   clean_curl_env curl --socks5-hostname "${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}" \
     --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
+}
+
+require_aws_ssh_key_readable() {
+  if [[ ! -f "$AWS_PROXY_SSH_KEY" ]]; then
+    echo "SSH key not found: $AWS_PROXY_SSH_KEY" >&2
+    echo "If the Lightsail key is still in Downloads, run:" >&2
+    echo "  tools/mac_proxy/install_aws_lightsail_key.sh" >&2
+    exit 1
+  fi
+
+  chmod 600 "$AWS_PROXY_SSH_KEY"
+
+  if ! ssh-keygen -y -f "$AWS_PROXY_SSH_KEY" >/dev/null 2>&1; then
+    echo "SSH key cannot be read by this terminal: $AWS_PROXY_SSH_KEY" >&2
+    echo "On macOS, a key under Downloads may be blocked by privacy/quarantine attributes." >&2
+    echo "Install it into ~/.ssh and remove quarantine attributes with:" >&2
+    echo "  tools/mac_proxy/install_aws_lightsail_key.sh" >&2
+    exit 1
+  fi
 }
 
 tcp_listener_pids() {
@@ -99,8 +137,15 @@ aws_tunnel_listener_pids() {
   tcp_listener_pids "$AWS_PROXY_SOCKS_PORT"
 }
 
+aws_http_tunnel_listener_pids() {
+  tcp_listener_pids "$AWS_PROXY_HTTP_PORT"
+}
+
 aws_tunnel_ssh_pids() {
-  lsof -nP -iTCP:"$AWS_PROXY_SOCKS_PORT" -sTCP:LISTEN -a -c ssh -t 2>/dev/null || true
+  {
+    lsof -nP -iTCP:"$AWS_PROXY_SOCKS_PORT" -sTCP:LISTEN -a -c ssh -t 2>/dev/null || true
+    lsof -nP -iTCP:"$AWS_PROXY_HTTP_PORT" -sTCP:LISTEN -a -c ssh -t 2>/dev/null || true
+  } | sort -u
 }
 
 aws_outline_listener_pids() {
@@ -125,13 +170,13 @@ ss_local_bin() {
 }
 
 ensure_aws_tunnel() {
-  if test_aws_socks; then
-    echo "AWS SOCKS tunnel already healthy on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}."
+  if test_aws_socks && test_aws_http; then
+    echo "AWS SSH proxy tunnel already healthy on SOCKS ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT} and HTTP ${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}."
     return
   fi
 
   local listeners ssh_listeners
-  listeners="$(aws_tunnel_listener_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  listeners="$({ aws_tunnel_listener_pids; aws_http_tunnel_listener_pids; } | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   ssh_listeners="$(aws_tunnel_ssh_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 
   if [[ -n "$listeners" ]]; then
@@ -140,30 +185,29 @@ ensure_aws_tunnel() {
       kill $ssh_listeners
       sleep 2
     else
-      echo "Port ${AWS_PROXY_SOCKS_PORT} is occupied by a non-SSH process:" >&2
+      echo "Port ${AWS_PROXY_SOCKS_PORT} or ${AWS_PROXY_HTTP_PORT} is occupied by a non-SSH process:" >&2
       lsof -nP -iTCP:"$AWS_PROXY_SOCKS_PORT" -sTCP:LISTEN >&2 || true
+      lsof -nP -iTCP:"$AWS_PROXY_HTTP_PORT" -sTCP:LISTEN >&2 || true
       echo "Stop that process or override AWS_PROXY_SOCKS_PORT." >&2
       exit 2
     fi
   fi
 
-  if [[ ! -f "$AWS_PROXY_SSH_KEY" ]]; then
-    echo "SSH key not found: $AWS_PROXY_SSH_KEY" >&2
-    exit 1
-  fi
-  chmod 600 "$AWS_PROXY_SSH_KEY"
+  require_aws_ssh_key_readable
 
   ssh -i "$AWS_PROXY_SSH_KEY" \
     -o StrictHostKeyChecking=accept-new \
     -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=20 \
     -o ServerAliveCountMax=3 \
+    -L "${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}:127.0.0.1:80" \
     -f -N -D "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" \
     "${AWS_PROXY_USER}@${AWS_PROXY_HOST}"
 
   sleep 2
   test_aws_socks
-  echo "AWS SOCKS tunnel started on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}."
+  test_aws_http
+  echo "AWS SSH proxy tunnel started on SOCKS ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT} and HTTP ${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}."
 }
 
 prepare_aws_outline_config() {
@@ -206,11 +250,7 @@ ensure_aws_outline_tunnel() {
     fi
   fi
 
-  if [[ ! -f "$AWS_PROXY_SSH_KEY" ]]; then
-    echo "SSH key not found: $AWS_PROXY_SSH_KEY" >&2
-    exit 1
-  fi
-  chmod 600 "$AWS_PROXY_SSH_KEY"
+  require_aws_ssh_key_readable
   prepare_aws_outline_config
 
   ss_bin="$(ss_local_bin)"
@@ -227,7 +267,7 @@ stop_aws_tunnel_if_owned() {
   if [[ -z "$ssh_listeners" ]]; then
     return
   fi
-  echo "Stopping AWS SSH SOCKS listener on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}: ${ssh_listeners}"
+  echo "Stopping AWS SSH proxy listener on ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT} / ${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}: ${ssh_listeners}"
   kill $ssh_listeners
 }
 
@@ -242,9 +282,11 @@ stop_aws_outline_if_owned() {
 }
 
 set_system_proxy_aws() {
-  networksetup -setwebproxystate "$MAC_PROXY_SERVICE" off
-  networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" off
+  networksetup -setwebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
+  networksetup -setsecurewebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
   networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_SOCKS_HOST" "$AWS_PROXY_SOCKS_PORT"
+  networksetup -setwebproxystate "$MAC_PROXY_SERVICE" on
+  networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" on
   networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
 }
 
@@ -272,8 +314,8 @@ set_system_proxy_mono() {
 
 set_git_proxy_aws() {
   require_git
-  git config --global http.proxy "$(aws_socks_url)"
-  git config --global https.proxy "$(aws_socks_url)"
+  git config --global http.proxy "$(aws_http_url)"
+  git config --global https.proxy "$(aws_http_url)"
 }
 
 set_git_proxy_aws_outline() {
@@ -353,7 +395,7 @@ test_codex_endpoint_mono() {
 
 test_codex_endpoint_aws_socks() {
   local code
-  code="$(clean_curl_env curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_aws_socks.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
+  code="$(clean_curl_env curl -x "$(aws_http_url)" --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_aws_socks.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
   rm -f /tmp/mac_proxy_codex_aws_socks.out
   [[ "$code" == "405" ]]
 }
@@ -370,7 +412,7 @@ test_trace_mono() {
 }
 
 test_trace_aws_socks() {
-  clean_curl_env curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
+  clean_curl_env curl -x "$(aws_http_url)" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
 }
 
 test_trace_aws_outline() {
@@ -398,6 +440,7 @@ verify_mode_c() {
 
 verify_mode_d() {
   test_aws_socks
+  test_aws_http
   test_trace_aws_socks
   test_codex_endpoint_aws_socks
 }
@@ -411,7 +454,7 @@ verify_mode_e() {
 update_zshrc_proxy_block() {
   local mode="$1"
   python3 - "$ZSHRC_PATH" "$mode" "$PROXY_BLOCK_BEGIN" "$PROXY_BLOCK_END" \
-    "$(aws_socks_url)" "$(aws_outline_socks_url)" "$(mono_http_url)" "$(mono_socks_url)" <<'PY'
+    "$(aws_socks_url)" "$(aws_http_url)" "$(aws_outline_socks_url)" "$(mono_http_url)" "$(mono_socks_url)" <<'PY'
 import pathlib
 import sys
 
@@ -420,15 +463,19 @@ mode = sys.argv[2]
 begin = sys.argv[3]
 end = sys.argv[4]
 aws_socks = sys.argv[5]
-aws_outline_socks = sys.argv[6]
-mono_http = sys.argv[7]
-mono_socks = sys.argv[8]
+aws_http = sys.argv[6]
+aws_outline_socks = sys.argv[7]
+mono_http = sys.argv[8]
+mono_socks = sys.argv[9]
 
 if mode == "aws":
     block_lines = [
         begin,
-        "# mode: aws-ssh-socks",
-        "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY",
+        "# mode: aws-ssh-proxy",
+        f"export http_proxy={aws_http}",
+        f"export https_proxy={aws_http}",
+        f"export HTTP_PROXY={aws_http}",
+        f"export HTTPS_PROXY={aws_http}",
         f"export all_proxy={aws_socks}",
         f"export ALL_PROXY={aws_socks}",
         end,

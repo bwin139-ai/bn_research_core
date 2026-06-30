@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/proxy_common.sh"
 
 LOOPS="${LOOPS:-3}"
-MODES="${MODES:-direct mono-http mono-socks aws-socks aws-outline}"
+MODES="${MODES:-direct mono-http mono-socks aws-http aws-socks aws-outline}"
 
 clean_env=(
   env
@@ -34,6 +34,9 @@ run_curl() {
       ;;
     mono-socks)
       cmd+=(--socks5-hostname "${MONO_SOCKS_HOST}:${MONO_SOCKS_PORT}")
+      ;;
+    aws-http)
+      cmd+=(-x "$(aws_http_url)")
       ;;
     aws-socks)
       cmd+=(--socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}")
