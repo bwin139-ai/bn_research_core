@@ -4,7 +4,7 @@
   "account": "chen912",
   "audit_enabled": true,
   "universe": {
-    "tradable_symbols": ["MUUSDT", "SPCXUSDT"]
+    "tradable_symbols": ["MUUSDT", "SPCXUSDT", "CBRSUSDT"]
   },
   "collection": {
     "interval_secs": 10
@@ -27,21 +27,28 @@
         {"level": "P1", "drop_pct": 0.04, "notional_usdt": 600},
         {"level": "P2", "drop_pct": 0.05, "notional_usdt": 600, "repeat_drop_step_pct": 0.01},
         {"level": "P3", "drop_pct": 0.12, "notional_usdt": 600, "repeat_drop_step_pct": 0.01}
+      ],
+      "CBRSUSDT": [
+        {"level": "P1", "drop_pct": 0.05, "notional_usdt": 500},
+        {"level": "P2", "drop_pct": 0.06, "notional_usdt": 500, "repeat_drop_step_pct": 0.015},
+        {"level": "P3", "drop_pct": 0.14, "notional_usdt": 500, "repeat_drop_step_pct": 0.015}
       ]
     }
   },
   "exit_policy": {
     "symbol_take_profit_pct": {
       "MUUSDT": 0.025,
-      "SPCXUSDT": 0.025
+      "SPCXUSDT": 0.025,
+      "CBRSUSDT": 0.03
     }
   },
   "risk": {
     "max_symbol_strategy_notional_usdt": {
       "MUUSDT": 1800,
-      "SPCXUSDT": 1800
+      "SPCXUSDT": 1800,
+      "CBRSUSDT": 1500
     },
-    "max_total_strategy_notional_usdt": 3600
+    "max_total_strategy_notional_usdt": 5100
   },
   "execution": {
     "position_side": "LONG",
@@ -49,7 +56,8 @@
     "margin_type": "CROSSED",
     "symbol_leverage": {
       "MUUSDT": 25,
-      "SPCXUSDT": 20
+      "SPCXUSDT": 20,
+      "CBRSUSDT": 20
     },
     "post_only_time_in_force": "GTX",
     "current_price_source": "BEST_BID",
