@@ -217,6 +217,39 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
 2026-06-30 进一步观察到：`51820/udp` 与 `443/udp` 都曾出现“可用约半天后失效”的现场；AWS 服务器能收到客户端 WireGuard handshake initiation 并发出 response，但 `latest handshake` 不刷新、NAT 转发计数不增长。新建 iPhone peer 后现象不变，说明问题更接近当前网络对 WireGuard UDP 的稳定性干扰，而不是单一客户端配置损坏。当前长期方向不再继续把 WireGuard UDP 作为唯一主通路；保留 WireGuard 作为备用，同时将 AWS SSH SOCKS / 后续 TCP/TLS 私有代理作为稳定性主线验证。
 
+2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
+
+```text
+client: Outline App on iPhone
+protocol: Shadowsocks
+server: 13.230.97.189
+port: 443/tcp
+method: chacha20-ietf-poly1305
+server service: shadowsocks-libev
+server config: /etc/shadowsocks-libev/config.json
+systemd: shadowsocks-libev.service
+```
+
+该模式的 access key / password 属于秘密信息，不得写入仓库或 active docs。若需要重新生成，应在 AWS 上更新 `/etc/shadowsocks-libev/config.json` 的 `password`，重启 `shadowsocks-libev`，再重新生成一次 `ss://...` access key。
+
+用户侧 iPhone 验收事实：
+
+```text
+Outline profile: AWS Tokyo E Outline
+server: 13.230.97.189:443
+status: connected
+public exit: 13.230.97.189 / Japan
+manual checks: Google ok, YouTube ok
+```
+
+E 模式验证命令示例：
+
+```bash
+sudo systemctl status shadowsocks-libev --no-pager -l
+sudo ss -lntup 'sport = :443'
+sudo ufw status numbered
+```
+
 WireGuard direct 模式切换后，先确认 WireGuard App 中 AWS Tokyo tunnel 已连接，再运行：
 
 ```bash
