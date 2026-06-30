@@ -10,9 +10,10 @@ set_system_proxy_aws
 set_git_proxy_aws
 update_zshrc_proxy_block aws
 
-echo "Mac proxy mode switched to AWS SSH HTTP+SOCKS."
+echo "Mac proxy mode switched to AWS SSH HTTP."
 echo "System HTTP/HTTPS: ${AWS_PROXY_HTTP_HOST}:${AWS_PROXY_HTTP_PORT}"
-echo "System SOCKS: ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}"
+echo "System SOCKS: off"
+echo "Local SOCKS test listener: ${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}"
 echo "Git proxy: $(aws_http_url)"
 print_next_shell_note
 echo "Note: use_aws_proxy.sh is kept as a compatibility alias; use use_aws_ssh_socks.sh for the explicit mode name."

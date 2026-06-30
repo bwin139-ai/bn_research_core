@@ -17,15 +17,15 @@ AWS WireGuard direct mode:
 - Stops the local AWS SSH SOCKS listener on `127.0.0.1:18080` when that
   listener is owned by `ssh`.
 
-AWS SSH HTTP+SOCKS mode:
+AWS SSH HTTP mode:
 
 - Uses TCP SSH forwarding instead of WireGuard UDP.
 - Assumes MonoProxy is quit and WireGuard is stopped.
-- Starts a local SSH SOCKS tunnel on `127.0.0.1:18080`.
 - Starts a local SSH HTTP/HTTPS proxy forward on `127.0.0.1:18082`, forwarding
   to AWS tinyproxy on the server.
-- Points macOS Wi-Fi HTTP/HTTPS proxy to `127.0.0.1:18082` and SOCKS proxy to
-  `127.0.0.1:18080`.
+- Starts a local SSH SOCKS tunnel on `127.0.0.1:18080` only for manual probes.
+- Points macOS Wi-Fi HTTP/HTTPS proxy to `127.0.0.1:18082` and keeps the macOS
+  SOCKS proxy disabled.
 - Points global git proxy and new shell HTTP/HTTPS proxy env to
   `http://127.0.0.1:18082`.
 
@@ -93,7 +93,7 @@ tools/mac_proxy/use_aws_ssh_socks.sh
 
 `use_monoproxy.sh` maps to Mode A. `use_aws_wireguard_direct.sh` maps to Mode B.
 `use_aws_proxy.sh` and `use_aws_ssh_socks.sh` are kept as compatibility aliases
-for AWS SSH HTTP+SOCKS; prefer `use_mode_d_aws_ssh_socks.sh` for the explicit
+for AWS SSH HTTP mode; prefer `use_mode_d_aws_ssh_socks.sh` for the explicit
 mode.
 
 Open a new terminal after switching modes so the updated `~/.zshrc` proxy block

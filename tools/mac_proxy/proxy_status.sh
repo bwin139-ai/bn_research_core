@@ -57,10 +57,9 @@ system_proxy_direct() {
 system_proxy_aws_socks() {
   proxy_enabled web &&
     proxy_enabled secure &&
-    proxy_enabled socks &&
+    proxy_disabled socks &&
     proxy_host_port_is web "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT" &&
-    proxy_host_port_is secure "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT" &&
-    proxy_host_port_is socks "$AWS_PROXY_SOCKS_HOST" "$AWS_PROXY_SOCKS_PORT"
+    proxy_host_port_is secure "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
 }
 
 system_proxy_aws_outline() {
@@ -107,8 +106,7 @@ shell_proxy_aws_socks() {
     [[ "${https_proxy:-}" == "$(aws_http_url)" ]] &&
     [[ "${HTTP_PROXY:-}" == "$(aws_http_url)" ]] &&
     [[ "${HTTPS_PROXY:-}" == "$(aws_http_url)" ]] &&
-    [[ "${all_proxy:-}" == "$(aws_socks_url)" ]] &&
-    [[ "${ALL_PROXY:-}" == "$(aws_socks_url)" ]]
+    [[ -z "${all_proxy:-}${ALL_PROXY:-}" ]]
 }
 
 shell_proxy_aws_outline() {
@@ -203,26 +201,26 @@ echo "== ABCDE mode verdict =="
 pass_fail "Mode A MonoProxy" mode_a_pass
 pass_fail "Mode B AWS WireGuard" mode_b_pass
 pass_fail "Mode C Direct" mode_c_pass
-pass_fail "Mode D AWS SSH HTTP+SOCKS" mode_d_pass
+pass_fail "Mode D AWS SSH HTTP" mode_d_pass
 pass_fail "Mode E AWS Outline/Shadowsocks" mode_e_pass
 
 echo
 echo "== component checks =="
 pass_fail "system proxy -> MonoProxy" system_proxy_mono
 pass_fail "system proxy -> direct/off" system_proxy_direct
-pass_fail "system proxy -> AWS SSH HTTP+SOCKS" system_proxy_aws_socks
+pass_fail "system proxy -> AWS SSH HTTP" system_proxy_aws_socks
 pass_fail "system proxy -> AWS Outline/Shadowsocks" system_proxy_aws_outline
 pass_fail "git proxy -> MonoProxy" git_proxy_mono
 pass_fail "git proxy -> empty" git_proxy_empty
-pass_fail "git proxy -> AWS SSH HTTP+SOCKS" git_proxy_aws_socks
+pass_fail "git proxy -> AWS SSH HTTP" git_proxy_aws_socks
 pass_fail "git proxy -> AWS Outline/Shadowsocks" git_proxy_aws_outline
 pass_fail "shell proxy -> MonoProxy" shell_proxy_mono
 pass_fail "shell proxy -> empty" shell_proxy_empty
-pass_fail "shell proxy -> AWS SSH HTTP+SOCKS" shell_proxy_aws_socks
+pass_fail "shell proxy -> AWS SSH HTTP" shell_proxy_aws_socks
 pass_fail "shell proxy -> AWS Outline/Shadowsocks" shell_proxy_aws_outline
 pass_fail "MonoProxy listeners 8118/8119" mono_listeners_active
 pass_fail "AWS SSH HTTP+SOCKS listeners 18082/18080" aws_socks_listener_active
-pass_fail "AWS SSH HTTP+SOCKS network reachable" aws_socks_network_reachable
+pass_fail "AWS SSH HTTP network reachable" aws_socks_network_reachable
 pass_fail "AWS Outline/Shadowsocks listener 18081" aws_outline_listener_active
 pass_fail "AWS Outline/Shadowsocks network reachable" aws_outline_network_reachable
 pass_fail "WireGuard 10.89.0.x active" wireguard_active
@@ -325,7 +323,7 @@ if command -v curl >/dev/null 2>&1; then
   if test_codex_endpoint_direct; then echo "405"; else echo "fail"; fi
   printf 'mono Codex endpoint: '
   if test_codex_endpoint_mono; then echo "405"; else echo "fail"; fi
-  printf 'AWS SSH HTTP+SOCKS Codex endpoint: '
+  printf 'AWS SSH HTTP Codex endpoint: '
   if test_codex_endpoint_aws_socks; then echo "405"; else echo "fail"; fi
   printf 'AWS Outline/Shadowsocks Codex endpoint: '
   if test_codex_endpoint_aws_outline; then echo "405"; else echo "fail"; fi

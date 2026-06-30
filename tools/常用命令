@@ -8,6 +8,7 @@ ssh aliyun-bn
 # ============== MacBook 代理模式 ===============
 # A: MonoProxy 备用模式
 tools/mac_proxy/use_mode_a_monoproxy.sh
+source ~/.zshrc
 
 # B: AWS WireGuard UDP 模式
 tools/mac_proxy/use_mode_b_aws_wireguard.sh
@@ -15,7 +16,7 @@ tools/mac_proxy/use_mode_b_aws_wireguard.sh
 # C: 普通直连模式
 tools/mac_proxy/use_mode_c_direct.sh
 
-# D: AWS SSH HTTP+SOCKS 私有 TCP 模式
+# D: AWS SSH HTTP 私有 TCP 模式
 tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
 source ~/.zshrc
 tools/mac_proxy/proxy_status.sh

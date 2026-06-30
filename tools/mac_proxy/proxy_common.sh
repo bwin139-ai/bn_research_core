@@ -284,10 +284,9 @@ stop_aws_outline_if_owned() {
 set_system_proxy_aws() {
   networksetup -setwebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
   networksetup -setsecurewebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
-  networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_SOCKS_HOST" "$AWS_PROXY_SOCKS_PORT"
   networksetup -setwebproxystate "$MAC_PROXY_SERVICE" on
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" on
-  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
+  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" off
 }
 
 set_system_proxy_aws_outline() {
@@ -476,8 +475,7 @@ if mode == "aws":
         f"export https_proxy={aws_http}",
         f"export HTTP_PROXY={aws_http}",
         f"export HTTPS_PROXY={aws_http}",
-        f"export all_proxy={aws_socks}",
-        f"export ALL_PROXY={aws_socks}",
+        "unset all_proxy ALL_PROXY",
         end,
     ]
 elif mode == "aws-wireguard-direct":
