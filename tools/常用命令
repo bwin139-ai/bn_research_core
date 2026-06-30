@@ -23,6 +23,8 @@ tools/mac_proxy/proxy_status.sh
 
 # E: AWS Outline/Shadowsocks 私有 TCP 模式
 tools/mac_proxy/use_mode_e_aws_outline.sh
+source ~/.zshrc
+tools/mac_proxy/proxy_status.sh
 
 # 查看当前代理状态
 tools/mac_proxy/proxy_status.sh

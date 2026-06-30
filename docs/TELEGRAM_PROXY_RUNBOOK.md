@@ -235,6 +235,8 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
 2026-06-30 D 模式第三次 MacBook 实测成功：HTTP-only 版本显示 `Mode D AWS SSH HTTP: PASS`，macOS HTTP/HTTPS、git proxy、shell `http_proxy/https_proxy` 均指向 `127.0.0.1:18082`，系统 SOCKS 为关闭，Codex endpoint 返回 `405`。用户确认当前 Codex Desktop 消息可经 D 通道发送并被收到，说明 D HTTP-only 已具备承载 Codex Desktop 的实用性。切换命令中若把说明行 `# Quit MonoProxy...` 直接粘进 zsh，可能出现 `zsh: command not found: #`，该提示无害；实际操作只需要执行不带 `#` 的命令行。
 
+2026-06-30 后续复测显示：D 模式曾再次出现 MacBook 无法联网，而 iPhone E 通道仍正常。MacBook 随后切换 E 模式并显示 `Mode E AWS Outline/Shadowsocks: PASS`：macOS HTTP/HTTPS 关闭、SOCKS 指向 `127.0.0.1:18081`，git proxy 和 shell `all_proxy/ALL_PROXY` 指向 `socks5h://127.0.0.1:18081`，`ss-local` listener 正常，AWS Outline 出口为 `13.230.97.189`，Codex endpoint 返回 `405`。用户确认当前 Codex Desktop 消息可经 MacBook E 通道发送并被收到。因此个人代理稳定性观察主线调整为 iPhone E + MacBook E 连续观察 24 小时；A / MonoProxy 作为保底回退，D / AWS SSH HTTP 作为调试备用，B / WireGuard UDP 作为实验备用。
+
 2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
 
 ```text
