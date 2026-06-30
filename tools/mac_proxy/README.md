@@ -25,6 +25,15 @@ AWS WireGuard direct mode:
 - Stops the local AWS SSH SOCKS listener on `127.0.0.1:18080` when that
   listener is owned by `ssh`.
 
+AWS SSH SOCKS mode:
+
+- Uses TCP SSH dynamic forwarding instead of WireGuard UDP.
+- Assumes MonoProxy is quit and WireGuard is stopped.
+- Starts a local SSH SOCKS tunnel to AWS Lightsail Tokyo on `127.0.0.1:18080`.
+- Points macOS Wi-Fi SOCKS proxy, git proxy, and new shell proxy env to that
+  tunnel.
+- Leaves macOS HTTP and HTTPS proxies disabled.
+
 MonoProxy mode:
 
 - Points macOS Wi-Fi HTTP/HTTPS proxy to `127.0.0.1:8118`.
@@ -40,6 +49,7 @@ tools/mac_proxy/probe_codex_network.sh
 tools/mac_proxy/use_mode_a_monoproxy.sh
 tools/mac_proxy/use_mode_b_aws_wireguard.sh
 tools/mac_proxy/use_mode_c_direct.sh
+tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
 ```
 
 Manual app state before running each mode:
@@ -47,6 +57,7 @@ Manual app state before running each mode:
 - Mode A: MonoProxy running and `Set As System Proxy` checked; WireGuard stopped.
 - Mode B: WireGuard tunnel started; MonoProxy quit.
 - Mode C: MonoProxy quit; WireGuard stopped.
+- Mode D: MonoProxy quit; WireGuard stopped; AWS SSH reachable.
 
 Compatibility aliases:
 
@@ -58,8 +69,8 @@ tools/mac_proxy/use_aws_ssh_socks.sh
 ```
 
 `use_monoproxy.sh` maps to Mode A. `use_aws_wireguard_direct.sh` maps to Mode B.
-`use_aws_proxy.sh` and `use_aws_ssh_socks.sh` are debug-only AWS SSH SOCKS tools,
-not part of the normal A/B/C workflow.
+`use_aws_proxy.sh` and `use_aws_ssh_socks.sh` are kept as compatibility aliases
+for AWS SSH SOCKS; prefer `use_mode_d_aws_ssh_socks.sh` for the explicit mode.
 
 Open a new terminal after switching modes so the updated `~/.zshrc` proxy block
 is applied to new shells. If Codex Desktop was already open, quit and reopen it
@@ -69,7 +80,7 @@ For WireGuard direct mode, `proxy_status.sh` should show no macOS HTTP/HTTPS/SOC
 proxy, no git global proxy, no shell proxy env, IPv4 public IP `13.230.97.189`,
 and either no IPv6 result or an expected WireGuard-controlled IPv6 route.
 
-`proxy_status.sh` prints `Mode A/B/C: PASS/FAIL` first. If the shell proxy result
+`proxy_status.sh` prints `Mode A/B/C/D: PASS/FAIL` first. If the shell proxy result
 does not match after switching, open a new terminal or run `source ~/.zshrc`.
 
 When Codex Desktop shows `stream disconnected before completion`, run:

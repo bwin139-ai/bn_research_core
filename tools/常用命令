@@ -4,6 +4,25 @@ ssh aliyun-bn
  cd ~/ai_projects/bn_research_core
  cd /root/bn_research_core
 
+# ============== MacBook 代理模式 ===============
+# A: MonoProxy 备用模式
+tools/mac_proxy/use_mode_a_monoproxy.sh
+
+# B: AWS WireGuard UDP 模式
+tools/mac_proxy/use_mode_b_aws_wireguard.sh
+
+# C: 普通直连模式
+tools/mac_proxy/use_mode_c_direct.sh
+
+# D: AWS SSH SOCKS 私有 TCP 模式
+tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
+
+# 查看当前代理状态
+tools/mac_proxy/proxy_status.sh
+
+# ChatGPT/Codex 网络探针
+LOOPS=5 MODES='mono-http mono-socks aws-socks' tools/mac_proxy/probe_codex_network.sh
+
 ps aux | grep python
 ps aux | grep '[c]ore.exchange_history_sync'
 

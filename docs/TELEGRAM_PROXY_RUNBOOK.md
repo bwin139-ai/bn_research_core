@@ -164,13 +164,15 @@ tools/mac_proxy/probe_codex_network.sh
 tools/mac_proxy/use_mode_a_monoproxy.sh
 tools/mac_proxy/use_mode_b_aws_wireguard.sh
 tools/mac_proxy/use_mode_c_direct.sh
+tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
 ```
 
-三档模式：
+四档模式：
 
 1. A / MonoProxy 备用模式：先手动启动 MonoProxy 并点击 `Set As System Proxy`，确认 WireGuard 已关闭，再运行 `tools/mac_proxy/use_mode_a_monoproxy.sh`。脚本要求 `127.0.0.1:8118/8119` 正在监听，并设置 macOS Wi-Fi 系统代理、git proxy 与 `~/.zshrc` 托管 proxy block。
 2. B / AWS WireGuard 主力模式：先手动 Quit MonoProxy，再在 WireGuard App 里启动 `personal-proxy-tokyo-test-macbook`，然后运行 `tools/mac_proxy/use_mode_b_aws_wireguard.sh`。脚本要求看到 `10.89.0.x` 地址，关闭本机 HTTP/HTTPS/SOCKS 系统代理，清空 git proxy 和 shell proxy，并验证 direct 出口 IPv4 是 `13.230.97.189`。
 3. C / Direct 直连模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_c_direct.sh`。脚本关闭全部本机代理残留，清空 git proxy 和 shell proxy，并验证普通直连网络可达；该模式不要求 ChatGPT 可直连。
+4. D / AWS SSH SOCKS 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_d_aws_ssh_socks.sh`。脚本启动 `127.0.0.1:18080 -> ubuntu@13.230.97.189` SSH SOCKS 隧道，设置 macOS Wi-Fi SOCKS、git proxy 与新 shell proxy env，并验证 ChatGPT trace 与 Codex endpoint 可达。
 
 也可以完全手动开关 MonoProxy / WireGuard；脚本的职责不是替代肉眼可见的软件开关，而是把系统代理、git proxy、shell proxy 和出口状态统一校准并给出 PASS/FAIL。
 
@@ -183,7 +185,7 @@ tools/mac_proxy/use_aws_proxy.sh
 tools/mac_proxy/use_aws_ssh_socks.sh
 ```
 
-其中 `use_monoproxy.sh` 映射到 A，`use_aws_wireguard_direct.sh` 映射到 B。`use_aws_proxy.sh` / `use_aws_ssh_socks.sh` 是 AWS SSH SOCKS 调试工具，不是日常 A/B/C 主路径。
+其中 `use_monoproxy.sh` 映射到 A，`use_aws_wireguard_direct.sh` 映射到 B。`use_aws_proxy.sh` / `use_aws_ssh_socks.sh` 保留为 AWS SSH SOCKS 兼容入口；正式 AWS SSH SOCKS 切换优先使用 D 模式脚本。
 
 AWS SSH SOCKS 调试模式会启动本机 SSH SOCKS 隧道：
 
@@ -212,6 +214,8 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 ```
 
 原始 `13.230.97.189:51820` 保留为服务器监听端口和兼容入口，但 2026-06-29 已观察到 MacBook / iPhone 经 `51820/udp` 会出现握手不完成、全局 VPN 接管后无法联网；`443/udp` 备用入口经 Lightsail IPv4 firewall、服务器 UFW 与 `iptables REDIRECT --to-ports 51820` 转发后，iPhone 已验证恢复正常握手与联网。
+
+2026-06-30 进一步观察到：`51820/udp` 与 `443/udp` 都曾出现“可用约半天后失效”的现场；AWS 服务器能收到客户端 WireGuard handshake initiation 并发出 response，但 `latest handshake` 不刷新、NAT 转发计数不增长。新建 iPhone peer 后现象不变，说明问题更接近当前网络对 WireGuard UDP 的稳定性干扰，而不是单一客户端配置损坏。当前长期方向不再继续把 WireGuard UDP 作为唯一主通路；保留 WireGuard 作为备用，同时将 AWS SSH SOCKS / 后续 TCP/TLS 私有代理作为稳定性主线验证。
 
 WireGuard direct 模式切换后，先确认 WireGuard App 中 AWS Tokyo tunnel 已连接，再运行：
 
@@ -243,6 +247,7 @@ source ~/.zshrc
 Mode A MonoProxy: PASS/FAIL
 Mode B AWS WireGuard: PASS/FAIL
 Mode C Direct: PASS/FAIL
+Mode D AWS SSH SOCKS: PASS/FAIL
 ```
 
 若刚运行过切换脚本但 shell proxy 仍显示旧值，说明当前 terminal / Codex 子进程继承了旧环境；新开 terminal 或 `source ~/.zshrc` 后再查。

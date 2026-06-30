@@ -240,8 +240,19 @@ test_codex_endpoint_mono() {
   [[ "$code" == "405" ]]
 }
 
+test_codex_endpoint_aws_socks() {
+  local code
+  code="$(clean_curl_env curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_aws_socks.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
+  rm -f /tmp/mac_proxy_codex_aws_socks.out
+  [[ "$code" == "405" ]]
+}
+
 test_trace_mono() {
   clean_curl_env curl -x "$(mono_http_url)" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
+}
+
+test_trace_aws_socks() {
+  clean_curl_env curl --socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
 }
 
 verify_mode_a() {
@@ -261,6 +272,12 @@ verify_mode_b() {
 
 verify_mode_c() {
   public_ipv4_direct >/dev/null
+}
+
+verify_mode_d() {
+  test_aws_socks
+  test_trace_aws_socks
+  test_codex_endpoint_aws_socks
 }
 
 update_zshrc_proxy_block() {
