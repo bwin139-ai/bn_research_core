@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/proxy_common.sh"
 
 LOOPS="${LOOPS:-3}"
-MODES="${MODES:-direct mono-http mono-socks aws-socks}"
+MODES="${MODES:-direct mono-http mono-socks aws-socks aws-outline}"
 
 clean_env=(
   env
@@ -37,6 +37,9 @@ run_curl() {
       ;;
     aws-socks)
       cmd+=(--socks5-hostname "${AWS_PROXY_SOCKS_HOST}:${AWS_PROXY_SOCKS_PORT}")
+      ;;
+    aws-outline)
+      cmd+=(--socks5-hostname "${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}")
       ;;
     *)
       echo "unknown mode: $mode" >&2

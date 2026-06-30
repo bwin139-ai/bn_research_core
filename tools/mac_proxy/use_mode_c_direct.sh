@@ -11,6 +11,7 @@ set_system_proxy_direct
 unset_git_proxy
 update_zshrc_proxy_block direct
 stop_aws_tunnel_if_owned
+stop_aws_outline_if_owned
 
 echo "Mode C direct settings applied."
 echo "System HTTP/HTTPS/SOCKS proxies: off"
