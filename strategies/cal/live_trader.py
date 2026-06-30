@@ -509,6 +509,10 @@ def _pause_symbol(
     detail: Mapping[str, Any] | None = None,
 ) -> None:
     symbol_state = _symbol_state(state, symbol)
+    already_paused_same_reason = (
+        str(symbol_state.get("status") or "").upper().strip() == "PAUSED_BY_INVARIANT_VIOLATION"
+        and str(symbol_state.get("paused_reason") or "") == str(reason)
+    )
     symbol_state["status"] = "PAUSED_BY_INVARIANT_VIOLATION"
     symbol_state["paused_reason"] = str(reason)
     symbol_state["paused_detail"] = dict(detail or {})
@@ -517,7 +521,8 @@ def _pause_symbol(
     state["status"] = "PAUSED_BY_INVARIANT_VIOLATION"
     _save_state(str(cfg["account"]), state)
     _write_event(cfg, "paused_by_invariant_violation", {"symbol": symbol, "reason": reason, "detail": dict(detail or {})})
-    _notify_cal(str(cfg["account"]), "CRITICAL paused", [f"symbol={symbol}", f"reason={reason}"])
+    if not already_paused_same_reason:
+        _notify_cal(str(cfg["account"]), "CRITICAL paused", [f"symbol={symbol}", f"reason={reason}"])
 
 
 def _clear_resolved_position_qty_pause(account: str, state: dict[str, Any], symbol_state: dict[str, Any]) -> None:
@@ -576,6 +581,75 @@ def _append_closed_lot(symbol_state: dict[str, Any], lot: Mapping[str, Any], *, 
     row["exit_order_snapshot"] = dict(order or {})
     closed.append(row)
     symbol_state["closed_lots"] = closed[-200:]
+
+
+def _open_order_client_ids(account: str, symbol: str) -> set[str]:
+    res = get_open_orders(account, symbol)
+    if not res.get("ok"):
+        raise RuntimeError(f"CAL open orders query failed: {symbol} | {res.get('reason')}")
+    rows = res.get("data") or []
+    if not isinstance(rows, list):
+        raise TypeError(f"CAL open orders response data must be list: {symbol}")
+    out: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        cid = str(row.get("client_order_id") or row.get("clientOrderId") or "").strip()
+        if cid:
+            out.add(cid)
+    return out
+
+
+def _close_lots_if_position_closed_externally(
+    *,
+    cfg: Mapping[str, Any],
+    state: dict[str, Any],
+    symbol: str,
+    symbol_state: dict[str, Any],
+    lots: list[dict[str, Any]],
+    trigger_order: Mapping[str, Any],
+) -> bool:
+    account = str(cfg["account"])
+    position = _query_long_position(account, symbol)
+    position_qty = _position_qty(position)
+    if position_qty > 0:
+        return False
+
+    open_cids = _open_order_client_ids(account, symbol)
+    for lot in lots:
+        tp_cid = str(lot.get("tp_client_order_id") or "").strip()
+        if tp_cid and tp_cid in open_cids:
+            cancel_order(account, symbol, client_order_id=tp_cid, notify_label="cal")
+        _append_closed_lot(symbol_state, lot, reason="POSITION_CLOSED_EXTERNAL", order=trigger_order)
+        logging.info(
+            "%s CAL EXIT | account=%s | symbol=%s | level=%s | reason=POSITION_CLOSED_EXTERNAL | lot_id=%s",
+            STRATEGY_LOGO,
+            account,
+            symbol,
+            lot.get("level"),
+            lot.get("lot_id"),
+        )
+
+    symbol_state["open_lots"] = []
+    symbol_state["repeat_counts"] = {}
+    _clear_symbol_pause(account, state, symbol_state, reason="tp_order_terminal_not_filled")
+    _save_state(account, state)
+    _write_event(
+        cfg,
+        "open_lots_position_closed_external",
+        {
+            "symbol": symbol,
+            "closed_count": len(lots),
+            "position_qty": position_qty,
+            "trigger_order": dict(trigger_order),
+        },
+    )
+    _notify_cal(
+        account,
+        "EXIT",
+        [f"symbol={symbol}", "reason=POSITION_CLOSED_EXTERNAL", f"closed_lots={len(lots)}"],
+    )
+    return True
 
 
 def _emit_signal(cfg: Mapping[str, Any], intent: Mapping[str, Any]) -> None:
@@ -803,6 +877,15 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
             _pause_symbol(cfg=cfg, state=state, symbol=symbol, reason="tp_order_status_missing", detail={"lot": lot, "order": order})
             return
         if status not in ACTIVE_TP_STATUSES and status != "FILLED":
+            if status in TERMINAL_ORDER_STATUSES and _close_lots_if_position_closed_externally(
+                cfg=cfg,
+                state=state,
+                symbol=symbol,
+                symbol_state=symbol_state,
+                lots=lots,
+                trigger_order=order,
+            ):
+                return
             _pause_symbol(cfg=cfg, state=state, symbol=symbol, reason="tp_order_terminal_not_filled", detail={"lot": lot, "order": order})
             return
         rows.append({"lot": lot, "order": order, "status": status})
