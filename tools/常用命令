@@ -17,6 +17,7 @@ tools/mac_proxy/use_mode_c_direct.sh
 
 # D: AWS SSH HTTP+SOCKS 私有 TCP 模式
 tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
+source ~/.zshrc
 tools/mac_proxy/proxy_status.sh
 
 # E: AWS Outline/Shadowsocks 私有 TCP 模式
