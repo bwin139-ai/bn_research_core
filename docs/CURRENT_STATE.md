@@ -1324,6 +1324,8 @@ Spring / Sweep-Reclaim 通过 `output/live_projection/*_heartbeat.*.json` 检查
 
 2026-07-01 chen912 / junjie2026 CAL decision config 新增 `CBRSUSDT`：杠杆 `20x`，P1/P2/P3 notional 均为 `500U`，drop_pct 分别为 `0.05 / 0.06 / 0.14`，P2/P3 `repeat_drop_step_pct=0.015`，symbol take profit pct 为 `0.03`；两个账户的单 symbol 风险上限新增 `CBRSUSDT=1500U`，总 CAL 策略 notional 上限从 `3600U` 调整为 `5100U`。
 
+2026-07-02 CAL live trader 修复 TP 部分成交误暂停：生产发现 `chen912 / CBRSUSDT` P1 entry `2.30 @ 216.47` 后 TP `SELL 2.30 @ 222.96` 部分成交 `0.46`，交易所 LONG 剩余 `1.84`，但旧 reconcile 仍用原始 `entry_qty=2.30` 与当前 position 比较，误触发 `position_qty_below_cal_open_lot_qty`。本轮补丁将 active TP 的可解释 CAL 数量改为 `orig_qty - executed_qty`，即按 TP 剩余数量与交易所 LONG position 对齐；若 TP 数量字段异常则 fail-fast 为 `tp_order_qty_invalid`。该修复只影响 CAL open lot reconcile 数量判断，不改变 entry、TP 价格、maker-only 下单或 repeat_count 语义。
+
 2026-05-21 chen912 配置 `exchange_history_start_time=2026-05-01T00:00:00+08:00` 后尝试单账户 bootstrap，发现该账户某些 1 天 income 窗口会命中 Binance `limit=1000`，同步器按完整性规则 fail-fast。已将 `core/exchange_history_sync.py` 的 income 同步改为自适应拆分：1 天窗口命中 `limit=1000` 时递归拆为更小窗口，直到低于 limit；若达到最小 1 小时窗口仍命中 limit，继续 fail-fast，避免把截断流水当作完整历史。
 
 2026-05-23 SWR sim/live 一致性审计 checkpoint：mybwin139 最新 live 样本窗口为 `2026-05-11 13:30:00+08:00` 至 `2026-05-22 13:00:00+08:00`，对应 sim run `SWR_SmokeTest_V1_0523T1152`。已确认 live projection anchor 无错位，70 个 sim signal 均能在 live 按 `symbol + signal_time` 命中，匹配信号的 H/gamma/B/C 结构锚点一致；live-only 21 个信号中，20 个对应 sim `cooldown_active`，来自执行状态分歧，1 个 `MLNUSDT 2026-05-15 04:14+08:00` 待查，当前事实指向 sim 本地 1m 落盘数据缺失。live trades 共 64 笔，其中 3 笔 `UNKNOWN_EXIT` 待进一步核查：`ESPORTSUSDT 2026-05-13 01:58+08:00`、`GUAUSDT 2026-05-16 14:44+08:00`、`EDENUSDT 2026-05-20 22:25+08:00`。

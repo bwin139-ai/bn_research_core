@@ -571,6 +571,18 @@ def _cal_qty(lots: list[Mapping[str, Any]]) -> float:
     return float(total)
 
 
+def _active_tp_remaining_qty(order: Mapping[str, Any]) -> float | None:
+    orig_qty = _as_float(order.get("orig_qty"))
+    executed_qty = _as_float(order.get("executed_qty"))
+    if orig_qty is None or orig_qty <= 0:
+        return None
+    if executed_qty is None or executed_qty < 0:
+        return None
+    if executed_qty > orig_qty + 1e-12:
+        return None
+    return max(float(orig_qty) - float(executed_qty), 0.0)
+
+
 def _append_closed_lot(symbol_state: dict[str, Any], lot: Mapping[str, Any], *, reason: str, order: Mapping[str, Any] | None) -> None:
     closed = list(symbol_state.get("closed_lots") or [])
     row = dict(lot)
@@ -888,7 +900,14 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
                 return
             _pause_symbol(cfg=cfg, state=state, symbol=symbol, reason="tp_order_terminal_not_filled", detail={"lot": lot, "order": order})
             return
-        rows.append({"lot": lot, "order": order, "status": status})
+        tp_remaining_qty = 0.0
+        if status in ACTIVE_TP_STATUSES:
+            maybe_remaining_qty = _active_tp_remaining_qty(order)
+            if maybe_remaining_qty is None:
+                _pause_symbol(cfg=cfg, state=state, symbol=symbol, reason="tp_order_qty_invalid", detail={"lot": lot, "order": order})
+                return
+            tp_remaining_qty = float(maybe_remaining_qty)
+        rows.append({"lot": lot, "order": order, "status": status, "tp_remaining_qty": tp_remaining_qty})
 
     filled_levels = {str(row["lot"].get("level") or "").upper() for row in rows if row["status"] == "FILLED"}
     active_levels = {str(row["lot"].get("level") or "").upper() for row in rows if row["status"] != "FILLED"}
@@ -958,13 +977,14 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
         _save_state(account, state)
         _write_event(cfg, "open_lots_position_closed", {"symbol": symbol, "closed_count": len(remaining)})
         return
-    if position_qty + 1e-12 < _cal_qty(remaining):
+    cal_remaining_qty = float(sum(float(row["tp_remaining_qty"]) for row in rows if row["status"] != "FILLED"))
+    if position_qty + 1e-12 < cal_remaining_qty:
         _pause_symbol(
             cfg=cfg,
             state=state,
             symbol=symbol,
             reason="position_qty_below_cal_open_lot_qty",
-            detail={"position_qty": position_qty, "cal_qty": _cal_qty(remaining)},
+            detail={"position_qty": position_qty, "cal_qty": cal_remaining_qty},
         )
         return
     _clear_resolved_position_qty_pause(account, state, symbol_state)
@@ -977,6 +997,7 @@ def _reconcile_open_lots(cfg: Mapping[str, Any], state: dict[str, Any], symbol: 
             "open_count": len(remaining),
             "closed_count": closed_count,
             "position_qty": position_qty,
+            "cal_remaining_qty": cal_remaining_qty,
             "repeat_counts": _repeat_counts(symbol_state),
         },
     )
