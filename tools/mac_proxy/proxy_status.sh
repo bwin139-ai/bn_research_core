@@ -78,6 +78,20 @@ system_proxy_aws_outline_http() {
     proxy_host_port_is socks "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
 }
 
+proxy_bypass_contains() {
+  local item="$1"
+  networksetup -getproxybypassdomains "$MAC_PROXY_SERVICE" 2>/dev/null | grep -Fxq "$item"
+}
+
+standard_proxy_bypass_active() {
+  proxy_bypass_contains "127.0.0.1" &&
+    proxy_bypass_contains "10.0.0.0/8" &&
+    proxy_bypass_contains "192.168.0.0/16" &&
+    proxy_bypass_contains "gateway.icloud.com.cn" &&
+    proxy_bypass_contains "*.icloud.com.cn" &&
+    proxy_bypass_contains "*.qq.com"
+}
+
 git_proxy_mono() {
   [[ "$(git config --global --get http.proxy 2>/dev/null || true)" == "$(mono_http_url)" ]] &&
     [[ "$(git config --global --get https.proxy 2>/dev/null || true)" == "$(mono_http_url)" ]]
@@ -271,6 +285,7 @@ pass_fail "AWS Outline/Shadowsocks listener 18081" aws_outline_listener_active
 pass_fail "AWS Outline/Shadowsocks network reachable" aws_outline_network_reachable
 pass_fail "AWS Outline HTTP listener 18083" aws_outline_http_listener_active
 pass_fail "AWS Outline HTTP network reachable" aws_outline_http_network_reachable
+pass_fail "standard proxy bypass domains" standard_proxy_bypass_active
 pass_fail "WireGuard 10.89.0.x active" wireguard_active
 pass_fail "direct public IPv4 is AWS" direct_public_ip_matches_aws
 pass_fail "direct network reachable" direct_network_reachable
@@ -283,6 +298,9 @@ if command -v networksetup >/dev/null 2>&1; then
   networksetup_proxy_block secure || true
   echo
   networksetup_proxy_block socks || true
+  echo
+  echo "Proxy bypass domains:"
+  networksetup -getproxybypassdomains "$MAC_PROXY_SERVICE" 2>/dev/null || true
 else
   echo "networksetup not found"
 fi

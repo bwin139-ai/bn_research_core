@@ -400,6 +400,7 @@ set_system_proxy_aws_outline() {
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" off
   networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
   networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
+  set_standard_proxy_bypass_domains
 }
 
 set_system_proxy_aws_outline_http() {
@@ -409,6 +410,41 @@ set_system_proxy_aws_outline_http() {
   networksetup -setwebproxystate "$MAC_PROXY_SERVICE" on
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" on
   networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
+  set_standard_proxy_bypass_domains
+}
+
+set_standard_proxy_bypass_domains() {
+  networksetup -setproxybypassdomains "$MAC_PROXY_SERVICE" \
+    localhost \
+    127.0.0.1 \
+    ::1 \
+    '*.local' \
+    10.0.0.0/8 \
+    172.16.0.0/12 \
+    192.168.0.0/16 \
+    100.64.0.0/10 \
+    17.0.0.0/8 \
+    captive.apple.com \
+    configuration.apple.com \
+    gateway.icloud.com \
+    gateway.icloud.com.cn \
+    '*.icloud.com.cn' \
+    '*.ess.apple.com' \
+    '*.push.apple.com' \
+    '*.push-apple.com.akadns.net' \
+    '*.smoot.apple.cn' \
+    api.smoot.apple.com \
+    guzzoni.apple.com \
+    health.apple.com \
+    ocsp.apple.com \
+    smp-device-content.apple.com \
+    valid.apple.com \
+    weather-data.apple.com \
+    weatherkit.apple.com \
+    xp.apple.com \
+    '*.qq.com' \
+    '*.weixin.qq.com' \
+    '*.wechat.com'
 }
 
 set_system_proxy_direct() {

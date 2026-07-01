@@ -176,7 +176,7 @@ tools/mac_proxy/use_mode_e_aws_outline.sh
 3. C / Direct 直连模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_c_direct.sh`。脚本关闭全部本机代理残留，清空 git proxy 和 shell proxy，并验证普通直连网络可达；该模式不要求 ChatGPT 可直连。
 4. D / AWS SSH HTTP 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_d_aws_ssh_socks.sh`。脚本启动 `127.0.0.1:18082 -> AWS tinyproxy 127.0.0.1:80` HTTP/HTTPS 代理转发，并保留 `127.0.0.1:18080` SSH SOCKS listener 仅供手动探针；macOS Wi-Fi HTTP/HTTPS 指向 `18082`，系统 SOCKS 保持关闭，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18082`，并验证 ChatGPT trace 与 Codex endpoint 可达。
 5. E / AWS Outline-Shadowsocks 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline.sh`。脚本通过 SSH 从 AWS 读取 Shadowsocks 服务端配置，写入本机私有配置 `~/.config/bn_research_core/aws_outline_e_macbook.json`，启动 `ss-local` 监听 `127.0.0.1:18081`，设置 macOS Wi-Fi SOCKS、git proxy 与新 shell proxy env，并验证 ChatGPT trace 与 Codex endpoint 可达。
-6. E+ / AWS Outline-Shadowsocks + 本地 HTTP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline_http.sh`。脚本底层仍使用 AWS Shadowsocks `13.230.97.189:443/tcp` 与本机 `ss-local 127.0.0.1:18081`，但额外启动本机 `privoxy 127.0.0.1:18083`，把 HTTP/HTTPS proxy 转发到 E 的 SOCKS 通道；macOS Wi-Fi HTTP/HTTPS 指向 `18083`，系统 SOCKS 关闭，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18083`。该模式用于对标 MonoProxy 的 HTTP 入口，重点验证 Codex 长线程、WebSocket 和 streaming 稳定性。首次使用若提示缺少 `privoxy`，先执行 `brew install privoxy`。
+6. E+ / AWS Outline-Shadowsocks + 本地 HTTP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline_http.sh`。脚本底层仍使用 AWS Shadowsocks `13.230.97.189:443/tcp` 与本机 `ss-local 127.0.0.1:18081`，但额外启动本机 `privoxy 127.0.0.1:18083`，把 HTTP/HTTPS proxy 转发到 E 的 SOCKS 通道；macOS Wi-Fi HTTP/HTTPS 指向 `18083`，系统 SOCKS 同时启用 `18081`，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18083`，shell `all_proxy` 指向 `socks5h://127.0.0.1:18081`。该模式用于对标 MonoProxy 的 HTTP+SOCKS 双入口，重点验证 Codex 长线程、WebSocket、streaming 和历史分页稳定性。首次使用若提示缺少 `privoxy`，先执行 `brew install privoxy`。
 
 首次使用 D/E 前，先安装 AWS Lightsail SSH key：
 
@@ -187,6 +187,8 @@ tools/mac_proxy/install_aws_lightsail_key.sh
 该脚本把 `~/Downloads/LightsailDefaultKey-ap-northeast-1.pem` 复制到 `~/.ssh/aws_lightsail_tokyo.pem`，设置 `600` 权限，清理常见 macOS quarantine / privacy 扩展属性，并验证 `ssh` 可读取该 key。若 key 保留在 `Downloads`，macOS 可能在 Terminal/Codex 子进程中报 `Load key "...pem": Operation not permitted`，导致 D/E 无法启动本地 TCP 隧道。
 
 也可以完全手动开关 MonoProxy / WireGuard；脚本的职责不是替代肉眼可见的软件开关，而是把系统代理、git proxy、shell proxy 和出口状态统一校准并给出 PASS/FAIL。
+
+E / E+ 模式会同时写入标准 macOS proxy bypass domains，使局域网、Apple/iCloud 中国、微信/QQ 等请求直连，避免这些后台连接挤占 AWS Outline 通道。2026-07-01 用户复测确认：在 E+ HTTP+SOCKS 双入口基础上加 bypass 后，此前两个无法完整加载历史的 Codex 长线程均恢复左侧进度条并能刷出全部聊天记录。
 
 兼容入口：
 

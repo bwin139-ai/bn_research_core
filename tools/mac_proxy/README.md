@@ -56,6 +56,9 @@ AWS Outline/Shadowsocks HTTP mode:
 - Also keeps macOS SOCKS enabled on `127.0.0.1:18081`, mirroring MonoProxy's
   dual HTTP+SOCKS shape more closely for long Codex threads, historical
   pagination, WebSocket, and streaming traffic.
+- Applies standard macOS proxy bypass domains so local networks, Apple/iCloud
+  China services, and WeChat/QQ traffic can go direct instead of competing with
+  Codex over the AWS Outline path.
 
 MonoProxy mode:
 
@@ -122,6 +125,12 @@ after switching so the app does not keep using stale proxy state.
 For WireGuard direct mode, `proxy_status.sh` should show no macOS HTTP/HTTPS/SOCKS
 proxy, no git global proxy, no shell proxy env, IPv4 public IP `13.230.97.189`,
 and either no IPv6 result or an expected WireGuard-controlled IPv6 route.
+
+For Mode E+, `proxy_status.sh` should show HTTP/HTTPS on `127.0.0.1:18083`,
+SOCKS on `127.0.0.1:18081`, git and shell HTTP proxy on `18083`, and shell
+`all_proxy` on `18081`. The mode also writes proxy bypass domains for local,
+Apple/iCloud China, WeChat, and QQ traffic to reduce background traffic on the
+AWS Outline tunnel.
 
 `proxy_status.sh` prints `Mode A/B/C/D/E/E+: PASS/FAIL` first. If the shell proxy result
 does not match after switching, open a new terminal or run `source ~/.zshrc`.
