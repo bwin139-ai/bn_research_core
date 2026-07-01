@@ -1,0 +1,45 @@
+{
+  "enabled": false,
+  "account": "mybwin139",
+  "notify_enabled": false,
+  "runtime": {
+    "loop": false,
+    "scan_second": 2,
+    "alert_cooldown_secs": 3600,
+    "config_error_alert_cooldown_secs": 300,
+    "summary_log_interval_secs": 600
+  },
+  "data": {
+    "max_lookback_mins": 990,
+    "request_priority": "LOW"
+  },
+  "symbols": [
+    {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "signals": {
+        "return_1m_abs": {
+          "enabled": true,
+          "threshold": 0.01
+        },
+        "return_5m_abs": {
+          "enabled": true,
+          "threshold": 0.02
+        },
+        "fixed_price_range": {
+          "enabled": false
+        },
+        "rolling_ranges": [
+          {
+            "enabled": true,
+            "lookback_mins": 480
+          },
+          {
+            "enabled": true,
+            "lookback_mins": 720
+          }
+        ]
+      }
+    }
+  ]
+}

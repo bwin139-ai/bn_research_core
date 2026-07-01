@@ -46,6 +46,7 @@ bn_research_core
 7. Codex 多线程交接文档体系。
 8. `core-anchor-ladder` / CAL / 锚梯策略的核心资产阶梯策略语义设计。
 9. `ignition` / IGN 点火动量 observer 的语义与候选扫描建设。
+10. `manual_watchlist` / 人工监控标的 observer 的只提醒不交易告警建设。
 
 ### 1.3 当前阶段目标
 
@@ -90,6 +91,23 @@ strategies/ignition/observer.py
 10. 2026-06-20 `IGN` 与 `IGN_EARLY` bot 消息同步去掉标题中的 `account/scan_id`，改为展示 `sig=HH:MM`；完整 `account/scan_id` 仍保留在 `ignition_observer` audit 记录中。
 11. 2026-06-21 `IGN_BASE` 推送去重从 `layer:symbol` 冷却改为结构身份永久去重：`IGN_BASE:{symbol}:{mode}:{ignition_start_bar_ts}:{ignition_end_bar_ts}:{bc_end_bar_ts}`。同一组 `A/B/C` 结构只推送一次，避免旧结构在 30 分钟冷却结束后重复推送；`IGN` / `IGN_EARLY` 仍保留按 `layer:symbol` 的冷却语义。
 12. 2026-06-23 `IGN_BASE` Telegram 推送增加新鲜度门槛：只有 `bc_end_bar_ts == latest_closed_bar_ts` 的结构才进入推送与 alert 去重；180m 窗口中仍成立但 `C` 已经不是最新闭合 bar 的历史结构仅保留在 audit/top_base_candidates，不再补推，避免类似 `C=08:10` 到 `sig=10:07` 的滞后提醒。
+
+Manual Watchlist observer 当前实现入口：
+
+```text
+strategies/manual_watchlist/config.observer.json
+strategies/manual_watchlist/observer.py
+```
+
+实现边界：
+
+1. 该 observer 用于人工设置监控标的，独立拉取 Binance USD-M 1m contract K 线，只落 audit 与 Telegram 提醒，不下单、不生成 execution intent、不写策略交易 state。
+2. 不依赖 `market_data_hub.finalized_candidate_inputs`，因此可监控大币、TradFi 品种以及 hub exclude symbols。
+3. loop 模式按配置的 `runtime.scan_second` 在每分钟固定秒数扫描，默认第 2 秒；不做 Snapback / Spring / SWR 的 finalized payload 严格等待。
+4. 所有信号均以已闭合 K 线 close 价判定：1m / 5m 涨跌幅使用 close-to-close，固定价格区间与 N 分钟滚动区间突破也使用最新闭合 C close。
+5. `data.max_lookback_mins` 显式限制最大回看不超过 990；每个 symbol 每轮使用一笔 `futures_klines` 请求，经 Binance REST Gateway `LOW` priority 出口，避免挤压 live 交易链路。
+6. JSON 配置支持热修改：loop 每轮重新检查配置 digest，合法变更立即生效；配置错误时暂停扫描、写 `config_error` audit，并在配置修复后自动恢复。
+7. 告警按 `account + symbol + signal_type` 维度冷却，默认 3600 秒，状态落盘到 `state/live/manual_watchlist_observer_alerts.<account>.json`；不同信号类型互不压制。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 
