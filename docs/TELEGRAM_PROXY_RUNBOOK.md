@@ -240,6 +240,8 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
 2026-07-01 新增对照事实：MacBook E SOCKS-only 可承载当前轻量 Codex 线程，但另一个上下文较长、已有多文件编辑状态的“实现核心资产策略”线程在 E 下发送失败，报 `failed to send websocket request: Broken pipe` 或 `stream disconnected before completion`；切回 A / MonoProxy 后同一长线程交互正常。该事实说明 E SOCKS-only 还不能完全平替 A。为对标 MonoProxy 的 HTTP 入口，新增 E+ 模式：本机 `privoxy 127.0.0.1:18083` 将 HTTP/HTTPS proxy 转发到 E 的 `ss-local 127.0.0.1:18081`，macOS/git/shell 均优先走 HTTP proxy，用于专门复测 Codex 长线程和 WebSocket streaming。
 
+2026-07-01 E+ 模式长线程复测成功：`proxy_status.sh` 显示 `Mode E+ AWS Outline HTTP: PASS`，本机 `ss-local 18081` 与 `privoxy 18083` 均正常监听，AWS Outline HTTP 出口为 `13.230.97.189`，Codex endpoint 返回 `405`。同一个此前在 E SOCKS-only 下失败、在 A / MonoProxy 下正常的“实现核心资产策略”长线程，在 E+ 下成功完成交互并返回阿里云策略进程检查结果。因此当前 MacBook 主力候选应优先使用 E+；E SOCKS-only 仅作为轻量备用，A / MonoProxy 作为保底回退。
+
 2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
 
 ```text
