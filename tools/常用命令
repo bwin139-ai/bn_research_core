@@ -26,6 +26,12 @@ tools/mac_proxy/use_mode_e_aws_outline.sh
 source ~/.zshrc
 tools/mac_proxy/proxy_status.sh
 
+# E+: AWS Outline/Shadowsocks + 本地 HTTP 入口
+# 首次使用前若提示缺少 privoxy，先执行：brew install privoxy
+tools/mac_proxy/use_mode_e_aws_outline_http.sh
+source ~/.zshrc
+tools/mac_proxy/proxy_status.sh
+
 # 查看当前代理状态
 tools/mac_proxy/proxy_status.sh
 

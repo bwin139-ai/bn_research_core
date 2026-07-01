@@ -11,6 +11,7 @@ set_system_proxy_mono
 set_git_proxy_mono
 update_zshrc_proxy_block mono
 stop_aws_tunnel_if_owned
+stop_aws_outline_http_if_owned
 stop_aws_outline_if_owned
 
 echo "Mode A MonoProxy settings applied."

@@ -11,6 +11,7 @@ ensure_aws_tunnel
 set_system_proxy_aws
 set_git_proxy_aws
 update_zshrc_proxy_block aws
+stop_aws_outline_http_if_owned
 stop_aws_outline_if_owned
 
 echo "Mode D AWS SSH HTTP settings applied."

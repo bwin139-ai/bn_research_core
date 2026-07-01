@@ -176,6 +176,7 @@ tools/mac_proxy/use_mode_e_aws_outline.sh
 3. C / Direct 直连模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_c_direct.sh`。脚本关闭全部本机代理残留，清空 git proxy 和 shell proxy，并验证普通直连网络可达；该模式不要求 ChatGPT 可直连。
 4. D / AWS SSH HTTP 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_d_aws_ssh_socks.sh`。脚本启动 `127.0.0.1:18082 -> AWS tinyproxy 127.0.0.1:80` HTTP/HTTPS 代理转发，并保留 `127.0.0.1:18080` SSH SOCKS listener 仅供手动探针；macOS Wi-Fi HTTP/HTTPS 指向 `18082`，系统 SOCKS 保持关闭，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18082`，并验证 ChatGPT trace 与 Codex endpoint 可达。
 5. E / AWS Outline-Shadowsocks 私有 TCP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline.sh`。脚本通过 SSH 从 AWS 读取 Shadowsocks 服务端配置，写入本机私有配置 `~/.config/bn_research_core/aws_outline_e_macbook.json`，启动 `ss-local` 监听 `127.0.0.1:18081`，设置 macOS Wi-Fi SOCKS、git proxy 与新 shell proxy env，并验证 ChatGPT trace 与 Codex endpoint 可达。
+6. E+ / AWS Outline-Shadowsocks + 本地 HTTP 模式：先手动 Quit MonoProxy 并停止 WireGuard tunnel，再运行 `tools/mac_proxy/use_mode_e_aws_outline_http.sh`。脚本底层仍使用 AWS Shadowsocks `13.230.97.189:443/tcp` 与本机 `ss-local 127.0.0.1:18081`，但额外启动本机 `privoxy 127.0.0.1:18083`，把 HTTP/HTTPS proxy 转发到 E 的 SOCKS 通道；macOS Wi-Fi HTTP/HTTPS 指向 `18083`，系统 SOCKS 关闭，git proxy 与新 shell HTTP/HTTPS proxy env 指向 `http://127.0.0.1:18083`。该模式用于对标 MonoProxy 的 HTTP 入口，重点验证 Codex 长线程、WebSocket 和 streaming 稳定性。首次使用若提示缺少 `privoxy`，先执行 `brew install privoxy`。
 
 首次使用 D/E 前，先安装 AWS Lightsail SSH key：
 
@@ -236,6 +237,8 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 2026-06-30 D 模式第三次 MacBook 实测成功：HTTP-only 版本显示 `Mode D AWS SSH HTTP: PASS`，macOS HTTP/HTTPS、git proxy、shell `http_proxy/https_proxy` 均指向 `127.0.0.1:18082`，系统 SOCKS 为关闭，Codex endpoint 返回 `405`。用户确认当前 Codex Desktop 消息可经 D 通道发送并被收到，说明 D HTTP-only 已具备承载 Codex Desktop 的实用性。切换命令中若把说明行 `# Quit MonoProxy...` 直接粘进 zsh，可能出现 `zsh: command not found: #`，该提示无害；实际操作只需要执行不带 `#` 的命令行。
 
 2026-06-30 后续复测显示：D 模式曾再次出现 MacBook 无法联网，而 iPhone E 通道仍正常。MacBook 随后切换 E 模式并显示 `Mode E AWS Outline/Shadowsocks: PASS`：macOS HTTP/HTTPS 关闭、SOCKS 指向 `127.0.0.1:18081`，git proxy 和 shell `all_proxy/ALL_PROXY` 指向 `socks5h://127.0.0.1:18081`，`ss-local` listener 正常，AWS Outline 出口为 `13.230.97.189`，Codex endpoint 返回 `405`。用户确认当前 Codex Desktop 消息可经 MacBook E 通道发送并被收到。因此个人代理稳定性观察主线调整为 iPhone E + MacBook E 连续观察 24 小时；A / MonoProxy 作为保底回退，D / AWS SSH HTTP 作为调试备用，B / WireGuard UDP 作为实验备用。
+
+2026-07-01 新增对照事实：MacBook E SOCKS-only 可承载当前轻量 Codex 线程，但另一个上下文较长、已有多文件编辑状态的“实现核心资产策略”线程在 E 下发送失败，报 `failed to send websocket request: Broken pipe` 或 `stream disconnected before completion`；切回 A / MonoProxy 后同一长线程交互正常。该事实说明 E SOCKS-only 还不能完全平替 A。为对标 MonoProxy 的 HTTP 入口，新增 E+ 模式：本机 `privoxy 127.0.0.1:18083` 将 HTTP/HTTPS proxy 转发到 E 的 `ss-local 127.0.0.1:18081`，macOS/git/shell 均优先走 HTTP proxy，用于专门复测 Codex 长线程和 WebSocket streaming。
 
 2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
 

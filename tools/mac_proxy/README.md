@@ -41,6 +41,18 @@ AWS Outline/Shadowsocks mode:
   local listener.
 - Leaves macOS HTTP and HTTPS proxies disabled.
 
+AWS Outline/Shadowsocks HTTP mode:
+
+- Uses the same AWS Tokyo Shadowsocks service and local `ss-local` listener as
+  Mode E.
+- Requires `privoxy`; install it with `brew install privoxy` if missing.
+- Starts local `privoxy` on `127.0.0.1:18083`, forwarding HTTP CONNECT traffic
+  to the `ss-local` SOCKS listener on `127.0.0.1:18081`.
+- Points macOS Wi-Fi HTTP/HTTPS proxy, git proxy, and new shell HTTP/HTTPS env
+  to `http://127.0.0.1:18083`.
+- Keeps macOS SOCKS disabled. This is intended to mimic MonoProxy's HTTP entry
+  more closely for long Codex threads and WebSocket/streaming traffic.
+
 MonoProxy mode:
 
 - Points macOS Wi-Fi HTTP/HTTPS proxy to `127.0.0.1:8118`.
@@ -59,6 +71,7 @@ tools/mac_proxy/use_mode_b_aws_wireguard.sh
 tools/mac_proxy/use_mode_c_direct.sh
 tools/mac_proxy/use_mode_d_aws_ssh_socks.sh
 tools/mac_proxy/use_mode_e_aws_outline.sh
+tools/mac_proxy/use_mode_e_aws_outline_http.sh
 ```
 
 Manual app state before running each mode:
@@ -68,6 +81,8 @@ Manual app state before running each mode:
 - Mode C: MonoProxy quit; WireGuard stopped.
 - Mode D: MonoProxy quit; WireGuard stopped; AWS SSH reachable.
 - Mode E: MonoProxy quit; WireGuard stopped; AWS Shadowsocks service reachable.
+- Mode E+: MonoProxy quit; WireGuard stopped; AWS Shadowsocks service reachable;
+  `privoxy` installed.
 
 Before using Mode D or E for the first time, install the AWS Lightsail key into
 `~/.ssh`:
@@ -104,7 +119,7 @@ For WireGuard direct mode, `proxy_status.sh` should show no macOS HTTP/HTTPS/SOC
 proxy, no git global proxy, no shell proxy env, IPv4 public IP `13.230.97.189`,
 and either no IPv6 result or an expected WireGuard-controlled IPv6 route.
 
-`proxy_status.sh` prints `Mode A/B/C/D/E: PASS/FAIL` first. If the shell proxy result
+`proxy_status.sh` prints `Mode A/B/C/D/E/E+: PASS/FAIL` first. If the shell proxy result
 does not match after switching, open a new terminal or run `source ~/.zshrc`.
 
 When Codex Desktop shows `stream disconnected before completion`, run:
@@ -128,7 +143,9 @@ AWS_PROXY_SSH_KEY=$HOME/.ssh/aws_lightsail_tokyo.pem
 AWS_PROXY_SOCKS_PORT=18080
 AWS_PROXY_HTTP_PORT=18082
 AWS_OUTLINE_SOCKS_PORT=18081
+AWS_OUTLINE_HTTP_PORT=18083
 AWS_OUTLINE_SS_CONFIG=$HOME/.config/bn_research_core/aws_outline_e_macbook.json
+AWS_OUTLINE_HTTP_CONFIG=$HOME/.config/bn_research_core/aws_outline_e_privoxy.conf
 MONO_HTTP_PORT=8118
 MONO_SOCKS_PORT=8119
 ```

@@ -69,6 +69,14 @@ system_proxy_aws_outline() {
     proxy_host_port_is socks "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
 }
 
+system_proxy_aws_outline_http() {
+  proxy_enabled web &&
+    proxy_enabled secure &&
+    proxy_disabled socks &&
+    proxy_host_port_is web "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT" &&
+    proxy_host_port_is secure "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
+}
+
 git_proxy_mono() {
   [[ "$(git config --global --get http.proxy 2>/dev/null || true)" == "$(mono_http_url)" ]] &&
     [[ "$(git config --global --get https.proxy 2>/dev/null || true)" == "$(mono_http_url)" ]]
@@ -86,6 +94,11 @@ git_proxy_aws_socks() {
 git_proxy_aws_outline() {
   [[ "$(git config --global --get http.proxy 2>/dev/null || true)" == "$(aws_outline_socks_url)" ]] &&
     [[ "$(git config --global --get https.proxy 2>/dev/null || true)" == "$(aws_outline_socks_url)" ]]
+}
+
+git_proxy_aws_outline_http() {
+  [[ "$(git config --global --get http.proxy 2>/dev/null || true)" == "$(aws_outline_http_url)" ]] &&
+    [[ "$(git config --global --get https.proxy 2>/dev/null || true)" == "$(aws_outline_http_url)" ]]
 }
 
 shell_proxy_mono() {
@@ -115,6 +128,14 @@ shell_proxy_aws_outline() {
     [[ "${ALL_PROXY:-}" == "$(aws_outline_socks_url)" ]]
 }
 
+shell_proxy_aws_outline_http() {
+  [[ "${http_proxy:-}" == "$(aws_outline_http_url)" ]] &&
+    [[ "${https_proxy:-}" == "$(aws_outline_http_url)" ]] &&
+    [[ "${HTTP_PROXY:-}" == "$(aws_outline_http_url)" ]] &&
+    [[ "${HTTPS_PROXY:-}" == "$(aws_outline_http_url)" ]] &&
+    [[ -z "${all_proxy:-}${ALL_PROXY:-}" ]]
+}
+
 mono_listeners_active() {
   mono_http_listener_active && mono_socks_listener_active
 }
@@ -137,6 +158,14 @@ aws_outline_listener_active() {
 
 aws_outline_network_reachable() {
   test_aws_outline_socks >/dev/null 2>&1
+}
+
+aws_outline_http_listener_active() {
+  [[ -n "$(aws_outline_privoxy_pids | tr -d '\n')" ]]
+}
+
+aws_outline_http_network_reachable() {
+  test_aws_outline_socks >/dev/null 2>&1 && test_aws_outline_http >/dev/null 2>&1
 }
 
 wireguard_inactive() {
@@ -197,12 +226,24 @@ mode_e_pass() {
     aws_outline_network_reachable
 }
 
-echo "== ABCDE mode verdict =="
+mode_e_http_pass() {
+  system_proxy_aws_outline_http &&
+    git_proxy_aws_outline_http &&
+    shell_proxy_aws_outline_http &&
+    mono_listeners_inactive &&
+    wireguard_inactive &&
+    aws_outline_listener_active &&
+    aws_outline_http_listener_active &&
+    aws_outline_http_network_reachable
+}
+
+echo "== ABCDE/E+ mode verdict =="
 pass_fail "Mode A MonoProxy" mode_a_pass
 pass_fail "Mode B AWS WireGuard" mode_b_pass
 pass_fail "Mode C Direct" mode_c_pass
 pass_fail "Mode D AWS SSH HTTP" mode_d_pass
 pass_fail "Mode E AWS Outline/Shadowsocks" mode_e_pass
+pass_fail "Mode E+ AWS Outline HTTP" mode_e_http_pass
 
 echo
 echo "== component checks =="
@@ -210,19 +251,24 @@ pass_fail "system proxy -> MonoProxy" system_proxy_mono
 pass_fail "system proxy -> direct/off" system_proxy_direct
 pass_fail "system proxy -> AWS SSH HTTP" system_proxy_aws_socks
 pass_fail "system proxy -> AWS Outline/Shadowsocks" system_proxy_aws_outline
+pass_fail "system proxy -> AWS Outline HTTP" system_proxy_aws_outline_http
 pass_fail "git proxy -> MonoProxy" git_proxy_mono
 pass_fail "git proxy -> empty" git_proxy_empty
 pass_fail "git proxy -> AWS SSH HTTP" git_proxy_aws_socks
 pass_fail "git proxy -> AWS Outline/Shadowsocks" git_proxy_aws_outline
+pass_fail "git proxy -> AWS Outline HTTP" git_proxy_aws_outline_http
 pass_fail "shell proxy -> MonoProxy" shell_proxy_mono
 pass_fail "shell proxy -> empty" shell_proxy_empty
 pass_fail "shell proxy -> AWS SSH HTTP" shell_proxy_aws_socks
 pass_fail "shell proxy -> AWS Outline/Shadowsocks" shell_proxy_aws_outline
+pass_fail "shell proxy -> AWS Outline HTTP" shell_proxy_aws_outline_http
 pass_fail "MonoProxy listeners 8118/8119" mono_listeners_active
 pass_fail "AWS SSH HTTP+SOCKS listeners 18082/18080" aws_socks_listener_active
 pass_fail "AWS SSH HTTP network reachable" aws_socks_network_reachable
 pass_fail "AWS Outline/Shadowsocks listener 18081" aws_outline_listener_active
 pass_fail "AWS Outline/Shadowsocks network reachable" aws_outline_network_reachable
+pass_fail "AWS Outline HTTP listener 18083" aws_outline_http_listener_active
+pass_fail "AWS Outline HTTP network reachable" aws_outline_http_network_reachable
 pass_fail "WireGuard 10.89.0.x active" wireguard_active
 pass_fail "direct public IPv4 is AWS" direct_public_ip_matches_aws
 pass_fail "direct network reachable" direct_network_reachable
@@ -283,6 +329,9 @@ lsof -nP -iTCP:"$AWS_PROXY_HTTP_PORT" -sTCP:LISTEN || true
 echo
 echo "AWS Outline/Shadowsocks ${AWS_OUTLINE_SOCKS_PORT}:"
 lsof -nP -iTCP:"$AWS_OUTLINE_SOCKS_PORT" -sTCP:LISTEN || true
+echo
+echo "AWS Outline HTTP ${AWS_OUTLINE_HTTP_PORT}:"
+lsof -nP -iTCP:"$AWS_OUTLINE_HTTP_PORT" -sTCP:LISTEN || true
 
 echo
 echo "== WireGuard direct hints =="
@@ -319,6 +368,9 @@ if command -v curl >/dev/null 2>&1; then
   printf 'AWS Outline/Shadowsocks ifconfig.me/ip: '
   clean_curl_env curl --socks5-hostname "${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -fsS https://ifconfig.me/ip || true
   echo
+  printf 'AWS Outline HTTP ifconfig.me/ip: '
+  clean_curl_env curl -x "$(aws_outline_http_url)" --connect-timeout 8 --max-time 20 -fsS https://ifconfig.me/ip || true
+  echo
   printf 'direct Codex endpoint: '
   if test_codex_endpoint_direct; then echo "405"; else echo "fail"; fi
   printf 'mono Codex endpoint: '
@@ -327,6 +379,8 @@ if command -v curl >/dev/null 2>&1; then
   if test_codex_endpoint_aws_socks; then echo "405"; else echo "fail"; fi
   printf 'AWS Outline/Shadowsocks Codex endpoint: '
   if test_codex_endpoint_aws_outline; then echo "405"; else echo "fail"; fi
+  printf 'AWS Outline HTTP Codex endpoint: '
+  if test_codex_endpoint_aws_outline_http; then echo "405"; else echo "fail"; fi
 else
   echo "curl not found"
 fi

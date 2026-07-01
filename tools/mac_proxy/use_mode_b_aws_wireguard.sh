@@ -11,6 +11,7 @@ set_system_proxy_direct
 unset_git_proxy
 update_zshrc_proxy_block aws-wireguard-direct
 stop_aws_tunnel_if_owned
+stop_aws_outline_http_if_owned
 stop_aws_outline_if_owned
 
 echo "Mode B AWS WireGuard settings applied."

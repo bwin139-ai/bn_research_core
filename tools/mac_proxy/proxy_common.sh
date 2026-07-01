@@ -21,6 +21,9 @@ AWS_PROXY_HTTP_PORT="${AWS_PROXY_HTTP_PORT:-18082}"
 AWS_OUTLINE_SS_CONFIG="${AWS_OUTLINE_SS_CONFIG:-$HOME/.config/bn_research_core/aws_outline_e_macbook.json}"
 AWS_OUTLINE_SOCKS_HOST="${AWS_OUTLINE_SOCKS_HOST:-127.0.0.1}"
 AWS_OUTLINE_SOCKS_PORT="${AWS_OUTLINE_SOCKS_PORT:-18081}"
+AWS_OUTLINE_HTTP_HOST="${AWS_OUTLINE_HTTP_HOST:-127.0.0.1}"
+AWS_OUTLINE_HTTP_PORT="${AWS_OUTLINE_HTTP_PORT:-18083}"
+AWS_OUTLINE_HTTP_CONFIG="${AWS_OUTLINE_HTTP_CONFIG:-$HOME/.config/bn_research_core/aws_outline_e_privoxy.conf}"
 MONO_HTTP_HOST="${MONO_HTTP_HOST:-127.0.0.1}"
 MONO_HTTP_PORT="${MONO_HTTP_PORT:-8118}"
 MONO_SOCKS_HOST="${MONO_SOCKS_HOST:-127.0.0.1}"
@@ -54,6 +57,10 @@ aws_http_url() {
 
 aws_outline_socks_url() {
   printf 'socks5h://%s:%s' "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
+}
+
+aws_outline_http_url() {
+  printf 'http://%s:%s' "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
 }
 
 mono_http_url() {
@@ -90,6 +97,11 @@ test_aws_http() {
 
 test_aws_outline_socks() {
   clean_curl_env curl --socks5-hostname "${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}" \
+    --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
+}
+
+test_aws_outline_http() {
+  clean_curl_env curl -x "$(aws_outline_http_url)" \
     --connect-timeout 5 --max-time 12 -fsS https://ifconfig.me/ip >/dev/null
 }
 
@@ -152,8 +164,16 @@ aws_outline_listener_pids() {
   tcp_listener_pids "$AWS_OUTLINE_SOCKS_PORT"
 }
 
+aws_outline_http_listener_pids() {
+  tcp_listener_pids "$AWS_OUTLINE_HTTP_PORT"
+}
+
 aws_outline_ss_local_pids() {
   lsof -nP -iTCP:"$AWS_OUTLINE_SOCKS_PORT" -sTCP:LISTEN -a -c ss-local -t 2>/dev/null || true
+}
+
+aws_outline_privoxy_pids() {
+  lsof -nP -iTCP:"$AWS_OUTLINE_HTTP_PORT" -sTCP:LISTEN -a -c privoxy -t 2>/dev/null || true
 }
 
 ss_local_bin() {
@@ -165,6 +185,19 @@ ss_local_bin() {
     printf '%s\n' /opt/homebrew/opt/shadowsocks-libev/bin/ss-local
   else
     echo "ss-local not found. Install shadowsocks-libev first." >&2
+    exit 1
+  fi
+}
+
+privoxy_bin() {
+  if command -v privoxy >/dev/null 2>&1; then
+    command -v privoxy
+  elif [[ -x /usr/local/sbin/privoxy ]]; then
+    printf '%s\n' /usr/local/sbin/privoxy
+  elif [[ -x /opt/homebrew/sbin/privoxy ]]; then
+    printf '%s\n' /opt/homebrew/sbin/privoxy
+  else
+    echo "privoxy not found. Install it first with: brew install privoxy" >&2
     exit 1
   fi
 }
@@ -261,6 +294,63 @@ ensure_aws_outline_tunnel() {
   echo "AWS Outline/Shadowsocks tunnel started on ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}."
 }
 
+prepare_aws_outline_http_config() {
+  local config_dir log_file
+  config_dir="$(dirname "$AWS_OUTLINE_HTTP_CONFIG")"
+  log_file="${config_dir}/aws_outline_e_privoxy.log"
+
+  mkdir -p "$config_dir"
+  chmod 700 "$config_dir"
+
+  cat > "$AWS_OUTLINE_HTTP_CONFIG" <<EOF
+listen-address ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}
+toggle 1
+enable-remote-toggle 0
+enable-edit-actions 0
+accept-intercepted-requests 0
+forward-socks5t / ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT} .
+logfile ${log_file}
+EOF
+  chmod 600 "$AWS_OUTLINE_HTTP_CONFIG"
+}
+
+ensure_aws_outline_http_proxy() {
+  ensure_aws_outline_tunnel
+
+  if test_aws_outline_http; then
+    echo "AWS Outline HTTP proxy already healthy on ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}."
+    return
+  fi
+
+  local listeners privoxy_listeners privoxy pid_file log_file
+  listeners="$(aws_outline_http_listener_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  privoxy_listeners="$(aws_outline_privoxy_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+
+  if [[ -n "$listeners" ]]; then
+    if [[ "$listeners" == "$privoxy_listeners" ]]; then
+      echo "Restarting stale privoxy listener on ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}: ${privoxy_listeners}"
+      kill $privoxy_listeners
+      sleep 2
+    else
+      echo "Port ${AWS_OUTLINE_HTTP_PORT} is occupied by a non-privoxy process:" >&2
+      lsof -nP -iTCP:"$AWS_OUTLINE_HTTP_PORT" -sTCP:LISTEN >&2 || true
+      echo "Stop that process or override AWS_OUTLINE_HTTP_PORT." >&2
+      exit 2
+    fi
+  fi
+
+  privoxy="$(privoxy_bin)"
+  prepare_aws_outline_http_config
+  pid_file="${AWS_OUTLINE_HTTP_CONFIG}.pid"
+  log_file="${AWS_OUTLINE_HTTP_CONFIG}.stdout.log"
+  "$privoxy" --no-daemon "$AWS_OUTLINE_HTTP_CONFIG" >"$log_file" 2>&1 &
+  echo "$!" > "$pid_file"
+
+  sleep 2
+  test_aws_outline_http
+  echo "AWS Outline HTTP proxy started on ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}."
+}
+
 stop_aws_tunnel_if_owned() {
   local ssh_listeners
   ssh_listeners="$(aws_tunnel_ssh_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -281,6 +371,16 @@ stop_aws_outline_if_owned() {
   kill $ss_local_listeners
 }
 
+stop_aws_outline_http_if_owned() {
+  local privoxy_listeners
+  privoxy_listeners="$(aws_outline_privoxy_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if [[ -z "$privoxy_listeners" ]]; then
+    return
+  fi
+  echo "Stopping AWS Outline HTTP proxy on ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}: ${privoxy_listeners}"
+  kill $privoxy_listeners
+}
+
 set_system_proxy_aws() {
   networksetup -setwebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
   networksetup -setsecurewebproxy "$MAC_PROXY_SERVICE" "$AWS_PROXY_HTTP_HOST" "$AWS_PROXY_HTTP_PORT"
@@ -294,6 +394,14 @@ set_system_proxy_aws_outline() {
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" off
   networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
   networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
+}
+
+set_system_proxy_aws_outline_http() {
+  networksetup -setwebproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
+  networksetup -setsecurewebproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
+  networksetup -setwebproxystate "$MAC_PROXY_SERVICE" on
+  networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" on
+  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" off
 }
 
 set_system_proxy_direct() {
@@ -321,6 +429,12 @@ set_git_proxy_aws_outline() {
   require_git
   git config --global http.proxy "$(aws_outline_socks_url)"
   git config --global https.proxy "$(aws_outline_socks_url)"
+}
+
+set_git_proxy_aws_outline_http() {
+  require_git
+  git config --global http.proxy "$(aws_outline_http_url)"
+  git config --global https.proxy "$(aws_outline_http_url)"
 }
 
 set_git_proxy_mono() {
@@ -406,6 +520,13 @@ test_codex_endpoint_aws_outline() {
   [[ "$code" == "405" ]]
 }
 
+test_codex_endpoint_aws_outline_http() {
+  local code
+  code="$(clean_curl_env curl -x "$(aws_outline_http_url)" --connect-timeout 8 --max-time 20 -sS -o /tmp/mac_proxy_codex_aws_outline_http.out -w '%{http_code}' https://chatgpt.com/backend-api/codex/responses || true)"
+  rm -f /tmp/mac_proxy_codex_aws_outline_http.out
+  [[ "$code" == "405" ]]
+}
+
 test_trace_mono() {
   clean_curl_env curl -x "$(mono_http_url)" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
 }
@@ -416,6 +537,10 @@ test_trace_aws_socks() {
 
 test_trace_aws_outline() {
   clean_curl_env curl --socks5-hostname "${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
+}
+
+test_trace_aws_outline_http() {
+  clean_curl_env curl -x "$(aws_outline_http_url)" --connect-timeout 8 --max-time 20 -fsS https://chatgpt.com/cdn-cgi/trace >/dev/null
 }
 
 verify_mode_a() {
@@ -450,10 +575,17 @@ verify_mode_e() {
   test_codex_endpoint_aws_outline
 }
 
+verify_mode_e_http() {
+  test_aws_outline_socks
+  test_aws_outline_http
+  test_trace_aws_outline_http
+  test_codex_endpoint_aws_outline_http
+}
+
 update_zshrc_proxy_block() {
   local mode="$1"
   python3 - "$ZSHRC_PATH" "$mode" "$PROXY_BLOCK_BEGIN" "$PROXY_BLOCK_END" \
-    "$(aws_socks_url)" "$(aws_http_url)" "$(aws_outline_socks_url)" "$(mono_http_url)" "$(mono_socks_url)" <<'PY'
+    "$(aws_socks_url)" "$(aws_http_url)" "$(aws_outline_socks_url)" "$(aws_outline_http_url)" "$(mono_http_url)" "$(mono_socks_url)" <<'PY'
 import pathlib
 import sys
 
@@ -464,8 +596,9 @@ end = sys.argv[4]
 aws_socks = sys.argv[5]
 aws_http = sys.argv[6]
 aws_outline_socks = sys.argv[7]
-mono_http = sys.argv[8]
-mono_socks = sys.argv[9]
+aws_outline_http = sys.argv[8]
+mono_http = sys.argv[9]
+mono_socks = sys.argv[10]
 
 if mode == "aws":
     block_lines = [
@@ -513,6 +646,17 @@ elif mode == "aws-outline":
         "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY",
         f"export all_proxy={aws_outline_socks}",
         f"export ALL_PROXY={aws_outline_socks}",
+        end,
+    ]
+elif mode == "aws-outline-http":
+    block_lines = [
+        begin,
+        "# mode: aws-outline-shadowsocks-http",
+        f"export http_proxy={aws_outline_http}",
+        f"export https_proxy={aws_outline_http}",
+        f"export HTTP_PROXY={aws_outline_http}",
+        f"export HTTPS_PROXY={aws_outline_http}",
+        "unset all_proxy ALL_PROXY",
         end,
     ]
 else:

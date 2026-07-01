@@ -12,6 +12,7 @@ set_system_proxy_aws_outline
 set_git_proxy_aws_outline
 update_zshrc_proxy_block aws-outline
 stop_aws_tunnel_if_owned
+stop_aws_outline_http_if_owned
 
 echo "Mode E AWS Outline/Shadowsocks settings applied."
 echo "System SOCKS: ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}"
