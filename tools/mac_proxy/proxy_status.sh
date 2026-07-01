@@ -72,9 +72,10 @@ system_proxy_aws_outline() {
 system_proxy_aws_outline_http() {
   proxy_enabled web &&
     proxy_enabled secure &&
-    proxy_disabled socks &&
+    proxy_enabled socks &&
     proxy_host_port_is web "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT" &&
-    proxy_host_port_is secure "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
+    proxy_host_port_is secure "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT" &&
+    proxy_host_port_is socks "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
 }
 
 git_proxy_mono() {
@@ -133,7 +134,8 @@ shell_proxy_aws_outline_http() {
     [[ "${https_proxy:-}" == "$(aws_outline_http_url)" ]] &&
     [[ "${HTTP_PROXY:-}" == "$(aws_outline_http_url)" ]] &&
     [[ "${HTTPS_PROXY:-}" == "$(aws_outline_http_url)" ]] &&
-    [[ -z "${all_proxy:-}${ALL_PROXY:-}" ]]
+    [[ "${all_proxy:-}" == "$(aws_outline_socks_url)" ]] &&
+    [[ "${ALL_PROXY:-}" == "$(aws_outline_socks_url)" ]]
 }
 
 mono_listeners_active() {

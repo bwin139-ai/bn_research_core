@@ -242,6 +242,12 @@ AWS Tokyo WireGuard 客户端 endpoint 优先使用：
 
 2026-07-01 E+ 模式长线程复测成功：`proxy_status.sh` 显示 `Mode E+ AWS Outline HTTP: PASS`，本机 `ss-local 18081` 与 `privoxy 18083` 均正常监听，AWS Outline HTTP 出口为 `13.230.97.189`，Codex endpoint 返回 `405`。同一个此前在 E SOCKS-only 下失败、在 A / MonoProxy 下正常的“实现核心资产策略”长线程，在 E+ 下成功完成交互并返回阿里云策略进程检查结果。因此当前 MacBook 主力候选应优先使用 E+；E SOCKS-only 仅作为轻量备用，A / MonoProxy 作为保底回退。
 
+2026-07-01 E+ 长线程历史分页继续调优：在 E+ 下网页和 YouTube 流畅，`proxy_status.sh` 与 5 轮 `probe_codex_network.sh` 均显示 AWS Outline HTTP 链路健康，Cloudflare `colo=NRT`、HTTP/2、Codex endpoint `405`，但某个 Codex 长线程向上滚动只能加载最近聊天记录，A / MonoProxy 下可加载完整早期记录。为增强 E+ 的长连接和大响应适配，`privoxy` 生成配置改为中性代理 `toggle 0`，并显式设置 `keep-alive-timeout 300`、`tolerate-pipelining 1`、`socket-timeout 600`，同时打开轻量 `debug 1/2/8192` 日志。若后续仍复现，应优先收集 `/Users/lyqmac/.config/bn_research_core/aws_outline_e_privoxy.log` 与 `proxy_status.sh` 输出，再决定是否继续调整 HTTP 层或回退 A。
+
+同日复现后继续调整 E+：`privoxy` stdout 日志中 `chatgpt.com` / `ab.chatgpt.com` 出现客户端侧 socket 提前不可用，而服务端 socket 仍打开的记录；结合 A / MonoProxy 可以完整加载历史记录，新的主要差异是 A 同时提供 HTTP + SOCKS，而 E+ 只开 HTTP。E+ 因此改为双入口：macOS HTTP/HTTPS 走 `127.0.0.1:18083`，系统 SOCKS 同时走 `127.0.0.1:18081`，shell env 同时写 HTTP proxy 与 `all_proxy=socks5h://127.0.0.1:18081`。后续验证重点是 Codex 长线程早期历史分页是否恢复正常。
+
+双入口 E+ 已完成用户复测：同一个此前在 E+ HTTP-only 下只能上滑一两页、缺少左侧虚拟滚动进度条的“实现核心资产策略”长线程，切换到 E+ HTTP+SOCKS 后已能加载到线程开头，左侧滚动进度条恢复。后续 MacBook 私有代理主路径应以双入口 E+ 为准；若状态脚本中 `system proxy -> AWS Outline HTTP` 或 `shell proxy -> AWS Outline HTTP` 失败，优先重新运行 `tools/mac_proxy/use_mode_e_aws_outline_http.sh` 并在新终端 `source ~/.zshrc`。
+
 2026-06-30 新增 iPhone E 模式，用于先在 iPhone 上验证 AWS 私有 TCP 通路，不影响 MacBook 当前 Codex 连接：
 
 ```text

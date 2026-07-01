@@ -15,7 +15,7 @@ stop_aws_tunnel_if_owned
 
 echo "Mode E+ AWS Outline/Shadowsocks HTTP settings applied."
 echo "System HTTP/HTTPS: ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}"
-echo "System SOCKS: off"
+echo "System SOCKS: ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}"
 echo "Local SOCKS listener: ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT}"
 echo "Git proxy: $(aws_outline_http_url)"
 echo "Local Shadowsocks config: ${AWS_OUTLINE_SS_CONFIG}"

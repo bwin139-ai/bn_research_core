@@ -304,18 +304,25 @@ prepare_aws_outline_http_config() {
 
   cat > "$AWS_OUTLINE_HTTP_CONFIG" <<EOF
 listen-address ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}
-toggle 1
+toggle 0
 enable-remote-toggle 0
 enable-edit-actions 0
 accept-intercepted-requests 0
+keep-alive-timeout 300
+tolerate-pipelining 1
+socket-timeout 600
 forward-socks5t / ${AWS_OUTLINE_SOCKS_HOST}:${AWS_OUTLINE_SOCKS_PORT} .
 logfile ${log_file}
+debug 1
+debug 2
+debug 8192
 EOF
   chmod 600 "$AWS_OUTLINE_HTTP_CONFIG"
 }
 
 ensure_aws_outline_http_proxy() {
   ensure_aws_outline_tunnel
+  prepare_aws_outline_http_config
 
   if test_aws_outline_http; then
     echo "AWS Outline HTTP proxy already healthy on ${AWS_OUTLINE_HTTP_HOST}:${AWS_OUTLINE_HTTP_PORT}."
@@ -340,7 +347,6 @@ ensure_aws_outline_http_proxy() {
   fi
 
   privoxy="$(privoxy_bin)"
-  prepare_aws_outline_http_config
   pid_file="${AWS_OUTLINE_HTTP_CONFIG}.pid"
   log_file="${AWS_OUTLINE_HTTP_CONFIG}.stdout.log"
   "$privoxy" --no-daemon "$AWS_OUTLINE_HTTP_CONFIG" >"$log_file" 2>&1 &
@@ -399,9 +405,10 @@ set_system_proxy_aws_outline() {
 set_system_proxy_aws_outline_http() {
   networksetup -setwebproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
   networksetup -setsecurewebproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_HTTP_HOST" "$AWS_OUTLINE_HTTP_PORT"
+  networksetup -setsocksfirewallproxy "$MAC_PROXY_SERVICE" "$AWS_OUTLINE_SOCKS_HOST" "$AWS_OUTLINE_SOCKS_PORT"
   networksetup -setwebproxystate "$MAC_PROXY_SERVICE" on
   networksetup -setsecurewebproxystate "$MAC_PROXY_SERVICE" on
-  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" off
+  networksetup -setsocksfirewallproxystate "$MAC_PROXY_SERVICE" on
 }
 
 set_system_proxy_direct() {
@@ -656,7 +663,8 @@ elif mode == "aws-outline-http":
         f"export https_proxy={aws_outline_http}",
         f"export HTTP_PROXY={aws_outline_http}",
         f"export HTTPS_PROXY={aws_outline_http}",
-        "unset all_proxy ALL_PROXY",
+        f"export all_proxy={aws_outline_socks}",
+        f"export ALL_PROXY={aws_outline_socks}",
         end,
     ]
 else:

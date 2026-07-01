@@ -48,10 +48,14 @@ AWS Outline/Shadowsocks HTTP mode:
 - Requires `privoxy`; install it with `brew install privoxy` if missing.
 - Starts local `privoxy` on `127.0.0.1:18083`, forwarding HTTP CONNECT traffic
   to the `ss-local` SOCKS listener on `127.0.0.1:18081`.
+- Generates a neutral, long-connection-friendly `privoxy` config: filtering is
+  toggled off, keep-alive is extended, socket timeout is relaxed, and
+  lightweight request/connection/error logging is enabled.
 - Points macOS Wi-Fi HTTP/HTTPS proxy, git proxy, and new shell HTTP/HTTPS env
   to `http://127.0.0.1:18083`.
-- Keeps macOS SOCKS disabled. This is intended to mimic MonoProxy's HTTP entry
-  more closely for long Codex threads and WebSocket/streaming traffic.
+- Also keeps macOS SOCKS enabled on `127.0.0.1:18081`, mirroring MonoProxy's
+  dual HTTP+SOCKS shape more closely for long Codex threads, historical
+  pagination, WebSocket, and streaming traffic.
 
 MonoProxy mode:
 
