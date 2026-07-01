@@ -108,6 +108,7 @@ strategies/manual_watchlist/observer.py
 5. `data.max_lookback_mins` 显式限制最大回看不超过 990；每个 symbol 每轮使用一笔 `futures_klines` 请求，经 Binance REST Gateway `LOW` priority 出口，避免挤压 live 交易链路。
 6. JSON 配置支持热修改：loop 每轮重新检查配置 digest，合法变更立即生效；配置错误时暂停扫描、写 `config_error` audit，并在配置修复后自动恢复。
 7. 告警按 `account + symbol + signal_type` 维度冷却，默认 3600 秒，状态落盘到 `state/live/manual_watchlist_observer_alerts.<account>.json`；不同信号类型互不压制。
+8. 当前 `mybwin139` 配置已启用 loop / notify：`BTCUSDT` 只监控 fixed price range `57750-59500` 与 `720m` rolling range；`RAVEUSDT` 监控 1m `3%`、5m `8%`、fixed price range `0.285-0.3033`、`720m/360m` rolling range；`BEATUSDT` 监控 1m `3%`、5m `8%`、fixed price range `2.76-3.03`、`720m/360m` rolling range。
 
 ### 1.5 Core Anchor Ladder 当前设计现场
 

@@ -1,9 +1,9 @@
 {
-  "enabled": false,
+  "enabled": true,
   "account": "mybwin139",
-  "notify_enabled": false,
+  "notify_enabled": true,
   "runtime": {
-    "loop": false,
+    "loop": true,
     "scan_second": 2,
     "alert_cooldown_secs": 3600,
     "config_error_alert_cooldown_secs": 300,
@@ -19,24 +19,80 @@
       "symbol": "BTCUSDT",
       "signals": {
         "return_1m_abs": {
-          "enabled": true,
-          "threshold": 0.01
+          "enabled": false,
+          "threshold": 0.0
         },
         "return_5m_abs": {
-          "enabled": true,
-          "threshold": 0.02
+          "enabled": false,
+          "threshold": 0.0
         },
         "fixed_price_range": {
-          "enabled": false
+          "enabled": true,
+          "min_price": 57750.0,
+          "max_price": 59500.0
         },
         "rolling_ranges": [
           {
             "enabled": true,
-            "lookback_mins": 480
-          },
+            "lookback_mins": 720
+          }
+        ]
+      }
+    },
+    {
+      "enabled": true,
+      "symbol": "RAVEUSDT",
+      "signals": {
+        "return_1m_abs": {
+          "enabled": true,
+          "threshold": 0.03
+        },
+        "return_5m_abs": {
+          "enabled": true,
+          "threshold": 0.08
+        },
+        "fixed_price_range": {
+          "enabled": true,
+          "min_price": 0.285,
+          "max_price": 0.3033
+        },
+        "rolling_ranges": [
           {
             "enabled": true,
             "lookback_mins": 720
+          },
+          {
+            "enabled": true,
+            "lookback_mins": 360
+          }
+        ]
+      }
+    },
+    {
+      "enabled": true,
+      "symbol": "BEATUSDT",
+      "signals": {
+        "return_1m_abs": {
+          "enabled": true,
+          "threshold": 0.03
+        },
+        "return_5m_abs": {
+          "enabled": true,
+          "threshold": 0.08
+        },
+        "fixed_price_range": {
+          "enabled": true,
+          "min_price": 2.76,
+          "max_price": 3.03
+        },
+        "rolling_ranges": [
+          {
+            "enabled": true,
+            "lookback_mins": 720
+          },
+          {
+            "enabled": true,
+            "lookback_mins": 360
           }
         ]
       }
